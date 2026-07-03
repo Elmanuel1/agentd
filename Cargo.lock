@@ -117,9 +117,16 @@ name = "agentd-memory"
 version = "0.1.0"
 dependencies = [
  "agentd-core",
+ "async-trait",
+ "axum",
+ "http",
+ "http-body-util",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
