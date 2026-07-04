@@ -1,0 +1,249 @@
+//! Integration tests for the V2 entity stores (environments, skills, vaults,
+//! memory, sessions) against a live Postgres + object store.
+//!
+//! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`; blob-backed tests also need
+//! `AGENTD_AWS_ENDPOINT` (MinIO/Floci) and skip otherwise. Run:
+//! ```sh
+//! AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
+//!   AGENTD_AWS_ENDPOINT=http://localhost:4566 AWS_ACCESS_KEY_ID=test \
+//!   AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 \
+//!   cargo test -p agentd-store-postgres --test pg_entities
+//! ```
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+
+use std::sync::Arc;
+
+use agentd_blobs::{BlobStore, S3BlobStore};
+use agentd_core::{AuthContext, OrgId, Timestamp, WorkspaceId};
+use agentd_store_postgres::{
+    PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgSkillsStore, PgVaultsStore,
+};
+use serde_json::json;
+
+fn enabled() -> bool {
+    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
+}
+
+async fn backend() -> PgBackend {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    PgBackend::connect(&url).await.unwrap()
+}
+
+/// Build a per-test object store, or `None` if no endpoint is configured.
+async fn s3(tag: &str) -> Option<Arc<dyn BlobStore>> {
+    std::env::var("AGENTD_AWS_ENDPOINT").ok()?;
+    let bucket = format!("agentdent{tag}{}", stamp());
+    Some(Arc::new(S3BlobStore::connect(bucket).await.unwrap()))
+}
+
+fn stamp() -> i64 {
+    Timestamp::now().as_datetime().timestamp_micros()
+}
+
+fn uniq_ws(tag: &str) -> WorkspaceId {
+    WorkspaceId(format!("wrkspc_{tag}{}", stamp()))
+}
+
+fn ctx_ws(ws: &WorkspaceId) -> AuthContext {
+    AuthContext {
+        org: OrgId(format!("org_{}", ws.0)),
+        workspace: ws.clone(),
+        api_key_id: "apikey_ent".into(),
+    }
+}
+
+fn ctx_org(tag: &str) -> AuthContext {
+    let org = format!("org_{tag}{}", stamp());
+    AuthContext {
+        org: OrgId(org),
+        workspace: WorkspaceId("wrkspc_ent".into()),
+        api_key_id: "apikey_ent".into(),
+    }
+}
+
+#[tokio::test]
+async fn pg_environments_service_roundtrip() {
+    if !enabled() {
+        eprintln!("skipping (set AGENTD_PG_TESTS=1)");
+        return;
+    }
+    use agentd_environments::EnvironmentsService;
+    let svc = EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend().await)));
+    let ctx = ctx_org("env");
+    let env = svc
+        .create(
+            &ctx,
+            serde_json::from_value(json!({
+                "name": "prod",
+                "config": {"type": "cloud", "networking": {"type": "unrestricted"}}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(env.name, "prod");
+    assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap().id, env.id);
+    assert_eq!(svc.list(&ctx).await.unwrap().len(), 1);
+    // org isolation
+    assert!(svc.get(&ctx_org("other"), env.id.as_str()).await.is_err());
+    svc.delete(&ctx, env.id.as_str()).await.unwrap();
+    assert!(svc.get(&ctx, env.id.as_str()).await.is_err());
+}
+
+#[tokio::test]
+async fn pg_skills_content_in_object_store() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("skills").await else {
+        eprintln!("skipping skills (needs AGENTD_AWS_ENDPOINT)");
+        return;
+    };
+    use agentd_skills::SkillsService;
+    let svc = SkillsService::new(Arc::new(PgSkillsStore::new(backend().await, blobs)));
+    let ctx = ctx_ws(&uniq_ws("skills"));
+    let skill = svc
+        .create(
+            &ctx,
+            serde_json::from_value(json!({"display_name": "greeter", "description": "d"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let v = svc
+        .create_version(
+            &ctx,
+            skill.id.as_str(),
+            serde_json::from_value(json!({"content": "# SKILL v1"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    // content came back from object storage, not the DB
+    let got = svc.get_version(&ctx, skill.id.as_str(), v.version).await.unwrap();
+    assert_eq!(got.content, "# SKILL v1");
+}
+
+#[tokio::test]
+async fn pg_vaults_secret_sealed_to_object_store() {
+    if !enabled() {
+        return;
+    }
+    let Some(secrets) = s3("vaults").await else {
+        eprintln!("skipping vaults (needs AGENTD_AWS_ENDPOINT)");
+        return;
+    };
+    use agentd_vaults::store::VaultsStore;
+    use agentd_vaults::types::CredentialAuthInput;
+    use agentd_vaults::VaultsService;
+    let store = Arc::new(PgVaultsStore::new(backend().await, secrets));
+    let svc = VaultsService::new(store.clone());
+    let ctx = ctx_ws(&uniq_ws("vaults"));
+    let vault = svc
+        .create_vault(&ctx, serde_json::from_value(json!({"display_name": "v"})).unwrap())
+        .await
+        .unwrap();
+    let cred = svc
+        .create_credential(
+            &ctx,
+            vault.id.as_str(),
+            serde_json::from_value(json!({
+                "display_name": "c",
+                "auth": {"type": "environment_variable", "secret_name": "API_KEY", "secret_value": "s3cr3t"}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The secret is never in the DB — it round-trips through the secret store.
+    let stored = store
+        .get_credential(&ctx.workspace, &vault.id, &cred.id)
+        .await
+        .unwrap();
+    match stored.auth {
+        Some(CredentialAuthInput::EnvironmentVariable { secret_value, .. }) => {
+            assert_eq!(secret_value.expose(), "s3cr3t");
+        }
+        other => panic!("expected sealed env-var secret, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn pg_memory_versioned_with_content_and_rollback() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memory").await else {
+        eprintln!("skipping memory (needs AGENTD_AWS_ENDPOINT)");
+        return;
+    };
+    use agentd_memory::MemoriesService;
+    let svc = MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs)));
+    let ctx = ctx_ws(&uniq_ws("memory"));
+    let ms = svc
+        .create_store(&ctx, serde_json::from_value(json!({"name": "m", "description": ""})).unwrap())
+        .await
+        .unwrap();
+    let m1 = svc
+        .create_memory(
+            &ctx,
+            ms.id.as_str(),
+            serde_json::from_value(json!({"path": "/notes.md", "content": "hello"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let v1 = m1.memory_version_id.clone();
+    let m2 = svc
+        .update_memory(
+            &ctx,
+            ms.id.as_str(),
+            m1.id.as_str(),
+            serde_json::from_value(json!({"content": "world"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(m2.memory_version_id, v1, "update appends a new head version");
+    // v1 content is fetched from object storage
+    let gv1 = svc.get_version(&ctx, ms.id.as_str(), v1.as_str()).await.unwrap();
+    assert_eq!(gv1.content.as_deref(), Some("hello"));
+    // O(1) rollback moves the head back to v1
+    let rolled = svc.rollback(&ctx, ms.id.as_str(), m1.id.as_str(), v1.as_str()).await.unwrap();
+    assert_eq!(rolled.memory_version_id, v1);
+}
+
+#[tokio::test]
+async fn pg_sessions_shared_event_log() {
+    if !enabled() {
+        return;
+    }
+    use agentd_sessions::events::{Event, EventPayload};
+    use agentd_sessions::store::SessionsStore;
+    use agentd_sessions::types::Session;
+    let store = PgSessionsStore::new(backend().await);
+    let ws = uniq_ws("sessions");
+    let session: Session =
+        serde_json::from_str(include_str!("../../../fixtures/session.create.json")).unwrap();
+
+    store.insert(&ws, session.clone()).await.unwrap();
+    assert_eq!(store.get(&ws, &session.id).await.unwrap().id, session.id);
+
+    let e1 = Event::new(EventPayload::UserInterrupt {});
+    let e2 = Event::new(EventPayload::UserInterrupt {});
+    store.append_event(&ws, &session.id, e1.clone()).await.unwrap();
+    store.append_event(&ws, &session.id, e2.clone()).await.unwrap();
+
+    let events = store.events(&ws, &session.id).await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].id, e1.id, "log returns append order (by seq)");
+
+    // replace stamps processed_at in place — no new row.
+    let mut e1p = e1.clone();
+    e1p.processed_at = Some(Timestamp::now());
+    store.replace_event(&ws, &session.id, e1p).await.unwrap();
+    let events = store.events(&ws, &session.id).await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events[0].processed_at.is_some());
+
+    store.delete(&ws, &session.id).await.unwrap();
+    assert!(store.get(&ws, &session.id).await.is_err());
+}
