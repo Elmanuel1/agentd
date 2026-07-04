@@ -23,10 +23,30 @@ dependencies = [
 name = "agentd-api"
 version = "0.1.0"
 dependencies = [
+ "agentd-agents",
  "agentd-core",
+ "agentd-deployments",
+ "agentd-dreams",
+ "agentd-engine",
+ "agentd-environments",
+ "agentd-files",
+ "agentd-memory",
+ "agentd-scheduler",
+ "agentd-sessions",
+ "agentd-skills",
+ "agentd-vaults",
+ "async-trait",
+ "axum",
+ "chrono",
+ "http",
+ "http-body-util",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

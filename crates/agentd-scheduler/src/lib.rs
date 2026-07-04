@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use agentd_core::ports::{
-    FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort,
+    FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort, TenantRef,
 };
 use agentd_core::schedule::{CompiledSchedule, CronKind, CronSchedule};
 use async_trait::async_trait;
@@ -233,6 +233,10 @@ mod tests {
             timezone: "UTC".into(),
             target: FireTarget::Deployment {
                 id: "depl_01test".into(),
+            },
+            tenant: TenantRef {
+                org_id: "org_t".into(),
+                workspace_id: "wrkspc_01t".into(),
             },
         }
     }

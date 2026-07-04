@@ -5,11 +5,37 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "agentd"
+path = "src/main.rs"
+
 [dependencies]
 agentd-core = { workspace = true }
+agentd-agents = { workspace = true }
+agentd-environments = { workspace = true }
+agentd-vaults = { workspace = true }
+agentd-memory = { workspace = true }
+agentd-files = { workspace = true }
+agentd-skills = { workspace = true }
+agentd-sessions = { workspace = true }
+agentd-deployments = { workspace = true }
+agentd-dreams = { workspace = true }
+agentd-scheduler = { workspace = true }
+agentd-engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
 
 [lints]
 workspace = true

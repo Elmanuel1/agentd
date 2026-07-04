@@ -122,6 +122,16 @@ impl FireTarget {
     }
 }
 
+/// The tenant a schedule fires under (rides with every fire delivery — a
+/// remote backend like Temporal carries it in the workflow payload).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantRef {
+    /// Organization.
+    pub org_id: String,
+    /// Workspace.
+    pub workspace_id: String,
+}
+
 /// A durable schedule registration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleSpec {
@@ -131,6 +141,8 @@ pub struct ScheduleSpec {
     pub timezone: String,
     /// What to fire.
     pub target: FireTarget,
+    /// Whose resource this is.
+    pub tenant: TenantRef,
 }
 
 /// Idempotency identity of a single fire: `(target, scheduled_at)`.
@@ -410,6 +422,10 @@ mod tests {
             cron: "0 0 * * *".into(),
             timezone: "UTC".into(),
             target: target.clone(),
+            tenant: TenantRef {
+                org_id: "org_t".into(),
+                workspace_id: "wrkspc_01t".into(),
+            },
         })
         .await
         .unwrap();
@@ -433,6 +449,10 @@ mod tests {
                 cron: "99 * * * *".into(),
                 timezone: "UTC".into(),
                 target: FireTarget::Dream { id: "d1".into() },
+                tenant: TenantRef {
+                    org_id: "org_t".into(),
+                    workspace_id: "wrkspc_01t".into(),
+                },
             })
             .await;
         assert!(matches!(bad, Err(SchedulerError::InvalidSpec(_))));

@@ -1,0 +1,150 @@
+//! Cross-entity dependency glue — implements the ports each entity crate
+//! declared, over the real services. This is the ONLY place entities are
+//! wired to each other, keeping the crate graph a DAG.
+
+use std::sync::Arc;
+
+use agentd_agents::{AgentRef, AgentSnapshot, AgentsService};
+use agentd_core::{ApiError, AuthContext};
+use agentd_deployments::service::DeploymentDeps;
+use agentd_deployments::types::{Deployment, InitialEvent};
+use agentd_environments::EnvironmentsService;
+use agentd_sessions::service::SessionDeps;
+use agentd_sessions::SessionsService;
+use async_trait::async_trait;
+
+/// SessionDeps over the real agents + environments services.
+pub struct RealSessionDeps {
+    /// Agents service.
+    pub agents: Arc<AgentsService>,
+    /// Environments service.
+    pub environments: Arc<EnvironmentsService>,
+}
+
+impl std::fmt::Debug for RealSessionDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealSessionDeps").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl SessionDeps for RealSessionDeps {
+    async fn resolve_agent(
+        &self,
+        ctx: &AuthContext,
+        agent_id: &str,
+        version: Option<u64>,
+    ) -> Result<AgentSnapshot, ApiError> {
+        let agent = match version {
+            Some(v) => {
+                let versions = self.agents.versions(ctx, agent_id).await?;
+                versions
+                    .into_iter()
+                    .find(|a| a.version == v)
+                    .ok_or_else(|| ApiError::not_found("agent version not found"))?
+            }
+            None => self.agents.get(ctx, agent_id).await?,
+        };
+        if agent.archived_at.is_some() {
+            return Err(ApiError::conflict_invalid_request(
+                "agent is archived; new sessions cannot reference it",
+            ));
+        }
+        Ok(agent.snapshot())
+    }
+
+    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError> {
+        let env = self.environments.get(ctx, env_id).await?;
+        if env.archived_at.is_some() {
+            return Err(ApiError::conflict_invalid_request(
+                "environment is archived; new sessions cannot reference it",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// DeploymentDeps over the real agents/environments/sessions services.
+pub struct RealDeploymentDeps {
+    /// Agents.
+    pub agents: Arc<AgentsService>,
+    /// Environments.
+    pub environments: Arc<EnvironmentsService>,
+    /// Sessions (fires create sessions).
+    pub sessions: Arc<SessionsService>,
+}
+
+impl std::fmt::Debug for RealDeploymentDeps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealDeploymentDeps").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl DeploymentDeps for RealDeploymentDeps {
+    async fn resolve_agent_ref(
+        &self,
+        ctx: &AuthContext,
+        agent_id: &str,
+        version: Option<u64>,
+    ) -> Result<AgentRef, ApiError> {
+        let agent = self.agents.get(ctx, agent_id).await?;
+        if agent.archived_at.is_some() {
+            return Err(ApiError::conflict_invalid_request(
+                "agent is archived; new sessions cannot reference it",
+            ));
+        }
+        let mut r = agent.reference();
+        if let Some(v) = version {
+            r.version = v;
+        }
+        Ok(r)
+    }
+
+    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError> {
+        let env = self.environments.get(ctx, env_id).await?;
+        if env.archived_at.is_some() {
+            return Err(ApiError::conflict_invalid_request(
+                "environment is archived",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn create_session(
+        &self,
+        ctx: &AuthContext,
+        deployment: &Deployment,
+    ) -> Result<String, ApiError> {
+        // Build the session create from the frozen deployment config.
+        let req: agentd_sessions::types::CreateSessionRequest =
+            serde_json::from_value(serde_json::json!({
+                "agent": {
+                    "type": "agent",
+                    "id": deployment.agent.id.as_str(),
+                    "version": deployment.agent.version,
+                },
+                "environment_id": deployment.environment_id,
+                "title": deployment.name,
+                "vault_ids": deployment.vault_ids,
+            }))
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let session = self.sessions.create(ctx, req).await?;
+        // Queue the deployment's initial events as the kickoff.
+        let payloads: Vec<agentd_sessions::events::EventPayload> = deployment
+            .initial_events
+            .iter()
+            .map(|e| match e {
+                InitialEvent::UserMessage { content } => {
+                    agentd_sessions::events::EventPayload::UserMessage {
+                        content: content.clone(),
+                    }
+                }
+            })
+            .collect();
+        self.sessions
+            .send_events(ctx, session.id.as_str(), payloads)
+            .await?;
+        Ok(session.id.as_str().to_owned())
+    }
+}

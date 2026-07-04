@@ -121,6 +121,10 @@ impl DreamsService {
                 target: FireTarget::Dream {
                     id: dream.id.as_str().to_owned(),
                 },
+                tenant: agentd_core::ports::TenantRef {
+                    org_id: ctx.org.0.clone(),
+                    workspace_id: ctx.workspace.0.clone(),
+                },
             })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
