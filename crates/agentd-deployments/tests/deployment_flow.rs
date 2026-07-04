@@ -206,6 +206,32 @@ async fn scheduled_fire_is_idempotent_per_scheduled_at() {
 }
 
 #[tokio::test]
+async fn concurrent_scheduled_fires_claim_exactly_once() {
+    // Two agentd replicas both receive the same (deployment, scheduled_at)
+    // tick. The store-level claim must let EXACTLY ONE fire — no double
+    // session. This is the multi-replica exactly-once guarantee.
+    let Rig { svc, deps, .. } = rig();
+    let d = svc.create(&ctx(), create_req()).await.unwrap();
+    let svc = std::sync::Arc::new(svc);
+    let tick = Timestamp::now();
+
+    let a = svc.clone();
+    let b = svc.clone();
+    let da = d.id.as_str().to_owned();
+    let db = d.id.as_str().to_owned();
+    let (ra, rb) = tokio::join!(
+        async move { a.fire_scheduled(&ctx(), &da, tick).await.unwrap() },
+        async move { b.fire_scheduled(&ctx(), &db, tick).await.unwrap() },
+    );
+
+    // Exactly one replica fired; the other was claimed out.
+    let fired = [ra.is_some(), rb.is_some()];
+    assert_eq!(fired.iter().filter(|x| **x).count(), 1, "exactly one fire");
+    assert_eq!(deps.sessions_created.load(Ordering::SeqCst), 1, "one session");
+    assert_eq!(svc.runs(&ctx(), d.id.as_str(), None).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn rate_limited_fire_records_error_run_no_retry() {
     let r = rig();
     let d = r.svc.create(&ctx(), create_req()).await.unwrap();

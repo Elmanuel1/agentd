@@ -38,6 +38,21 @@ pub trait DeploymentsStore: Send + Sync {
         deployment: &DeploymentId,
         has_error: Option<bool>,
     ) -> Result<Vec<DeploymentRun>, StoreError>;
+
+    /// Atomically claim one `(deployment, scheduled_at)` fire.
+    ///
+    /// Returns `true` if this call won the claim (the caller should fire),
+    /// `false` if another replica already claimed it (skip). This is the
+    /// exactly-once boundary across replicas — it MUST be atomic. The
+    /// Postgres impl is `INSERT … ON CONFLICT DO NOTHING` on a
+    /// `UNIQUE(deployment_id, scheduled_at)` index (rows-affected = the
+    /// boolean). App code must never do a read-then-write dup check.
+    async fn claim_fire(
+        &self,
+        ws: &WorkspaceId,
+        deployment: &DeploymentId,
+        scheduled_at: &str,
+    ) -> Result<bool, StoreError>;
 }
 
 type Entry = (Deployment, Vec<DeploymentRun>);
@@ -46,6 +61,9 @@ type Entry = (Deployment, Vec<DeploymentRun>);
 #[derive(Debug, Default)]
 pub struct InMemoryDeploymentsStore {
     inner: RwLock<BTreeMap<WorkspaceId, BTreeMap<DeploymentId, Entry>>>,
+    /// Claimed fire keys (`ws/deployment/scheduled_at`) — the single-node
+    /// stand-in for the Postgres unique index.
+    claims: parking_lot::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl InMemoryDeploymentsStore {
@@ -127,5 +145,17 @@ impl DeploymentsStore for InMemoryDeploymentsStore {
             .collect();
         out.reverse(); // newest first
         Ok(out)
+    }
+
+    async fn claim_fire(
+        &self,
+        ws: &WorkspaceId,
+        deployment: &DeploymentId,
+        scheduled_at: &str,
+    ) -> Result<bool, StoreError> {
+        let key = format!("{}/{}/{scheduled_at}", ws.0, deployment.as_str());
+        // insert() returns true iff the key was NOT already present — a
+        // single atomic test-and-set, exactly like the DB unique index.
+        Ok(self.claims.lock().insert(key))
     }
 }

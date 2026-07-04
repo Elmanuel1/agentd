@@ -120,7 +120,15 @@ impl LocalScheduler {
         }
     }
 
-    /// Spawn the production background loop (checks every `interval`).
+    /// Spawn the background ticking loop (checks every `interval`).
+    ///
+    /// ⚠️ **Single-instance only.** `LocalScheduler` holds its schedule map
+    /// in-process, so running this ticker on more than one agentd replica
+    /// makes each replica fire independently. For multi-replica deployments
+    /// use the Temporal (or Postgres-claim) `SchedulerPort` backend, whose
+    /// timer is a single external source of truth. (The deployment fire path
+    /// additionally claims each `(deployment, scheduled_at)` at the store, so
+    /// a double-tick can't double-*fire* — but it still wastes work.)
     pub fn spawn(self: Arc<Self>, interval: std::time::Duration) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);

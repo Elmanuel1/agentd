@@ -256,17 +256,17 @@ impl DeploymentsService {
         match d.status {
             DeploymentStatus::Paused | DeploymentStatus::Archived => Ok(None),
             DeploymentStatus::Active => {
-                // Idempotency: one run per (deployment, scheduled_at).
-                let existing = self
+                // Exactly-once across replicas: atomically CLAIM the
+                // (deployment, scheduled_at) tick at the store. A read-then-
+                // write dup check would let two replicas both pass and
+                // double-fire; the claim is a single test-and-set (Postgres
+                // UNIQUE index). Only the winner fires.
+                let claimed = self
                     .store
-                    .runs(&ctx.workspace, &d.id, None)
+                    .claim_fire(&ctx.workspace, &d.id, &scheduled_at.to_wire())
                     .await
                     .map_err(map_store)?;
-                let dup = existing.iter().any(|r| {
-                    matches!(&r.trigger_context, TriggerContext::Schedule { scheduled_at: s }
-                        if s == &scheduled_at)
-                });
-                if dup {
+                if !claimed {
                     return Ok(None);
                 }
                 let run = self

@@ -382,6 +382,21 @@ impl TurnRunner {
             }
             ConfirmationResult::Deny => {
                 let msg = deny_message.unwrap_or_else(|| "denied by user".into());
+                // Statelessness: the denial MUST enter the event log, or a
+                // replica reconstructing history from the log would miss it
+                // and feed the model a different conversation. Emit it as an
+                // errored tool_result carrying the deny reason.
+                self.contract
+                    .emit(
+                        &self.ws,
+                        &self.session_id,
+                        EventPayload::AgentToolResult {
+                            tool_use_id,
+                            content: vec![ContentBlock::text(format!("denied: {msg}"))],
+                            is_error: true,
+                        },
+                    )
+                    .await?;
                 self.history.push(ModelMessage {
                     role: "user".into(),
                     content: format!("[tool_denied {}] {msg}", pending.name),
