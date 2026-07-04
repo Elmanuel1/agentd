@@ -1,0 +1,64 @@
+# agentd stack: control plane + persistence + artifacts + scheduler backend.
+#
+# Dev profile runs agentd with in-memory stores + the local scheduler; the
+# postgres/minio/temporal services are the production-shaped backends the
+# store/scheduler ports swap onto (config-selected, no code change).
+
+services:
+  agentd:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      AGENTD_ADDR: 0.0.0.0:8080
+      # key:org:workspace[,key:org:workspace…]
+      AGENTD_API_KEYS: ${AGENTD_API_KEYS:-agentd-dev-key:org_dev:wrkspc_01dev}
+      RUST_LOG: info
+    depends_on:
+      - postgres
+      - minio
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentd
+      POSTGRES_USER: agentd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentd-dev}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-agentd}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-agentd-dev-secret}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # Scheduler backend for the TemporalScheduler impl of the SchedulerPort.
+  # The dev profile uses the in-process LocalScheduler; point
+  # AGENTD_SCHEDULER=temporal at this service to swap.
+  temporal:
+    image: temporalio/auto-setup:latest
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: agentd
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-agentd-dev}
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      - postgres
+    ports:
+      - "7233:7233"
+
+volumes:
+  pg_data:
+  minio_data:

@@ -53,10 +53,15 @@ dependencies = [
 name = "agentd-conformance"
 version = "0.1.0"
 dependencies = [
+ "agentd-api",
  "agentd-core",
+ "axum",
+ "http",
+ "http-body-util",
  "serde",
  "serde_json",
- "thiserror",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
