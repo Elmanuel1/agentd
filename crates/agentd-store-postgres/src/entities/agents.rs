@@ -1,62 +1,85 @@
-//! `AgentsStore` on Postgres — versioned rows, latest via `DISTINCT ON`.
+//! `AgentsStore` on Postgres via Diesel — versioned rows, latest via
+//! `DISTINCT ON`. The typed schema lives in `crate::schema`; the wire object is
+//! kept in the `doc` jsonb column (fetched as `serde_json::Value`).
 
 use agentd_agents::store::{AgentsStore, StoreError};
 use agentd_agents::types::AgentId;
 use agentd_agents::Agent;
 use agentd_core::WorkspaceId;
 use async_trait::async_trait;
-use sqlx::types::Json;
+use chrono::{DateTime, Utc};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::RunQueryDsl;
 
-use crate::{sqlx_msg, PgBackend};
+use crate::schema::agents;
+use crate::{diesel_be, pool_be, PgBackend};
 
-/// Postgres-backed agents store.
+/// Postgres-backed agents store (Diesel).
 #[derive(Debug, Clone)]
 pub struct PgAgentsStore {
     backend: PgBackend,
 }
 
 impl PgAgentsStore {
-    /// Wrap a pool.
+    /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
 }
 
-fn be(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(sqlx_msg(e))
+/// Row for inserts — the lifted filter columns plus the wire `doc`.
+#[derive(diesel::Insertable)]
+#[diesel(table_name = agents)]
+struct NewAgent {
+    workspace_id: String,
+    agent_id: String,
+    version: i64,
+    name: String,
+    archived_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
+}
+
+fn row(ws: &WorkspaceId, a: &Agent) -> Result<NewAgent, StoreError> {
+    Ok(NewAgent {
+        workspace_id: ws.0.clone(),
+        agent_id: a.id.as_str().to_owned(),
+        version: a.version as i64,
+        name: a.name.clone(),
+        archived_at: a.archived_at.map(|t| t.as_datetime()),
+        created_at: a.created_at.as_datetime(),
+        doc: serde_json::to_value(a).map_err(|e| StoreError::Backend(e.to_string()))?,
+    })
+}
+
+fn parse(doc: serde_json::Value) -> Result<Agent, StoreError> {
+    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
 }
 
 #[async_trait]
 impl AgentsStore for PgAgentsStore {
     async fn insert(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into agents (workspace_id, agent_id, version, name, archived_at, created_at, doc)
-             values ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&ws.0)
-        .bind(agent.id.as_str())
-        .bind(agent.version as i64)
-        .bind(&agent.name)
-        .bind(agent.archived_at.map(|t| t.as_datetime()))
-        .bind(agent.created_at.as_datetime())
-        .bind(Json(&agent))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(agents::table)
+            .values(row(ws, &agent)?)
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
     async fn latest(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Agent, StoreError> {
-        let row: Option<(Json<Agent>,)> = sqlx::query_as(
-            "select doc from agents where workspace_id = $1 and agent_id = $2
-             order by version desc limit 1",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::NotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = agents::table
+            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::agent_id.eq(id.as_str()))
+            .order(agents::version.desc())
+            .select(agents::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn version(
@@ -65,49 +88,67 @@ impl AgentsStore for PgAgentsStore {
         id: &AgentId,
         version: u64,
     ) -> Result<Agent, StoreError> {
-        let row: Option<(Json<Agent>,)> = sqlx::query_as(
-            "select doc from agents where workspace_id = $1 and agent_id = $2 and version = $3",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .bind(version as i64)
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::NotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = agents::table
+            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::agent_id.eq(id.as_str()))
+            .filter(agents::version.eq(version as i64))
+            .select(agents::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn append_version(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
-        let exists: Option<(i32,)> = sqlx::query_as(
-            "select 1 from agents where workspace_id = $1 and agent_id = $2 limit 1",
-        )
-        .bind(&ws.0)
-        .bind(agent.id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let exists: Option<i64> = agents::table
+            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::agent_id.eq(agent.id.as_str()))
+            .select(agents::version)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         if exists.is_none() {
             return Err(StoreError::NotFound);
         }
-        self.insert(ws, agent).await
+        diesel::insert_into(agents::table)
+            .values(row(ws, &agent)?)
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        Ok(())
     }
 
     async fn replace_latest(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update agents set doc = $3, name = $4, archived_at = $5
-             where workspace_id = $1 and agent_id = $2
-               and version = (select max(version) from agents
-                              where workspace_id = $1 and agent_id = $2)",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let max: Option<i64> = agents::table
+            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::agent_id.eq(agent.id.as_str()))
+            .select(diesel::dsl::max(agents::version))
+            .first(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        let Some(maxv) = max else {
+            return Err(StoreError::NotFound);
+        };
+        let doc = serde_json::to_value(&agent).map_err(|e| StoreError::Backend(e.to_string()))?;
+        let affected = diesel::update(
+            agents::table
+                .filter(agents::workspace_id.eq(&ws.0))
+                .filter(agents::agent_id.eq(agent.id.as_str()))
+                .filter(agents::version.eq(maxv)),
         )
-        .bind(&ws.0)
-        .bind(agent.id.as_str())
-        .bind(Json(&agent))
-        .bind(&agent.name)
-        .bind(agent.archived_at.map(|t| t.as_datetime()))
-        .execute(&self.backend.pool)
+        .set((
+            agents::doc.eq(doc),
+            agents::name.eq(&agent.name),
+            agents::archived_at.eq(agent.archived_at.map(|t| t.as_datetime())),
+        ))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::NotFound);
         }
@@ -115,30 +156,32 @@ impl AgentsStore for PgAgentsStore {
     }
 
     async fn versions(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Vec<Agent>, StoreError> {
-        let rows: Vec<(Json<Agent>,)> = sqlx::query_as(
-            "select doc from agents where workspace_id = $1 and agent_id = $2 order by version asc",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        if rows.is_empty() {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = agents::table
+            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::agent_id.eq(id.as_str()))
+            .order(agents::version.asc())
+            .select(agents::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        if docs.is_empty() {
             return Err(StoreError::NotFound);
         }
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        docs.into_iter().map(parse).collect()
     }
 
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Agent>, StoreError> {
-        // "Latest of each agent" — one indexed query, no app-side fold.
-        let rows: Vec<(Json<Agent>,)> = sqlx::query_as(
-            "select distinct on (agent_id) doc from agents
-             where workspace_id = $1 order by agent_id, version desc",
-        )
-        .bind(&ws.0)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        // "Latest of each agent" — Postgres DISTINCT ON, one indexed query.
+        let docs: Vec<serde_json::Value> = agents::table
+            .filter(agents::workspace_id.eq(&ws.0))
+            .distinct_on(agents::agent_id)
+            .order((agents::agent_id, agents::version.desc()))
+            .select(agents::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 }

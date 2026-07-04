@@ -24,9 +24,16 @@
 )]
 
 pub mod entities;
+pub mod schema;
 
+use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::AsyncPgConnection;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+
+/// The diesel-async connection pool type (tokio-postgres under the hood).
+pub type DieselPgPool = DieselPool<AsyncPgConnection>;
 
 pub use entities::agents::PgAgentsStore;
 pub use entities::deployments::PgDeploymentsStore;
@@ -38,11 +45,15 @@ pub use entities::sessions::PgSessionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
 
-/// Shared connection pool.
+/// Shared connection pools. Transitional: `pool` (sqlx) serves stores not yet
+/// ported; `diesel` (diesel-async) serves the ported ones. Both target the
+/// same database. When every store is on Diesel, `pool` is removed.
 #[derive(Clone)]
 pub struct PgBackend {
-    /// The sqlx pool.
+    /// The sqlx pool (legacy stores).
     pub pool: PgPool,
+    /// The diesel-async pool (ported stores).
+    pub diesel: DieselPgPool,
 }
 
 impl std::fmt::Debug for PgBackend {
@@ -67,7 +78,12 @@ impl PgBackend {
             .connect(database_url)
             .await
             .map_err(|e| PgError::Connect(e.to_string()))?;
-        Ok(Self { pool })
+        let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
+        let diesel = DieselPool::builder(manager)
+            .max_size(10)
+            .build()
+            .map_err(|e| PgError::Connect(e.to_string()))?;
+        Ok(Self { pool, diesel })
     }
 }
 
@@ -75,6 +91,30 @@ impl PgBackend {
 /// its own `StoreError::Backend`).
 pub(crate) fn sqlx_msg(e: sqlx::Error) -> String {
     e.to_string()
+}
+
+/// Map a Diesel query error to a store `Backend` variant. Generic over the
+/// entity `StoreError` so every entity can reuse it.
+pub(crate) fn diesel_be<E: FromBackend>(e: diesel::result::Error) -> E {
+    E::backend(e.to_string())
+}
+
+/// Map a diesel-async pool checkout error to a store `Backend` variant.
+pub(crate) fn pool_be<E: FromBackend>(
+    e: diesel_async::pooled_connection::deadpool::PoolError,
+) -> E {
+    E::backend(e.to_string())
+}
+
+/// Entity `StoreError`s that carry a `Backend(String)` variant.
+pub(crate) trait FromBackend {
+    fn backend(msg: String) -> Self;
+}
+
+impl FromBackend for agentd_agents::store::StoreError {
+    fn backend(msg: String) -> Self {
+        Self::Backend(msg)
+    }
 }
 
 /// Serialize a snake_case enum to its wire string for a filter column

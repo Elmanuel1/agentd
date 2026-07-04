@@ -25,6 +25,8 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
+diesel = { workspace = true }
+diesel-async = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
