@@ -10,6 +10,7 @@ agentd-core = { workspace = true }
 agentd-agents = { workspace = true }
 agentd-deployments = { workspace = true }
 agentd-files = { workspace = true }
+agentd-blobs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +22,7 @@ sqlx = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+agentd-blobs = { workspace = true }
 
 [lints]
 workspace = true

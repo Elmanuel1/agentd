@@ -25,22 +25,24 @@
 
 pub mod dynamo;
 pub mod entities;
-pub mod s3;
 
 pub use entities::agents::DynamoAgentsStore;
 pub use entities::deployments::DynamoDeploymentsStore;
 pub use entities::files::DynamoFilesStore;
 
+use std::sync::Arc;
+
+use agentd_blobs::{BlobStore, S3BlobStore};
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::config::{Credentials, Region};
 
 /// Shared AWS clients + table/bucket naming.
 #[derive(Clone)]
 pub struct AwsBackend {
-    /// DynamoDB document helper.
+    /// DynamoDB document helper (entity metadata).
     pub dynamo: dynamo::DynamoDoc,
-    /// S3 blob helper.
-    pub blobs: s3::S3Blobs,
+    /// Shared S3 blob store (bytes) — same layer the Postgres backend uses.
+    pub blobs: Arc<dyn BlobStore>,
     /// Table/bucket name prefix (namespacing, e.g. `agentd`).
     pub prefix: String,
 }
@@ -56,7 +58,7 @@ impl std::fmt::Debug for AwsBackend {
 impl AwsBackend {
     /// Connect using ambient AWS config, optionally overriding the endpoint
     /// (`AGENTD_AWS_ENDPOINT`) and region for a local emulator.
-    pub async fn connect(prefix: impl Into<String>) -> Self {
+    pub async fn connect(prefix: impl Into<String>) -> Result<Self, AwsError> {
         let endpoint = std::env::var("AGENTD_AWS_ENDPOINT").ok();
         let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".into());
 
@@ -71,27 +73,24 @@ impl AwsBackend {
         let shared = loader.load().await;
 
         let dynamo = dynamo::DynamoDoc::new(aws_sdk_dynamodb::Client::new(&shared));
-        // S3 needs path-style addressing against emulators.
-        let s3_conf = aws_sdk_s3::config::Builder::from(&shared)
-            .force_path_style(endpoint.is_some())
-            .build();
-        let blobs = s3::S3Blobs::new(aws_sdk_s3::Client::from_conf(s3_conf));
+        let prefix = prefix.into();
+        // Bytes go to the shared S3 blob store (reads AGENTD_AWS_ENDPOINT itself).
+        let blobs: Arc<dyn BlobStore> = Arc::new(
+            S3BlobStore::connect(format!("{prefix}-artifacts"))
+                .await
+                .map_err(|e| AwsError::S3(e.to_string()))?,
+        );
 
-        Self {
+        Ok(Self {
             dynamo,
             blobs,
-            prefix: prefix.into(),
-        }
+            prefix,
+        })
     }
 
     /// Fully-qualified table name for an entity (`{prefix}_{entity}`).
     pub fn table(&self, entity: &str) -> String {
         format!("{}_{entity}", self.prefix)
-    }
-
-    /// Bucket name for blobs (`{prefix}-artifacts`).
-    pub fn bucket(&self) -> String {
-        format!("{}-artifacts", self.prefix)
     }
 }
 

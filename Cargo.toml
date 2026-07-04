@@ -17,6 +17,7 @@ members = [
     "crates/agentd-conformance",
     "crates/agentd-store-aws",
     "crates/agentd-store-postgres",
+    "crates/agentd-blobs",
 ]
 
 [workspace.package]
@@ -42,6 +43,7 @@ agentd-engine = { path = "crates/agentd-engine" }
 agentd-api = { path = "crates/agentd-api" }
 agentd-store-aws = { path = "crates/agentd-store-aws" }
 agentd-store-postgres = { path = "crates/agentd-store-postgres" }
+agentd-blobs = { path = "crates/agentd-blobs" }
 
 # external
 serde = { version = "1", features = ["derive"] }

@@ -56,9 +56,10 @@ create table deployment_claims (
     primary key (workspace_id, deployment_id, scheduled_at)
 );
 
--- ── files (metadata + bytes) ────────────────────────────────────────────
--- Bytes live in a bytea column for a pure-Postgres story; swap to S3 for
--- large-object workloads without touching the trait.
+-- ── files (metadata only) ───────────────────────────────────────────────
+-- ONLY metadata lives here. File BYTES go to object storage (S3 / MinIO) via
+-- the agentd-blobs BlobStore — never in the database. The DB keeps this table
+-- small and fast to back up; the bytes scale independently in S3.
 create table files (
     workspace_id text        not null,
     file_id      text        not null,
@@ -67,7 +68,6 @@ create table files (
     size_bytes   bigint      not null,
     created_at   timestamptz not null,
     doc          jsonb       not null,
-    bytes        bytea       not null,
     primary key (workspace_id, file_id)
 );
 create index files_ws_scope_idx on files (workspace_id, scope_id);

@@ -33,7 +33,7 @@ fn unique_prefix(tag: &str) -> String {
 }
 
 async fn backend(tag: &str) -> AwsBackend {
-    AwsBackend::connect(unique_prefix(tag)).await
+    AwsBackend::connect(unique_prefix(tag)).await.unwrap()
 }
 
 fn ws(n: &str) -> WorkspaceId {

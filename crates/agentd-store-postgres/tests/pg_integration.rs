@@ -20,6 +20,7 @@ use agentd_deployments::store::DeploymentsStore;
 use agentd_deployments::types::DeploymentId;
 use agentd_files::store::{FilesStore, StoredFile};
 use agentd_store_postgres::{PgAgentsStore, PgBackend, PgDeploymentsStore, PgFilesStore};
+use agentd_blobs::{BlobStore, S3BlobStore};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -155,7 +156,16 @@ async fn pg_files_roundtrip() {
     if !enabled() {
         return;
     }
-    let store = PgFilesStore::new(backend().await);
+    if std::env::var("AGENTD_AWS_ENDPOINT").is_err() {
+        eprintln!("skipping files (needs S3 via AGENTD_AWS_ENDPOINT)");
+        return;
+    }
+    let blobs: Arc<dyn BlobStore> = Arc::new(
+        S3BlobStore::connect(format!("agentdpgtest{}", Timestamp::now().as_datetime().timestamp_micros()))
+            .await
+            .unwrap(),
+    );
+    let store = PgFilesStore::new(backend().await, blobs);
     let ws = uniq_ws("files");
     let meta = agentd_files::types::FileMetadata {
         created_at: Timestamp::now(),

@@ -73,8 +73,9 @@ AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
 ## Coverage
 
 Implemented + tested against live Postgres: **agents** (versioned, `DISTINCT
-ON` list), **deployments** (+ runs + claim), **files** (metadata + `bytea`
-bytes). Remaining entities reuse the same hybrid pattern — one module + a
+ON` list), **deployments** (+ runs + claim), **files** (metadata in Postgres,
+bytes in object storage via the shared `agentd-blobs` `BlobStore` — never in
+the DB). Remaining entities reuse the same hybrid pattern — one module + a
 `V2__*.sql` (or extend `V1`) each.
 
 ## Postgres vs DynamoDB (agentd-store-aws)

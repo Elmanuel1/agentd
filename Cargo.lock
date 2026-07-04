@@ -50,6 +50,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentd-blobs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "bytes",
+ "thiserror",
+]
+
+[[package]]
 name = "agentd-conformance"
 version = "0.1.0"
 dependencies = [
@@ -243,13 +254,13 @@ name = "agentd-store-aws"
 version = "0.1.0"
 dependencies = [
  "agentd-agents",
+ "agentd-blobs",
  "agentd-core",
  "agentd-deployments",
  "agentd-files",
  "async-trait",
  "aws-config",
  "aws-sdk-dynamodb",
- "aws-sdk-s3",
  "bytes",
  "serde",
  "serde_json",
@@ -263,6 +274,7 @@ name = "agentd-store-postgres"
 version = "0.1.0"
 dependencies = [
  "agentd-agents",
+ "agentd-blobs",
  "agentd-core",
  "agentd-deployments",
  "agentd-files",

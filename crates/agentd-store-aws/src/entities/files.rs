@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AwsBackend, AwsError};
 
+fn blob_be(e: agentd_blobs::BlobError) -> StoreError {
+    StoreError::Backend(e.to_string())
+}
+
 /// The DynamoDB-stored portion (bytes live in S3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileDoc {
@@ -26,10 +30,10 @@ pub struct DynamoFilesStore {
 }
 
 impl DynamoFilesStore {
-    /// Build; ensures the table and bucket exist.
+    /// Build; ensures the table exists (the bucket is ensured by the blob
+    /// store at connect time).
     pub async fn new(aws: AwsBackend) -> Result<Self, AwsError> {
         aws.dynamo.ensure_table(&aws.table("files")).await?;
-        aws.blobs.ensure_bucket(&aws.bucket()).await?;
         Ok(Self { aws })
     }
 
@@ -51,9 +55,9 @@ impl FilesStore for DynamoFilesStore {
         // Bytes → S3, metadata → DynamoDB.
         self.aws
             .blobs
-            .put(&self.aws.bucket(), &Self::key(ws, &f.meta.id), f.bytes.clone())
+            .put(&Self::key(ws, &f.meta.id), f.bytes.clone())
             .await
-            .map_err(be)?;
+            .map_err(blob_be)?;
         let doc = FileDoc {
             meta: f.meta.clone(),
             scope_id: f.scope_id.clone(),
@@ -76,9 +80,9 @@ impl FilesStore for DynamoFilesStore {
         let bytes = self
             .aws
             .blobs
-            .get(&self.aws.bucket(), &Self::key(ws, id))
+            .get(&Self::key(ws, id))
             .await
-            .map_err(be)?;
+            .map_err(blob_be)?;
         Ok(StoredFile {
             meta: doc.meta,
             bytes,
@@ -95,9 +99,9 @@ impl FilesStore for DynamoFilesStore {
             .map_err(be)?;
         self.aws
             .blobs
-            .delete(&self.aws.bucket(), &Self::key(ws, id))
+            .delete(&Self::key(ws, id))
             .await
-            .map_err(be)?;
+            .map_err(blob_be)?;
         Ok(existing)
     }
 
