@@ -1,0 +1,147 @@
+//! Axum routes for `/v1/sessions` + events + SSE stream.
+
+use std::convert::Infallible;
+use std::sync::Arc;
+
+use agentd_core::{ApiError, AuthContext, Page, RequestId};
+use axum::extract::{Extension, Path};
+use axum::response::sse::{Event as SseEvent, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use futures::stream::Stream;
+use serde::Deserialize;
+
+use crate::events::EventPayload;
+use crate::service::SessionsService;
+use crate::types::{CreateSessionRequest, UpdateSessionRequest};
+
+/// Error wrapper.
+#[derive(Debug)]
+pub struct RouteError(pub ApiError);
+
+impl From<ApiError> for RouteError {
+    fn from(e: ApiError) -> Self {
+        Self(e)
+    }
+}
+
+impl IntoResponse for RouteError {
+    fn into_response(self) -> Response {
+        let rid = RequestId::generate();
+        let body = self.0.to_envelope(&rid);
+        let status = axum::http::StatusCode::from_u16(self.0.status)
+            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        (status, Json(body)).into_response()
+    }
+}
+
+/// `POST …/events` body: `{"events":[…]}`.
+#[derive(Debug, Deserialize)]
+pub struct SendEventsBody {
+    /// The events to enqueue.
+    #[serde(default)]
+    pub events: Vec<EventPayload>,
+}
+
+/// Build the sessions router.
+pub fn router() -> Router {
+    Router::new()
+        .route("/v1/sessions", post(create).get(list))
+        .route(
+            "/v1/sessions/{id}",
+            get(get_one).post(update).delete(delete),
+        )
+        .route("/v1/sessions/{id}/archive", post(archive))
+        .route(
+            "/v1/sessions/{id}/events",
+            get(list_events).post(send_events),
+        )
+        .route("/v1/sessions/{id}/events/stream", get(stream_events))
+}
+
+async fn create(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(body): Json<CreateSessionRequest>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.create(&ctx, body).await?).into_response())
+}
+
+async fn list(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Response, RouteError> {
+    Ok(Json(Page::of(svc.list(&ctx).await?)).into_response())
+}
+
+async fn get_one(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.get(&ctx, &id).await?).into_response())
+}
+
+async fn update(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateSessionRequest>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.update(&ctx, &id, body).await?).into_response())
+}
+
+async fn archive(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.archive(&ctx, &id).await?).into_response())
+}
+
+async fn delete(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.delete(&ctx, &id).await?).into_response())
+}
+
+async fn list_events(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Response, RouteError> {
+    Ok(Json(Page::of(svc.list_events(&ctx, &id).await?)).into_response())
+}
+
+async fn send_events(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(body): Json<SendEventsBody>,
+) -> Result<Response, RouteError> {
+    Ok(Json(Page::of(svc.send_events(&ctx, &id, body.events).await?)).into_response())
+}
+
+async fn stream_events(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
+    let rx = svc.subscribe(&ctx, &id).await?;
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let data = serde_json::to_string(&ev).unwrap_or_default();
+                    return Some((Ok(SseEvent::default().data(data)), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
