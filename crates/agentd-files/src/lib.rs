@@ -132,6 +132,7 @@ fn parse_id(raw: &str) -> Result<FileId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("file not found"),
+        StoreError::Backend(m) => ApiError::internal(m),
     }
 }
 

@@ -19,6 +19,9 @@ pub enum StoreError {
     /// No such agent in this workspace.
     #[error("agent not found")]
     NotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// Persistence port for agents.

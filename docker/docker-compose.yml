@@ -1,8 +1,10 @@
-# agentd stack: control plane + persistence + artifacts + scheduler backend.
+# agentd stack: control plane + AWS-native persistence (emulated locally).
 #
-# Dev profile runs agentd with in-memory stores + the local scheduler; the
-# postgres/minio/temporal services are the production-shaped backends the
-# store/scheduler ports swap onto (config-selected, no code change).
+# Persistence is DynamoDB (shared entity state) + S3 (blobs) via the
+# agentd-store-aws crate — so agentd replicas are stateless and scale
+# horizontally. Locally these are emulated by Floci, the token-free MIT
+# LocalStack successor (`:4566`, LocalStack-endpoint-compatible). For real
+# AWS, drop AGENTD_AWS_ENDPOINT and give the container an IAM role.
 
 services:
   agentd:
@@ -13,52 +15,32 @@ services:
       - "8080:8080"
     environment:
       AGENTD_ADDR: 0.0.0.0:8080
-      # key:org:workspace[,key:org:workspace…]
       AGENTD_API_KEYS: ${AGENTD_API_KEYS:-agentd-dev-key:org_dev:wrkspc_01dev}
+      # Persistence backend + emulator endpoint.
+      AGENTD_STORE: ${AGENTD_STORE:-aws}
+      AGENTD_AWS_ENDPOINT: http://aws:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
       RUST_LOG: info
     depends_on:
-      - postgres
-      - minio
+      - aws
+    deploy:
+      replicas: ${AGENTD_REPLICAS:-1}   # DynamoDB conditional writes keep N replicas exactly-once
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: agentd
-      POSTGRES_USER: agentd
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentd-dev}
+  # Local AWS emulator (DynamoDB + S3). Default: Floci — 24ms start, no token.
+  # Swap `image` to `ministack/ministack` or `localstack/localstack:latest`
+  # (the latter needs LOCALSTACK_AUTH_TOKEN since 2026.03.0) — all speak :4566.
+  aws:
+    image: ${AGENTD_AWS_IMAGE:-floci/floci:latest}
+    ports:
+      - "4566:4566"
     volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - "5433:5432"
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: root
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-agentd}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-agentd-dev-secret}
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-
-  # Scheduler backend for the TemporalScheduler impl of the SchedulerPort.
-  # The dev profile uses the in-process LocalScheduler; point
-  # AGENTD_SCHEDULER=temporal at this service to swap.
-  temporal:
-    image: temporalio/auto-setup:latest
-    environment:
-      DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_USER: agentd
-      POSTGRES_PWD: ${POSTGRES_PASSWORD:-agentd-dev}
-      POSTGRES_SEEDS: postgres
-    depends_on:
-      - postgres
-    ports:
-      - "7233:7233"
-
-volumes:
-  pg_data:
-  minio_data:
+  # Optional: scheduler backend for the Temporal SchedulerPort impl.
+  # Dev uses the in-process LocalScheduler; set AGENTD_SCHEDULER=temporal to swap.
+  # temporal:
+  #   image: temporalio/auto-setup:latest
+  #   ports: ["7233:7233"]

@@ -14,6 +14,9 @@ pub enum StoreError {
     /// No such deployment.
     #[error("deployment not found")]
     NotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// Persistence port.

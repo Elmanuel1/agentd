@@ -15,6 +15,9 @@ pub enum StoreError {
     /// No such file.
     #[error("file not found")]
     NotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// A stored file: metadata + blob + optional session scope.
