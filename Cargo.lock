@@ -80,9 +80,15 @@ name = "agentd-dreams"
 version = "0.1.0"
 dependencies = [
  "agentd-core",
+ "agentd-memory",
+ "async-trait",
+ "axum",
+ "chrono",
+ "parking_lot",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
