@@ -1,12 +1,27 @@
-# agentd stack: control plane + AWS-native persistence (emulated locally).
+# agentd stack.
 #
-# Persistence is DynamoDB (shared entity state) + S3 (blobs) via the
-# agentd-store-aws crate — so agentd replicas are stateless and scale
-# horizontally. Locally these are emulated by Floci, the token-free MIT
-# LocalStack successor (`:4566`, LocalStack-endpoint-compatible). For real
-# AWS, drop AGENTD_AWS_ENDPOINT and give the container an IAM role.
+# DEFAULT persistence: PostgreSQL (Flyway-migrated) — chosen because the
+# product is dashboard-first (list / filter / sort / search / count are plain
+# SQL). agentd stays stateless across replicas (all state in Postgres);
+# multi-replica exactly-once is a native INSERT … ON CONFLICT DO NOTHING.
+#
+# Alternative: the DynamoDB + S3 backend (agentd-store-aws) for extreme-scale
+# / write-heavy workloads — bring it up with `--profile aws`.
 
 services:
+  # ── migrations: Flyway 11 applies the schema, then exits ──────────────
+  flyway:
+    image: flyway/flyway:11-alpine
+    command: >
+      -url=jdbc:postgresql://postgres:5432/agentd
+      -user=agentd -password=${POSTGRES_PASSWORD:-agentd}
+      -locations=filesystem:/flyway/sql -connectRetries=20 migrate
+    volumes:
+      - ../crates/agentd-store-postgres/migrations:/flyway/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   agentd:
     build:
       context: ..
@@ -16,31 +31,42 @@ services:
     environment:
       AGENTD_ADDR: 0.0.0.0:8080
       AGENTD_API_KEYS: ${AGENTD_API_KEYS:-agentd-dev-key:org_dev:wrkspc_01dev}
-      # Persistence backend + emulator endpoint.
-      AGENTD_STORE: ${AGENTD_STORE:-aws}
-      AGENTD_AWS_ENDPOINT: http://aws:4566
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_DEFAULT_REGION: us-east-1
+      AGENTD_STORE: ${AGENTD_STORE:-postgres}
+      DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:-agentd}@postgres:5432/agentd
       RUST_LOG: info
     depends_on:
-      - aws
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully   # schema ready before boot
     deploy:
-      replicas: ${AGENTD_REPLICAS:-1}   # DynamoDB conditional writes keep N replicas exactly-once
+      replicas: ${AGENTD_REPLICAS:-1}   # ON CONFLICT keeps N replicas exactly-once
 
-  # Local AWS emulator (DynamoDB + S3). Default: Floci — 24ms start, no token.
-  # Swap `image` to `ministack/ministack` or `localstack/localstack:latest`
-  # (the latter needs LOCALSTACK_AUTH_TOKEN since 2026.03.0) — all speak :4566.
+  postgres:
+    image: postgres:16-alpine   # Flyway 11 supports PG 9.5–latest; 16 is the safe LTS-grade pick
+    environment:
+      POSTGRES_DB: agentd
+      POSTGRES_USER: agentd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentd}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentd"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ── optional AWS-native backend (DynamoDB + S3 via Floci) ─────────────
   aws:
     image: ${AGENTD_AWS_IMAGE:-floci/floci:latest}
+    profiles: ["aws"]
     ports:
       - "4566:4566"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     user: root
 
-  # Optional: scheduler backend for the Temporal SchedulerPort impl.
-  # Dev uses the in-process LocalScheduler; set AGENTD_SCHEDULER=temporal to swap.
-  # temporal:
-  #   image: temporalio/auto-setup:latest
-  #   ports: ["7233:7233"]
+volumes:
+  pg_data:

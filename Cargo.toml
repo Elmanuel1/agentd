@@ -16,6 +16,7 @@ members = [
     "crates/agentd-api",
     "crates/agentd-conformance",
     "crates/agentd-store-aws",
+    "crates/agentd-store-postgres",
 ]
 
 [workspace.package]
@@ -40,6 +41,7 @@ agentd-scheduler = { path = "crates/agentd-scheduler" }
 agentd-engine = { path = "crates/agentd-engine" }
 agentd-api = { path = "crates/agentd-api" }
 agentd-store-aws = { path = "crates/agentd-store-aws" }
+agentd-store-postgres = { path = "crates/agentd-store-postgres" }
 
 # external
 serde = { version = "1", features = ["derive"] }
@@ -65,6 +67,7 @@ aws-config = { version = "1", default-features = false, features = ["rustls", "r
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-smithy-runtime-api = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
