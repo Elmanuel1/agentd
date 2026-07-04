@@ -7,9 +7,21 @@ license.workspace = true
 
 [dependencies]
 agentd-core = { workspace = true }
+agentd-agents = { workspace = true }
+agentd-sessions = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
+http-body-util = { workspace = true }
+http = { workspace = true }
 
 [lints]
 workspace = true
