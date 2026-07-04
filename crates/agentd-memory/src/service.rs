@@ -547,5 +547,6 @@ fn map_store(e: StoreError) -> ApiError {
         StoreError::PathConflict { path, memory_id } => {
             ApiError::memory_path_conflict(&path, memory_id.as_str())
         }
+        StoreError::Backend(m) => ApiError::internal(m),
     }
 }

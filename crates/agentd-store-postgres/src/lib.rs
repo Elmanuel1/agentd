@@ -30,7 +30,13 @@ use sqlx::PgPool;
 
 pub use entities::agents::PgAgentsStore;
 pub use entities::deployments::PgDeploymentsStore;
+pub use entities::dreams::PgDreamsStore;
+pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
+pub use entities::memory::PgMemoryStore;
+pub use entities::sessions::PgSessionsStore;
+pub use entities::skills::PgSkillsStore;
+pub use entities::vaults::PgVaultsStore;
 
 /// Shared connection pool.
 #[derive(Clone)]
@@ -69,4 +75,14 @@ impl PgBackend {
 /// its own `StoreError::Backend`).
 pub(crate) fn sqlx_msg(e: sqlx::Error) -> String {
     e.to_string()
+}
+
+/// Serialize a snake_case enum to its wire string for a filter column
+/// (e.g. `EnvironmentState::Active` → `"active"`). Falls back to `""` for
+/// non-string serializations, which never happens for these tag enums.
+pub(crate) fn enum_str<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }

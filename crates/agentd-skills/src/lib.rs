@@ -111,6 +111,9 @@ pub enum StoreError {
     /// No such version.
     #[error("skill version not found")]
     VersionNotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// Persistence port.
@@ -407,6 +410,7 @@ fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::SkillNotFound => ApiError::not_found("skill not found"),
         StoreError::VersionNotFound => ApiError::not_found("skill version not found"),
+        StoreError::Backend(m) => ApiError::internal(m),
     }
 }
 

@@ -15,6 +15,9 @@ pub enum StoreError {
     /// No such session.
     #[error("session not found")]
     NotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// Persistence port.

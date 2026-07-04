@@ -10,6 +10,12 @@ agentd-core = { workspace = true }
 agentd-agents = { workspace = true }
 agentd-deployments = { workspace = true }
 agentd-files = { workspace = true }
+agentd-environments = { workspace = true }
+agentd-vaults = { workspace = true }
+agentd-skills = { workspace = true }
+agentd-sessions = { workspace = true }
+agentd-dreams = { workspace = true }
+agentd-memory = { workspace = true }
 agentd-blobs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

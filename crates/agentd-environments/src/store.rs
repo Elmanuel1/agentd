@@ -14,6 +14,9 @@ pub enum StoreError {
     /// No such environment in this org.
     #[error("environment not found")]
     NotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// Persistence port for environments.

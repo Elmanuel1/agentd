@@ -31,6 +31,9 @@ pub enum StoreError {
     /// No such credential.
     #[error("credential not found")]
     CredentialNotFound,
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// Persistence port.

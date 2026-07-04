@@ -217,6 +217,75 @@ impl CredentialAuthInput {
             },
         }
     }
+
+    /// Seal the FULL material — **including secrets** — to JSON for a secret
+    /// store (S3/MinIO stand-in for a secret manager). This is the deliberate
+    /// inverse of [`Self::unseal`]; it is NOT the wire projection and must
+    /// never reach a client. The output matches this type's `Deserialize`
+    /// shape, so `unseal` is a plain round-trip.
+    pub fn seal(&self) -> String {
+        match self {
+            Self::McpOauth {
+                mcp_server_url,
+                access_token,
+                expires_at,
+                refresh,
+            } => serde_json::json!({
+                "type": "mcp_oauth",
+                "mcp_server_url": mcp_server_url,
+                "access_token": access_token.expose(),
+                "expires_at": expires_at,
+                "refresh": refresh.as_ref().map(OauthRefreshInput::seal_value),
+            }),
+            Self::StaticBearer {
+                mcp_server_url,
+                token,
+            } => serde_json::json!({
+                "type": "static_bearer",
+                "mcp_server_url": mcp_server_url,
+                "token": token.expose(),
+            }),
+            Self::EnvironmentVariable {
+                secret_name,
+                secret_value,
+                networking,
+            } => serde_json::json!({
+                "type": "environment_variable",
+                "secret_name": secret_name,
+                "secret_value": secret_value.expose(),
+                "networking": networking,
+            }),
+        }
+        .to_string()
+    }
+
+    /// Recover sealed material produced by [`Self::seal`].
+    pub fn unseal(sealed: &str) -> Option<Self> {
+        serde_json::from_str(sealed).ok()
+    }
+}
+
+impl OauthRefreshInput {
+    fn seal_value(&self) -> serde_json::Value {
+        let token_endpoint_auth = self.token_endpoint_auth.as_ref().map(|a| match a {
+            TokenEndpointAuthInput::None => serde_json::json!({"type": "none"}),
+            TokenEndpointAuthInput::ClientSecretBasic { client_secret } => serde_json::json!({
+                "type": "client_secret_basic",
+                "client_secret": client_secret.expose(),
+            }),
+            TokenEndpointAuthInput::ClientSecretPost { client_secret } => serde_json::json!({
+                "type": "client_secret_post",
+                "client_secret": client_secret.expose(),
+            }),
+        });
+        serde_json::json!({
+            "token_endpoint": self.token_endpoint,
+            "client_id": self.client_id,
+            "scope": self.scope,
+            "refresh_token": self.refresh_token.expose(),
+            "token_endpoint_auth": token_endpoint_auth,
+        })
+    }
 }
 
 /// Credential auth — **wire** shape. Contains no [`SecretString`] by

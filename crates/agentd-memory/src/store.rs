@@ -49,6 +49,9 @@ pub enum StoreError {
         /// Who occupies it.
         memory_id: MemoryId,
     },
+    /// The backing store failed (infrastructure error).
+    #[error("store backend: {0}")]
+    Backend(String),
 }
 
 /// One version's full record: wire metadata + content blob.
