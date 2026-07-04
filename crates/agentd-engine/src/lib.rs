@@ -1,17 +1,32 @@
-//! agentd-engine — the task-side agent loop.
+//! agentd-engine — the ORCHESTRATOR-side agent loop.
 //!
-//! Runs inside the ephemeral job (Fargate task / Firecracker VM / local
-//! tokio task) and drives one session: drain queued user events → call the
-//! model → execute tools under the agent's permission policy → emit the
-//! wire events through [`agentd_sessions::EngineContract`] → idle.
+//! Ownership split (matching the Managed Agents architecture: the agent
+//! loop never runs in the sandbox — the container only executes tools):
+//!
+//! - **Orchestrator (this crate's [`turn::TurnRunner`] / [`outcome::OutcomeLoop`])**:
+//!   drains user events, calls the model (holds the API key), evaluates the
+//!   permission policy, parks/resumes on ask/custom, journals every wire
+//!   event through [`agentd_sessions::EngineContract`], drives grading.
+//!   The policy gate MUST live here — a sandbox cannot be trusted to
+//!   enforce its own `always_ask`.
+//! - **Sandbox (the ephemeral Fargate/Firecracker/local task)**: implements
+//!   [`tools::ToolExecutor`] and nothing else — receives `(name, input)`,
+//!   returns output from inside the path jail. A dumb executor, like the
+//!   self-hosted `EnvironmentWorker`.
+//!
+//! `ToolExecutor` is therefore the orchestrator↔sandbox seam:
+//! [`tools::WorkspaceTools`] is the in-process impl (dev/local); a
+//! `RemoteToolExecutor` dispatching over the task work channel is the
+//! production impl (with the same jailed `WorkspaceTools` answering inside
+//! the task).
 //!
 //! Every non-deterministic dependency is a port:
 //! - [`model::ModelClient`] — the LLM (scripted [`model::MockModel`] in
 //!   tests; `AnthropicHttpModel` behind the `anthropic` feature; a rig-core
 //!   adapter slots in the same way),
-//! - [`tools::ToolExecutor`] — tool execution (path-jailed workspace fs
-//!   tools included; bash policy-controlled),
-//! - [`outcome::Grader`] — the outcome rubric grader.
+//! - [`tools::ToolExecutor`] — tool execution (the sandbox seam),
+//! - [`outcome::Grader`] — the outcome rubric grader (independent context,
+//!   orchestrator-side by definition).
 
 #![cfg_attr(
     test,
