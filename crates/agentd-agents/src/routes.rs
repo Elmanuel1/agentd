@@ -42,7 +42,12 @@ impl IntoResponse for RouteError {
 pub fn router() -> Router {
     Router::new()
         .route("/v1/agents", post(create).get(list))
-        .route("/v1/agents/{id}", get(get_one).post(update))
+        // DELETE is registered so 405s advertise `Allow: DELETE, GET, HEAD,
+        // POST` (live), but agents are NOT deletable — DELETE itself 404s.
+        .route(
+            "/v1/agents/{id}",
+            get(get_one).post(update).delete(delete_not_supported),
+        )
         .route("/v1/agents/{id}/archive", post(archive))
         .route("/v1/agents/{id}/versions", get(versions))
 }
@@ -105,4 +110,10 @@ async fn versions(
     let page = Pagination::from_params(&params)?;
     let list = svc.versions(&ctx, &id).await?;
     Ok(Json(Page::paginate(list, &page)).into_response())
+}
+
+/// Live: `DELETE /v1/agents/{id}` returns 404 (agents cannot be deleted; the
+/// method exists only so 405 `Allow` headers advertise it).
+async fn delete_not_supported() -> Result<Response, RouteError> {
+    Err(RouteError(ApiError::not_found("not found")))
 }
