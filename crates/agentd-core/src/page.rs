@@ -87,6 +87,59 @@ impl Pagination {
     }
 }
 
+/// The **standard Anthropic Files API** list envelope — `{data, has_more,
+/// first_id, last_id}` (distinct from managed-agents' `next_page`). `/v1/files`
+/// is the shared Files API and paginates by id cursor (`after_id`/`before_id`).
+#[derive(Debug, Clone, Serialize)]
+pub struct IdPage<T> {
+    /// The items on this page.
+    pub data: Vec<T>,
+    /// Whether more results follow.
+    pub has_more: bool,
+    /// Id of the first item on this page (null when empty).
+    pub first_id: Option<String>,
+    /// Id of the last item on this page (null when empty).
+    pub last_id: Option<String>,
+}
+
+impl<T> IdPage<T> {
+    /// Paginate an ordered set by id cursor. `id_of` extracts each item's id;
+    /// `after_id`/`before_id` are exclusive bounds and `limit` (1..=100,
+    /// default 20) caps the page.
+    pub fn paginate(
+        all: Vec<T>,
+        params: &HashMap<String, String>,
+        id_of: impl Fn(&T) -> String,
+    ) -> Result<Self, ApiError> {
+        let limit = Pagination::from_params(params)?.limit;
+        let ids: Vec<String> = all.iter().map(&id_of).collect();
+        let start = match params.get("after_id") {
+            Some(a) => ids.iter().position(|i| i == a).map_or(0, |p| p + 1),
+            None => 0,
+        };
+        let end_bound = match params.get("before_id") {
+            Some(b) => ids.iter().position(|i| i == b).unwrap_or(all.len()),
+            None => all.len(),
+        };
+        let window: Vec<T> = all
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| *i >= start && *i < end_bound)
+            .map(|(_, t)| t)
+            .collect();
+        let has_more = window.len() > limit;
+        let data: Vec<T> = window.into_iter().take(limit).collect();
+        let first_id = data.first().map(&id_of);
+        let last_id = data.last().map(&id_of);
+        Ok(Self {
+            data,
+            has_more,
+            first_id,
+            last_id,
+        })
+    }
+}
+
 fn encode_cursor(offset: usize) -> String {
     format!("page_{}", URL_SAFE_NO_PAD.encode(offset.to_string()))
 }

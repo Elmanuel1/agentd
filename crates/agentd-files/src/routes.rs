@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{ApiError, AuthContext, IdPage, RequestId};
 use axum::extract::{Extension, Multipart, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -78,9 +78,12 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    // /v1/files is the shared Files API — it paginates with {has_more, first_id,
+    // last_id} + after_id/before_id, NOT the managed-agents next_page cursor.
     let scope = params.get("scope_id").map(String::as_str);
-    let page = Pagination::from_params(&params)?;
-    Ok(Json(Page::paginate(svc.list(&ctx, scope).await?, &page)).into_response())
+    let files = svc.list(&ctx, scope).await?;
+    let page = IdPage::paginate(files, &params, |f| f.id.as_str().to_owned())?;
+    Ok(Json(page).into_response())
 }
 
 async fn metadata(
