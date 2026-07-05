@@ -22,6 +22,8 @@ agentd-deployments = { workspace = true }
 agentd-dreams = { workspace = true }
 agentd-scheduler = { workspace = true }
 agentd-engine = { workspace = true }
+agentd-store-postgres = { workspace = true }
+agentd-blobs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

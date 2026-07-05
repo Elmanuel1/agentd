@@ -24,6 +24,7 @@ name = "agentd-api"
 version = "0.1.0"
 dependencies = [
  "agentd-agents",
+ "agentd-blobs",
  "agentd-core",
  "agentd-deployments",
  "agentd-dreams",
@@ -34,6 +35,7 @@ dependencies = [
  "agentd-scheduler",
  "agentd-sessions",
  "agentd-skills",
+ "agentd-store-postgres",
  "agentd-vaults",
  "async-trait",
  "axum",
@@ -65,7 +67,9 @@ name = "agentd-conformance"
 version = "0.1.0"
 dependencies = [
  "agentd-api",
+ "agentd-blobs",
  "agentd-core",
+ "agentd-store-postgres",
  "axum",
  "http 1.4.2",
  "http-body-util",

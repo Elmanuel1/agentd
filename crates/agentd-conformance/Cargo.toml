@@ -16,5 +16,9 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 tokio = { workspace = true }
 
+[dev-dependencies]
+agentd-store-postgres = { workspace = true }
+agentd-blobs = { workspace = true }
+
 [lints]
 workspace = true

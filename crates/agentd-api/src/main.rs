@@ -1,15 +1,18 @@
 //! agentd — the Managed-Agents-compatible control plane.
 //!
-//! Boot: build the in-memory stack (persistent stores slot in behind the
-//! same traits), register API keys from `AGENTD_API_KEYS`
+//! Boot: connect Postgres (records) + the object store (blobs/secrets), build
+//! the durable stack (no in-memory state — replicas are interchangeable),
+//! register API keys from `AGENTD_API_KEYS`
 //! (`key:org:workspace[,key:org:workspace…]`), start the local scheduler,
 //! and serve.
 
 use std::sync::Arc;
 
 use agentd_api::{build_router, AppState};
+use agentd_blobs::{BlobStore, S3BlobStore};
 use agentd_core::ports::FireTarget;
 use agentd_scheduler::{FireError, FireSink, LocalScheduler};
+use agentd_store_postgres::PgBackend;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -63,7 +66,25 @@ async fn main() {
         state: parking_lot::Mutex::new(None),
     });
     let scheduler = Arc::new(LocalScheduler::new(sink.clone()));
-    let state = AppState::in_memory(scheduler.clone());
+
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    let backend = match PgBackend::connect(&database_url).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(error = %e, "postgres connect failed");
+            return;
+        }
+    };
+    let bucket = std::env::var("AGENTD_BLOB_BUCKET").unwrap_or_else(|_| "agentd-artifacts".into());
+    let blobs: Arc<dyn BlobStore> = match S3BlobStore::connect(bucket).await {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            tracing::error!(error = %e, "object store connect failed");
+            return;
+        }
+    };
+    let state = AppState::from_postgres(backend, blobs, scheduler.clone());
 
     // Keys from env: AGENTD_API_KEYS="key:org:workspace,key2:org2:ws2"
     let keys_env = std::env::var("AGENTD_API_KEYS")

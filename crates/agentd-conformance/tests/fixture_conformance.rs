@@ -10,8 +10,11 @@
 use std::sync::Arc;
 
 use agentd_api::{build_router, AppState};
+use agentd_blobs::{BlobStore, S3BlobStore};
 use agentd_conformance::diff;
 use agentd_core::ports::FakeScheduler;
+use agentd_core::Timestamp;
+use agentd_store_postgres::PgBackend;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
@@ -20,10 +23,28 @@ use tower::ServiceExt;
 
 const KEY: &str = "conformance-key";
 
-fn app() -> Router {
-    let state = AppState::in_memory(Arc::new(FakeScheduler::new()));
-    state.keys.register(KEY, "org_c", "wrkspc_01conf", "apikey_01conf");
-    build_router(state)
+fn enabled() -> bool {
+    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
+        && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
+}
+
+/// Compose the router over live Postgres + object store with a fresh tenant
+/// (so empty-list conformance holds), or `None` when the env isn't configured.
+async fn app() -> Option<Router> {
+    if !enabled() {
+        return None;
+    }
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    let backend = PgBackend::connect(&url).await.unwrap();
+    let stamp = Timestamp::now().as_datetime().timestamp_micros();
+    let blobs: Arc<dyn BlobStore> =
+        Arc::new(S3BlobStore::connect(format!("agentdconf{stamp}")).await.unwrap());
+    let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
+    state
+        .keys
+        .register(KEY, format!("org_c{stamp}"), format!("wrkspc_c{stamp}"), "apikey_01conf");
+    Some(build_router(state))
 }
 
 async fn call(
@@ -75,7 +96,9 @@ fn assert_conformant(name: &str, expected: &serde_json::Value, actual: &serde_js
 
 #[tokio::test]
 async fn environment_create_matches_live_capture() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     // The exact request from the live probe.
     let (st, actual) = call(
         &app,
@@ -90,7 +113,9 @@ async fn environment_create_matches_live_capture() {
 
 #[tokio::test]
 async fn agent_create_matches_live_capture() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (st, actual) = call(
         &app,
         "POST",
@@ -104,7 +129,9 @@ async fn agent_create_matches_live_capture() {
 
 #[tokio::test]
 async fn memory_store_create_matches_live_capture() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (st, actual) = call(
         &app,
         "POST",
@@ -118,7 +145,9 @@ async fn memory_store_create_matches_live_capture() {
 
 #[tokio::test]
 async fn memory_create_matches_live_capture() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (_, store) = call(
         &app,
         "POST",
@@ -146,7 +175,9 @@ async fn memory_create_matches_live_capture() {
 
 #[tokio::test]
 async fn session_create_matches_live_capture() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (_, env) = call(
         &app,
         "POST",
@@ -178,7 +209,9 @@ async fn session_create_matches_live_capture() {
 
 #[tokio::test]
 async fn error_envelopes_match_live_captures() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     // Each (request, expected error body) pair captured live.
     let cases: Vec<(&str, &str, Option<&str>, u16, serde_json::Value)> = vec![
         (
@@ -203,7 +236,9 @@ async fn error_envelopes_match_live_captures() {
 
 #[tokio::test]
 async fn memory_conflict_409_matches_live_capture() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (_, store) = call(&app, "POST", "/v1/memory_stores", Some(r#"{"name":"m"}"#)).await;
     let sid = store["id"].as_str().unwrap();
     call(
@@ -237,7 +272,9 @@ async fn memory_conflict_409_matches_live_capture() {
 
 #[tokio::test]
 async fn empty_list_shape_matches_live() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     // Live: GET /v1/agents → {"data":[]}
     let (st, v) = call(&app, "GET", "/v1/agents", None).await;
     assert_eq!(st, StatusCode::OK);

@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use agentd_api::{build_router, AppState};
+use agentd_blobs::{BlobStore, S3BlobStore};
 use agentd_core::ports::FakeScheduler;
+use agentd_core::Timestamp;
+use agentd_store_postgres::PgBackend;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
@@ -16,11 +19,33 @@ use tower::ServiceExt;
 const KEY: &str = "test-key-workspace-a";
 const KEY_B: &str = "test-key-workspace-b";
 
-fn app() -> Router {
-    let state = AppState::in_memory(Arc::new(FakeScheduler::new()));
-    state.keys.register(KEY, "org_t", "wrkspc_01a", "apikey_01a");
-    state.keys.register(KEY_B, "org_t", "wrkspc_01b", "apikey_01b");
-    build_router(state)
+fn enabled() -> bool {
+    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
+        && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
+}
+
+/// Build the composed router over live Postgres + object store, or `None` when
+/// the integration env isn't configured (test skips). Unique tenants per call
+/// isolate the shared DB.
+async fn app() -> Option<Router> {
+    if !enabled() {
+        return None;
+    }
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    let backend = PgBackend::connect(&url).await.unwrap();
+    let bucket = format!("agentdapi{}", Timestamp::now().as_datetime().timestamp_micros());
+    let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(bucket).await.unwrap());
+    let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
+    let stamp = Timestamp::now().as_datetime().timestamp_micros();
+    let org = format!("org_t{stamp}");
+    state
+        .keys
+        .register(KEY, &org, format!("wrkspc_a{stamp}"), "apikey_01a");
+    state
+        .keys
+        .register(KEY_B, &org, format!("wrkspc_b{stamp}"), "apikey_01b");
+    Some(build_router(state))
 }
 
 /// Call with full header control.
@@ -67,7 +92,9 @@ async fn call(
 
 #[tokio::test]
 async fn missing_api_key_is_401_envelope() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (st, v) = call_raw(&app, "GET", "/v1/agents", None, None, true).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert_eq!(v["type"], "error");
@@ -77,7 +104,9 @@ async fn missing_api_key_is_401_envelope() {
 
 #[tokio::test]
 async fn unknown_api_key_is_401() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (st, v) = call_raw(&app, "GET", "/v1/agents", None, Some("sk-bogus"), true).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert_eq!(v["error"]["type"], "authentication_error");
@@ -85,7 +114,9 @@ async fn unknown_api_key_is_401() {
 
 #[tokio::test]
 async fn missing_beta_header_reproduces_live_unknown_field_error() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     // Live probe G: POST /v1/agents without beta →
     // 400 "Failed to parse request body: unknown field \"model\""
     let (st, v) = call_raw(
@@ -109,7 +140,9 @@ async fn missing_beta_header_reproduces_live_unknown_field_error() {
 
 #[tokio::test]
 async fn unknown_route_gets_wire_404_envelope() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (st, v) = call(&app, "GET", "/v1/nonexistent", None).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert_eq!(v["type"], "error");
@@ -118,7 +151,9 @@ async fn unknown_route_gets_wire_404_envelope() {
 
 #[tokio::test]
 async fn full_stack_agent_env_session_flow() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     // 1. environment
     let (st, env) = call(
         &app,
@@ -173,7 +208,9 @@ async fn full_stack_agent_env_session_flow() {
 
 #[tokio::test]
 async fn workspace_isolation_through_http() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (_, agent) = call(
         &app,
         "POST",
@@ -217,7 +254,9 @@ async fn workspace_isolation_through_http() {
 
 #[tokio::test]
 async fn deployment_create_and_internal_fire_through_http() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (_, env) = call(
         &app,
         "POST",
@@ -295,7 +334,9 @@ async fn deployment_create_and_internal_fire_through_http() {
 
 #[tokio::test]
 async fn memory_patch_405_through_the_composed_router() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (_, store) = call(&app, "POST", "/v1/memory_stores", Some(r#"{"name":"m"}"#)).await;
     let sid = store["id"].as_str().unwrap();
     let (_, mem) = call(
@@ -318,7 +359,9 @@ async fn memory_patch_405_through_the_composed_router() {
 
 #[tokio::test]
 async fn exact_live_error_strings_survive_the_full_stack() {
-    let app = app();
+    let Some(app) = app().await else {
+        return;
+    };
     let (st, v) = call(&app, "POST", "/v1/agents", Some(r#"{"name":"x"}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "model: Field required");

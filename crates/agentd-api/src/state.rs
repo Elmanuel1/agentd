@@ -4,18 +4,22 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_agents::{AgentsService, InMemoryAgentsStore};
+use agentd_agents::AgentsService;
+use agentd_blobs::BlobStore;
 use agentd_core::limits::ModelCatalog;
 use agentd_core::ports::SchedulerPort;
 use agentd_core::{AuthContext, OrgId, WorkspaceId};
-use agentd_deployments::{DeploymentsService, InMemoryDeploymentsStore};
-use agentd_environments::{EnvironmentsService, InMemoryEnvironmentsStore};
-use agentd_files::store::InMemoryFilesStore;
+use agentd_deployments::DeploymentsService;
+use agentd_environments::EnvironmentsService;
 use agentd_files::FilesService;
-use agentd_memory::{InMemoryMemoryStore, MemoriesService};
-use agentd_sessions::{InMemorySessionsStore, SessionsService};
-use agentd_skills::{InMemorySkillsStore, SkillsService};
-use agentd_vaults::{InMemoryVaultsStore, VaultsService};
+use agentd_memory::MemoriesService;
+use agentd_sessions::SessionsService;
+use agentd_skills::SkillsService;
+use agentd_store_postgres::{
+    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgFilesStore, PgMemoryStore,
+    PgSessionsStore, PgSkillsStore, PgVaultsStore,
+};
+use agentd_vaults::VaultsService;
 use parking_lot::RwLock;
 
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
@@ -87,30 +91,50 @@ impl std::fmt::Debug for AppState {
 }
 
 impl AppState {
-    /// Build the full in-memory stack (dev/test; persistent stores slot in
-    /// behind the same traits).
-    pub fn in_memory(scheduler: Arc<dyn SchedulerPort>) -> Self {
+    /// Build the durable stack: every entity store is Postgres (records) + a
+    /// shared object store (blobs/secrets). No in-memory state — replicas are
+    /// interchangeable. `backend` is a live pool; `blobs` is one object store
+    /// reused across files/skills/memory-content/vault-secrets (distinct key
+    /// prefixes). Only the key registry and model catalog stay in memory, both
+    /// loaded from central config at boot.
+    pub fn from_postgres(
+        backend: PgBackend,
+        blobs: Arc<dyn BlobStore>,
+        scheduler: Arc<dyn SchedulerPort>,
+    ) -> Self {
         let keys = ApiKeyRegistry::new();
         let agents = Arc::new(AgentsService::new(
-            Arc::new(InMemoryAgentsStore::new()),
+            Arc::new(PgAgentsStore::new(backend.clone())),
             ModelCatalog::default_catalog(),
         ));
-        let environments = Arc::new(EnvironmentsService::new(Arc::new(
-            InMemoryEnvironmentsStore::new(),
-        )));
-        let vaults = Arc::new(VaultsService::new(Arc::new(InMemoryVaultsStore::new())));
-        let memories = Arc::new(MemoriesService::new(Arc::new(InMemoryMemoryStore::new())));
-        let files = Arc::new(FilesService::new(Arc::new(InMemoryFilesStore::new())));
-        let skills = Arc::new(SkillsService::new(Arc::new(InMemorySkillsStore::new())));
+        let environments = Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(
+            backend.clone(),
+        ))));
+        let vaults = Arc::new(VaultsService::new(Arc::new(PgVaultsStore::new(
+            backend.clone(),
+            blobs.clone(),
+        ))));
+        let memories = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(
+            backend.clone(),
+            blobs.clone(),
+        ))));
+        let files = Arc::new(FilesService::new(Arc::new(PgFilesStore::new(
+            backend.clone(),
+            blobs.clone(),
+        ))));
+        let skills = Arc::new(SkillsService::new(Arc::new(PgSkillsStore::new(
+            backend.clone(),
+            blobs.clone(),
+        ))));
         let sessions = Arc::new(SessionsService::new(
-            Arc::new(InMemorySessionsStore::new()),
+            Arc::new(PgSessionsStore::new(backend.clone())),
             Arc::new(RealSessionDeps {
                 agents: agents.clone(),
                 environments: environments.clone(),
             }),
         ));
         let deployments = Arc::new(DeploymentsService::new(
-            Arc::new(InMemoryDeploymentsStore::new()),
+            Arc::new(PgDeploymentsStore::new(backend)),
             Arc::new(RealDeploymentDeps {
                 agents: agents.clone(),
                 environments: environments.clone(),
