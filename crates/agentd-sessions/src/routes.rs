@@ -1,10 +1,11 @@
 //! Axum routes for `/v1/sessions` + events + SSE stream.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, RequestId};
-use axum::extract::{Extension, Path};
+use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use axum::extract::{Extension, Path, Query};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -71,8 +72,10 @@ async fn create(
 async fn list(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(Page::of(svc.list(&ctx).await?)).into_response())
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(svc.list(&ctx).await?, &page)).into_response())
 }
 
 async fn get_one(
@@ -112,8 +115,10 @@ async fn list_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(Page::of(svc.list_events(&ctx, &id).await?)).into_response())
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(svc.list_events(&ctx, &id).await?, &page)).into_response())
 }
 
 async fn send_events(

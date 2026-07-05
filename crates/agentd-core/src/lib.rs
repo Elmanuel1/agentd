@@ -39,7 +39,7 @@ pub use content::ContentBlock;
 pub use error::{ApiError, ErrorType};
 pub use id::{Id, RequestId, Resource};
 pub use metadata::Metadata;
-pub use page::Page;
+pub use page::{Page, Pagination};
 pub use scope::Scope;
 pub use tenancy::{AuthContext, OrgId, WorkspaceId};
 pub use time::Timestamp;

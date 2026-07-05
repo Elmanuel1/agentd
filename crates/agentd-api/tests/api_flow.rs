@@ -333,6 +333,40 @@ async fn deployment_create_and_internal_fire_through_http() {
 }
 
 #[tokio::test]
+async fn list_pagination_matches_live_cursor_shape() {
+    let Some(app) = app().await else {
+        return;
+    };
+    // Create 22 agents so a default page (20) leaves a next_page cursor.
+    for i in 0..22 {
+        call(
+            &app,
+            "POST",
+            "/v1/agents",
+            Some(&format!(r#"{{"name":"pg-{i}","model":"claude-sonnet-4-6"}}"#)),
+        )
+        .await;
+    }
+    // Default limit = 20, next_page cursor present (live shape).
+    let (st, p1) = call(&app, "GET", "/v1/agents?limit=20", None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(p1["data"].as_array().unwrap().len(), 20);
+    let cursor = p1["next_page"].as_str().expect("more results → next_page cursor");
+    assert!(cursor.starts_with("page_"));
+    // Fetch the next page via ?page=<cursor> → the remaining 2, no next_page.
+    let (_, p2) = call(&app, "GET", &format!("/v1/agents?limit=20&page={cursor}"), None).await;
+    assert_eq!(p2["data"].as_array().unwrap().len(), 2);
+    assert!(p2.get("next_page").is_none(), "last page omits next_page");
+    // limit out of range → the exact live 400 message.
+    let (st, err) = call(&app, "GET", "/v1/agents?limit=0", None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err["error"]["message"],
+        "limit: value must be greater than or equal to 1 and less than or equal to 100"
+    );
+}
+
+#[tokio::test]
 async fn memory_patch_405_through_the_composed_router() {
     let Some(app) = app().await else {
         return;

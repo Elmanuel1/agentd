@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, RequestId, Timestamp};
+use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId, Timestamp};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -67,8 +67,10 @@ async fn create(
 async fn list(
     Extension(svc): Extension<Arc<DeploymentsService>>,
     Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(Page::of(svc.list(&ctx).await?)).into_response())
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(svc.list(&ctx).await?, &page)).into_response())
 }
 
 async fn get_one(
@@ -123,8 +125,10 @@ async fn list_runs(
     let has_error = params
         .get("has_error")
         .and_then(|v| v.parse::<bool>().ok());
-    Ok(Json(Page::of(
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(
         svc.runs(&ctx, &deployment_id, has_error).await?,
+        &page,
     ))
     .into_response())
 }

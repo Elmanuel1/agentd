@@ -4,10 +4,11 @@
 //! the request-id/error-envelope middleware. Handlers here return
 //! `Result<Json, ApiError>`; the envelope wrapping happens in one place.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, RequestId};
-use axum::extract::{Extension, Path};
+use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -58,9 +59,11 @@ async fn create(
 async fn list(
     Extension(svc): Extension<Arc<AgentsService>>,
     Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    let page = Pagination::from_params(&params)?;
     let agents = svc.list(&ctx).await?;
-    Ok(Json(Page::of(agents)).into_response())
+    Ok(Json(Page::paginate(agents, &page)).into_response())
 }
 
 async fn get_one(
@@ -95,7 +98,9 @@ async fn versions(
     Extension(svc): Extension<Arc<AgentsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    let page = Pagination::from_params(&params)?;
     let list = svc.versions(&ctx, &id).await?;
-    Ok(Json(Page::of(list)).into_response())
+    Ok(Json(Page::paginate(list, &page)).into_response())
 }

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, RequestId};
+use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -87,8 +87,10 @@ async fn create_store(
 async fn list_stores(
     Extension(svc): Extension<Arc<MemoriesService>>,
     Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(Page::of(svc.list_stores(&ctx).await?)).into_response())
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(svc.list_stores(&ctx).await?, &page)).into_response())
 }
 
 async fn get_store(
@@ -174,8 +176,10 @@ async fn list_versions(
 ) -> Result<Response, RouteError> {
     let view = view_of(&params, View::Basic);
     let memory_id = params.get("memory_id").map(String::as_str);
-    Ok(Json(Page::of(
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(
         svc.list_versions(&ctx, &id, memory_id, view).await?,
+        &page,
     ))
     .into_response())
 }

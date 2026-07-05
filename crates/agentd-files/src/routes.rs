@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, RequestId};
+use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
 use axum::extract::{Extension, Multipart, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -79,7 +79,8 @@ async fn list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let scope = params.get("scope_id").map(String::as_str);
-    Ok(Json(Page::of(svc.list(&ctx, scope).await?)).into_response())
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(svc.list(&ctx, scope).await?, &page)).into_response())
 }
 
 async fn metadata(
