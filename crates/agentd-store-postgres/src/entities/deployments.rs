@@ -1,29 +1,28 @@
-//! `DeploymentsStore` on Postgres — native exactly-once claim via
+//! `DeploymentsStore` on Postgres via Diesel — native exactly-once claim via
 //! `INSERT … ON CONFLICT DO NOTHING`.
 
 use agentd_core::WorkspaceId;
 use agentd_deployments::store::{DeploymentsStore, StoreError};
 use agentd_deployments::types::{Deployment, DeploymentId, DeploymentRun};
 use async_trait::async_trait;
-use sqlx::types::Json;
+use chrono::{DateTime, Utc};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::RunQueryDsl;
 
-use crate::{sqlx_msg, PgBackend};
+use crate::schema::{deployment_claims, deployment_runs, deployments};
+use crate::{diesel_be, pool_be, PgBackend};
 
-/// Postgres-backed deployments store.
+/// Postgres-backed deployments store (Diesel).
 #[derive(Debug, Clone)]
 pub struct PgDeploymentsStore {
     backend: PgBackend,
 }
 
 impl PgDeploymentsStore {
-    /// Wrap a pool.
+    /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
-}
-
-fn be(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(sqlx_msg(e))
 }
 
 fn status_str(d: &Deployment) -> &'static str {
@@ -35,53 +34,94 @@ fn status_str(d: &Deployment) -> &'static str {
     }
 }
 
+fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
+    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
+    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = deployments)]
+struct NewDeployment {
+    workspace_id: String,
+    deployment_id: String,
+    name: String,
+    status: String,
+    archived_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = deployment_runs)]
+struct NewRun {
+    workspace_id: String,
+    deployment_id: String,
+    run_id: String,
+    created_at: DateTime<Utc>,
+    has_error: bool,
+    doc: serde_json::Value,
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = deployment_claims)]
+struct NewClaim {
+    workspace_id: String,
+    deployment_id: String,
+    scheduled_at: String,
+}
+
 #[async_trait]
 impl DeploymentsStore for PgDeploymentsStore {
     async fn insert(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into deployments (workspace_id, deployment_id, name, status, archived_at, created_at, doc)
-             values ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&ws.0)
-        .bind(d.id.as_str())
-        .bind(&d.name)
-        .bind(status_str(&d))
-        .bind(d.archived_at.map(|t| t.as_datetime()))
-        .bind(d.created_at.as_datetime())
-        .bind(Json(&d))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(deployments::table)
+            .values(NewDeployment {
+                workspace_id: ws.0.clone(),
+                deployment_id: d.id.as_str().to_owned(),
+                name: d.name.clone(),
+                status: status_str(&d).to_owned(),
+                archived_at: d.archived_at.map(|t| t.as_datetime()),
+                created_at: d.created_at.as_datetime(),
+                doc: to_doc(&d)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
     async fn get(&self, ws: &WorkspaceId, id: &DeploymentId) -> Result<Deployment, StoreError> {
-        let row: Option<(Json<Deployment>,)> = sqlx::query_as(
-            "select doc from deployments where workspace_id = $1 and deployment_id = $2",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::NotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = deployments::table
+            .filter(deployments::workspace_id.eq(&ws.0))
+            .filter(deployments::deployment_id.eq(id.as_str()))
+            .select(deployments::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn replace(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update deployments set name = $3, status = $4, archived_at = $5, doc = $6
-             where workspace_id = $1 and deployment_id = $2",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            deployments::table
+                .filter(deployments::workspace_id.eq(&ws.0))
+                .filter(deployments::deployment_id.eq(d.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(d.id.as_str())
-        .bind(&d.name)
-        .bind(status_str(&d))
-        .bind(d.archived_at.map(|t| t.as_datetime()))
-        .bind(Json(&d))
-        .execute(&self.backend.pool)
+        .set((
+            deployments::name.eq(&d.name),
+            deployments::status.eq(status_str(&d)),
+            deployments::archived_at.eq(d.archived_at.map(|t| t.as_datetime())),
+            deployments::doc.eq(to_doc(&d)?),
+        ))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::NotFound);
         }
@@ -89,42 +129,42 @@ impl DeploymentsStore for PgDeploymentsStore {
     }
 
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Deployment>, StoreError> {
-        let rows: Vec<(Json<Deployment>,)> = sqlx::query_as(
-            "select doc from deployments where workspace_id = $1 order by created_at desc",
-        )
-        .bind(&ws.0)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = deployments::table
+            .filter(deployments::workspace_id.eq(&ws.0))
+            .order(deployments::created_at.desc())
+            .select(deployments::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 
     async fn count(&self, ws: &WorkspaceId) -> Result<usize, StoreError> {
-        // A dashboard tile ("N deployments") is a single indexed count — not
-        // an app-side scan.
-        let (n,): (i64,) =
-            sqlx::query_as("select count(*) from deployments where workspace_id = $1")
-                .bind(&ws.0)
-                .fetch_one(&self.backend.pool)
-                .await
-                .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let n: i64 = deployments::table
+            .filter(deployments::workspace_id.eq(&ws.0))
+            .count()
+            .get_result(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(n.max(0) as usize)
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DeploymentRun) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into deployment_runs (workspace_id, deployment_id, run_id, created_at, has_error, doc)
-             values ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&ws.0)
-        .bind(run.deployment_id.as_str())
-        .bind(run.id.as_str())
-        .bind(run.created_at.as_datetime())
-        .bind(run.error.is_some())
-        .bind(Json(&run))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(deployment_runs::table)
+            .values(NewRun {
+                workspace_id: ws.0.clone(),
+                deployment_id: run.deployment_id.as_str().to_owned(),
+                run_id: run.id.as_str().to_owned(),
+                created_at: run.created_at.as_datetime(),
+                has_error: run.error.is_some(),
+                doc: to_doc(&run)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
@@ -134,30 +174,21 @@ impl DeploymentsStore for PgDeploymentsStore {
         deployment: &DeploymentId,
         has_error: Option<bool>,
     ) -> Result<Vec<DeploymentRun>, StoreError> {
-        // Filter pushed into SQL — dashboards ask "just the failures."
-        let rows: Vec<(Json<DeploymentRun>,)> = match has_error {
-            Some(want) => sqlx::query_as(
-                "select doc from deployment_runs
-                 where workspace_id = $1 and deployment_id = $2 and has_error = $3
-                 order by created_at desc",
-            )
-            .bind(&ws.0)
-            .bind(deployment.as_str())
-            .bind(want)
-            .fetch_all(&self.backend.pool)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut q = deployment_runs::table
+            .filter(deployment_runs::workspace_id.eq(&ws.0))
+            .filter(deployment_runs::deployment_id.eq(deployment.as_str()))
+            .into_boxed();
+        if let Some(want) = has_error {
+            q = q.filter(deployment_runs::has_error.eq(want));
+        }
+        let docs: Vec<serde_json::Value> = q
+            .order(deployment_runs::created_at.desc())
+            .select(deployment_runs::doc)
+            .load(&mut conn)
             .await
-            .map_err(be)?,
-            None => sqlx::query_as(
-                "select doc from deployment_runs
-                 where workspace_id = $1 and deployment_id = $2 order by created_at desc",
-            )
-            .bind(&ws.0)
-            .bind(deployment.as_str())
-            .fetch_all(&self.backend.pool)
-            .await
-            .map_err(be)?,
-        };
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 
     async fn claim_fire(
@@ -166,19 +197,19 @@ impl DeploymentsStore for PgDeploymentsStore {
         deployment: &DeploymentId,
         scheduled_at: &str,
     ) -> Result<bool, StoreError> {
-        // The primary-key conflict is the exactly-once boundary: exactly one
-        // replica's insert affects a row; the rest get zero.
-        let affected = sqlx::query(
-            "insert into deployment_claims (workspace_id, deployment_id, scheduled_at)
-             values ($1, $2, $3) on conflict do nothing",
-        )
-        .bind(&ws.0)
-        .bind(deployment.as_str())
-        .bind(scheduled_at)
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?
-        .rows_affected();
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        // The PK conflict is the exactly-once boundary: exactly one replica's
+        // insert affects a row; the rest do nothing.
+        let affected = diesel::insert_into(deployment_claims::table)
+            .values(NewClaim {
+                workspace_id: ws.0.clone(),
+                deployment_id: deployment.as_str().to_owned(),
+                scheduled_at: scheduled_at.to_owned(),
+            })
+            .on_conflict_do_nothing()
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(affected == 1)
     }
 }

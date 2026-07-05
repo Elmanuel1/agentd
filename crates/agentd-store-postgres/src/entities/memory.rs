@@ -1,25 +1,25 @@
-//! `MemoryPersistence` on Postgres — the git-object model: `memory_stores` →
-//! `memories` (head pointer) → `memory_versions` (append-only chain). Version
-//! CONTENT is a blob in object storage, keyed by version id; only metadata and
-//! the movable `latest` ref live in the DB.
+//! `MemoryPersistence` on Postgres via Diesel — the git-object model:
+//! `memory_stores` → `memories` (head) → `memory_versions` (append-only chain).
+//! Version CONTENT is a blob in object storage, keyed by version id.
 
 use std::sync::Arc;
 
 use agentd_blobs::BlobStore;
 use agentd_core::WorkspaceId;
-use agentd_memory::store::{
-    MemoryPersistence, MemoryRecord, StoreError, VersionRecord,
-};
+use agentd_memory::store::{MemoryPersistence, MemoryRecord, StoreError, VersionRecord};
 use agentd_memory::types::{
     Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use sqlx::types::Json;
+use diesel::upsert::excluded;
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods};
+use diesel_async::RunQueryDsl;
 
-use crate::{sqlx_msg, PgBackend};
+use crate::schema::{memories, memory_stores, memory_versions};
+use crate::{diesel_be, pool_be, PgBackend};
 
-/// Postgres + object-storage backed memory store.
+/// Postgres + object-storage backed memory store (Diesel).
 #[derive(Clone)]
 pub struct PgMemoryStore {
     backend: PgBackend,
@@ -32,16 +32,20 @@ impl std::fmt::Debug for PgMemoryStore {
     }
 }
 
-fn be(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(sqlx_msg(e))
-}
-
 fn blob_be(e: agentd_blobs::BlobError) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
+    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
+    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
 impl PgMemoryStore {
-    /// Wrap a pool + blob store.
+    /// Wrap a backend + blob store.
     pub fn new(backend: PgBackend, blobs: Arc<dyn BlobStore>) -> Self {
         Self { backend, blobs }
     }
@@ -55,84 +59,78 @@ impl PgMemoryStore {
         ws: &WorkspaceId,
         store: &MemoryStoreId,
     ) -> Result<(), StoreError> {
-        let exists: Option<(i32,)> = sqlx::query_as(
-            "select 1 from memory_stores where workspace_id = $1 and store_id = $2",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let exists: Option<String> = memory_stores::table
+            .filter(memory_stores::workspace_id.eq(&ws.0))
+            .filter(memory_stores::store_id.eq(store.as_str()))
+            .select(memory_stores::store_id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         exists.map(|_| ()).ok_or(StoreError::StoreNotFound)
     }
 
-    /// Chain metadata (content unset — `blob = None`), oldest first.
     async fn chain_meta(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
         memory_id: &MemoryId,
     ) -> Result<Vec<VersionRecord>, StoreError> {
-        let rows: Vec<(Json<MemoryVersion>,)> = sqlx::query_as(
-            "select doc from memory_versions
-             where workspace_id = $1 and store_id = $2 and memory_id = $3
-             order by seq asc",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(memory_id.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows
-            .into_iter()
-            .map(|(d,)| VersionRecord {
-                version: d.0,
-                blob: None,
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = memory_versions::table
+            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::store_id.eq(store.as_str()))
+            .filter(memory_versions::memory_id.eq(memory_id.as_str()))
+            .order(memory_versions::seq.asc())
+            .select(memory_versions::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter()
+            .map(|d| {
+                Ok(VersionRecord {
+                    version: parse(d)?,
+                    blob: None,
+                })
             })
-            .collect())
+            .collect()
     }
 
-    /// Chain with content blobs fetched from object storage (full view).
     async fn chain_full(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
         memory_id: &MemoryId,
     ) -> Result<Vec<VersionRecord>, StoreError> {
-        let rows: Vec<(Json<MemoryVersion>, bool)> = sqlx::query_as(
-            "select doc, has_blob from memory_versions
-             where workspace_id = $1 and store_id = $2 and memory_id = $3
-             order by seq asc",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(memory_id.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let rows: Vec<(serde_json::Value, bool)> = memory_versions::table
+            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::store_id.eq(store.as_str()))
+            .filter(memory_versions::memory_id.eq(memory_id.as_str()))
+            .order(memory_versions::seq.asc())
+            .select((memory_versions::doc, memory_versions::has_blob))
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         let mut out = Vec::with_capacity(rows.len());
         for (doc, has_blob) in rows {
+            let version: MemoryVersion = parse(doc)?;
             let blob = if has_blob {
                 let bytes = self
                     .blobs
-                    .get(&Self::blob_key(ws, store, &doc.0.id))
+                    .get(&Self::blob_key(ws, store, &version.id))
                     .await
                     .map_err(blob_be)?;
                 Some(String::from_utf8_lossy(&bytes).into_owned())
             } else {
                 None
             };
-            out.push(VersionRecord {
-                version: doc.0,
-                blob,
-            });
+            out.push(VersionRecord { version, blob });
         }
         Ok(out)
     }
 
-    /// Persist one chain version: content → S3 (or purge on redact), metadata
-    /// row upserted (seq preserved on conflict).
     async fn upsert_version(
         &self,
         ws: &WorkspaceId,
@@ -154,23 +152,30 @@ impl PgMemoryStore {
         }
         let mut meta = v.version.clone();
         meta.content = None;
-        sqlx::query(
-            "insert into memory_versions
-               (workspace_id, store_id, memory_id, version_id, has_blob, created_at, doc)
-             values ($1, $2, $3, $4, $5, $6, $7)
-             on conflict (workspace_id, store_id, version_id)
-             do update set has_blob = excluded.has_blob, doc = excluded.doc",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(memory_id.as_str())
-        .bind(v.version.id.as_str())
-        .bind(v.blob.is_some())
-        .bind(v.version.created_at.as_datetime())
-        .bind(Json(&meta))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(memory_versions::table)
+            .values((
+                memory_versions::workspace_id.eq(&ws.0),
+                memory_versions::store_id.eq(store.as_str()),
+                memory_versions::memory_id.eq(memory_id.as_str()),
+                memory_versions::version_id.eq(v.version.id.as_str()),
+                memory_versions::has_blob.eq(v.blob.is_some()),
+                memory_versions::created_at.eq(v.version.created_at.as_datetime()),
+                memory_versions::doc.eq(to_doc(&meta)?),
+            ))
+            .on_conflict((
+                memory_versions::workspace_id,
+                memory_versions::store_id,
+                memory_versions::version_id,
+            ))
+            .do_update()
+            .set((
+                memory_versions::has_blob.eq(excluded(memory_versions::has_blob)),
+                memory_versions::doc.eq(excluded(memory_versions::doc)),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
@@ -180,25 +185,33 @@ impl PgMemoryStore {
         store: &MemoryStoreId,
         record: &MemoryRecord,
     ) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into memories
-               (workspace_id, store_id, memory_id, path, head_version_id, deleted, created_at, doc)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
-             on conflict (workspace_id, store_id, memory_id)
-             do update set path = excluded.path, head_version_id = excluded.head_version_id,
-                           deleted = excluded.deleted, doc = excluded.doc",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(record.head.id.as_str())
-        .bind(&record.head.path)
-        .bind(record.head.memory_version_id.as_str())
-        .bind(record.deleted)
-        .bind(record.head.created_at.as_datetime())
-        .bind(Json(&record.head))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(memories::table)
+            .values((
+                memories::workspace_id.eq(&ws.0),
+                memories::store_id.eq(store.as_str()),
+                memories::memory_id.eq(record.head.id.as_str()),
+                memories::path.eq(&record.head.path),
+                memories::head_version_id.eq(record.head.memory_version_id.as_str()),
+                memories::deleted.eq(record.deleted),
+                memories::created_at.eq(record.head.created_at.as_datetime()),
+                memories::doc.eq(to_doc(&record.head)?),
+            ))
+            .on_conflict((
+                memories::workspace_id,
+                memories::store_id,
+                memories::memory_id,
+            ))
+            .do_update()
+            .set((
+                memories::path.eq(excluded(memories::path)),
+                memories::head_version_id.eq(excluded(memories::head_version_id)),
+                memories::deleted.eq(excluded(memories::deleted)),
+                memories::doc.eq(excluded(memories::doc)),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 }
@@ -206,18 +219,18 @@ impl PgMemoryStore {
 #[async_trait]
 impl MemoryPersistence for PgMemoryStore {
     async fn insert_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into memory_stores (workspace_id, store_id, name, created_at, doc)
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(&ws.0)
-        .bind(s.id.as_str())
-        .bind(&s.name)
-        .bind(s.created_at.as_datetime())
-        .bind(Json(&s))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(memory_stores::table)
+            .values((
+                memory_stores::workspace_id.eq(&ws.0),
+                memory_stores::store_id.eq(s.id.as_str()),
+                memory_stores::name.eq(&s.name),
+                memory_stores::created_at.eq(s.created_at.as_datetime()),
+                memory_stores::doc.eq(to_doc(&s)?),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
@@ -226,30 +239,29 @@ impl MemoryPersistence for PgMemoryStore {
         ws: &WorkspaceId,
         id: &MemoryStoreId,
     ) -> Result<MemoryStoreEntity, StoreError> {
-        let row: Option<(Json<MemoryStoreEntity>,)> = sqlx::query_as(
-            "select doc from memory_stores where workspace_id = $1 and store_id = $2",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::StoreNotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = memory_stores::table
+            .filter(memory_stores::workspace_id.eq(&ws.0))
+            .filter(memory_stores::store_id.eq(id.as_str()))
+            .select(memory_stores::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::StoreNotFound)?)
     }
 
     async fn replace_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update memory_stores set name = $3, doc = $4
-             where workspace_id = $1 and store_id = $2",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            memory_stores::table
+                .filter(memory_stores::workspace_id.eq(&ws.0))
+                .filter(memory_stores::store_id.eq(s.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(s.id.as_str())
-        .bind(&s.name)
-        .bind(Json(&s))
-        .execute(&self.backend.pool)
+        .set((memory_stores::name.eq(&s.name), memory_stores::doc.eq(to_doc(&s)?)))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::StoreNotFound);
         }
@@ -261,38 +273,41 @@ impl MemoryPersistence for PgMemoryStore {
         ws: &WorkspaceId,
         id: &MemoryStoreId,
     ) -> Result<MemoryStoreEntity, StoreError> {
-        // Purge content blobs for every version in the store first.
-        let versions: Vec<(String,)> = sqlx::query_as(
-            "select version_id from memory_versions where workspace_id = $1 and store_id = $2
-             and has_blob = true",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        let row: Option<(Json<MemoryStoreEntity>,)> = sqlx::query_as(
-            "delete from memory_stores where workspace_id = $1 and store_id = $2 returning doc",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        let store = row.map(|(d,)| d.0).ok_or(StoreError::StoreNotFound)?;
-        sqlx::query("delete from memory_versions where workspace_id = $1 and store_id = $2")
-            .bind(&ws.0)
-            .bind(id.as_str())
-            .execute(&self.backend.pool)
+        let store = self.get_store(ws, id).await?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let version_ids: Vec<String> = memory_versions::table
+            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::store_id.eq(id.as_str()))
+            .filter(memory_versions::has_blob.eq(true))
+            .select(memory_versions::version_id)
+            .load(&mut conn)
             .await
-            .map_err(be)?;
-        sqlx::query("delete from memories where workspace_id = $1 and store_id = $2")
-            .bind(&ws.0)
-            .bind(id.as_str())
-            .execute(&self.backend.pool)
-            .await
-            .map_err(be)?;
-        for (vid,) in versions {
+            .map_err(diesel_be)?;
+        diesel::delete(
+            memory_versions::table
+                .filter(memory_versions::workspace_id.eq(&ws.0))
+                .filter(memory_versions::store_id.eq(id.as_str())),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        diesel::delete(
+            memories::table
+                .filter(memories::workspace_id.eq(&ws.0))
+                .filter(memories::store_id.eq(id.as_str())),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        diesel::delete(
+            memory_stores::table
+                .filter(memory_stores::workspace_id.eq(&ws.0))
+                .filter(memory_stores::store_id.eq(id.as_str())),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        for vid in version_ids {
             let key = format!("memory/{}/{}/{}", ws.0, id.as_str(), vid);
             match self.blobs.delete(&key).await {
                 Ok(()) | Err(agentd_blobs::BlobError::NotFound(_)) => {}
@@ -303,14 +318,15 @@ impl MemoryPersistence for PgMemoryStore {
     }
 
     async fn list_stores(&self, ws: &WorkspaceId) -> Result<Vec<MemoryStoreEntity>, StoreError> {
-        let rows: Vec<(Json<MemoryStoreEntity>,)> = sqlx::query_as(
-            "select doc from memory_stores where workspace_id = $1 order by created_at desc",
-        )
-        .bind(&ws.0)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = memory_stores::table
+            .filter(memory_stores::workspace_id.eq(&ws.0))
+            .order(memory_stores::created_at.desc())
+            .select(memory_stores::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 
     async fn insert_memory(
@@ -340,23 +356,24 @@ impl MemoryPersistence for PgMemoryStore {
         id: &MemoryId,
     ) -> Result<MemoryRecord, StoreError> {
         self.require_store(ws, store).await?;
-        let row: Option<(Json<Memory>, bool)> = sqlx::query_as(
-            "select doc, deleted from memories
-             where workspace_id = $1 and store_id = $2 and memory_id = $3",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        let (head, deleted) = row.ok_or(StoreError::MemoryNotFound)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let row: Option<(serde_json::Value, bool)> = memories::table
+            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::store_id.eq(store.as_str()))
+            .filter(memories::memory_id.eq(id.as_str()))
+            .select((memories::doc, memories::deleted))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        let (doc, deleted) = row.ok_or(StoreError::MemoryNotFound)?;
         if deleted {
             return Err(StoreError::MemoryNotFound);
         }
+        let head: Memory = parse(doc)?;
         let chain = self.chain_full(ws, store, id).await?;
         Ok(MemoryRecord {
-            head: head.0,
+            head,
             deleted,
             chain,
         })
@@ -369,15 +386,16 @@ impl MemoryPersistence for PgMemoryStore {
         record: MemoryRecord,
     ) -> Result<(), StoreError> {
         self.require_store(ws, store).await?;
-        let exists: Option<(i32,)> = sqlx::query_as(
-            "select 1 from memories where workspace_id = $1 and store_id = $2 and memory_id = $3",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(record.head.id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let exists: Option<String> = memories::table
+            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::store_id.eq(store.as_str()))
+            .filter(memories::memory_id.eq(record.head.id.as_str()))
+            .select(memories::memory_id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         if exists.is_none() {
             return Err(StoreError::MemoryNotFound);
         }
@@ -405,23 +423,27 @@ impl MemoryPersistence for PgMemoryStore {
         path_prefix: Option<&str>,
     ) -> Result<Vec<MemoryRecord>, StoreError> {
         self.require_store(ws, store).await?;
-        let heads: Vec<(Json<Memory>,)> = sqlx::query_as(
-            "select doc from memories
-             where workspace_id = $1 and store_id = $2 and deleted = false
-               and ($3::text is null or path like $3 || '%')
-             order by path",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(path_prefix)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut q = memories::table
+            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::store_id.eq(store.as_str()))
+            .filter(memories::deleted.eq(false))
+            .into_boxed();
+        if let Some(p) = path_prefix {
+            q = q.filter(memories::path.like(format!("{p}%")));
+        }
+        let heads: Vec<serde_json::Value> = q
+            .order(memories::path.asc())
+            .select(memories::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         let mut out = Vec::with_capacity(heads.len());
-        for (head,) in heads {
-            let chain = self.chain_meta(ws, store, &head.0.id).await?;
+        for doc in heads {
+            let head: Memory = parse(doc)?;
+            let chain = self.chain_meta(ws, store, &head.id).await?;
             out.push(MemoryRecord {
-                head: head.0,
+                head,
                 deleted: false,
                 chain,
             });
@@ -435,17 +457,24 @@ impl MemoryPersistence for PgMemoryStore {
         store: &MemoryStoreId,
         path: &str,
     ) -> Result<Option<MemoryId>, StoreError> {
-        let row: Option<(Json<Memory>,)> = sqlx::query_as(
-            "select doc from memories
-             where workspace_id = $1 and store_id = $2 and path = $3 and deleted = false",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(path)
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(row.map(|(d,)| d.0.id))
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = memories::table
+            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::store_id.eq(store.as_str()))
+            .filter(memories::path.eq(path))
+            .filter(memories::deleted.eq(false))
+            .select(memories::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        match doc {
+            Some(d) => {
+                let m: Memory = parse(d)?;
+                Ok(Some(m.id))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn list_versions(
@@ -455,25 +484,28 @@ impl MemoryPersistence for PgMemoryStore {
         memory_id: Option<&MemoryId>,
     ) -> Result<Vec<VersionRecord>, StoreError> {
         self.require_store(ws, store).await?;
-        let rows: Vec<(Json<MemoryVersion>,)> = sqlx::query_as(
-            "select doc from memory_versions
-             where workspace_id = $1 and store_id = $2
-               and ($3::text is null or memory_id = $3)
-             order by seq desc",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(memory_id.map(MemoryId::as_str))
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows
-            .into_iter()
-            .map(|(d,)| VersionRecord {
-                version: d.0,
-                blob: None,
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut q = memory_versions::table
+            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::store_id.eq(store.as_str()))
+            .into_boxed();
+        if let Some(mid) = memory_id {
+            q = q.filter(memory_versions::memory_id.eq(mid.as_str().to_owned()));
+        }
+        let docs: Vec<serde_json::Value> = q
+            .order(memory_versions::seq.desc())
+            .select(memory_versions::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter()
+            .map(|d| {
+                Ok(VersionRecord {
+                    version: parse(d)?,
+                    blob: None,
+                })
             })
-            .collect())
+            .collect()
     }
 
     async fn get_version(
@@ -482,17 +514,18 @@ impl MemoryPersistence for PgMemoryStore {
         store: &MemoryStoreId,
         id: &MemoryVersionId,
     ) -> Result<(MemoryId, VersionRecord), StoreError> {
-        let row: Option<(Json<MemoryVersion>, bool)> = sqlx::query_as(
-            "select doc, has_blob from memory_versions
-             where workspace_id = $1 and store_id = $2 and version_id = $3",
-        )
-        .bind(&ws.0)
-        .bind(store.as_str())
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let row: Option<(serde_json::Value, bool)> = memory_versions::table
+            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::store_id.eq(store.as_str()))
+            .filter(memory_versions::version_id.eq(id.as_str()))
+            .select((memory_versions::doc, memory_versions::has_blob))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         let (doc, has_blob) = row.ok_or(StoreError::VersionNotFound)?;
+        let version: MemoryVersion = parse(doc)?;
         let blob = if has_blob {
             let bytes = self
                 .blobs
@@ -503,8 +536,8 @@ impl MemoryPersistence for PgMemoryStore {
         } else {
             None
         };
-        let memory_id = doc.0.memory_id.clone();
-        Ok((memory_id, VersionRecord { version: doc.0, blob }))
+        let memory_id = version.memory_id.clone();
+        Ok((memory_id, VersionRecord { version, blob }))
     }
 
     async fn rollback(

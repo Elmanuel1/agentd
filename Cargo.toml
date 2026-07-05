@@ -69,7 +69,6 @@ aws-config = { version = "1", default-features = false, features = ["rustls", "r
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-smithy-runtime-api = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json"] }
 diesel = { version = "2.2", default-features = false, features = ["postgres_backend", "serde_json", "chrono"] }
 diesel-async = { version = "0.5", default-features = false, features = ["postgres", "deadpool"] }
 

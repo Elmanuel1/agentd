@@ -8,10 +8,11 @@
 //! multi-replica **exactly-once** claim is a native
 //! `INSERT … ON CONFLICT DO NOTHING`.
 //!
-//! Schema is managed by **Flyway** (`migrations/V*.sql`, Postgres 16 /
-//! Flyway 11). This crate only *uses* the migrated schema — it never creates
-//! tables — so schema and code evolve through reviewed migrations, matching
-//! the tosspaper convention.
+//! Queries use **Diesel** (typed DSL over `crate::schema`, the jOOQ analog):
+//! codegen-style typed schema + compile-time-checked queries, no ORM runtime
+//! behaviour. **Flyway** owns the migrations (`migrations/V*.sql`, Postgres 16
+//! / Flyway 11) and `crate::schema` mirrors them — the same Flyway → jOOQ
+//! split as the tosspaper Java stack. This crate never creates tables.
 
 #![cfg_attr(
     test,
@@ -29,8 +30,6 @@ pub mod schema;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::AsyncPgConnection;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
 
 /// The diesel-async connection pool type (tokio-postgres under the hood).
 pub type DieselPgPool = DieselPool<AsyncPgConnection>;
@@ -45,14 +44,11 @@ pub use entities::sessions::PgSessionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
 
-/// Shared connection pools. Transitional: `pool` (sqlx) serves stores not yet
-/// ported; `diesel` (diesel-async) serves the ported ones. Both target the
-/// same database. When every store is on Diesel, `pool` is removed.
+/// Shared diesel-async connection pool (tokio-postgres). All entity stores go
+/// through Diesel — the typed schema lives in `crate::schema`.
 #[derive(Clone)]
 pub struct PgBackend {
-    /// The sqlx pool (legacy stores).
-    pub pool: PgPool,
-    /// The diesel-async pool (ported stores).
+    /// The diesel-async pool.
     pub diesel: DieselPgPool,
 }
 
@@ -73,24 +69,13 @@ pub enum PgError {
 impl PgBackend {
     /// Connect using `database_url` (or `DATABASE_URL`), pooled.
     pub async fn connect(database_url: &str) -> Result<Self, PgError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .connect(database_url)
-            .await
-            .map_err(|e| PgError::Connect(e.to_string()))?;
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
         let diesel = DieselPool::builder(manager)
             .max_size(10)
             .build()
             .map_err(|e| PgError::Connect(e.to_string()))?;
-        Ok(Self { pool, diesel })
+        Ok(Self { diesel })
     }
-}
-
-/// Map any sqlx error to a store `Backend` string (each entity wraps it in
-/// its own `StoreError::Backend`).
-pub(crate) fn sqlx_msg(e: sqlx::Error) -> String {
-    e.to_string()
 }
 
 /// Map a Diesel query error to a store `Backend` variant. Generic over the
@@ -111,11 +96,27 @@ pub(crate) trait FromBackend {
     fn backend(msg: String) -> Self;
 }
 
-impl FromBackend for agentd_agents::store::StoreError {
-    fn backend(msg: String) -> Self {
-        Self::Backend(msg)
-    }
+macro_rules! from_backend {
+    ($($t:ty),+ $(,)?) => {$(
+        impl FromBackend for $t {
+            fn backend(msg: String) -> Self {
+                Self::Backend(msg)
+            }
+        }
+    )+};
 }
+
+from_backend!(
+    agentd_agents::store::StoreError,
+    agentd_deployments::store::StoreError,
+    agentd_files::store::StoreError,
+    agentd_environments::store::StoreError,
+    agentd_vaults::store::StoreError,
+    agentd_skills::StoreError,
+    agentd_sessions::store::StoreError,
+    agentd_dreams::store::StoreError,
+    agentd_memory::store::StoreError,
+);
 
 /// Serialize a snake_case enum to its wire string for a filter column
 /// (e.g. `EnvironmentState::Active` → `"active"`). Falls back to `""` for

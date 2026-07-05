@@ -24,7 +24,6 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-sqlx = { workspace = true }
 diesel = { workspace = true }
 diesel-async = { workspace = true }
 

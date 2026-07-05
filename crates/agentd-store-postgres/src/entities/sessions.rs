@@ -1,85 +1,104 @@
-//! `SessionsStore` on Postgres — session rows + the shared append-only event
-//! log (SSE tails `session_events` by `seq`, so any replica serves the stream).
+//! `SessionsStore` on Postgres via Diesel — session rows + the shared
+//! append-only event log (SSE tails `session_events` by `seq`).
 
 use agentd_core::WorkspaceId;
 use agentd_sessions::events::Event;
 use agentd_sessions::store::{SessionsStore, StoreError};
 use agentd_sessions::types::{Session, SessionId};
 use async_trait::async_trait;
-use sqlx::types::Json;
+use chrono::{DateTime, Utc};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::RunQueryDsl;
 
-use crate::{enum_str, sqlx_msg, PgBackend};
+use crate::schema::{session_events, sessions};
+use crate::{diesel_be, enum_str, pool_be, PgBackend};
 
-/// Postgres-backed sessions store.
+/// Postgres-backed sessions store (Diesel).
 #[derive(Debug, Clone)]
 pub struct PgSessionsStore {
     backend: PgBackend,
 }
 
 impl PgSessionsStore {
-    /// Wrap a pool.
+    /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
 
     async fn require_session(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
-        let exists: Option<(i32,)> =
-            sqlx::query_as("select 1 from sessions where workspace_id = $1 and session_id = $2")
-                .bind(&ws.0)
-                .bind(id.as_str())
-                .fetch_optional(&self.backend.pool)
-                .await
-                .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let exists: Option<String> = sessions::table
+            .filter(sessions::workspace_id.eq(&ws.0))
+            .filter(sessions::session_id.eq(id.as_str()))
+            .select(sessions::session_id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         exists.map(|_| ()).ok_or(StoreError::NotFound)
     }
 }
 
-fn be(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(sqlx_msg(e))
+fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
+    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
+    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = sessions)]
+struct NewSession {
+    workspace_id: String,
+    session_id: String,
+    status: String,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
 }
 
 #[async_trait]
 impl SessionsStore for PgSessionsStore {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into sessions (workspace_id, session_id, status, created_at, doc)
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(&ws.0)
-        .bind(s.id.as_str())
-        .bind(enum_str(&s.status))
-        .bind(s.created_at.as_datetime())
-        .bind(Json(&s))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(sessions::table)
+            .values(NewSession {
+                workspace_id: ws.0.clone(),
+                session_id: s.id.as_str().to_owned(),
+                status: enum_str(&s.status),
+                created_at: s.created_at.as_datetime(),
+                doc: to_doc(&s)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
-        let row: Option<(Json<Session>,)> =
-            sqlx::query_as("select doc from sessions where workspace_id = $1 and session_id = $2")
-                .bind(&ws.0)
-                .bind(id.as_str())
-                .fetch_optional(&self.backend.pool)
-                .await
-                .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::NotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = sessions::table
+            .filter(sessions::workspace_id.eq(&ws.0))
+            .filter(sessions::session_id.eq(id.as_str()))
+            .select(sessions::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn replace(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update sessions set status = $3, doc = $4
-             where workspace_id = $1 and session_id = $2",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            sessions::table
+                .filter(sessions::workspace_id.eq(&ws.0))
+                .filter(sessions::session_id.eq(s.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(s.id.as_str())
-        .bind(enum_str(&s.status))
-        .bind(Json(&s))
-        .execute(&self.backend.pool)
+        .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(to_doc(&s)?)))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::NotFound);
         }
@@ -87,33 +106,38 @@ impl SessionsStore for PgSessionsStore {
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
-        // Log rows go first so a crash mid-delete never orphans events.
-        sqlx::query("delete from session_events where workspace_id = $1 and session_id = $2")
-            .bind(&ws.0)
-            .bind(id.as_str())
-            .execute(&self.backend.pool)
-            .await
-            .map_err(be)?;
-        let row: Option<(Json<Session>,)> = sqlx::query_as(
-            "delete from sessions where workspace_id = $1 and session_id = $2 returning doc",
+        let existing = self.get(ws, id).await?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        // Log rows first so a crash never orphans events.
+        diesel::delete(
+            session_events::table
+                .filter(session_events::workspace_id.eq(&ws.0))
+                .filter(session_events::session_id.eq(id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
+        .execute(&mut conn)
         .await
-        .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::NotFound)
+        .map_err(diesel_be)?;
+        diesel::delete(
+            sessions::table
+                .filter(sessions::workspace_id.eq(&ws.0))
+                .filter(sessions::session_id.eq(id.as_str())),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        Ok(existing)
     }
 
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Session>, StoreError> {
-        let rows: Vec<(Json<Session>,)> = sqlx::query_as(
-            "select doc from sessions where workspace_id = $1 order by created_at",
-        )
-        .bind(&ws.0)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = sessions::table
+            .filter(sessions::workspace_id.eq(&ws.0))
+            .order(sessions::created_at.asc())
+            .select(sessions::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 
     async fn append_event(
@@ -123,17 +147,19 @@ impl SessionsStore for PgSessionsStore {
         event: Event,
     ) -> Result<(), StoreError> {
         self.require_session(ws, id).await?;
-        sqlx::query(
-            "insert into session_events (workspace_id, session_id, event_id, created_at, doc)
-             values ($1, $2, $3, now(), $4)",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .bind(event.id.as_str())
-        .bind(Json(&event))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        // DB stamps the log time (authoritative ordering is `seq` bigserial).
+        diesel::insert_into(session_events::table)
+            .values((
+                session_events::workspace_id.eq(&ws.0),
+                session_events::session_id.eq(id.as_str()),
+                session_events::event_id.eq(event.id.as_str()),
+                session_events::created_at.eq(diesel::dsl::now),
+                session_events::doc.eq(to_doc(&event)?),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
@@ -143,18 +169,17 @@ impl SessionsStore for PgSessionsStore {
         id: &SessionId,
         event: Event,
     ) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update session_events set doc = $4
-             where workspace_id = $1 and session_id = $2 and event_id = $3",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            session_events::table
+                .filter(session_events::workspace_id.eq(&ws.0))
+                .filter(session_events::session_id.eq(id.as_str()))
+                .filter(session_events::event_id.eq(event.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .bind(event.id.as_str())
-        .bind(Json(&event))
-        .execute(&self.backend.pool)
+        .set(session_events::doc.eq(to_doc(&event)?))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::NotFound);
         }
@@ -163,15 +188,15 @@ impl SessionsStore for PgSessionsStore {
 
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         self.require_session(ws, id).await?;
-        let rows: Vec<(Json<Event>,)> = sqlx::query_as(
-            "select doc from session_events where workspace_id = $1 and session_id = $2
-             order by seq",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = session_events::table
+            .filter(session_events::workspace_id.eq(&ws.0))
+            .filter(session_events::session_id.eq(id.as_str()))
+            .order(session_events::seq.asc())
+            .select(session_events::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 }

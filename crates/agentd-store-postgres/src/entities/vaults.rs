@@ -1,6 +1,6 @@
-//! `VaultsStore` on Postgres — vault + secret-free credential rows; the secret
-//! material is sealed to object storage (a secret-manager stand-in), keyed by
-//! credential id, and NEVER written to the database.
+//! `VaultsStore` on Postgres via Diesel — vault + secret-free credential rows;
+//! the secret material is sealed to object storage (a secret-manager stand-in),
+//! keyed by credential id, and NEVER written to the database.
 
 use std::sync::Arc;
 
@@ -10,11 +10,14 @@ use agentd_vaults::store::{StoreError, StoredCredential, VaultsStore};
 use agentd_vaults::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
 use async_trait::async_trait;
 use bytes::Bytes;
-use sqlx::types::Json;
+use chrono::{DateTime, Utc};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::RunQueryDsl;
 
-use crate::{sqlx_msg, PgBackend};
+use crate::schema::{credentials, vaults};
+use crate::{diesel_be, pool_be, PgBackend};
 
-/// Postgres + secret-store backed vaults store.
+/// Postgres + secret-store backed vaults store (Diesel).
 #[derive(Clone)]
 pub struct PgVaultsStore {
     backend: PgBackend,
@@ -28,7 +31,7 @@ impl std::fmt::Debug for PgVaultsStore {
 }
 
 impl PgVaultsStore {
-    /// Wrap a pool + secret store.
+    /// Wrap a backend + secret store.
     pub fn new(backend: PgBackend, secrets: Arc<dyn BlobStore>) -> Self {
         Self { backend, secrets }
     }
@@ -38,13 +41,15 @@ impl PgVaultsStore {
     }
 
     async fn require_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<(), StoreError> {
-        let exists: Option<(i32,)> =
-            sqlx::query_as("select 1 from vaults where workspace_id = $1 and vault_id = $2")
-                .bind(&ws.0)
-                .bind(id.as_str())
-                .fetch_optional(&self.backend.pool)
-                .await
-                .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let exists: Option<String> = vaults::table
+            .filter(vaults::workspace_id.eq(&ws.0))
+            .filter(vaults::vault_id.eq(id.as_str()))
+            .select(vaults::vault_id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         exists.map(|_| ()).ok_or(StoreError::VaultNotFound)
     }
 
@@ -62,7 +67,6 @@ impl PgVaultsStore {
                 .put(&key, Bytes::from(a.seal().into_bytes()))
                 .await
                 .map_err(blob_be),
-            // Archived → secret purged. Delete is idempotent (NotFound ok).
             None => match self.secrets.delete(&key).await {
                 Ok(()) | Err(agentd_blobs::BlobError::NotFound(_)) => Ok(()),
                 Err(e) => Err(blob_be(e)),
@@ -71,56 +75,85 @@ impl PgVaultsStore {
     }
 }
 
-fn be(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(sqlx_msg(e))
-}
-
 fn blob_be(e: agentd_blobs::BlobError) -> StoreError {
     StoreError::Backend(e.to_string())
+}
+
+fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
+    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
+    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = vaults)]
+struct NewVault {
+    workspace_id: String,
+    vault_id: String,
+    display_name: String,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = credentials)]
+struct NewCredential {
+    workspace_id: String,
+    vault_id: String,
+    credential_id: String,
+    display_name: String,
+    has_secret: bool,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
 }
 
 #[async_trait]
 impl VaultsStore for PgVaultsStore {
     async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into vaults (workspace_id, vault_id, display_name, created_at, doc)
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(&ws.0)
-        .bind(vault.id.as_str())
-        .bind(&vault.display_name)
-        .bind(vault.created_at.as_datetime())
-        .bind(Json(&vault))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(vaults::table)
+            .values(NewVault {
+                workspace_id: ws.0.clone(),
+                vault_id: vault.id.as_str().to_owned(),
+                display_name: vault.display_name.clone(),
+                created_at: vault.created_at.as_datetime(),
+                doc: to_doc(&vault)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
-        let row: Option<(Json<Vault>,)> =
-            sqlx::query_as("select doc from vaults where workspace_id = $1 and vault_id = $2")
-                .bind(&ws.0)
-                .bind(id.as_str())
-                .fetch_optional(&self.backend.pool)
-                .await
-                .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::VaultNotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = vaults::table
+            .filter(vaults::workspace_id.eq(&ws.0))
+            .filter(vaults::vault_id.eq(id.as_str()))
+            .select(vaults::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::VaultNotFound)?)
     }
 
     async fn replace_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update vaults set display_name = $3, doc = $4
-             where workspace_id = $1 and vault_id = $2",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            vaults::table
+                .filter(vaults::workspace_id.eq(&ws.0))
+                .filter(vaults::vault_id.eq(vault.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(vault.id.as_str())
-        .bind(&vault.display_name)
-        .bind(Json(&vault))
-        .execute(&self.backend.pool)
+        .set((
+            vaults::display_name.eq(&vault.display_name),
+            vaults::doc.eq(to_doc(&vault)?),
+        ))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::VaultNotFound);
         }
@@ -129,21 +162,24 @@ impl VaultsStore for PgVaultsStore {
 
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
         let creds = self.list_credentials(ws, id).await.unwrap_or_default();
-        let row: Option<(Json<Vault>,)> = sqlx::query_as(
-            "delete from vaults where workspace_id = $1 and vault_id = $2 returning doc",
+        let vault = self.get_vault(ws, id).await?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::delete(
+            credentials::table
+                .filter(credentials::workspace_id.eq(&ws.0))
+                .filter(credentials::vault_id.eq(id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
+        .execute(&mut conn)
         .await
-        .map_err(be)?;
-        let vault = row.map(|(d,)| d.0).ok_or(StoreError::VaultNotFound)?;
-        sqlx::query("delete from credentials where workspace_id = $1 and vault_id = $2")
-            .bind(&ws.0)
-            .bind(id.as_str())
-            .execute(&self.backend.pool)
-            .await
-            .map_err(be)?;
+        .map_err(diesel_be)?;
+        diesel::delete(
+            vaults::table
+                .filter(vaults::workspace_id.eq(&ws.0))
+                .filter(vaults::vault_id.eq(id.as_str())),
+        )
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
         for c in creds {
             self.put_secret(ws, id, &c.wire.id, &None).await?;
         }
@@ -151,14 +187,15 @@ impl VaultsStore for PgVaultsStore {
     }
 
     async fn list_vaults(&self, ws: &WorkspaceId) -> Result<Vec<Vault>, StoreError> {
-        let rows: Vec<(Json<Vault>,)> = sqlx::query_as(
-            "select doc from vaults where workspace_id = $1 order by created_at",
-        )
-        .bind(&ws.0)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = vaults::table
+            .filter(vaults::workspace_id.eq(&ws.0))
+            .order(vaults::created_at.asc())
+            .select(vaults::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 
     async fn insert_credential(
@@ -169,21 +206,20 @@ impl VaultsStore for PgVaultsStore {
     ) -> Result<(), StoreError> {
         self.require_vault(ws, vault).await?;
         self.put_secret(ws, vault, &cred.wire.id, &cred.auth).await?;
-        sqlx::query(
-            "insert into credentials
-               (workspace_id, vault_id, credential_id, display_name, has_secret, created_at, doc)
-             values ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&ws.0)
-        .bind(vault.as_str())
-        .bind(cred.wire.id.as_str())
-        .bind(&cred.wire.display_name)
-        .bind(cred.auth.is_some())
-        .bind(cred.wire.created_at.as_datetime())
-        .bind(Json(&cred.wire))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(credentials::table)
+            .values(NewCredential {
+                workspace_id: ws.0.clone(),
+                vault_id: vault.as_str().to_owned(),
+                credential_id: cred.wire.id.as_str().to_owned(),
+                display_name: cred.wire.display_name.clone(),
+                has_secret: cred.auth.is_some(),
+                created_at: cred.wire.created_at.as_datetime(),
+                doc: to_doc(&cred.wire)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
@@ -193,17 +229,18 @@ impl VaultsStore for PgVaultsStore {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError> {
-        let row: Option<(Json<Credential>, bool)> = sqlx::query_as(
-            "select doc, has_secret from credentials
-             where workspace_id = $1 and vault_id = $2 and credential_id = $3",
-        )
-        .bind(&ws.0)
-        .bind(vault.as_str())
-        .bind(id.as_str())
-        .fetch_optional(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        let (wire, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let row: Option<(serde_json::Value, bool)> = credentials::table
+            .filter(credentials::workspace_id.eq(&ws.0))
+            .filter(credentials::vault_id.eq(vault.as_str()))
+            .filter(credentials::credential_id.eq(id.as_str()))
+            .select((credentials::doc, credentials::has_secret))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        let (doc, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
+        let wire: Credential = parse(doc)?;
         let auth = if has_secret {
             let sealed = self
                 .secrets
@@ -214,7 +251,7 @@ impl VaultsStore for PgVaultsStore {
         } else {
             None
         };
-        Ok(StoredCredential { wire: wire.0, auth })
+        Ok(StoredCredential { wire, auth })
     }
 
     async fn replace_credential(
@@ -223,20 +260,21 @@ impl VaultsStore for PgVaultsStore {
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update credentials set display_name = $4, has_secret = $5, doc = $6
-             where workspace_id = $1 and vault_id = $2 and credential_id = $3",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            credentials::table
+                .filter(credentials::workspace_id.eq(&ws.0))
+                .filter(credentials::vault_id.eq(vault.as_str()))
+                .filter(credentials::credential_id.eq(cred.wire.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(vault.as_str())
-        .bind(cred.wire.id.as_str())
-        .bind(&cred.wire.display_name)
-        .bind(cred.auth.is_some())
-        .bind(Json(&cred.wire))
-        .execute(&self.backend.pool)
+        .set((
+            credentials::display_name.eq(&cred.wire.display_name),
+            credentials::has_secret.eq(cred.auth.is_some()),
+            credentials::doc.eq(to_doc(&cred.wire)?),
+        ))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::CredentialNotFound);
         }
@@ -250,16 +288,16 @@ impl VaultsStore for PgVaultsStore {
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError> {
         let existing = self.get_credential(ws, vault, id).await?;
-        sqlx::query(
-            "delete from credentials
-             where workspace_id = $1 and vault_id = $2 and credential_id = $3",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::delete(
+            credentials::table
+                .filter(credentials::workspace_id.eq(&ws.0))
+                .filter(credentials::vault_id.eq(vault.as_str()))
+                .filter(credentials::credential_id.eq(id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(vault.as_str())
-        .bind(id.as_str())
-        .execute(&self.backend.pool)
+        .execute(&mut conn)
         .await
-        .map_err(be)?;
+        .map_err(diesel_be)?;
         self.put_secret(ws, vault, id, &None).await?;
         Ok(existing)
     }
@@ -270,23 +308,23 @@ impl VaultsStore for PgVaultsStore {
         vault: &VaultId,
     ) -> Result<Vec<StoredCredential>, StoreError> {
         self.require_vault(ws, vault).await?;
-        // Secret-free listing: `auth` is fetched per-credential on demand
-        // (egress injection reads one at a time) — never bulk-loaded here.
-        let rows: Vec<(Json<Credential>,)> = sqlx::query_as(
-            "select doc from credentials where workspace_id = $1 and vault_id = $2
-             order by created_at",
-        )
-        .bind(&ws.0)
-        .bind(vault.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows
-            .into_iter()
-            .map(|(d,)| StoredCredential {
-                wire: d.0,
-                auth: None,
+        // Secret-free listing: `auth` is fetched per-credential on demand.
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = credentials::table
+            .filter(credentials::workspace_id.eq(&ws.0))
+            .filter(credentials::vault_id.eq(vault.as_str()))
+            .order(credentials::created_at.asc())
+            .select(credentials::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter()
+            .map(|d| {
+                Ok(StoredCredential {
+                    wire: parse(d)?,
+                    auth: None,
+                })
             })
-            .collect())
+            .collect()
     }
 }

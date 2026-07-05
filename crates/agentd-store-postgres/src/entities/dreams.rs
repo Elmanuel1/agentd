@@ -1,74 +1,105 @@
-//! `DreamsStore` on Postgres — dream rows + append-only runs.
+//! `DreamsStore` on Postgres via Diesel — dream rows + append-only runs.
 
 use agentd_core::WorkspaceId;
 use agentd_dreams::store::{DreamsStore, StoreError};
 use agentd_dreams::types::{Dream, DreamId, DreamRun};
 use async_trait::async_trait;
-use sqlx::types::Json;
+use chrono::{DateTime, Utc};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::RunQueryDsl;
 
-use crate::{enum_str, sqlx_msg, PgBackend};
+use crate::schema::{dream_runs, dreams};
+use crate::{diesel_be, enum_str, pool_be, PgBackend};
 
-/// Postgres-backed dreams store.
+/// Postgres-backed dreams store (Diesel).
 #[derive(Debug, Clone)]
 pub struct PgDreamsStore {
     backend: PgBackend,
 }
 
 impl PgDreamsStore {
-    /// Wrap a pool.
+    /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
 }
 
-fn be(e: sqlx::Error) -> StoreError {
-    StoreError::Backend(sqlx_msg(e))
+fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
+    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
+    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = dreams)]
+struct NewDream {
+    workspace_id: String,
+    dream_id: String,
+    name: String,
+    status: String,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
+}
+
+#[derive(diesel::Insertable)]
+#[diesel(table_name = dream_runs)]
+struct NewRun {
+    workspace_id: String,
+    dream_id: String,
+    run_id: String,
+    created_at: DateTime<Utc>,
+    doc: serde_json::Value,
 }
 
 #[async_trait]
 impl DreamsStore for PgDreamsStore {
     async fn insert(&self, ws: &WorkspaceId, d: Dream) -> Result<(), StoreError> {
-        sqlx::query(
-            "insert into dreams (workspace_id, dream_id, name, status, created_at, doc)
-             values ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&ws.0)
-        .bind(d.id.as_str())
-        .bind(&d.name)
-        .bind(enum_str(&d.status))
-        .bind(d.created_at.as_datetime())
-        .bind(Json(&d))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::insert_into(dreams::table)
+            .values(NewDream {
+                workspace_id: ws.0.clone(),
+                dream_id: d.id.as_str().to_owned(),
+                name: d.name.clone(),
+                status: enum_str(&d.status),
+                created_at: d.created_at.as_datetime(),
+                doc: to_doc(&d)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
     async fn get(&self, ws: &WorkspaceId, id: &DreamId) -> Result<Dream, StoreError> {
-        let row: Option<(Json<Dream>,)> =
-            sqlx::query_as("select doc from dreams where workspace_id = $1 and dream_id = $2")
-                .bind(&ws.0)
-                .bind(id.as_str())
-                .fetch_optional(&self.backend.pool)
-                .await
-                .map_err(be)?;
-        row.map(|(d,)| d.0).ok_or(StoreError::NotFound)
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = dreams::table
+            .filter(dreams::workspace_id.eq(&ws.0))
+            .filter(dreams::dream_id.eq(id.as_str()))
+            .select(dreams::doc)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        parse(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn replace(&self, ws: &WorkspaceId, d: Dream) -> Result<(), StoreError> {
-        let affected = sqlx::query(
-            "update dreams set name = $3, status = $4, doc = $5
-             where workspace_id = $1 and dream_id = $2",
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            dreams::table
+                .filter(dreams::workspace_id.eq(&ws.0))
+                .filter(dreams::dream_id.eq(d.id.as_str())),
         )
-        .bind(&ws.0)
-        .bind(d.id.as_str())
-        .bind(&d.name)
-        .bind(enum_str(&d.status))
-        .bind(Json(&d))
-        .execute(&self.backend.pool)
+        .set((
+            dreams::name.eq(&d.name),
+            dreams::status.eq(enum_str(&d.status)),
+            dreams::doc.eq(to_doc(&d)?),
+        ))
+        .execute(&mut conn)
         .await
-        .map_err(be)?
-        .rows_affected();
+        .map_err(diesel_be)?;
         if affected == 0 {
             return Err(StoreError::NotFound);
         }
@@ -76,52 +107,54 @@ impl DreamsStore for PgDreamsStore {
     }
 
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Dream>, StoreError> {
-        let rows: Vec<(Json<Dream>,)> = sqlx::query_as(
-            "select doc from dreams where workspace_id = $1 order by created_at desc",
-        )
-        .bind(&ws.0)
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = dreams::table
+            .filter(dreams::workspace_id.eq(&ws.0))
+            .order(dreams::created_at.desc())
+            .select(dreams::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DreamRun) -> Result<(), StoreError> {
-        let exists: Option<(i32,)> =
-            sqlx::query_as("select 1 from dreams where workspace_id = $1 and dream_id = $2")
-                .bind(&ws.0)
-                .bind(run.dream_id.as_str())
-                .fetch_optional(&self.backend.pool)
-                .await
-                .map_err(be)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let exists: Option<String> = dreams::table
+            .filter(dreams::workspace_id.eq(&ws.0))
+            .filter(dreams::dream_id.eq(run.dream_id.as_str()))
+            .select(dreams::dream_id)
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
         if exists.is_none() {
             return Err(StoreError::NotFound);
         }
-        sqlx::query(
-            "insert into dream_runs (workspace_id, dream_id, run_id, created_at, doc)
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(&ws.0)
-        .bind(run.dream_id.as_str())
-        .bind(run.id.as_str())
-        .bind(run.created_at.as_datetime())
-        .bind(Json(&run))
-        .execute(&self.backend.pool)
-        .await
-        .map_err(be)?;
+        diesel::insert_into(dream_runs::table)
+            .values(NewRun {
+                workspace_id: ws.0.clone(),
+                dream_id: run.dream_id.as_str().to_owned(),
+                run_id: run.id.as_str().to_owned(),
+                created_at: run.created_at.as_datetime(),
+                doc: to_doc(&run)?,
+            })
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
         Ok(())
     }
 
     async fn runs(&self, ws: &WorkspaceId, id: &DreamId) -> Result<Vec<DreamRun>, StoreError> {
-        let rows: Vec<(Json<DreamRun>,)> = sqlx::query_as(
-            "select doc from dream_runs where workspace_id = $1 and dream_id = $2
-             order by seq desc",
-        )
-        .bind(&ws.0)
-        .bind(id.as_str())
-        .fetch_all(&self.backend.pool)
-        .await
-        .map_err(be)?;
-        Ok(rows.into_iter().map(|(d,)| d.0).collect())
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = dream_runs::table
+            .filter(dream_runs::workspace_id.eq(&ws.0))
+            .filter(dream_runs::dream_id.eq(id.as_str()))
+            .order(dream_runs::seq.desc())
+            .select(dream_runs::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse).collect()
     }
 }

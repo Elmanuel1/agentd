@@ -1,5 +1,5 @@
-//! Postgres implementations of the entity store traits (sqlx, runtime
-//! queries — no compile-time DB dependency, so `cargo build` stays offline).
+//! Postgres implementations of the entity store traits (Diesel typed DSL over
+//! `crate::schema`; the wire object lives in each table's `doc` jsonb column).
 
 pub mod agents;
 pub mod deployments;
