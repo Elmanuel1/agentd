@@ -56,7 +56,6 @@ pub fn build_router(state: AppState) -> Router {
         .layer(axum::Extension(state.vaults.clone()))
         .layer(axum::Extension(state.memories.clone()))
         .layer(axum::Extension(state.files.clone()))
-        .layer(axum::Extension(state.skills.clone()))
         .layer(axum::Extension(state.sessions.clone()))
         .layer(axum::Extension(state.deployments.clone()))
 }

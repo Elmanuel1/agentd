@@ -14,10 +14,9 @@ use agentd_environments::EnvironmentsService;
 use agentd_files::FilesService;
 use agentd_memory::MemoriesService;
 use agentd_sessions::SessionsService;
-use agentd_skills::SkillsService;
 use agentd_store_postgres::{
     PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgFilesStore, PgMemoryStore,
-    PgSessionsStore, PgSkillsStore, PgVaultsStore,
+    PgSessionsStore, PgVaultsStore,
 };
 use agentd_vaults::VaultsService;
 use parking_lot::RwLock;
@@ -76,8 +75,6 @@ pub struct AppState {
     pub memories: Arc<MemoriesService>,
     /// Files.
     pub files: Arc<FilesService>,
-    /// Skills.
-    pub skills: Arc<SkillsService>,
     /// Sessions.
     pub sessions: Arc<SessionsService>,
     /// Deployments.
@@ -94,7 +91,7 @@ impl AppState {
     /// Build the durable stack: every entity store is Postgres (records) + a
     /// shared object store (blobs/secrets). No in-memory state — replicas are
     /// interchangeable. `backend` is a live pool; `blobs` is one object store
-    /// reused across files/skills/memory-content/vault-secrets (distinct key
+    /// reused across files/memory-content/vault-secrets (distinct key
     /// prefixes). Only the key registry and model catalog stay in memory, both
     /// loaded from central config at boot.
     pub fn from_postgres(
@@ -122,10 +119,6 @@ impl AppState {
             backend.clone(),
             blobs.clone(),
         ))));
-        let skills = Arc::new(SkillsService::new(Arc::new(PgSkillsStore::new(
-            backend.clone(),
-            blobs.clone(),
-        ))));
         let sessions = Arc::new(SessionsService::new(
             Arc::new(PgSessionsStore::new(backend.clone())),
             Arc::new(RealSessionDeps {
@@ -149,7 +142,6 @@ impl AppState {
             vaults,
             memories,
             files,
-            skills,
             sessions,
             deployments,
         }

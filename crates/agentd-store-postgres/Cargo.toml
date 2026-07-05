@@ -12,7 +12,6 @@ agentd-deployments = { workspace = true }
 agentd-files = { workspace = true }
 agentd-environments = { workspace = true }
 agentd-vaults = { workspace = true }
-agentd-skills = { workspace = true }
 agentd-sessions = { workspace = true }
 agentd-dreams = { workspace = true }
 agentd-memory = { workspace = true }
@@ -30,7 +29,6 @@ diesel-async = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 agentd-blobs = { workspace = true }
-base64 = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }

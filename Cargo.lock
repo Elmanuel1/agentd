@@ -33,7 +33,6 @@ dependencies = [
  "agentd-memory",
  "agentd-scheduler",
  "agentd-sessions",
- "agentd-skills",
  "agentd-store-postgres",
  "agentd-vaults",
  "async-trait",
@@ -233,23 +232,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentd-skills"
-version = "0.1.0"
-dependencies = [
- "agentd-core",
- "async-trait",
- "axum",
- "base64",
- "http 1.4.2",
- "http-body-util",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower",
-]
-
-[[package]]
 name = "agentd-store-aws"
 version = "0.1.0"
 dependencies = [
@@ -282,11 +264,9 @@ dependencies = [
  "agentd-files",
  "agentd-memory",
  "agentd-sessions",
- "agentd-skills",
  "agentd-vaults",
  "async-trait",
  "axum",
- "base64",
  "bytes",
  "chrono",
  "diesel",

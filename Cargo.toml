@@ -7,7 +7,6 @@ members = [
     "crates/agentd-vaults",
     "crates/agentd-memory",
     "crates/agentd-files",
-    "crates/agentd-skills",
     "crates/agentd-sessions",
     "crates/agentd-deployments",
     "crates/agentd-dreams",
@@ -34,7 +33,6 @@ agentd-environments = { path = "crates/agentd-environments" }
 agentd-vaults = { path = "crates/agentd-vaults" }
 agentd-memory = { path = "crates/agentd-memory" }
 agentd-files = { path = "crates/agentd-files" }
-agentd-skills = { path = "crates/agentd-skills" }
 agentd-sessions = { path = "crates/agentd-sessions" }
 agentd-deployments = { path = "crates/agentd-deployments" }
 agentd-dreams = { path = "crates/agentd-dreams" }

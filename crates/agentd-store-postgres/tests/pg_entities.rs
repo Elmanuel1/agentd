@@ -1,4 +1,4 @@
-//! Integration tests for the V2 entity stores (environments, skills, vaults,
+//! Integration tests for the V2 entity stores (environments, vaults,
 //! memory, sessions) against a live Postgres + object store.
 //!
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`; blob-backed tests also need
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use agentd_blobs::{BlobStore, S3BlobStore};
 use agentd_core::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use agentd_store_postgres::{
-    PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgSkillsStore, PgVaultsStore,
+    PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgVaultsStore,
 };
 use serde_json::json;
 
@@ -90,43 +90,6 @@ async fn pg_environments_service_roundtrip() {
     assert!(svc.get(&ctx_org("other"), env.id.as_str()).await.is_err());
     svc.delete(&ctx, env.id.as_str()).await.unwrap();
     assert!(svc.get(&ctx, env.id.as_str()).await.is_err());
-}
-
-#[tokio::test]
-async fn pg_skills_binary_bundle_in_object_store() {
-    if !enabled() {
-        return;
-    }
-    let Some(blobs) = s3("skills").await else {
-        eprintln!("skipping skills (needs AGENTD_AWS_ENDPOINT)");
-        return;
-    };
-    use agentd_skills::SkillsService;
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    let svc = SkillsService::new(Arc::new(PgSkillsStore::new(backend().await, blobs)));
-    let ctx = ctx_ws(&uniq_ws("skills"));
-    let skill = svc
-        .create(
-            &ctx,
-            serde_json::from_value(json!({"display_name": "greeter", "description": "d"})).unwrap(),
-        )
-        .await
-        .unwrap();
-    // A real .skill/zip: PK\x03\x04 magic + a NUL byte — invalid UTF-8, which a
-    // String would have corrupted. Uploaded as base64.
-    let bundle: Vec<u8> = vec![0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0xfe, 0x01];
-    let v = svc
-        .create_version(
-            &ctx,
-            skill.id.as_str(),
-            serde_json::from_value(json!({"content": STANDARD.encode(&bundle)})).unwrap(),
-        )
-        .await
-        .unwrap();
-    // Bytes come back from object storage byte-for-byte identical.
-    let got = svc.get_version(&ctx, skill.id.as_str(), v.version).await.unwrap();
-    assert_eq!(got.content, bundle, "binary bundle round-trips uncorrupted");
 }
 
 #[tokio::test]
