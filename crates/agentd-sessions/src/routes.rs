@@ -59,6 +59,7 @@ pub fn router() -> Router {
             get(list_events).post(send_events),
         )
         .route("/v1/sessions/{id}/events/stream", get(stream_events))
+        .route("/v1/sessions/{id}/threads", get(list_threads))
 }
 
 async fn create(
@@ -93,6 +94,20 @@ async fn update(
     Json(body): Json<UpdateSessionRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.update(&ctx, &id, body).await?).into_response())
+}
+
+/// `GET /v1/sessions/{id}/threads` — multi-agent sub-threads. agentd runs
+/// single-agent sessions, so this is always `{data:[]}` (matching the live
+/// shape for non-multiagent sessions); 404s if the session is unknown.
+async fn list_threads(
+    Extension(svc): Extension<Arc<SessionsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response, RouteError> {
+    svc.get(&ctx, &id).await?;
+    let page = Pagination::from_params(&params)?;
+    Ok(Json(Page::paginate(Vec::<serde_json::Value>::new(), &page)).into_response())
 }
 
 async fn archive(
