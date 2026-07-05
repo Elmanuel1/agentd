@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -89,6 +89,7 @@ async fn list_stores(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     let page = Pagination::from_params(&params)?;
     Ok(Json(Page::paginate(svc.list_stores(&ctx).await?, &page)).into_response())
 }
@@ -132,6 +133,7 @@ async fn list_memories(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["path_prefix", "order_by", "depth"])?;
     let prefix = params.get("path_prefix").map(String::as_str);
     let order_by = params.get("order_by").map(String::as_str);
     let depth = params.get("depth").and_then(|d| d.parse::<u32>().ok());
@@ -144,6 +146,7 @@ async fn get_memory(
     Path((id, mid)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["view"])?;
     // Retrieve defaults to full view (content included).
     let view = view_of(&params, View::Full);
     Ok(Json(svc.get_memory(&ctx, &id, &mid, view).await?).into_response())
@@ -164,6 +167,7 @@ async fn delete_memory(
     Path((id, mid)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["expected_content_sha256"])?;
     let expected = params.get("expected_content_sha256").map(String::as_str);
     Ok(Json(svc.delete_memory(&ctx, &id, &mid, expected).await?).into_response())
 }
@@ -174,6 +178,7 @@ async fn list_versions(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["view", "memory_id", "limit", "page"])?;
     let view = view_of(&params, View::Basic);
     let memory_id = params.get("memory_id").map(String::as_str);
     let page = Pagination::from_params(&params)?;

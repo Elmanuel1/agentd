@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, IdPage, RequestId};
+use agentd_core::{reject_unknown_params, ApiError, AuthContext, IdPage, RequestId};
 use axum::extract::{Extension, Multipart, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -78,6 +78,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "after_id", "before_id", "scope_id"])?;
     // /v1/files is the shared Files API — it paginates with {has_more, first_id,
     // last_id} + after_id/before_id, NOT the managed-agents next_page cursor.
     let scope = params.get("scope_id").map(String::as_str);

@@ -140,6 +140,23 @@ impl<T> IdPage<T> {
     }
 }
 
+/// Reject any query param not in `allowed`, matching the live 400
+/// `Failed to parse request body: unknown field "X"`. Callers pass exactly the
+/// params they read, so a valid param is never rejected.
+pub fn reject_unknown_params(
+    params: &HashMap<String, String>,
+    allowed: &[&str],
+) -> Result<(), ApiError> {
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(ApiError::invalid_request(format!(
+                "Failed to parse request body: unknown field \"{key}\""
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn encode_cursor(offset: usize) -> String {
     format!("page_{}", URL_SAFE_NO_PAD.encode(offset.to_string()))
 }

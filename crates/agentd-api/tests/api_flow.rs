@@ -365,6 +365,13 @@ async fn list_pagination_matches_live_cursor_shape() {
         err["error"]["message"],
         "limit: value must be greater than or equal to 1 and less than or equal to 100"
     );
+    // Unknown query param → live 400 "unknown field" (agentd allowlists limit/page).
+    let (st, err) = call(&app, "GET", "/v1/agents?bogusparam=1", None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err["error"]["message"],
+        "Failed to parse request body: unknown field \"bogusparam\""
+    );
 }
 
 #[tokio::test]

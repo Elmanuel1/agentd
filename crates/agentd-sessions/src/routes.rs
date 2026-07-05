@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
 use axum::extract::{Extension, Path, Query};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
@@ -75,6 +75,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     let page = Pagination::from_params(&params)?;
     Ok(Json(Page::paginate(svc.list(&ctx).await?, &page)).into_response())
 }
@@ -105,6 +106,7 @@ async fn list_threads(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     svc.get(&ctx, &id).await?;
     let page = Pagination::from_params(&params)?;
     Ok(Json(Page::paginate(Vec::<serde_json::Value>::new(), &page)).into_response())
@@ -132,6 +134,7 @@ async fn list_events(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     let page = Pagination::from_params(&params)?;
     Ok(Json(Page::paginate(svc.list_events(&ctx, &id).await?, &page)).into_response())
 }

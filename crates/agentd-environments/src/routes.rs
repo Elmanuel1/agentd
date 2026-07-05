@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -56,6 +56,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     let page = Pagination::from_params(&params)?;
     Ok(Json(Page::paginate(svc.list(&ctx).await?, &page)).into_response())
 }

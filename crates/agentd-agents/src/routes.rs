@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -66,6 +66,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     let page = Pagination::from_params(&params)?;
     let agents = svc.list(&ctx).await?;
     Ok(Json(Page::paginate(agents, &page)).into_response())
@@ -77,6 +78,7 @@ async fn get_one(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["version"])?;
     let version = params.get("version").and_then(|v| v.parse::<u64>().ok());
     let agent = svc.get(&ctx, &id, version).await?;
     Ok(Json(agent).into_response())
@@ -107,6 +109,7 @@ async fn versions(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
+    reject_unknown_params(&params, &["limit", "page"])?;
     let page = Pagination::from_params(&params)?;
     let list = svc.versions(&ctx, &id).await?;
     Ok(Json(Page::paginate(list, &page)).into_response())
