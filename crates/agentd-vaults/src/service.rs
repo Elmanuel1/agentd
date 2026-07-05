@@ -187,14 +187,17 @@ impl VaultsService {
             )));
         }
         let now = Timestamp::now();
+        req.metadata.validate(MetadataPolicy::capped())?;
         let cred = Credential {
             archived_at: None,
             auth: auth.to_wire(),
             created_at: now,
             display_name,
             id: CredentialId::generate(),
+            metadata: req.metadata,
             tag: CredentialTag::Credential,
             updated_at: now,
+            vault_id: vault_id.as_str().to_owned(),
         };
         self.store
             .insert_credential(

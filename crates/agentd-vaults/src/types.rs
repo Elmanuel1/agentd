@@ -147,6 +147,25 @@ pub enum CredentialNetworking {
     },
 }
 
+/// Where an env-var credential is injected on egress requests. Live default is
+/// both `body` and `header` true.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjectionLocation {
+    /// Inject into the request body.
+    pub body: bool,
+    /// Inject into request headers.
+    pub header: bool,
+}
+
+impl Default for InjectionLocation {
+    fn default() -> Self {
+        Self {
+            body: true,
+            header: true,
+        }
+    }
+}
+
 /// Credential auth — **input** shape (secrets flow in).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -175,8 +194,11 @@ pub enum CredentialAuthInput {
         secret_name: String,
         /// The secret value (write-only).
         secret_value: SecretString,
-        /// Host restriction.
-        networking: Option<CredentialNetworking>,
+        /// Host restriction — REQUIRED by the live API.
+        networking: CredentialNetworking,
+        /// Where to inject; defaults to body + header.
+        #[serde(default)]
+        injection_location: Option<InjectionLocation>,
     },
 }
 
@@ -210,10 +232,12 @@ impl CredentialAuthInput {
             Self::EnvironmentVariable {
                 secret_name,
                 networking,
+                injection_location,
                 ..
             } => CredentialAuthWire::EnvironmentVariable {
                 secret_name: secret_name.clone(),
                 networking: networking.clone(),
+                injection_location: injection_location.clone().unwrap_or_default(),
             },
         }
     }
@@ -249,11 +273,13 @@ impl CredentialAuthInput {
                 secret_name,
                 secret_value,
                 networking,
+                injection_location,
             } => serde_json::json!({
                 "type": "environment_variable",
                 "secret_name": secret_name,
                 "secret_value": secret_value.expose(),
                 "networking": networking,
+                "injection_location": injection_location,
             }),
         }
         .to_string()
@@ -311,8 +337,10 @@ pub enum CredentialAuthWire {
     EnvironmentVariable {
         /// Variable name key.
         secret_name: String,
-        /// Host restriction.
-        networking: Option<CredentialNetworking>,
+        /// Host restriction (always present on the wire).
+        networking: CredentialNetworking,
+        /// Where the value is injected on egress.
+        injection_location: InjectionLocation,
     },
 }
 
@@ -337,11 +365,15 @@ pub struct Credential {
     pub display_name: String,
     /// `cred_…`.
     pub id: CredentialId,
+    /// User metadata.
+    pub metadata: Metadata,
     /// Always `"credential"`.
     #[serde(rename = "type")]
     pub tag: CredentialTag,
     /// Updated.
     pub updated_at: Timestamp,
+    /// Parent vault.
+    pub vault_id: String,
 }
 
 /// `POST /v1/vaults/{id}/credentials` body.
@@ -351,6 +383,9 @@ pub struct CreateCredentialRequest {
     pub display_name: Option<String>,
     /// Required.
     pub auth: Option<CredentialAuthInput>,
+    /// Optional user metadata.
+    #[serde(default)]
+    pub metadata: Metadata,
 }
 
 /// `POST /v1/vaults/{vid}/credentials/{cid}` body — rotation only: secret
@@ -414,7 +449,7 @@ mod tests {
         .unwrap();
         assert_eq!(oauth.unique_key(), "https://a/mcp");
         let env: CredentialAuthInput = serde_json::from_str(
-            r#"{"type":"environment_variable","secret_name":"TWILIO_API_KEY","secret_value":"sk"}"#,
+            r#"{"type":"environment_variable","secret_name":"TWILIO_API_KEY","secret_value":"sk","networking":{"type":"unrestricted"}}"#,
         )
         .unwrap();
         assert_eq!(env.unique_key(), "TWILIO_API_KEY");

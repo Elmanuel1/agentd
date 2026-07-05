@@ -154,12 +154,19 @@ async fn pg_vaults_secret_sealed_to_object_store() {
             vault.id.as_str(),
             serde_json::from_value(json!({
                 "display_name": "c",
-                "auth": {"type": "environment_variable", "secret_name": "API_KEY", "secret_value": "s3cr3t"}
+                "auth": {"type": "environment_variable", "secret_name": "API_KEY",
+                         "secret_value": "s3cr3t", "networking": {"type": "unrestricted"}}
             }))
             .unwrap(),
         )
         .await
         .unwrap();
+    // Live conformance: credential carries vault_id + metadata, and the env-var
+    // wire auth includes injection_location {body,header}.
+    let wire = serde_json::to_value(&cred).unwrap();
+    assert_eq!(wire["vault_id"], vault.id.as_str());
+    assert_eq!(wire["auth"]["injection_location"], json!({"body": true, "header": true}));
+    assert_eq!(wire["auth"]["networking"]["type"], "unrestricted");
     // The secret is never in the DB — it round-trips through the secret store.
     let stored = store
         .get_credential(&ctx.workspace, &vault.id, &cred.id)
