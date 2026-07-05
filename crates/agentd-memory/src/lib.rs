@@ -34,5 +34,5 @@ pub mod store;
 pub mod types;
 
 pub use service::MemoriesService;
-pub use store::{InMemoryMemoryStore, MemoryPersistence, VersionSelector};
+pub use store::{MemoryPersistence, VersionSelector};
 pub use types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};

@@ -27,5 +27,5 @@ pub mod store;
 pub mod types;
 
 pub use service::{DeploymentDeps, DeploymentsService};
-pub use store::{DeploymentsStore, InMemoryDeploymentsStore};
+pub use store::DeploymentsStore;
 pub use types::{Deployment, DeploymentId, DeploymentRun, DeploymentRunId, RunError};

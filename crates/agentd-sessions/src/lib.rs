@@ -28,5 +28,5 @@ pub mod types;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
 pub use service::{EngineContract, SessionDeps, SessionsService};
-pub use store::{InMemorySessionsStore, SessionsStore};
+pub use store::SessionsStore;
 pub use types::{Session, SessionId, SessionStatus};

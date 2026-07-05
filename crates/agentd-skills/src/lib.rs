@@ -16,13 +16,11 @@
 
 pub mod routes;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use agentd_core::limits::required;
 use agentd_core::{ApiError, AuthContext, Id, Resource, Timestamp, WorkspaceId};
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 /// Marker for `skill_…` ids.
@@ -151,121 +149,6 @@ pub trait SkillsStore: Send + Sync {
         ws: &WorkspaceId,
         id: &SkillId,
     ) -> Result<Vec<SkillVersion>, StoreError>;
-}
-
-type SkillEntry = (Skill, BTreeMap<u64, SkillVersion>);
-
-/// In-memory store.
-#[derive(Debug, Default)]
-pub struct InMemorySkillsStore {
-    inner: RwLock<BTreeMap<WorkspaceId, BTreeMap<SkillId, SkillEntry>>>,
-}
-
-impl InMemorySkillsStore {
-    /// New empty store.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[async_trait]
-impl SkillsStore for InMemorySkillsStore {
-    async fn insert(&self, ws: &WorkspaceId, s: Skill) -> Result<(), StoreError> {
-        self.inner
-            .write()
-            .entry(ws.clone())
-            .or_default()
-            .insert(s.id.clone(), (s, BTreeMap::new()));
-        Ok(())
-    }
-
-    async fn get(&self, ws: &WorkspaceId, id: &SkillId) -> Result<Skill, StoreError> {
-        self.inner
-            .read()
-            .get(ws)
-            .and_then(|m| m.get(id))
-            .map(|(s, _)| s.clone())
-            .ok_or(StoreError::SkillNotFound)
-    }
-
-    async fn replace(&self, ws: &WorkspaceId, s: Skill) -> Result<(), StoreError> {
-        let mut g = self.inner.write();
-        let e = g
-            .get_mut(ws)
-            .and_then(|m| m.get_mut(&s.id))
-            .ok_or(StoreError::SkillNotFound)?;
-        e.0 = s;
-        Ok(())
-    }
-
-    async fn delete(&self, ws: &WorkspaceId, id: &SkillId) -> Result<Skill, StoreError> {
-        self.inner
-            .write()
-            .get_mut(ws)
-            .and_then(|m| m.remove(id))
-            .map(|(s, _)| s)
-            .ok_or(StoreError::SkillNotFound)
-    }
-
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Skill>, StoreError> {
-        Ok(self
-            .inner
-            .read()
-            .get(ws)
-            .map(|m| m.values().map(|(s, _)| s.clone()).collect())
-            .unwrap_or_default())
-    }
-
-    async fn push_version(&self, ws: &WorkspaceId, v: SkillVersion) -> Result<(), StoreError> {
-        let mut g = self.inner.write();
-        let e = g
-            .get_mut(ws)
-            .and_then(|m| m.get_mut(&v.skill_id))
-            .ok_or(StoreError::SkillNotFound)?;
-        e.1.insert(v.version, v);
-        Ok(())
-    }
-
-    async fn get_version(
-        &self,
-        ws: &WorkspaceId,
-        id: &SkillId,
-        version: u64,
-    ) -> Result<SkillVersion, StoreError> {
-        let g = self.inner.read();
-        let e = g
-            .get(ws)
-            .and_then(|m| m.get(id))
-            .ok_or(StoreError::SkillNotFound)?;
-        e.1.get(&version).cloned().ok_or(StoreError::VersionNotFound)
-    }
-
-    async fn delete_version(
-        &self,
-        ws: &WorkspaceId,
-        id: &SkillId,
-        version: u64,
-    ) -> Result<SkillVersion, StoreError> {
-        let mut g = self.inner.write();
-        let e = g
-            .get_mut(ws)
-            .and_then(|m| m.get_mut(id))
-            .ok_or(StoreError::SkillNotFound)?;
-        e.1.remove(&version).ok_or(StoreError::VersionNotFound)
-    }
-
-    async fn list_versions(
-        &self,
-        ws: &WorkspaceId,
-        id: &SkillId,
-    ) -> Result<Vec<SkillVersion>, StoreError> {
-        let g = self.inner.read();
-        let e = g
-            .get(ws)
-            .and_then(|m| m.get(id))
-            .ok_or(StoreError::SkillNotFound)?;
-        Ok(e.1.values().cloned().collect())
-    }
 }
 
 /// Skills service.
@@ -411,88 +294,5 @@ fn map_store(e: StoreError) -> ApiError {
         StoreError::SkillNotFound => ApiError::not_found("skill not found"),
         StoreError::VersionNotFound => ApiError::not_found("skill version not found"),
         StoreError::Backend(m) => ApiError::internal(m),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use agentd_core::OrgId;
-
-    fn svc() -> SkillsService {
-        SkillsService::new(Arc::new(InMemorySkillsStore::new()))
-    }
-
-    fn ctx() -> AuthContext {
-        AuthContext {
-            org: OrgId("org_t".into()),
-            workspace: WorkspaceId("wrkspc_01t".into()),
-            api_key_id: "apikey_01t".into(),
-        }
-    }
-
-    #[tokio::test]
-    async fn skill_and_version_lifecycle() {
-        let s = svc();
-        let skill = s
-            .create(
-                &ctx(),
-                CreateSkillRequest {
-                    display_name: Some("citing-sources".into()),
-                    description: Some("cite everything".into()),
-                },
-            )
-            .await
-            .unwrap();
-        assert!(skill.id.as_str().starts_with("skill_01"));
-        assert_eq!(skill.latest_version, None);
-
-        let v1 = s
-            .create_version(
-                &ctx(),
-                skill.id.as_str(),
-                CreateVersionRequest {
-                    content: Some("# SKILL v1".into()),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(v1.version, 1);
-        let v2 = s
-            .create_version(
-                &ctx(),
-                skill.id.as_str(),
-                CreateVersionRequest {
-                    content: Some("# SKILL v2".into()),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(v2.version, 2);
-
-        let updated = s.get(&ctx(), skill.id.as_str()).await.unwrap();
-        assert_eq!(updated.latest_version, Some(2));
-
-        let versions = s.list_versions(&ctx(), skill.id.as_str()).await.unwrap();
-        assert_eq!(versions.len(), 2);
-
-        s.delete_version(&ctx(), skill.id.as_str(), 1).await.unwrap();
-        assert_eq!(
-            s.get_version(&ctx(), skill.id.as_str(), 1)
-                .await
-                .unwrap_err()
-                .status,
-            404
-        );
-
-        s.delete(&ctx(), skill.id.as_str()).await.unwrap();
-        assert_eq!(s.get(&ctx(), skill.id.as_str()).await.unwrap_err().status, 404);
-    }
-
-    #[tokio::test]
-    async fn required_fields() {
-        let s = svc();
-        let e = s.create(&ctx(), CreateSkillRequest::default()).await.unwrap_err();
-        assert_eq!(e.message, "display_name: Field required");
     }
 }

@@ -25,5 +25,5 @@ pub mod store;
 pub mod types;
 
 pub use service::EnvironmentsService;
-pub use store::{EnvironmentsStore, InMemoryEnvironmentsStore};
+pub use store::EnvironmentsStore;
 pub use types::{Environment, EnvironmentConfig, EnvironmentId};

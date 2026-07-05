@@ -21,5 +21,5 @@ pub mod store;
 pub mod types;
 
 pub use service::AgentsService;
-pub use store::{AgentsStore, InMemoryAgentsStore};
+pub use store::AgentsStore;
 pub use types::{Agent, AgentConfig, AgentRef, AgentSnapshot, ModelSpec};

@@ -26,5 +26,5 @@ pub mod store;
 pub mod types;
 
 pub use service::VaultsService;
-pub use store::{InMemoryVaultsStore, VaultsStore};
+pub use store::VaultsStore;
 pub use types::{Credential, SecretString, Vault, VaultId};
