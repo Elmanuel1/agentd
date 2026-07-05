@@ -68,11 +68,14 @@ pub struct Skill {
     pub updated_at: Timestamp,
 }
 
-/// One immutable skill version.
+/// One immutable skill version. The bundle is arbitrary bytes (a `.skill`/zip
+/// archive), stored in object storage; on the wire it is base64 (binary-safe
+/// inside JSON — a raw zip is not valid UTF-8).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillVersion {
-    /// SKILL.md content.
-    pub content: String,
+    /// The skill bundle bytes (base64 on the wire).
+    #[serde(with = "b64")]
+    pub content: Vec<u8>,
     /// Created.
     pub created_at: Timestamp,
     /// Parent skill.
@@ -82,6 +85,31 @@ pub struct SkillVersion {
     pub tag: SkillVersionTag,
     /// Version number (1-based).
     pub version: u64,
+}
+
+/// base64 (standard) serde for the binary bundle — keeps arbitrary bytes safe
+/// inside JSON.
+mod b64 {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        STANDARD.decode(s.as_bytes()).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Decode a base64 bundle from a request (binary-safe).
+pub(crate) fn decode_bundle(input: &str) -> Result<Vec<u8>, ApiError> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    STANDARD
+        .decode(input.as_bytes())
+        .map_err(|_| ApiError::invalid_request("content: must be base64-encoded bundle bytes"))
 }
 
 /// `POST /v1/skills` body.
@@ -96,7 +124,7 @@ pub struct CreateSkillRequest {
 /// `POST /v1/skills/{id}/versions` body.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CreateVersionRequest {
-    /// Required — the SKILL.md content.
+    /// Required — the base64-encoded skill bundle (`.skill`/zip) bytes.
     pub content: Option<String>,
 }
 
@@ -221,7 +249,7 @@ impl SkillsService {
     ) -> Result<SkillVersion, ApiError> {
         let id = parse_id(raw_id)?;
         let mut skill = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        let content = required("content", req.content)?;
+        let content = decode_bundle(&required("content", req.content)?)?;
         let next = skill.latest_version.unwrap_or(0) + 1;
         let v = SkillVersion {
             content,

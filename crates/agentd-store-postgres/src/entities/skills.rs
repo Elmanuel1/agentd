@@ -176,12 +176,12 @@ impl SkillsStore for PgSkillsStore {
         self.blobs
             .put(
                 &Self::key(ws, &v.skill_id, v.version),
-                Bytes::from(v.content.clone().into_bytes()),
+                Bytes::from(v.content.clone()),
             )
             .await
             .map_err(blob_be)?;
         let mut meta = v.clone();
-        meta.content = String::new();
+        meta.content = Vec::new();
         diesel::insert_into(skill_versions::table)
             .values(NewSkillVersion {
                 workspace_id: ws.0.clone(),
@@ -214,7 +214,7 @@ impl SkillsStore for PgSkillsStore {
             .map_err(diesel_be)?;
         let mut v: SkillVersion = parse(doc.ok_or(StoreError::VersionNotFound)?)?;
         let bytes = self.blobs.get(&Self::key(ws, id, version)).await.map_err(blob_be)?;
-        v.content = String::from_utf8_lossy(&bytes).into_owned();
+        v.content = bytes.to_vec();
         Ok(v)
     }
 
