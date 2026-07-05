@@ -181,15 +181,8 @@ impl DreamsService {
             // Live content at the candidate's path (the gate's comparison target).
             let live = self
                 .memories
-                .list_memories(
-                    ctx,
-                    &dream.memory_store_id,
-                    Some(&candidate.path),
-                    agentd_memory::service::View::Full,
-                )
-                .await?
-                .into_iter()
-                .find(|m| m.path == candidate.path);
+                .content_at_path(ctx, &dream.memory_store_id, &candidate.path)
+                .await?;
 
             // 2. Review against live memory.
             let verdict = self

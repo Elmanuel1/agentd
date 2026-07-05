@@ -113,6 +113,45 @@ pub struct Memory {
     pub updated_at: Timestamp,
 }
 
+/// Constant `"type":"memory_prefix"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPrefixTag {
+    /// Always `memory_prefix`.
+    MemoryPrefix,
+}
+
+/// A collapsed sub-directory in a `depth`-limited memory listing — live shape
+/// `{"path":"/notes/","type":"memory_prefix"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryPrefix {
+    /// The directory path, trailing-slash terminated.
+    pub path: String,
+    /// Always `"memory_prefix"`.
+    #[serde(rename = "type")]
+    pub tag: MemoryPrefixTag,
+}
+
+/// One entry in a memory listing: a leaf `memory` or a collapsed
+/// `memory_prefix`. Serialized untagged (each variant carries its own `type`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum MemoryListItem {
+    /// A leaf memory (content omitted in listings).
+    Memory(Box<Memory>),
+    /// A collapsed sub-directory.
+    Prefix(MemoryPrefix),
+}
+
+/// The list-memories response envelope — live shape `{data, prefixes}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryListPage {
+    /// Memories and collapsed prefixes at this depth.
+    pub data: Vec<MemoryListItem>,
+    /// Always `[]` in the current API (collapsed dirs live in `data`).
+    pub prefixes: Vec<MemoryPrefix>,
+}
+
 /// The version operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

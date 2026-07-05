@@ -174,6 +174,89 @@ async fn pg_vaults_secret_sealed_to_object_store() {
 }
 
 #[tokio::test]
+async fn pg_memory_list_directory_browse_matches_live() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memlist").await else {
+        return;
+    };
+    use agentd_memory::MemoriesService;
+    let svc = MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs)));
+    let ctx = ctx_ws(&uniq_ws("memlist"));
+    let ms = svc
+        .create_store(&ctx, serde_json::from_value(json!({"name": "m", "description": ""})).unwrap())
+        .await
+        .unwrap();
+    for p in ["/a.md", "/notes/b.md", "/notes/sub/c.md", "/rules/d.md"] {
+        svc.create_memory(
+            &ctx,
+            ms.id.as_str(),
+            serde_json::from_value(json!({"path": p, "content": "x"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // depth=1, order_by=path → leaf /a.md + collapsed /notes/ and /rules/,
+    // exactly as the live API returns (probed 2026-07-05).
+    let page = svc
+        .list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(1))
+        .await
+        .unwrap();
+    let v = serde_json::to_value(&page).unwrap();
+    let shapes: Vec<(&str, &str)> = v["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["path"].as_str().unwrap(), d["type"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        shapes,
+        vec![
+            ("/a.md", "memory"),
+            ("/notes/", "memory_prefix"),
+            ("/rules/", "memory_prefix")
+        ]
+    );
+    assert!(v["prefixes"].as_array().unwrap().is_empty(), "prefixes is []");
+    assert!(v["data"][0].get("content").is_none(), "list omits content");
+
+    // depth=2 expands one more level, collapsing /notes/sub/.
+    let page2 = svc
+        .list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(2))
+        .await
+        .unwrap();
+    let v2 = serde_json::to_value(&page2).unwrap();
+    let shapes2: Vec<(&str, &str)> = v2["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| (d["path"].as_str().unwrap(), d["type"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        shapes2,
+        vec![
+            ("/a.md", "memory"),
+            ("/notes/b.md", "memory"),
+            ("/notes/sub/", "memory_prefix"),
+            ("/rules/d.md", "memory")
+        ]
+    );
+
+    // invalid order_by → the exact live 400 message.
+    let err = svc
+        .list_memories(&ctx, ms.id.as_str(), None, Some("bogus"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.message, "order_by must be one of: created_at, path");
+
+    // no depth → flat list of all memories (no prefixes).
+    let flat = svc.list_memories(&ctx, ms.id.as_str(), None, None, None).await.unwrap();
+    assert_eq!(flat.data.len(), 4);
+}
+
+#[tokio::test]
 async fn pg_memory_versioned_with_content_and_rollback() {
     if !enabled() {
         return;

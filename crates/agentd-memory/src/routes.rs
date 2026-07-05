@@ -130,12 +130,10 @@ async fn list_memories(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let view = view_of(&params, View::Basic);
     let prefix = params.get("path_prefix").map(String::as_str);
-    Ok(Json(Page::of(
-        svc.list_memories(&ctx, &id, prefix, view).await?,
-    ))
-    .into_response())
+    let order_by = params.get("order_by").map(String::as_str);
+    let depth = params.get("depth").and_then(|d| d.parse::<u32>().ok());
+    Ok(Json(svc.list_memories(&ctx, &id, prefix, order_by, depth).await?).into_response())
 }
 
 async fn get_memory(
