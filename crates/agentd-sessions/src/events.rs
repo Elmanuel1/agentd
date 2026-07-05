@@ -300,8 +300,10 @@ impl EventPayload {
 pub struct Event {
     /// `sevt_…`.
     pub id: EventId,
-    /// Null until the agent consumes the event (client-sent events appear
-    /// twice on the stream: queued then processed).
+    /// Set when the agent consumes the event. Live OMITS this field until the
+    /// event is processed (client-sent events appear twice on the stream:
+    /// queued without it, then processed with it).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub processed_at: Option<Timestamp>,
     /// The typed payload, flattened beside the envelope.
     #[serde(flatten)]
@@ -366,9 +368,9 @@ mod tests {
 
     #[test]
     fn user_message_roundtrip() {
+        // Live omits processed_at on a queued event (added once processed).
         let raw = serde_json::json!({
             "id": "sevt_01AbCdEfGhIjKlMnOpQrStUv",
-            "processed_at": null,
             "type": "user.message",
             "content": [{"type":"text","text":"Summarize the repo README"}]
         });
@@ -385,7 +387,6 @@ mod tests {
         ] {
             let raw = serde_json::json!({
                 "id": "sevt_01AbCdEfGhIjKlMnOpQrStUv",
-                "processed_at": null,
                 "type": "user.define_outcome",
                 "description": "Build the model",
                 "rubric": rubric,

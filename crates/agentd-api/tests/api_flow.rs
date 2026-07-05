@@ -200,7 +200,8 @@ async fn full_stack_agent_env_session_flow() {
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(sent["data"][0]["type"], "user.message");
-    assert_eq!(sent["data"][0]["processed_at"], serde_json::Value::Null);
+    // Live: a queued event omits processed_at entirely (added once processed).
+    assert!(sent["data"][0].get("processed_at").is_none());
     let (st, listed) = call(&app, "GET", &format!("/v1/sessions/{sid}/events"), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 1);
