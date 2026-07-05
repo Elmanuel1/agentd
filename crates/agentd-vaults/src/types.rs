@@ -195,8 +195,10 @@ pub enum CredentialAuthInput {
         secret_name: String,
         /// The secret value (write-only).
         secret_value: SecretString,
-        /// Host restriction — REQUIRED by the live API.
-        networking: CredentialNetworking,
+        /// Host restriction. Required by the live API — validated in the service
+        /// so the error is the exact `auth.networking: Field required`.
+        #[serde(default)]
+        networking: Option<CredentialNetworking>,
         /// Where to inject; defaults to body + header.
         #[serde(default)]
         injection_location: Option<InjectionLocation>,
@@ -237,7 +239,9 @@ impl CredentialAuthInput {
                 ..
             } => CredentialAuthWire::EnvironmentVariable {
                 secret_name: secret_name.clone(),
-                networking: networking.clone(),
+                // Service validated Some before this projection; default is
+                // defensive-only.
+                networking: networking.clone().unwrap_or(CredentialNetworking::Unrestricted),
                 injection_location: injection_location.clone().unwrap_or_default(),
             },
         }

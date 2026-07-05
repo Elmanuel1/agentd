@@ -166,6 +166,7 @@ impl VaultsService {
         }
         let display_name = required("display_name", req.display_name)?;
         let auth = required("auth", req.auth)?;
+        validate_auth(&auth)?;
         let existing = self
             .store
             .list_credentials(&ctx.workspace, &vault_id)
@@ -266,6 +267,7 @@ impl VaultsService {
             ));
         }
         if let Some(new_auth) = req.auth {
+            validate_auth(&new_auth)?;
             let old_key = stored
                 .auth
                 .as_ref()
@@ -359,6 +361,19 @@ fn parse_pair(v: &str, c: &str) -> Result<(VaultId, CredentialId), ApiError> {
     let vid = parse_vault_id(v)?;
     let cid = CredentialId::parse(c).map_err(|e| ApiError::invalid_request(e.to_string()))?;
     Ok((vid, cid))
+}
+
+/// Live: env-var credentials REQUIRE `auth.networking` — a missing one is
+/// `auth.networking: Field required` (an exact nested field-path message serde
+/// can't produce, so it's validated here).
+fn validate_auth(auth: &crate::types::CredentialAuthInput) -> Result<(), ApiError> {
+    if let crate::types::CredentialAuthInput::EnvironmentVariable {
+        networking: None, ..
+    } = auth
+    {
+        return Err(ApiError::invalid_request("auth.networking: Field required"));
+    }
+    Ok(())
 }
 
 fn map_store(e: StoreError) -> ApiError {
