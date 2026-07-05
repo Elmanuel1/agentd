@@ -168,6 +168,7 @@ pub struct Environment {
 
 /// `POST /v1/environments` body (permissive; validated in the service).
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateEnvironmentRequest {
     /// Required.
     pub name: Option<String>,
@@ -182,6 +183,7 @@ pub struct CreateEnvironmentRequest {
 
 /// `POST /v1/environments/{id}` body.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateEnvironmentRequest {
     /// Replace name.
     pub name: Option<String>,

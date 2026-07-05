@@ -217,6 +217,7 @@ pub struct DeploymentRun {
 
 /// `POST /v1/deployments` body.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateDeploymentRequest {
     /// Required.
     pub name: Option<String>,

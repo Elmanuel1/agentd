@@ -210,6 +210,7 @@ pub enum Precondition {
 
 /// `POST /v1/memory_stores` body.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateStoreRequest {
     /// Required.
     pub name: Option<String>,
@@ -222,6 +223,7 @@ pub struct CreateStoreRequest {
 
 /// `POST /v1/memory_stores/{id}/memories` body.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateMemoryRequest {
     /// Required — unique path.
     pub path: Option<String>,
@@ -232,6 +234,7 @@ pub struct CreateMemoryRequest {
 /// `POST /v1/memory_stores/{sid}/memories/{mid}` body (update via POST —
 /// live-verified; PATCH is 405).
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateMemoryRequest {
     /// New content.
     pub content: Option<String>,

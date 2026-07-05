@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{
+    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+};
 use axum::extract::{Extension, Path, Query};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
@@ -39,6 +41,7 @@ impl IntoResponse for RouteError {
 
 /// `POST …/events` body: `{"events":[…]}`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendEventsBody {
     /// The events to enqueue.
     #[serde(default)]
@@ -65,7 +68,7 @@ pub fn router() -> Router {
 async fn create(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<CreateSessionRequest>,
+    ApiJson(body): ApiJson<CreateSessionRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.create(&ctx, body).await?).into_response())
 }
@@ -92,7 +95,7 @@ async fn update(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateSessionRequest>,
+    ApiJson(body): ApiJson<UpdateSessionRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.update(&ctx, &id, body).await?).into_response())
 }
@@ -143,7 +146,7 @@ async fn send_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<SendEventsBody>,
+    ApiJson(body): ApiJson<SendEventsBody>,
 ) -> Result<Response, RouteError> {
     Ok(Json(Page::of(svc.send_events(&ctx, &id, body.events).await?)).into_response())
 }

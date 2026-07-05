@@ -287,6 +287,7 @@ pub enum SessionResourceInput {
 
 /// `POST /v1/sessions` body.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
     /// Required agent reference.
     pub agent: Option<AgentRefInput>,
@@ -308,6 +309,7 @@ pub struct CreateSessionRequest {
 /// `POST /v1/sessions/{id}` body — only `title`/`metadata` here (agent-config
 /// overrides are a later surface).
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateSessionRequest {
     /// Replace title.
     pub title: Option<String>,

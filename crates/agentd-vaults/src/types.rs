@@ -91,6 +91,7 @@ pub struct Vault {
 
 /// `POST /v1/vaults` body.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateVaultRequest {
     /// Required.
     pub display_name: Option<String>,
@@ -378,6 +379,7 @@ pub struct Credential {
 
 /// `POST /v1/vaults/{id}/credentials` body.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateCredentialRequest {
     /// Required.
     pub display_name: Option<String>,
@@ -391,6 +393,7 @@ pub struct CreateCredentialRequest {
 /// `POST /v1/vaults/{vid}/credentials/{cid}` body — rotation only: secret
 /// values and display_name can change; keys are immutable.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateCredentialRequest {
     /// Replace display name.
     pub display_name: Option<String>,
@@ -400,6 +403,7 @@ pub struct UpdateCredentialRequest {
 
 /// `POST /v1/vaults/{id}` body.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateVaultRequest {
     /// Replace display name.
     pub display_name: Option<String>,

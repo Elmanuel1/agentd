@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{
+    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -79,7 +81,7 @@ pub fn router() -> Router {
 async fn create_store(
     Extension(svc): Extension<Arc<MemoriesService>>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<CreateStoreRequest>,
+    ApiJson(body): ApiJson<CreateStoreRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.create_store(&ctx, body).await?).into_response())
 }
@@ -122,7 +124,7 @@ async fn create_memory(
     Extension(svc): Extension<Arc<MemoriesService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<CreateMemoryRequest>,
+    ApiJson(body): ApiJson<CreateMemoryRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.create_memory(&ctx, &id, body).await?).into_response())
 }
@@ -156,7 +158,7 @@ async fn update_memory(
     Extension(svc): Extension<Arc<MemoriesService>>,
     Extension(ctx): Extension<AuthContext>,
     Path((id, mid)): Path<(String, String)>,
-    Json(body): Json<UpdateMemoryRequest>,
+    ApiJson(body): ApiJson<UpdateMemoryRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.update_memory(&ctx, &id, &mid, body).await?).into_response())
 }

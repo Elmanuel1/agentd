@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{
+    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -60,7 +62,7 @@ pub fn router() -> Router {
 async fn create_vault(
     Extension(svc): Extension<Arc<VaultsService>>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<CreateVaultRequest>,
+    ApiJson(body): ApiJson<CreateVaultRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.create_vault(&ctx, body).await?).into_response())
 }
@@ -87,7 +89,7 @@ async fn update_vault(
     Extension(svc): Extension<Arc<VaultsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateVaultRequest>,
+    ApiJson(body): ApiJson<UpdateVaultRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.update_vault(&ctx, &id, body).await?).into_response())
 }
@@ -112,7 +114,7 @@ async fn create_credential(
     Extension(svc): Extension<Arc<VaultsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<CreateCredentialRequest>,
+    ApiJson(body): ApiJson<CreateCredentialRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.create_credential(&ctx, &id, body).await?).into_response())
 }
@@ -140,7 +142,7 @@ async fn update_credential(
     Extension(svc): Extension<Arc<VaultsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path((id, cid)): Path<(String, String)>,
-    Json(body): Json<UpdateCredentialRequest>,
+    ApiJson(body): ApiJson<UpdateCredentialRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.update_credential(&ctx, &id, &cid, body).await?).into_response())
 }

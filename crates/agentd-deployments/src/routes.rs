@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agentd_core::{
-    reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId, Timestamp,
+    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId, Timestamp,
 };
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -38,6 +38,7 @@ impl IntoResponse for RouteError {
 
 /// `/internal/fire` body — the fixed scheduler contract.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FireBody {
     /// `deployment/<id>` or `dream/<id>` target key… here: the deployment id.
     pub deployment_id: String,
@@ -61,7 +62,7 @@ pub fn router() -> Router {
 async fn create(
     Extension(svc): Extension<Arc<DeploymentsService>>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<CreateDeploymentRequest>,
+    ApiJson(body): ApiJson<CreateDeploymentRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.create(&ctx, body).await?).into_response())
 }
@@ -144,7 +145,7 @@ async fn list_runs(
 async fn internal_fire(
     Extension(svc): Extension<Arc<DeploymentsService>>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<FireBody>,
+    ApiJson(body): ApiJson<FireBody>,
 ) -> Result<Response, RouteError> {
     let run = svc
         .fire_scheduled(&ctx, &body.deployment_id, body.scheduled_at)
