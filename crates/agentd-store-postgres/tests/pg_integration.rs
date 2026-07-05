@@ -112,11 +112,11 @@ async fn agents_service_over_pg() {
         .unwrap();
     assert_eq!(a.version, 1);
     let updated = svc
-        .update(&ctx(&ws), a.id.as_str(), serde_json::from_str(r#"{"system":"v2"}"#).unwrap())
+        .update(&ctx(&ws), a.id.as_str(), serde_json::from_str(r#"{"version":1,"system":"v2"}"#).unwrap())
         .await
         .unwrap();
     assert_eq!(updated.version, 2);
-    assert_eq!(svc.get(&ctx(&ws), a.id.as_str()).await.unwrap().version, 2);
+    assert_eq!(svc.get(&ctx(&ws), a.id.as_str(), None).await.unwrap().version, 2);
 }
 
 #[tokio::test]

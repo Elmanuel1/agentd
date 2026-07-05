@@ -131,7 +131,7 @@ async fn agents_service_over_dynamo() {
         .unwrap();
     assert_eq!(updated.version, 2);
     // fetched back from Dynamo
-    assert_eq!(svc.get(&ctx(), a.id.as_str()).await.unwrap().version, 2);
+    assert_eq!(svc.get(&ctx(), a.id.as_str(), None).await.unwrap().version, 2);
     // model canonicalization survived the round-trip
     assert_eq!(updated.model.id, "claude-sonnet-4-6");
 }

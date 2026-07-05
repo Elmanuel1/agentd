@@ -70,8 +70,10 @@ async fn get_one(
     Extension(svc): Extension<Arc<AgentsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let agent = svc.get(&ctx, &id).await?;
+    let version = params.get("version").and_then(|v| v.parse::<u64>().ok());
+    let agent = svc.get(&ctx, &id, version).await?;
     Ok(Json(agent).into_response())
 }
 

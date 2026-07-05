@@ -43,7 +43,7 @@ impl SessionDeps for RealSessionDeps {
                     .find(|a| a.version == v)
                     .ok_or_else(|| ApiError::not_found("agent version not found"))?
             }
-            None => self.agents.get(ctx, agent_id).await?,
+            None => self.agents.get(ctx, agent_id, None).await?,
         };
         if agent.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request(
@@ -88,7 +88,7 @@ impl DeploymentDeps for RealDeploymentDeps {
         agent_id: &str,
         version: Option<u64>,
     ) -> Result<AgentRef, ApiError> {
-        let agent = self.agents.get(ctx, agent_id).await?;
+        let agent = self.agents.get(ctx, agent_id, None).await?;
         if agent.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request(
                 "agent is archived; new sessions cannot reference it",

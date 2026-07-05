@@ -68,12 +68,19 @@ impl AgentsService {
 
     /// `GET /v1/agents/{id}` — malformed id → 400 "Invalid agent ID."
     /// (live-verified: not 404).
-    pub async fn get(&self, ctx: &AuthContext, raw_id: &str) -> Result<Agent, ApiError> {
+    pub async fn get(
+        &self,
+        ctx: &AuthContext,
+        raw_id: &str,
+        version: Option<u64>,
+    ) -> Result<Agent, ApiError> {
         let id = parse_id(raw_id)?;
-        self.store
-            .latest(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        match version {
+            // Live: `?version=N` returns that specific version.
+            Some(v) => self.store.version(&ctx.workspace, &id, v).await,
+            None => self.store.latest(&ctx.workspace, &id).await,
+        }
+        .map_err(map_store)
     }
 
     /// `GET /v1/agents` — latest version of each agent.
@@ -98,6 +105,9 @@ impl AgentsService {
         req: UpdateAgentRequest,
     ) -> Result<Agent, ApiError> {
         let id = parse_id(raw_id)?;
+        // Live: `version` is required (optimistic lock) — a missing one fails
+        // body validation with "version: Field required".
+        let expected = required("version", req.version)?;
         let current = self
             .store
             .latest(&ctx.workspace, &id)
@@ -108,13 +118,11 @@ impl AgentsService {
                 "cannot update an archived agent",
             ));
         }
-        if let Some(v) = req.version {
-            if v != current.version {
-                return Err(ApiError::conflict_invalid_request(format!(
-                    "version mismatch: expected {}, got {v}",
-                    current.version
-                )));
-            }
+        if expected != current.version {
+            // Live 400 message, verbatim.
+            return Err(ApiError::invalid_request(
+                "Concurrent modification detected. Please fetch the latest version and retry.",
+            ));
         }
         // Merge: present fields replace, absent fields carry over.
         let merged = CreateAgentRequest {
