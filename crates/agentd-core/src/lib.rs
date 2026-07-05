@@ -22,6 +22,7 @@
 pub mod actor;
 pub mod content;
 pub mod error;
+pub mod extract;
 pub mod hash;
 pub mod id;
 pub mod limits;
@@ -37,6 +38,7 @@ pub mod usage;
 pub use actor::Actor;
 pub use content::ContentBlock;
 pub use error::{ApiError, ErrorType};
+pub use extract::{ApiJson, ApiJsonError};
 pub use id::{Id, RequestId, Resource};
 pub use metadata::Metadata;
 pub use page::{reject_unknown_params, IdPage, Page, Pagination};

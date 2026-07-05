@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{reject_unknown_params, ApiError, AuthContext, Page, Pagination, RequestId};
+use agentd_core::{
+    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -55,7 +57,7 @@ pub fn router() -> Router {
 async fn create(
     Extension(svc): Extension<Arc<AgentsService>>,
     Extension(ctx): Extension<AuthContext>,
-    Json(body): Json<CreateAgentRequest>,
+    ApiJson(body): ApiJson<CreateAgentRequest>,
 ) -> Result<Response, RouteError> {
     let agent = svc.create(&ctx, body).await?;
     Ok(Json(agent).into_response())
@@ -88,7 +90,7 @@ async fn update(
     Extension(svc): Extension<Arc<AgentsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateAgentRequest>,
+    ApiJson(body): ApiJson<UpdateAgentRequest>,
 ) -> Result<Response, RouteError> {
     let agent = svc.update(&ctx, &id, body).await?;
     Ok(Json(agent).into_response())

@@ -388,9 +388,10 @@ pub struct AgentRef {
 
 // ─── Requests ──────────────────────────────────────────────────────────────
 
-/// `POST /v1/agents` body (permissive — validation happens in the service so
-/// error strings match the live API exactly).
+/// `POST /v1/agents` body (validation happens in the service so error strings
+/// match the live API exactly; unknown fields are rejected like live).
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateAgentRequest {
     /// Required (validated, not enforced by serde).
     pub name: Option<String>,
@@ -418,6 +419,7 @@ pub struct CreateAgentRequest {
 
 /// `POST /v1/agents/{id}` body — partial update; every present field replaces.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateAgentRequest {
     /// Optimistic lock: must equal the current version when present.
     pub version: Option<u64>,

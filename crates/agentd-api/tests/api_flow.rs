@@ -422,4 +422,17 @@ async fn exact_live_error_strings_survive_the_full_stack() {
     let (st, v) = call(&app, "GET", "/v1/agents/agent_00bogus", None).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "Invalid agent ID.");
+    // Unknown BODY field → live 400 "unknown field" (deny_unknown_fields + ApiJson).
+    let (st, v) = call(
+        &app,
+        "POST",
+        "/v1/agents",
+        Some(r#"{"name":"x","model":"claude-sonnet-4-6","bogus":1}"#),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        v["error"]["message"],
+        "Failed to parse request body: unknown field \"bogus\""
+    );
 }
