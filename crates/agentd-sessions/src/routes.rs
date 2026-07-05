@@ -150,8 +150,12 @@ async fn stream_events(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
+    use futures::StreamExt;
     let rx = svc.subscribe(&ctx, &id).await?;
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
+    // Live opens the stream with a `: connected` comment frame before events.
+    let connected =
+        futures::stream::once(async { Ok(SseEvent::default().comment("connected")) });
+    let events = futures::stream::unfold(rx, |mut rx| async move {
         loop {
             match rx.recv().await {
                 Ok(ev) => {
@@ -163,5 +167,6 @@ async fn stream_events(
             }
         }
     });
+    let stream = connected.chain(events);
     Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
