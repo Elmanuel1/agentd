@@ -70,7 +70,7 @@ pub enum VaultTag {
 }
 
 /// Full wire vault object (field set matches live probe).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vault {
     /// Archive stamp.
     pub archived_at: Option<Timestamp>,
@@ -358,7 +358,7 @@ pub enum CredentialTag {
 }
 
 /// Wire credential object — secret-free by type.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credential {
     /// Archive stamp (archive purges the secret and frees the key).
     pub archived_at: Option<Timestamp>,

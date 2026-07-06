@@ -90,16 +90,19 @@ impl EnvironmentsStore for PgEnvironmentsStore {
     }
 
     async fn delete(&self, org: &OrgId, id: &EnvironmentId) -> Result<Environment, StoreError> {
-        let existing = self.get(org, id).await?;
-        diesel::delete(
+        // Single round-trip: delete and return the row in one statement.
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let doc: Option<serde_json::Value> = diesel::delete(
             environments::table
                 .filter(environments::org_id.eq(&org.0))
                 .filter(environments::environment_id.eq(id.as_str())),
         )
-        .execute(&mut self.backend.diesel.get().await.map_err(pool_be)?)
+        .returning(environments::doc)
+        .get_result(&mut conn)
         .await
+        .optional()
         .map_err(diesel_be)?;
-        Ok(existing)
+        parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn list(&self, org: &OrgId) -> Result<Vec<Environment>, StoreError> {

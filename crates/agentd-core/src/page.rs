@@ -33,6 +33,7 @@ pub struct Page<T> {
 impl<T> Page<T> {
     /// Bare `{"data":[…]}` (no pagination) — for non-list responses like the
     /// echo of just-sent events.
+    #[must_use]
     pub fn of(data: Vec<T>) -> Self {
         Self {
             data,
@@ -42,6 +43,7 @@ impl<T> Page<T> {
 
     /// Slice `all` (a fully-ordered result set) to the requested page and set
     /// `next_page` when more remain.
+    #[must_use]
     pub fn paginate(all: Vec<T>, page: &Pagination) -> Self {
         let total = all.len();
         let start = page.offset.min(total);

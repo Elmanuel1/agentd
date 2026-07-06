@@ -271,6 +271,7 @@ dependencies = [
  "chrono",
  "diesel",
  "diesel-async",
+ "futures",
  "http 1.4.2",
  "http-body-util",
  "serde",

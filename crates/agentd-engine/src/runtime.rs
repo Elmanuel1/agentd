@@ -80,13 +80,11 @@ impl Runtime for LocalTokioRuntime {
 
     async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
         let mut g = self.tasks.lock();
-        match g.remove(&handle.id) {
-            Some(task) => {
-                task.abort();
-                Ok(())
-            }
-            None => Err(RuntimeError::Unknown(handle.id.clone())),
-        }
+        let Some(task) = g.remove(&handle.id) else {
+            return Err(RuntimeError::Unknown(handle.id.clone()));
+        };
+        task.abort();
+        Ok(())
     }
 }
 

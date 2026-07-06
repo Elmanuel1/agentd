@@ -61,7 +61,7 @@ pub enum MemoryVersionTag {
 /// `{created_at, description, id, metadata, name, type, updated_at}`
 /// (note: **no** `archived_at` on the create response; it appears after
 /// archive — modeled as skip-when-none).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryStoreEntity {
     /// Archive stamp — absent on the live create response.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,7 +87,7 @@ pub struct MemoryStoreEntity {
 /// `{content_sha256, content_size_bytes, created_at, id, memory_store_id,
 ///   memory_version_id, path, type, updated_at}`
 /// `content` appears only on full-view reads (create/update do NOT echo it).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Memory {
     /// Full content — only on `view=full` reads.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,7 +123,7 @@ pub enum MemoryPrefixTag {
 
 /// A collapsed sub-directory in a `depth`-limited memory listing — live shape
 /// `{"path":"/notes/","type":"memory_prefix"}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPrefix {
     /// The directory path, trailing-slash terminated.
     pub path: String,
@@ -134,7 +134,7 @@ pub struct MemoryPrefix {
 
 /// One entry in a memory listing: a leaf `memory` or a collapsed
 /// `memory_prefix`. Serialized untagged (each variant carries its own `type`).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum MemoryListItem {
     /// A leaf memory (content omitted in listings).
@@ -167,7 +167,7 @@ pub enum VersionOperation {
 /// An immutable version record — live fixture:
 /// `{content_sha256, content_size_bytes, created_at, created_by, id,
 ///   memory_id, memory_store_id, operation, path, redacted_by, type}`
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryVersion {
     /// Full content — only on `view=full` reads; cleared by redact.
     #[serde(skip_serializing_if = "Option::is_none")]

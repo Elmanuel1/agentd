@@ -75,8 +75,10 @@ impl PgMemoryStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (doc, has_blob) in rows {
+        // Fetch the chain's content blobs concurrently — they're independent
+        // object-store reads, so a sequential loop would add latency linearly
+        // on the hot `get_memory` path.
+        let fetches = rows.into_iter().map(|(doc, has_blob)| async move {
             let version: MemoryVersion = parse_doc(doc)?;
             let blob = if has_blob {
                 let bytes = self
@@ -88,9 +90,9 @@ impl PgMemoryStore {
             } else {
                 None
             };
-            out.push(VersionRecord { version, blob });
-        }
-        Ok(out)
+            Ok(VersionRecord { version, blob })
+        });
+        futures::future::try_join_all(fetches).await
     }
 
     async fn upsert_version(

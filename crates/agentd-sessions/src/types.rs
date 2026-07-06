@@ -94,7 +94,7 @@ pub enum MemoryAccess {
 
 /// A session resource — file / repo / memory store. Cross-entity links are
 /// by ID string (no crate dependency on files/memory).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionResource {
     /// An uploaded file mounted read-only.
@@ -140,7 +140,7 @@ pub enum SessionResource {
 }
 
 /// Outcome evaluation record surfaced on the session object.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutcomeEvaluation {
     /// The outcome.
     pub outcome_id: OutcomeId,
@@ -177,7 +177,7 @@ impl OutcomeResult {
 }
 
 /// Full wire session object (field order per live fixture).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
     /// Frozen agent snapshot (full config, live-verified embedding).
     pub agent: AgentSnapshot,

@@ -43,7 +43,8 @@ pub enum ErrorType {
 
 impl ErrorType {
     /// The wire string for `error.type`.
-    pub fn wire_name(self) -> &'static str {
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
         match self {
             Self::InvalidRequest => "invalid_request_error",
             Self::Authentication => "authentication_error",
@@ -59,7 +60,8 @@ impl ErrorType {
     }
 
     /// Canonical HTTP status code.
-    pub fn status(self) -> u16 {
+    #[must_use]
+    pub const fn status(self) -> u16 {
         match self {
             Self::InvalidRequest => 400,
             Self::Authentication => 401,
@@ -91,22 +93,26 @@ pub struct ApiError {
 
 impl ApiError {
     /// 400 `invalid_request_error`.
+    #[must_use]
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::of(ErrorType::InvalidRequest, message)
     }
 
     /// 404 `not_found_error`.
+    #[must_use]
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::of(ErrorType::NotFound, message)
     }
 
     /// 401 `authentication_error`.
+    #[must_use]
     pub fn authentication(message: impl Into<String>) -> Self {
         Self::of(ErrorType::Authentication, message)
     }
 
     /// 409 with the same `error.type` as a plain invalid request (live
     /// behavior: non-typed conflicts reuse `invalid_request_error`).
+    #[must_use]
     pub fn conflict_invalid_request(message: impl Into<String>) -> Self {
         let mut e = Self::of(ErrorType::InvalidRequest, message);
         e.status = 409;
@@ -116,6 +122,7 @@ impl ApiError {
     /// 409 `memory_path_conflict_error` — exact live shape:
     /// `path `/a.md` is already used by `mem_…`; use update to modify it`
     /// plus `conflicting_path` / `conflicting_memory_id` fields.
+    #[must_use]
     pub fn memory_path_conflict(path: &str, memory_id: &str) -> Self {
         let mut e = Self::of(
             ErrorType::MemoryPathConflict,
@@ -131,11 +138,13 @@ impl ApiError {
     }
 
     /// 429 `rate_limit_error`.
+    #[must_use]
     pub fn rate_limited(message: impl Into<String>) -> Self {
         Self::of(ErrorType::RateLimit, message)
     }
 
     /// 500 `api_error`.
+    #[must_use]
     pub fn internal(message: impl Into<String>) -> Self {
         Self::of(ErrorType::Api, message)
     }

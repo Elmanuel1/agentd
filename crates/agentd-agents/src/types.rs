@@ -282,7 +282,7 @@ pub struct AgentConfig {
 }
 
 /// Full wire agent object.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agent {
     /// Archive timestamp (null while active).
     pub archived_at: Option<Timestamp>,
@@ -347,7 +347,7 @@ impl Agent {
 }
 
 /// Frozen agent config embedded in sessions and threads.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSnapshot {
     /// Description (nullable).
     pub description: Option<String>,

@@ -152,6 +152,7 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     /// Build from an explicit list.
+    #[must_use]
     pub fn new(models: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             models: models.into_iter().map(Into::into).collect(),
@@ -159,6 +160,7 @@ impl ModelCatalog {
     }
 
     /// Default catalog mirroring currently-served Anthropic model aliases.
+    #[must_use]
     pub fn default_catalog() -> Self {
         Self::new([
             "claude-fable-5",
@@ -174,6 +176,7 @@ impl ModelCatalog {
     }
 
     /// Whether a model id is accepted.
+    #[must_use]
     pub fn supports(&self, id: &str) -> bool {
         self.models.iter().any(|m| m == id)
     }

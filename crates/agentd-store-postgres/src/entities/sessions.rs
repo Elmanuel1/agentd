@@ -98,7 +98,6 @@ impl SessionsStore for PgSessionsStore {
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
-        let existing = self.get(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         // Log rows first so a crash never orphans events.
         diesel::delete(
@@ -109,15 +108,18 @@ impl SessionsStore for PgSessionsStore {
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;
-        diesel::delete(
+        // Delete + return the row in one statement (no separate get).
+        let doc: Option<serde_json::Value> = diesel::delete(
             sessions::table
                 .filter(sessions::workspace_id.eq(&ws.0))
                 .filter(sessions::session_id.eq(id.as_str())),
         )
-        .execute(&mut conn)
+        .returning(sessions::doc)
+        .get_result(&mut conn)
         .await
+        .optional()
         .map_err(diesel_be)?;
-        Ok(existing)
+        parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Session>, StoreError> {

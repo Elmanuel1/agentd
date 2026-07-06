@@ -23,6 +23,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+futures = { workspace = true }
 diesel = { workspace = true }
 diesel-async = { workspace = true }
 
