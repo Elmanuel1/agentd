@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::AwsError;
 
 /// Uniform DynamoDB document access.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DynamoDoc {
     client: Client,
 }

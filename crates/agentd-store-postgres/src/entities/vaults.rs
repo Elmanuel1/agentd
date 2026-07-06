@@ -149,7 +149,9 @@ impl VaultsStore for PgVaultsStore {
     }
 
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
-        let creds = self.list_credentials(ws, id).await.unwrap_or_default();
+        // Propagate a listing failure — swallowing it would skip secret cleanup
+        // and orphan the sealed material in the object store.
+        let creds = self.list_credentials(ws, id).await?;
         let vault = self.get_vault(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::delete(

@@ -90,10 +90,11 @@ impl Default for Packages {
 }
 
 /// Container networking policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Networking {
     /// Full egress.
+    #[default]
     Unrestricted,
     /// Deny-by-default with opt-ins.
     Limited {
@@ -109,13 +110,11 @@ pub enum Networking {
     },
 }
 
-impl Default for Networking {
-    fn default() -> Self {
-        Self::Unrestricted
-    }
-}
-
 /// Canonical environment config.
+// Boxing the `Cloud` variant would change the internally-tagged serde shape and
+// break wire conformance; the size asymmetry is harmless for a config object
+// that is never held in bulk.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentConfig {

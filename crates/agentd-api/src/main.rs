@@ -17,9 +17,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 /// In-process fire sink: scheduled ticks call the deployments service
-/// directly (same fire contract as the HTTP `/internal/fire`).
+/// directly (same fire contract as the HTTP `/internal/fire`). `state` is set
+/// once at boot to break the sink↔state init cycle — `OnceLock` is lock-free
+/// after set and hands back a reference (no per-fire clone).
 struct InProcessSink {
-    state: parking_lot::Mutex<Option<AppState>>,
+    state: std::sync::OnceLock<AppState>,
 }
 
 #[async_trait]
@@ -29,7 +31,7 @@ impl FireSink for InProcessSink {
         target: &FireTarget,
         scheduled_at: DateTime<Utc>,
     ) -> Result<(), FireError> {
-        let Some(state) = self.state.lock().clone() else {
+        let Some(state) = self.state.get() else {
             return Err(FireError("state not initialized".into()));
         };
         // The scheduler fires under the service identity; the deployment's
@@ -63,7 +65,7 @@ impl FireSink for InProcessSink {
 async fn main() {
     tracing_subscriber_init();
     let sink = Arc::new(InProcessSink {
-        state: parking_lot::Mutex::new(None),
+        state: std::sync::OnceLock::new(),
     });
     let scheduler = Arc::new(LocalScheduler::new(sink.clone()));
 
@@ -97,7 +99,7 @@ async fn main() {
                 .register(key, org, ws, format!("apikey_01local{i:010}"));
         }
     }
-    *sink.state.lock() = Some(state.clone());
+    let _ = sink.state.set(state.clone());
 
     // Background cron ticker (10s resolution; cron is minute-granular).
     let _ticker = scheduler.spawn(std::time::Duration::from_secs(10));

@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use agentd_core::ports::{
-    FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort, TenantRef,
+    FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort,
 };
 use agentd_core::schedule::{CompiledSchedule, CronKind, CronSchedule};
 use async_trait::async_trait;
@@ -207,6 +207,7 @@ impl SchedulerPort for LocalScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentd_core::ports::TenantRef;
     use parking_lot::Mutex as PMutex;
 
     /// Records fires; can be armed to fail (transport error).
@@ -283,10 +284,11 @@ mod tests {
         let (sched, sink) = rig("*/5 * * * *").await; // next: 00:05
         // 27 minutes pass with no ticks (downtime): 00:05/10/15/20/25 missed.
         sched.tick(utc("2026-01-01T00:27:00Z")).await;
-        let fires = sink.fires.lock();
-        assert_eq!(fires.len(), 1, "exactly one fire, not five");
-        assert_eq!(fires[0].1, utc("2026-01-01T00:25:00Z"), "the LATEST missed one");
-        drop(fires);
+        {
+            let fires = sink.fires.lock();
+            assert_eq!(fires.len(), 1, "exactly one fire, not five");
+            assert_eq!(fires[0].1, utc("2026-01-01T00:25:00Z"), "the LATEST missed one");
+        }
         // Next fires normally at 00:30.
         sched.tick(utc("2026-01-01T00:30:00Z")).await;
         assert_eq!(sink.fires.lock().len(), 2);

@@ -211,6 +211,10 @@ impl SessionsService {
                 .replace(&ctx.workspace, s.clone())
                 .await
                 .map_err(map_store)?;
+            // Drop the broadcast sender — an archived session takes no new
+            // events, so keeping its channel would leak the entry (and its
+            // ring buffer) for the process lifetime.
+            self.channels.lock().remove(&id);
         }
         Ok(s)
     }
@@ -250,15 +254,17 @@ impl SessionsService {
         }
         // Validate each payload with the live field-path error convention.
         for (i, p) in payloads.iter().enumerate() {
-            if let EventPayload::UserDefineOutcome { max_iterations, .. } = p {
-                if let Some(n) = max_iterations {
-                    validate_range_u32(
-                        &format!("events.{i}.user_define_outcome.max_iterations"),
-                        *n,
-                        values::OUTCOME_MAX_ITERATIONS_MIN,
-                        values::OUTCOME_MAX_ITERATIONS_MAX,
-                    )?;
-                }
+            if let EventPayload::UserDefineOutcome {
+                max_iterations: Some(n),
+                ..
+            } = p
+            {
+                validate_range_u32(
+                    &format!("events.{i}.user_define_outcome.max_iterations"),
+                    *n,
+                    values::OUTCOME_MAX_ITERATIONS_MIN,
+                    values::OUTCOME_MAX_ITERATIONS_MAX,
+                )?;
             }
             if !p.is_user_event() {
                 return Err(ApiError::invalid_request(format!(
