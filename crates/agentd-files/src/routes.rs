@@ -63,7 +63,7 @@ async fn list(
     // last_id} + after_id/before_id, NOT the managed-agents next_page cursor.
     let scope = params.get("scope_id").map(String::as_str);
     let files = svc.list(&ctx, scope).await?;
-    let page = IdPage::paginate(files, &params, |f| f.id.as_str().to_owned())?;
+    let page = IdPage::paginate(files, &params, |f| f.id.as_str())?;
     Ok(Json(page).into_response())
 }
 

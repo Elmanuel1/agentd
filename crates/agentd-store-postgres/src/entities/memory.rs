@@ -59,32 +59,6 @@ impl PgMemoryStore {
         exists.map(|_| ()).ok_or(StoreError::StoreNotFound)
     }
 
-    async fn chain_meta(
-        &self,
-        ws: &WorkspaceId,
-        store: &MemoryStoreId,
-        memory_id: &MemoryId,
-    ) -> Result<Vec<VersionRecord>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = memory_versions::table
-            .filter(memory_versions::workspace_id.eq(&ws.0))
-            .filter(memory_versions::store_id.eq(store.as_str()))
-            .filter(memory_versions::memory_id.eq(memory_id.as_str()))
-            .order(memory_versions::seq.asc())
-            .select(memory_versions::doc)
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter()
-            .map(|d| {
-                Ok(VersionRecord {
-                    version: parse_doc(d)?,
-                    blob: None,
-                })
-            })
-            .collect()
-    }
-
     async fn chain_full(
         &self,
         ws: &WorkspaceId,
@@ -418,7 +392,11 @@ impl MemoryPersistence for PgMemoryStore {
             .filter(memories::deleted.eq(false))
             .into_boxed();
         if let Some(p) = path_prefix {
-            q = q.filter(memories::path.like(format!("{p}%")));
+            // Anchored prefix `LIKE 'p%'` — index-backed by the
+            // `text_pattern_ops` index (V3). Escape the caller's `%`/`_`/`\` so
+            // a path containing them can't act as a wildcard (ESCAPE '\').
+            let escaped = p.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            q = q.filter(memories::path.like(format!("{escaped}%")));
         }
         let heads: Vec<serde_json::Value> = q
             .order(memories::path.asc())
@@ -426,17 +404,18 @@ impl MemoryPersistence for PgMemoryStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        let mut out = Vec::with_capacity(heads.len());
-        for doc in heads {
-            let head: Memory = parse_doc(doc)?;
-            let chain = self.chain_meta(ws, store, &head.id).await?;
-            out.push(MemoryRecord {
-                head,
-                deleted: false,
-                chain,
-            });
-        }
-        Ok(out)
+        // The listing projects the head only (basic view), so skip the
+        // per-memory version-chain fetch entirely — no N+1.
+        heads
+            .into_iter()
+            .map(|doc| {
+                Ok(MemoryRecord {
+                    head: parse_doc(doc)?,
+                    deleted: false,
+                    chain: Vec::new(),
+                })
+            })
+            .collect()
     }
 
     async fn find_by_path(

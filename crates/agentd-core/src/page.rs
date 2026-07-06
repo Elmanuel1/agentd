@@ -117,16 +117,15 @@ impl<T> IdPage<T> {
     pub fn paginate(
         all: Vec<T>,
         params: &HashMap<String, String>,
-        id_of: impl Fn(&T) -> String,
+        id_of: impl Fn(&T) -> &str,
     ) -> Result<Self, ApiError> {
         let limit = Pagination::from_params(params)?.limit;
-        let ids: Vec<String> = all.iter().map(&id_of).collect();
         let start = match params.get("after_id") {
-            Some(a) => ids.iter().position(|i| i == a).map_or(0, |p| p + 1),
+            Some(a) => all.iter().position(|t| id_of(t) == a).map_or(0, |p| p + 1),
             None => 0,
         };
         let end_bound = match params.get("before_id") {
-            Some(b) => ids.iter().position(|i| i == b).unwrap_or(all.len()),
+            Some(b) => all.iter().position(|t| id_of(t) == b).unwrap_or(all.len()),
             None => all.len(),
         };
         let window: Vec<T> = all
@@ -137,8 +136,9 @@ impl<T> IdPage<T> {
             .collect();
         let has_more = window.len() > limit;
         let data: Vec<T> = window.into_iter().take(limit).collect();
-        let first_id = data.first().map(&id_of);
-        let last_id = data.last().map(&id_of);
+        // Only the two cursor ids are owned (not one String per row).
+        let first_id = data.first().map(|t| id_of(t).to_owned());
+        let last_id = data.last().map(|t| id_of(t).to_owned());
         Ok(Self {
             data,
             has_more,
