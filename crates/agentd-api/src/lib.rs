@@ -38,9 +38,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(agentd_vaults::routes::router())
         .merge(agentd_memory::routes::router())
         .merge(agentd_files::routes::router())
-        // NOTE: `/v1/skills` is NOT mounted — the live managed-agents API has no
-        // skills resource (GET /v1/skills → 404). Skills are `.skill` bundles
-        // uploaded to /v1/files and referenced by id in `agent.skills[]`.
+        .merge(agentd_skills::routes::router())
         .merge(agentd_sessions::routes::router())
         .merge(agentd_deployments::routes::router());
 
@@ -56,6 +54,7 @@ pub fn build_router(state: AppState) -> Router {
         .layer(axum::Extension(state.vaults.clone()))
         .layer(axum::Extension(state.memories.clone()))
         .layer(axum::Extension(state.files.clone()))
+        .layer(axum::Extension(state.skills.clone()))
         .layer(axum::Extension(state.sessions.clone()))
         .layer(axum::Extension(state.deployments.clone()))
 }

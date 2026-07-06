@@ -16,6 +16,7 @@ agentd-environments = { workspace = true }
 agentd-vaults = { workspace = true }
 agentd-memory = { workspace = true }
 agentd-files = { workspace = true }
+agentd-skills = { workspace = true }
 agentd-sessions = { workspace = true }
 agentd-deployments = { workspace = true }
 agentd-dreams = { workspace = true }

@@ -8,4 +8,5 @@ pub mod environments;
 pub mod files;
 pub mod memory;
 pub mod sessions;
+pub mod skills;
 pub mod vaults;

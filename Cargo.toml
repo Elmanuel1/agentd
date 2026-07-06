@@ -7,6 +7,7 @@ members = [
     "crates/agentd-vaults",
     "crates/agentd-memory",
     "crates/agentd-files",
+    "crates/agentd-skills",
     "crates/agentd-sessions",
     "crates/agentd-deployments",
     "crates/agentd-dreams",
@@ -33,6 +34,7 @@ agentd-environments = { path = "crates/agentd-environments" }
 agentd-vaults = { path = "crates/agentd-vaults" }
 agentd-memory = { path = "crates/agentd-memory" }
 agentd-files = { path = "crates/agentd-files" }
+agentd-skills = { path = "crates/agentd-skills" }
 agentd-sessions = { path = "crates/agentd-sessions" }
 agentd-deployments = { path = "crates/agentd-deployments" }
 agentd-dreams = { path = "crates/agentd-dreams" }
@@ -54,6 +56,7 @@ rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }

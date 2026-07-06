@@ -41,6 +41,7 @@ pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
 pub use entities::memory::PgMemoryStore;
 pub use entities::sessions::PgSessionsStore;
+pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
 
 /// Shared diesel-async connection pool (tokio-postgres). All entity stores go
@@ -111,6 +112,7 @@ from_backend!(
     agentd_files::store::StoreError,
     agentd_environments::store::StoreError,
     agentd_vaults::store::StoreError,
+    agentd_skills::StoreError,
     agentd_sessions::store::StoreError,
     agentd_dreams::store::StoreError,
     agentd_memory::store::StoreError,
