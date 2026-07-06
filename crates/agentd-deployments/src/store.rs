@@ -13,7 +13,7 @@ pub enum StoreError {
     NotFound,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
-    Backend(String),
+    Backend(#[source] agentd_core::BackendError),
 }
 
 /// Persistence port.

@@ -44,7 +44,7 @@ impl DynamoDeploymentsStore {
 }
 
 fn be(e: AwsError) -> StoreError {
-    StoreError::Backend(e.to_string())
+    StoreError::Backend(agentd_core::BackendError::new(e))
 }
 
 #[async_trait]

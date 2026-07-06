@@ -384,6 +384,6 @@ fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::VaultNotFound => ApiError::not_found("vault not found"),
         StoreError::CredentialNotFound => ApiError::not_found("credential not found"),
-        StoreError::Backend(m) => ApiError::internal(m),
+        StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

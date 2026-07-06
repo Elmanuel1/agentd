@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{AwsBackend, AwsError};
 
 fn blob_be(e: agentd_blobs::BlobError) -> StoreError {
-    StoreError::Backend(e.to_string())
+    StoreError::Backend(agentd_core::BackendError::new(e))
 }
 
 /// The DynamoDB-stored portion (bytes live in S3).
@@ -46,7 +46,7 @@ impl DynamoFilesStore {
 }
 
 fn be(e: AwsError) -> StoreError {
-    StoreError::Backend(e.to_string())
+    StoreError::Backend(agentd_core::BackendError::new(e))
 }
 
 #[async_trait]

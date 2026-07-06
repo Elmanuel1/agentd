@@ -152,6 +152,6 @@ fn parse_id(raw: &str) -> Result<EnvironmentId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("environment not found"),
-        StoreError::Backend(m) => ApiError::internal(m),
+        StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

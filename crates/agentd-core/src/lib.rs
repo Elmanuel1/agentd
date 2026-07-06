@@ -37,7 +37,7 @@ pub mod usage;
 
 pub use actor::Actor;
 pub use content::ContentBlock;
-pub use error::{ApiError, ErrorType};
+pub use error::{ApiError, BackendError, ErrorType};
 pub use extract::{wire_response, ApiJson, ApiJsonError, RouteError};
 pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;

@@ -78,29 +78,30 @@ impl PgBackend {
     }
 }
 
-/// Map a Diesel query error to a store `Backend` variant. Generic over the
-/// entity `StoreError` so every entity can reuse it.
+/// Map a Diesel query error to a store `Backend` variant, preserving it as the
+/// error's `source()`. Generic over the entity `StoreError` so every entity can
+/// reuse it.
 pub(crate) fn diesel_be<E: FromBackend>(e: diesel::result::Error) -> E {
-    E::backend(e.to_string())
+    E::backend(agentd_core::BackendError::new(e))
 }
 
 /// Map a diesel-async pool checkout error to a store `Backend` variant.
 pub(crate) fn pool_be<E: FromBackend>(
     e: diesel_async::pooled_connection::deadpool::PoolError,
 ) -> E {
-    E::backend(e.to_string())
+    E::backend(agentd_core::BackendError::new(e))
 }
 
-/// Entity `StoreError`s that carry a `Backend(String)` variant.
+/// Entity `StoreError`s that carry a `Backend(BackendError)` variant.
 pub(crate) trait FromBackend {
-    fn backend(msg: String) -> Self;
+    fn backend(source: agentd_core::BackendError) -> Self;
 }
 
 macro_rules! from_backend {
     ($($t:ty),+ $(,)?) => {$(
         impl FromBackend for $t {
-            fn backend(msg: String) -> Self {
-                Self::Backend(msg)
+            fn backend(source: agentd_core::BackendError) -> Self {
+                Self::Backend(source)
             }
         }
     )+};
@@ -133,15 +134,15 @@ pub(crate) fn enum_str<T: serde::Serialize>(value: &T) -> String {
 pub(crate) fn parse_doc<T: serde::de::DeserializeOwned, E: FromBackend>(
     doc: serde_json::Value,
 ) -> Result<T, E> {
-    serde_json::from_value(doc).map_err(|e| E::backend(e.to_string()))
+    serde_json::from_value(doc).map_err(|e| E::backend(agentd_core::BackendError::new(e)))
 }
 
 /// Serialize a wire type into a `doc` jsonb value.
 pub(crate) fn to_doc<T: serde::Serialize, E: FromBackend>(v: &T) -> Result<serde_json::Value, E> {
-    serde_json::to_value(v).map_err(|e| E::backend(e.to_string()))
+    serde_json::to_value(v).map_err(|e| E::backend(agentd_core::BackendError::new(e)))
 }
 
 /// Map an object-store error into the entity `Backend` variant.
 pub(crate) fn blob_be<E: FromBackend>(e: agentd_blobs::BlobError) -> E {
-    E::backend(e.to_string())
+    E::backend(agentd_core::BackendError::new(e))
 }

@@ -152,7 +152,7 @@ pub enum StoreError {
     VersionNotFound,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
-    Backend(String),
+    Backend(#[source] agentd_core::BackendError),
 }
 
 /// The parsed contents of an uploaded bundle (folder + frontmatter fields).
@@ -383,7 +383,7 @@ fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::SkillNotFound => ApiError::not_found("skill not found"),
         StoreError::VersionNotFound => ApiError::not_found("skill version not found"),
-        StoreError::Backend(m) => ApiError::internal(m),
+        StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }
 

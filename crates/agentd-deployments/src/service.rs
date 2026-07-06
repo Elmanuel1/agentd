@@ -386,6 +386,6 @@ fn parse_id(raw: &str) -> Result<DeploymentId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("deployment not found"),
-        StoreError::Backend(m) => ApiError::internal(m),
+        StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

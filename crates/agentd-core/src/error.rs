@@ -194,6 +194,42 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// A wrapped infrastructure error carried by every entity store's `Backend`
+/// variant. It preserves the underlying error as a `source()` chain (for
+/// structured logging / `{:?}`) instead of flattening it to a `String`, while
+/// staying `Clone` (`Arc`) and `Eq` (all backend errors compare equal — the
+/// variant is what control flow branches on; the wrapped cause is diagnostic
+/// only). This lets `StoreError` keep deriving `Clone`/`PartialEq`/`Eq`.
+#[derive(Clone, Debug)]
+pub struct BackendError(std::sync::Arc<dyn std::error::Error + Send + Sync>);
+
+impl BackendError {
+    /// Wrap a concrete source error.
+    pub fn new<E: std::error::Error + Send + Sync + 'static>(source: E) -> Self {
+        Self(std::sync::Arc::new(source))
+    }
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for BackendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.0)
+    }
+}
+
+impl PartialEq for BackendError {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for BackendError {}
+
 /// Envelope wrapper used when a handler needs a serializable success body —
 /// kept here so all crates serialize identically.
 #[derive(Debug, Serialize)]
@@ -263,5 +299,20 @@ mod tests {
         let e = ApiError::conflict_invalid_request("cannot archive while running");
         assert_eq!(e.status, 409);
         assert_eq!(e.error_type.wire_name(), "invalid_request_error");
+    }
+
+    #[test]
+    fn backend_error_preserves_source_chain_and_stays_eq() {
+        use std::error::Error;
+        let io = std::io::Error::other("disk on fire");
+        let be = BackendError::new(io);
+        // Display forwards to the wrapped cause; source() exposes it for logging.
+        assert_eq!(be.to_string(), "disk on fire");
+        assert_eq!(be.source().map(ToString::to_string), Some("disk on fire".to_string()));
+        // All backend errors compare equal (variant identity, not the cause) so
+        // enums that carry one keep deriving Eq/Clone.
+        let other = BackendError::new(std::io::Error::other("different"));
+        assert_eq!(be, other);
+        let _cloned = be.clone();
     }
 }

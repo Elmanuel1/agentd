@@ -48,7 +48,7 @@ pub enum StoreError {
     },
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
-    Backend(String),
+    Backend(#[source] agentd_core::BackendError),
 }
 
 /// One version's full record: wire metadata + content blob.
