@@ -73,7 +73,7 @@ pub struct MemoryRecord {
 
 impl MemoryRecord {
     /// Find a version in the chain.
-    pub fn find(&self, id: &MemoryVersionId) -> Option<&VersionRecord> {
+    fn find(&self, id: &MemoryVersionId) -> Option<&VersionRecord> {
         self.chain.iter().find(|v| &v.version.id == id)
     }
 

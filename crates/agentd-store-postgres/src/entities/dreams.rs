@@ -9,7 +9,7 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 
 use crate::schema::{dream_runs, dreams};
-use crate::{diesel_be, enum_str, pool_be, PgBackend};
+use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, PgBackend};
 
 /// Postgres-backed dreams store (Diesel).
 #[derive(Debug, Clone)]
@@ -22,14 +22,6 @@ impl PgDreamsStore {
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
-}
-
-fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
-    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
-}
-
-fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
-    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
 }
 
 #[derive(diesel::Insertable)]
@@ -82,7 +74,7 @@ impl DreamsStore for PgDreamsStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        parse(doc.ok_or(StoreError::NotFound)?)
+        parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn replace(&self, ws: &WorkspaceId, d: Dream) -> Result<(), StoreError> {
@@ -115,7 +107,7 @@ impl DreamsStore for PgDreamsStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter().map(parse).collect()
+        docs.into_iter().map(parse_doc).collect()
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DreamRun) -> Result<(), StoreError> {
@@ -155,6 +147,6 @@ impl DreamsStore for PgDreamsStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter().map(parse).collect()
+        docs.into_iter().map(parse_doc).collect()
     }
 }

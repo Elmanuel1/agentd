@@ -139,7 +139,7 @@ impl MemoriesService {
         self.store
             .insert_store(&ctx.workspace, s.clone())
             .await
-            .map_err(|e| map_store(e))?;
+            .map_err(map_store)?;
         Ok(s)
     }
 

@@ -3,33 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{reject_unknown_params, ApiError, AuthContext, IdPage, RequestId};
+use agentd_core::{reject_unknown_params, AuthContext, IdPage, RouteError};
 use axum::extract::{Extension, Multipart, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 
 use crate::FilesService;
-
-/// Error wrapper.
-#[derive(Debug)]
-pub struct RouteError(pub ApiError);
-
-impl From<ApiError> for RouteError {
-    fn from(e: ApiError) -> Self {
-        Self(e)
-    }
-}
-
-impl IntoResponse for RouteError {
-    fn into_response(self) -> Response {
-        let rid = RequestId::generate();
-        let body = self.0.to_envelope(&rid);
-        let status = axum::http::StatusCode::from_u16(self.0.status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(body)).into_response()
-    }
-}
 
 /// Build the files router.
 pub fn router() -> Router {

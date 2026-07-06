@@ -9,7 +9,7 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 
 use crate::schema::environments;
-use crate::{diesel_be, enum_str, pool_be, PgBackend};
+use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, PgBackend};
 
 /// Postgres-backed environments store (Diesel).
 #[derive(Debug, Clone)]
@@ -22,10 +22,6 @@ impl PgEnvironmentsStore {
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
-}
-
-fn parse(doc: serde_json::Value) -> Result<Environment, StoreError> {
-    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
 }
 
 #[derive(diesel::Insertable)]
@@ -50,7 +46,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
                 name: env.name.clone(),
                 state: enum_str(&env.state),
                 created_at: env.created_at.as_datetime(),
-                doc: serde_json::to_value(&env).map_err(|e| StoreError::Backend(e.to_string()))?,
+                doc: to_doc(&env)?,
             })
             .execute(&mut conn)
             .await
@@ -68,12 +64,12 @@ impl EnvironmentsStore for PgEnvironmentsStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        parse(doc.ok_or(StoreError::NotFound)?)
+        parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn replace(&self, org: &OrgId, env: Environment) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let doc = serde_json::to_value(&env).map_err(|e| StoreError::Backend(e.to_string()))?;
+        let doc = to_doc(&env)?;
         let affected = diesel::update(
             environments::table
                 .filter(environments::org_id.eq(&org.0))
@@ -115,6 +111,6 @@ impl EnvironmentsStore for PgEnvironmentsStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter().map(parse).collect()
+        docs.into_iter().map(parse_doc).collect()
     }
 }

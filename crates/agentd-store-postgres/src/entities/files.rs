@@ -15,7 +15,7 @@ use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 
 use crate::schema::files;
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, PgBackend};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileDoc {
@@ -45,10 +45,6 @@ impl PgFilesStore {
     fn key(ws: &WorkspaceId, id: &FileId) -> String {
         format!("{}/{}", ws.0, id.as_str())
     }
-}
-
-fn blob_be(e: agentd_blobs::BlobError) -> StoreError {
-    StoreError::Backend(e.to_string())
 }
 
 #[derive(diesel::Insertable)]
@@ -84,7 +80,7 @@ impl FilesStore for PgFilesStore {
                 scope_id: f.scope_id.clone(),
                 size_bytes: f.meta.size_bytes as i64,
                 created_at: f.meta.created_at.as_datetime(),
-                doc: serde_json::to_value(&doc).map_err(|e| StoreError::Backend(e.to_string()))?,
+                doc: to_doc(&doc)?,
             })
             .execute(&mut conn)
             .await
@@ -102,8 +98,7 @@ impl FilesStore for PgFilesStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        let doc: FileDoc = serde_json::from_value(doc.ok_or(StoreError::NotFound)?)
-            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let doc: FileDoc = parse_doc(doc.ok_or(StoreError::NotFound)?)?;
         let bytes = self.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)?;
         Ok(StoredFile {
             meta: doc.meta,
@@ -148,8 +143,7 @@ impl FilesStore for PgFilesStore {
             .map_err(diesel_be)?;
         docs.into_iter()
             .map(|d| {
-                let doc: FileDoc =
-                    serde_json::from_value(d).map_err(|e| StoreError::Backend(e.to_string()))?;
+                let doc: FileDoc = parse_doc(d)?;
                 Ok(StoredFile {
                     meta: doc.meta,
                     bytes: Bytes::new(),

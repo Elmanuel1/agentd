@@ -5,7 +5,7 @@
 //! highest `sk` under the agent's prefix.
 
 use agentd_agents::store::{AgentsStore, StoreError};
-use agentd_agents::{Agent, AgentSnapshot};
+use agentd_agents::Agent;
 use agentd_agents::types::AgentId;
 use agentd_core::WorkspaceId;
 use async_trait::async_trait;
@@ -136,11 +136,4 @@ impl AgentsStore for DynamoAgentsStore {
         }
         Ok(latest.into_values().collect())
     }
-}
-
-// Keeps AgentSnapshot referenced for downstream crates that re-export via
-// this store module's public surface.
-#[allow(dead_code)]
-fn _snapshot_marker(a: &Agent) -> AgentSnapshot {
-    a.snapshot()
 }

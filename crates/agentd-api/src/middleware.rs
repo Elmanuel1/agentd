@@ -1,12 +1,10 @@
 //! Wire-compat middleware: auth, the beta-header gate, and the 404 fallback.
 
-use agentd_core::{ApiError, AuthContext, RequestId};
+use agentd_core::{wire_response, ApiError, AuthContext};
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::StatusCode;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::response::Response;
 
 use crate::state::ApiKeyRegistry;
 
@@ -14,10 +12,7 @@ use crate::state::ApiKeyRegistry;
 pub const MANAGED_AGENTS_BETA: &str = "managed-agents-2026-04-01";
 
 fn envelope(e: &ApiError) -> Response {
-    let rid = RequestId::generate();
-    let status =
-        StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, Json(e.to_envelope(&rid))).into_response()
+    wire_response(e)
 }
 
 /// `x-api-key` → [`AuthContext`]. Missing/unknown → 401 envelope

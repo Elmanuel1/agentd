@@ -14,8 +14,8 @@ use chrono::Utc;
 use crate::store::{DeploymentsStore, StoreError};
 use crate::types::{
     CreateDeploymentRequest, Deployment, DeploymentId, DeploymentRun, DeploymentRunId,
-    DeploymentRunTag, DeploymentStatus, DeploymentTag, InitialEvent, PausedReason, RunError,
-    RunErrorKind, TriggerContext, WireSchedule,
+    DeploymentRunTag, DeploymentStatus, DeploymentTag, PausedReason, RunError, RunErrorKind,
+    TriggerContext, WireSchedule,
 };
 
 /// What deployments need from other entities — resolved via ports so tests
@@ -385,8 +385,3 @@ fn map_store(e: StoreError) -> ApiError {
         StoreError::Backend(m) => ApiError::internal(m),
     }
 }
-
-// keep InitialEvent referenced (used in Deployment) — silence unused-import
-// style pitfalls in downstream matches.
-#[allow(dead_code)]
-fn _uses(_: &InitialEvent) {}

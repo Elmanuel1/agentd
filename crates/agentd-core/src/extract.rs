@@ -35,16 +35,43 @@ where
     }
 }
 
+/// Render an `ApiError` as the wire envelope with a fresh request id — the one
+/// place this happens (routes, extractor rejections, and the 404 fallback all
+/// go through here).
+pub fn wire_response(error: &ApiError) -> Response {
+    let rid = RequestId::generate();
+    let status = axum::http::StatusCode::from_u16(error.status)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    (status, Json(error.to_envelope(&rid))).into_response()
+}
+
 /// The rejection type — renders the wire envelope with a fresh request id.
 #[derive(Debug)]
 pub struct ApiJsonError(pub ApiError);
 
 impl IntoResponse for ApiJsonError {
     fn into_response(self) -> Response {
-        let rid = RequestId::generate();
-        let status = axum::http::StatusCode::from_u16(self.0.status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(self.0.to_envelope(&rid))).into_response()
+        wire_response(&self.0)
+    }
+}
+
+/// The canonical route error wrapper: lets handlers return
+/// `Result<Response, RouteError>` and `?`-propagate `ApiError`, rendering the
+/// shared wire envelope. Replaces the byte-identical copy every entity crate
+/// used to define (the orphan rule forbids `impl IntoResponse for ApiError`
+/// downstream, which is exactly why this lives in core).
+#[derive(Debug)]
+pub struct RouteError(pub ApiError);
+
+impl From<ApiError> for RouteError {
+    fn from(e: ApiError) -> Self {
+        Self(e)
+    }
+}
+
+impl IntoResponse for RouteError {
+    fn into_response(self) -> Response {
+        wire_response(&self.0)
     }
 }
 

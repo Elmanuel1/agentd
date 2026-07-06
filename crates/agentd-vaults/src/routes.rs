@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agentd_core::{
-    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+    ApiJson, AuthContext, Page, Pagination, RouteError,
 };
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -15,26 +15,6 @@ use crate::service::VaultsService;
 use crate::types::{
     CreateCredentialRequest, CreateVaultRequest, UpdateCredentialRequest, UpdateVaultRequest,
 };
-
-/// Error wrapper.
-#[derive(Debug)]
-pub struct RouteError(pub ApiError);
-
-impl From<ApiError> for RouteError {
-    fn from(e: ApiError) -> Self {
-        Self(e)
-    }
-}
-
-impl IntoResponse for RouteError {
-    fn into_response(self) -> Response {
-        let rid = RequestId::generate();
-        let body = self.0.to_envelope(&rid);
-        let status = axum::http::StatusCode::from_u16(self.0.status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(body)).into_response()
-    }
-}
 
 /// Build the vaults router.
 pub fn router() -> Router {
@@ -72,8 +52,7 @@ async fn list_vaults(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["limit", "page"])?;
-    let page = Pagination::from_params(&params)?;
+    let page = Pagination::from_list_params(&params)?;
     Ok(Json(Page::paginate(svc.list_vaults(&ctx).await?, &page)).into_response())
 }
 
@@ -125,8 +104,7 @@ async fn list_credentials(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["limit", "page"])?;
-    let page = Pagination::from_params(&params)?;
+    let page = Pagination::from_list_params(&params)?;
     Ok(Json(Page::paginate(svc.list_credentials(&ctx, &id).await?, &page)).into_response())
 }
 

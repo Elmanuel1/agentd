@@ -17,7 +17,7 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMetho
 use diesel_async::RunQueryDsl;
 
 use crate::schema::{memories, memory_stores, memory_versions};
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, PgBackend};
 
 /// Postgres + object-storage backed memory store (Diesel).
 #[derive(Clone)]
@@ -30,18 +30,6 @@ impl std::fmt::Debug for PgMemoryStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PgMemoryStore").finish_non_exhaustive()
     }
-}
-
-fn blob_be(e: agentd_blobs::BlobError) -> StoreError {
-    StoreError::Backend(e.to_string())
-}
-
-fn parse<T: serde::de::DeserializeOwned>(doc: serde_json::Value) -> Result<T, StoreError> {
-    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
-}
-
-fn to_doc<T: serde::Serialize>(v: &T) -> Result<serde_json::Value, StoreError> {
-    serde_json::to_value(v).map_err(|e| StoreError::Backend(e.to_string()))
 }
 
 impl PgMemoryStore {
@@ -90,7 +78,7 @@ impl PgMemoryStore {
         docs.into_iter()
             .map(|d| {
                 Ok(VersionRecord {
-                    version: parse(d)?,
+                    version: parse_doc(d)?,
                     blob: None,
                 })
             })
@@ -115,7 +103,7 @@ impl PgMemoryStore {
             .map_err(diesel_be)?;
         let mut out = Vec::with_capacity(rows.len());
         for (doc, has_blob) in rows {
-            let version: MemoryVersion = parse(doc)?;
+            let version: MemoryVersion = parse_doc(doc)?;
             let blob = if has_blob {
                 let bytes = self
                     .blobs
@@ -248,7 +236,7 @@ impl MemoryPersistence for PgMemoryStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        parse(doc.ok_or(StoreError::StoreNotFound)?)
+        parse_doc(doc.ok_or(StoreError::StoreNotFound)?)
     }
 
     async fn replace_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError> {
@@ -326,7 +314,7 @@ impl MemoryPersistence for PgMemoryStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter().map(parse).collect()
+        docs.into_iter().map(parse_doc).collect()
     }
 
     async fn insert_memory(
@@ -370,7 +358,7 @@ impl MemoryPersistence for PgMemoryStore {
         if deleted {
             return Err(StoreError::MemoryNotFound);
         }
-        let head: Memory = parse(doc)?;
+        let head: Memory = parse_doc(doc)?;
         let chain = self.chain_full(ws, store, id).await?;
         Ok(MemoryRecord {
             head,
@@ -440,7 +428,7 @@ impl MemoryPersistence for PgMemoryStore {
             .map_err(diesel_be)?;
         let mut out = Vec::with_capacity(heads.len());
         for doc in heads {
-            let head: Memory = parse(doc)?;
+            let head: Memory = parse_doc(doc)?;
             let chain = self.chain_meta(ws, store, &head.id).await?;
             out.push(MemoryRecord {
                 head,
@@ -470,7 +458,7 @@ impl MemoryPersistence for PgMemoryStore {
             .map_err(diesel_be)?;
         match doc {
             Some(d) => {
-                let m: Memory = parse(d)?;
+                let m: Memory = parse_doc(d)?;
                 Ok(Some(m.id))
             }
             None => Ok(None),
@@ -501,7 +489,7 @@ impl MemoryPersistence for PgMemoryStore {
         docs.into_iter()
             .map(|d| {
                 Ok(VersionRecord {
-                    version: parse(d)?,
+                    version: parse_doc(d)?,
                     blob: None,
                 })
             })
@@ -525,7 +513,7 @@ impl MemoryPersistence for PgMemoryStore {
             .optional()
             .map_err(diesel_be)?;
         let (doc, has_blob) = row.ok_or(StoreError::VersionNotFound)?;
-        let version: MemoryVersion = parse(doc)?;
+        let version: MemoryVersion = parse_doc(doc)?;
         let blob = if has_blob {
             let bytes = self
                 .blobs

@@ -58,6 +58,12 @@ pub struct InvalidId {
     pub label: &'static str,
 }
 
+/// Parse a raw id into a typed `Id<T>`, mapping a bad id to the live 400
+/// (`"Invalid {label} ID."`). Replaces the per-entity `parse_id` wrappers.
+pub fn parse_id<T: Resource>(raw: &str) -> Result<Id<T>, crate::error::ApiError> {
+    Id::<T>::parse(raw).map_err(|e| crate::error::ApiError::invalid_request(e.to_string()))
+}
+
 /// A typed resource identifier. Serializes as the full prefixed string.
 pub struct Id<T: Resource> {
     value: String,

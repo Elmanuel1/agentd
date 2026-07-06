@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agentd_core::{
-    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RouteError,
 };
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -17,27 +17,6 @@ use axum::{Json, Router};
 
 use crate::service::AgentsService;
 use crate::types::{CreateAgentRequest, UpdateAgentRequest};
-
-/// Wrapper so `ApiError` can be returned from handlers directly.
-#[derive(Debug)]
-pub struct RouteError(pub ApiError);
-
-impl From<ApiError> for RouteError {
-    fn from(e: ApiError) -> Self {
-        Self(e)
-    }
-}
-
-impl IntoResponse for RouteError {
-    fn into_response(self) -> Response {
-        // Each response carries a fresh req_ id, like the live API.
-        let rid = RequestId::generate();
-        let body = self.0.to_envelope(&rid);
-        let status = axum::http::StatusCode::from_u16(self.0.status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(body)).into_response()
-    }
-}
 
 /// Build the `/v1/agents` router. State is injected via Extensions so the
 /// composing crate (`agentd-api`) owns middleware ordering.
@@ -68,8 +47,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["limit", "page"])?;
-    let page = Pagination::from_params(&params)?;
+    let page = Pagination::from_list_params(&params)?;
     let agents = svc.list(&ctx).await?;
     Ok(Json(Page::paginate(agents, &page)).into_response())
 }
@@ -111,8 +89,7 @@ async fn versions(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["limit", "page"])?;
-    let page = Pagination::from_params(&params)?;
+    let page = Pagination::from_list_params(&params)?;
     let list = svc.versions(&ctx, &id).await?;
     Ok(Json(Page::paginate(list, &page)).into_response())
 }

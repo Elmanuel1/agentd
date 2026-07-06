@@ -85,6 +85,14 @@ impl Pagination {
         };
         Ok(Self { limit, offset })
     }
+
+    /// A plain list endpoint's controls: reject any param other than
+    /// `limit`/`page`, then parse. Collapses the `reject_unknown_params(…) +
+    /// from_params(…)` pair repeated at every simple list route.
+    pub fn from_list_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
+        reject_unknown_params(params, &["limit", "page"])?;
+        Self::from_params(params)
+    }
 }
 
 /// The **standard Anthropic Files API** list envelope — `{data, has_more,

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agentd_core::{
-    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RequestId,
+    reject_unknown_params, ApiJson, AuthContext, Page, Pagination, RouteError,
 };
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
@@ -17,26 +17,6 @@ use axum::{Json, Router};
 
 use crate::service::{MemoriesService, View};
 use crate::types::{CreateMemoryRequest, CreateStoreRequest, UpdateMemoryRequest};
-
-/// Error wrapper.
-#[derive(Debug)]
-pub struct RouteError(pub ApiError);
-
-impl From<ApiError> for RouteError {
-    fn from(e: ApiError) -> Self {
-        Self(e)
-    }
-}
-
-impl IntoResponse for RouteError {
-    fn into_response(self) -> Response {
-        let rid = RequestId::generate();
-        let body = self.0.to_envelope(&rid);
-        let status = axum::http::StatusCode::from_u16(self.0.status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(body)).into_response()
-    }
-}
 
 fn view_of(params: &HashMap<String, String>, default: View) -> View {
     match params.get("view").map(String::as_str) {
@@ -91,8 +71,7 @@ async fn list_stores(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["limit", "page"])?;
-    let page = Pagination::from_params(&params)?;
+    let page = Pagination::from_list_params(&params)?;
     Ok(Json(Page::paginate(svc.list_stores(&ctx).await?, &page)).into_response())
 }
 

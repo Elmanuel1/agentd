@@ -12,7 +12,7 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 
 use crate::schema::agents;
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
 
 /// Postgres-backed agents store (Diesel).
 #[derive(Debug, Clone)]
@@ -48,12 +48,8 @@ fn row(ws: &WorkspaceId, a: &Agent) -> Result<NewAgent, StoreError> {
         name: a.name.clone(),
         archived_at: a.archived_at.map(|t| t.as_datetime()),
         created_at: a.created_at.as_datetime(),
-        doc: serde_json::to_value(a).map_err(|e| StoreError::Backend(e.to_string()))?,
+        doc: to_doc(a)?,
     })
-}
-
-fn parse(doc: serde_json::Value) -> Result<Agent, StoreError> {
-    serde_json::from_value(doc).map_err(|e| StoreError::Backend(e.to_string()))
 }
 
 #[async_trait]
@@ -79,7 +75,7 @@ impl AgentsStore for PgAgentsStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        parse(doc.ok_or(StoreError::NotFound)?)
+        parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn version(
@@ -98,7 +94,7 @@ impl AgentsStore for PgAgentsStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        parse(doc.ok_or(StoreError::NotFound)?)
+        parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn append_version(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
@@ -134,7 +130,7 @@ impl AgentsStore for PgAgentsStore {
         let Some(maxv) = max else {
             return Err(StoreError::NotFound);
         };
-        let doc = serde_json::to_value(&agent).map_err(|e| StoreError::Backend(e.to_string()))?;
+        let doc = to_doc(&agent)?;
         let affected = diesel::update(
             agents::table
                 .filter(agents::workspace_id.eq(&ws.0))
@@ -168,7 +164,7 @@ impl AgentsStore for PgAgentsStore {
         if docs.is_empty() {
             return Err(StoreError::NotFound);
         }
-        docs.into_iter().map(parse).collect()
+        docs.into_iter().map(parse_doc).collect()
     }
 
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Agent>, StoreError> {
@@ -182,6 +178,6 @@ impl AgentsStore for PgAgentsStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter().map(parse).collect()
+        docs.into_iter().map(parse_doc).collect()
     }
 }
