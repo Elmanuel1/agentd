@@ -98,7 +98,7 @@ async fn dynamo_agents_versioned_roundtrip() {
     // list returns latest of each; a second agent added.
     let id2 = agentd_agents::types::AgentId::generate();
     store.insert(&ctx().workspace, agent(1, id2.clone())).await.unwrap();
-    let listed = store.list(&ctx().workspace).await.unwrap();
+    let listed = store.list(&ctx().workspace, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap();
     assert_eq!(listed.len(), 2);
     assert!(listed.iter().any(|a| a.id == id && a.version == 2));
 

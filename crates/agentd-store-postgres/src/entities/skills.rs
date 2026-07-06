@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use agentd_blobs::BlobStore;
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use agentd_skills::{Skill, SkillId, SkillVersion, SkillsStore, StoreError};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -117,12 +117,14 @@ impl SkillsStore for PgSkillsStore {
         parse_doc(doc.ok_or(StoreError::SkillNotFound)?)
     }
 
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Skill>, StoreError> {
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Skill>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = skills::table
             .filter(skills::workspace_id.eq(ws.as_str()))
             .order(skills::created_at.desc())
             .select(skills::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
@@ -133,6 +135,7 @@ impl SkillsStore for PgSkillsStore {
         &self,
         ws: &WorkspaceId,
         id: &SkillId,
+        page: &Pagination,
     ) -> Result<Vec<SkillVersion>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = skill_versions::table
@@ -140,6 +143,8 @@ impl SkillsStore for PgSkillsStore {
             .filter(skill_versions::skill_id.eq(id.as_str()))
             .order(skill_versions::version.desc())
             .select(skill_versions::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
@@ -180,8 +185,19 @@ impl SkillsStore for PgSkillsStore {
     }
 
     async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError> {
-        let versions = self.versions(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        // Every version's blob key must be removed — fetch the full set, not a page.
+        let version_docs: Vec<serde_json::Value> = skill_versions::table
+            .filter(skill_versions::workspace_id.eq(ws.as_str()))
+            .filter(skill_versions::skill_id.eq(id.as_str()))
+            .select(skill_versions::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        let versions: Vec<SkillVersion> = version_docs
+            .into_iter()
+            .map(parse_doc)
+            .collect::<Result<_, StoreError>>()?;
         diesel::delete(
             skill_versions::table
                 .filter(skill_versions::workspace_id.eq(ws.as_str()))

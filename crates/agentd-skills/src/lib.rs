@@ -127,11 +127,12 @@ pub struct SkillListPage<T> {
 }
 
 impl<T> SkillListPage<T> {
-    /// Slice an ordered set to the requested page. Reuses core's `page_…`
-    /// cursor; `has_more` mirrors cursor presence.
+    /// Build from rows the store fetched DB-side with `limit + 1`
+    /// ([`Pagination::fetch_limit`]/[`Pagination::sql_offset`]). Reuses core's
+    /// `page_…` cursor; `has_more` mirrors cursor presence.
     #[must_use]
-    pub fn paginate(all: Vec<T>, page: &Pagination) -> Self {
-        let inner = Page::paginate(all, page);
+    pub fn from_fetched(rows: Vec<T>, page: &Pagination) -> Self {
+        let inner = Page::from_fetched(rows, page);
         Self {
             data: inner.data,
             has_more: inner.next_page.is_some(),
@@ -242,13 +243,14 @@ pub trait SkillsStore: Send + Sync {
     ) -> Result<(), StoreError>;
     /// Fetch a skill.
     async fn get(&self, ws: &WorkspaceId, id: &SkillId) -> Result<Skill, StoreError>;
-    /// All skills, newest first.
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Skill>, StoreError>;
-    /// A skill's versions, newest first.
+    /// One page of skills, newest first (fetched DB-side with `limit + 1`).
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Skill>, StoreError>;
+    /// One page of a skill's versions, newest first (fetched DB-side).
     async fn versions(
         &self,
         ws: &WorkspaceId,
         id: &SkillId,
+        page: &Pagination,
     ) -> Result<Vec<SkillVersion>, StoreError>;
     /// Delete one version; returns whether the skill has any versions left.
     async fn delete_version(
@@ -323,8 +325,11 @@ impl SkillsService {
     }
 
     /// `GET /v1/skills`.
-    pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<Skill>, ApiError> {
-        self.store.list(&ctx.workspace).await.map_err(map_store)
+    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Skill>, ApiError> {
+        self.store
+            .list(&ctx.workspace, page)
+            .await
+            .map_err(map_store)
     }
 
     /// `GET /v1/skills/{id}/versions`.
@@ -332,10 +337,11 @@ impl SkillsService {
         &self,
         ctx: &AuthContext,
         raw_id: &str,
+        page: &Pagination,
     ) -> Result<Vec<SkillVersion>, ApiError> {
         let id = agentd_core::parse_id::<SkillResource>(raw_id)?;
         self.store
-            .versions(&ctx.workspace, &id)
+            .versions(&ctx.workspace, &id, page)
             .await
             .map_err(map_store)
     }

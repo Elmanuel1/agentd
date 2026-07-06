@@ -8,7 +8,7 @@ use agentd_core::limits::{
     ModelCatalog,
 };
 use agentd_core::metadata::MetadataPolicy;
-use agentd_core::{ApiError, AuthContext, Timestamp};
+use agentd_core::{ApiError, AuthContext, Pagination, Timestamp};
 
 use crate::store::{AgentsStore, StoreError};
 use crate::types::{
@@ -84,8 +84,11 @@ impl AgentsService {
     }
 
     /// `GET /v1/agents` — latest version of each agent.
-    pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<Agent>, ApiError> {
-        self.store.list(&ctx.workspace).await.map_err(map_store)
+    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Agent>, ApiError> {
+        self.store
+            .list(&ctx.workspace, page)
+            .await
+            .map_err(map_store)
     }
 
     /// `GET /v1/agents/{id}/versions` — ascending.

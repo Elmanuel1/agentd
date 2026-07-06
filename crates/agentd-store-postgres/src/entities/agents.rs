@@ -5,7 +5,7 @@
 use agentd_agents::store::{AgentsStore, StoreError};
 use agentd_agents::types::AgentId;
 use agentd_agents::Agent;
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -167,7 +167,7 @@ impl AgentsStore for PgAgentsStore {
         docs.into_iter().map(parse_doc).collect()
     }
 
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Agent>, StoreError> {
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Agent>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         // "Latest of each agent" — Postgres DISTINCT ON, one indexed query.
         let docs: Vec<serde_json::Value> = agents::table
@@ -175,6 +175,8 @@ impl AgentsStore for PgAgentsStore {
             .distinct_on(agents::agent_id)
             .order((agents::agent_id, agents::version.desc()))
             .select(agents::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;

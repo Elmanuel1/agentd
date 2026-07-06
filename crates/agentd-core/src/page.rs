@@ -52,6 +52,22 @@ impl<T> Page<T> {
         let next_page = (end < total).then(|| encode_cursor(end));
         Self { data, next_page }
     }
+
+    /// Build a page from rows the store fetched DB-side with
+    /// [`Pagination::fetch_limit`] + [`Pagination::sql_offset`]: the store asks
+    /// for `limit + 1` rows, so a returned row beyond `limit` proves more remain
+    /// without loading the whole table. Behaviourally identical to
+    /// [`Self::paginate`] over the full set, but only `limit + 1` rows travel.
+    #[must_use]
+    pub fn from_fetched(mut rows: Vec<T>, page: &Pagination) -> Self {
+        let has_more = rows.len() > page.limit;
+        rows.truncate(page.limit);
+        let next_page = has_more.then(|| encode_cursor(page.offset + page.limit));
+        Self {
+            data: rows,
+            next_page,
+        }
+    }
 }
 
 /// Parsed pagination controls: a page size and an offset into the ordered set.
@@ -94,6 +110,31 @@ impl Pagination {
     pub fn from_list_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
         reject_unknown_params(params, &["limit", "page"])?;
         Self::from_params(params)
+    }
+
+    /// SQL `LIMIT` to fetch: `limit + 1`. The extra row (if present) signals
+    /// "more remain" without a second count query. Capped at `i64`.
+    #[must_use]
+    pub fn fetch_limit(&self) -> i64 {
+        self.limit.saturating_add(1).min(i64::MAX as usize) as i64
+    }
+
+    /// SQL `OFFSET` for this page.
+    #[must_use]
+    pub fn sql_offset(&self) -> i64 {
+        self.offset.min(i64::MAX as usize) as i64
+    }
+
+    /// Slice an already-materialized ordered set to this page's window,
+    /// yielding up to `limit + 1` rows so [`Page::from_fetched`] can still
+    /// detect "more". For stores that cannot push LIMIT/OFFSET into the query
+    /// (e.g. a DynamoDB partition query returns the whole partition).
+    #[must_use]
+    pub fn window<T>(&self, rows: Vec<T>) -> Vec<T> {
+        rows.into_iter()
+            .skip(self.offset)
+            .take(self.limit.saturating_add(1))
+            .collect()
     }
 }
 
@@ -186,6 +227,29 @@ mod tests {
         // Live: an empty list is {"data":[]} (next_page omitted).
         let p: Page<u8> = Page::of(vec![]);
         assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"data":[]}"#);
+    }
+
+    #[test]
+    fn from_fetched_matches_paginate_over_full_set() {
+        // The store fetches `fetch_limit()` rows at `sql_offset()`; from_fetched
+        // must produce the same page (data + next_page) as slicing the full set.
+        let all: Vec<u8> = (0..25).collect();
+        for offset in [0usize, 10, 20, 25, 40] {
+            for limit in [1usize, 7, 20, 100] {
+                let page = Pagination { limit, offset };
+                let full = Page::paginate(all.clone(), &page);
+                // Simulate the DB fetch: skip=offset, take=limit+1.
+                let fetched: Vec<u8> = all
+                    .iter()
+                    .copied()
+                    .skip(page.sql_offset() as usize)
+                    .take(page.fetch_limit() as usize)
+                    .collect();
+                let db = Page::from_fetched(fetched, &page);
+                assert_eq!(db.data, full.data, "data at off={offset} lim={limit}");
+                assert_eq!(db.next_page, full.next_page, "cursor at off={offset} lim={limit}");
+            }
+        }
     }
 
     #[test]

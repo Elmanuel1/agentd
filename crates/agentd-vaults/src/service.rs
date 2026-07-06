@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use agentd_core::limits::{required, validate_array_max, validate_string_len, values};
 use agentd_core::metadata::MetadataPolicy;
-use agentd_core::{ApiError, AuthContext, Timestamp};
+use agentd_core::{ApiError, AuthContext, Pagination, Timestamp};
 
 use crate::store::{StoreError, StoredCredential, VaultsStore};
 use crate::types::{
@@ -75,9 +75,13 @@ impl VaultsService {
     }
 
     /// `GET /v1/vaults`.
-    pub async fn list_vaults(&self, ctx: &AuthContext) -> Result<Vec<Vault>, ApiError> {
+    pub async fn list_vaults(
+        &self,
+        ctx: &AuthContext,
+        page: &Pagination,
+    ) -> Result<Vec<Vault>, ApiError> {
         self.store
-            .list_vaults(&ctx.workspace)
+            .list_vaults(&ctx.workspace, page)
             .await
             .map_err(map_store)
     }

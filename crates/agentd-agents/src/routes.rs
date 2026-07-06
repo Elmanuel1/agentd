@@ -48,8 +48,8 @@ async fn list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let page = Pagination::from_list_params(&params)?;
-    let agents = svc.list(&ctx).await?;
-    Ok(Json(Page::paginate(agents, &page)).into_response())
+    let agents = svc.list(&ctx, &page).await?;
+    Ok(Json(Page::from_fetched(agents, &page)).into_response())
 }
 
 async fn get_one(

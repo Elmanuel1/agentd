@@ -5,7 +5,7 @@
 //! store keeps the full version history (agents are append-only per
 //! version; `update` never rewrites an old version).
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
 use crate::types::{Agent, AgentId};
@@ -39,8 +39,11 @@ pub trait AgentsStore: Send + Sync {
     async fn append_version(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError>;
     /// Replace the latest version in place (archive stamping only).
     async fn replace_latest(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError>;
-    /// All versions of one agent, ascending.
+    /// All versions of one agent, ascending. Version history is bounded and
+    /// several internal callers need the full set, so it is not paginated
+    /// DB-side (the route slices in memory).
     async fn versions(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Vec<Agent>, StoreError>;
-    /// Latest version of every agent in the workspace, insertion order.
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Agent>, StoreError>;
+    /// One page of the latest version of every agent in the workspace,
+    /// insertion order. `page` is applied DB-side (fetch `limit + 1`).
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Agent>, StoreError>;
 }

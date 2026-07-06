@@ -1,7 +1,7 @@
 //! `DeploymentsStore` on Postgres via Diesel — native exactly-once claim via
 //! `INSERT … ON CONFLICT DO NOTHING`.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use agentd_deployments::store::{DeploymentsStore, StoreError};
 use agentd_deployments::types::{Deployment, DeploymentId, DeploymentRun};
 use async_trait::async_trait;
@@ -120,12 +120,14 @@ impl DeploymentsStore for PgDeploymentsStore {
         Ok(())
     }
 
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Deployment>, StoreError> {
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Deployment>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = deployments::table
             .filter(deployments::workspace_id.eq(ws.as_str()))
             .order(deployments::created_at.desc())
             .select(deployments::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;

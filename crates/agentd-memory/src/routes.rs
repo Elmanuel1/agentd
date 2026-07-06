@@ -72,7 +72,7 @@ async fn list_stores(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let page = Pagination::from_list_params(&params)?;
-    Ok(Json(Page::paginate(svc.list_stores(&ctx).await?, &page)).into_response())
+    Ok(Json(Page::from_fetched(svc.list_stores(&ctx, &page).await?, &page)).into_response())
 }
 
 async fn get_store(

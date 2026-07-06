@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agentd_core::limits::{required, validate_range_u32, values};
-use agentd_core::{ApiError, AuthContext, Timestamp, Usage, WorkspaceId};
+use agentd_core::{ApiError, AuthContext, Pagination, Timestamp, Usage, WorkspaceId};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
@@ -165,8 +165,12 @@ impl SessionsService {
     }
 
     /// `GET /v1/sessions`.
-    pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<Session>, ApiError> {
-        self.store.list(&ctx.workspace).await.map_err(map_store)
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        page: &Pagination,
+    ) -> Result<Vec<Session>, ApiError> {
+        self.store.list(&ctx.workspace, page).await.map_err(map_store)
     }
 
     /// `POST /v1/sessions/{id}` — title/metadata only here.

@@ -1,6 +1,6 @@
 //! Session persistence: session rows + the append-only event log.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
 use crate::events::Event;
@@ -29,7 +29,7 @@ pub trait SessionsStore: Send + Sync {
     /// Delete a session and its event log.
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// All sessions, insertion order.
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Session>, StoreError>;
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Session>, StoreError>;
     /// Append an event to the log.
     async fn append_event(
         &self,

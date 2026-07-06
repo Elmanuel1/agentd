@@ -1,6 +1,6 @@
 //! Deployment persistence — deployments + append-only run records.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
 use crate::types::{Deployment, DeploymentId, DeploymentRun};
@@ -26,7 +26,7 @@ pub trait DeploymentsStore: Send + Sync {
     /// Replace.
     async fn replace(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError>;
     /// List, insertion order.
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Deployment>, StoreError>;
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Deployment>, StoreError>;
     /// Count (for the ≤1000/org limit; keyed by workspace here, org check in api).
     async fn count(&self, ws: &WorkspaceId) -> Result<usize, StoreError>;
     /// Append a run record.

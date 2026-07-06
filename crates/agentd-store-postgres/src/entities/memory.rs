@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use agentd_blobs::BlobStore;
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use agentd_memory::store::{MemoryPersistence, MemoryRecord, StoreError, VersionRecord};
 use agentd_memory::types::{
     Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId,
@@ -281,12 +281,18 @@ impl MemoryPersistence for PgMemoryStore {
         Ok(store)
     }
 
-    async fn list_stores(&self, ws: &WorkspaceId) -> Result<Vec<MemoryStoreEntity>, StoreError> {
+    async fn list_stores(
+        &self,
+        ws: &WorkspaceId,
+        page: &Pagination,
+    ) -> Result<Vec<MemoryStoreEntity>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = memory_stores::table
             .filter(memory_stores::workspace_id.eq(ws.as_str()))
             .order(memory_stores::created_at.desc())
             .select(memory_stores::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;

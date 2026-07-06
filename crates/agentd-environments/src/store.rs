@@ -1,6 +1,6 @@
 //! Environment persistence — **org-scoped** (shared across workspaces).
 
-use agentd_core::OrgId;
+use agentd_core::{OrgId, Pagination};
 use async_trait::async_trait;
 
 use crate::types::{Environment, EnvironmentId};
@@ -28,6 +28,10 @@ pub trait EnvironmentsStore: Send + Sync {
     /// Remove one.
     async fn delete(&self, org: &OrgId, id: &EnvironmentId) -> Result<Environment, StoreError>;
     /// All environments in the org, insertion order.
-    async fn list(&self, org: &OrgId) -> Result<Vec<Environment>, StoreError>;
+    async fn list(
+        &self,
+        org: &OrgId,
+        page: &Pagination,
+    ) -> Result<Vec<Environment>, StoreError>;
 }
 

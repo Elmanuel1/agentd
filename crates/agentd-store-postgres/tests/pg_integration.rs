@@ -215,7 +215,7 @@ async fn dashboard_queries_are_native_sql() {
     agents.insert(&ws, agent(1, AgentId::generate(), "triage-bot")).await.unwrap();
     agents.insert(&ws, agent(1, AgentId::generate(), "report-bot")).await.unwrap();
 
-    let listed = agents.list(&ws).await.unwrap();
+    let listed = agents.list(&ws, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap();
     assert_eq!(listed.len(), 3, "DISTINCT ON returns latest of each agent");
     assert!(listed.iter().any(|a| a.id == a1 && a.version == 2));
 
@@ -231,14 +231,14 @@ async fn dashboard_queries_are_native_sql() {
         svc.create(&ctx_ws, create_depl()).await.unwrap();
     }
     // Pause one → status column diverges.
-    let all = deployments.list(&ws).await.unwrap();
+    let all = deployments.list(&ws, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap();
     svc.pause(&ctx_ws, all[0].id.as_str()).await.unwrap();
 
     // Count tile: one indexed query.
     assert_eq!(deployments.count(&ws).await.unwrap(), 3);
     // "Show only failed runs" etc. is the has_error SQL filter, exercised in
     // the deployment suite; here we assert the list came back newest-first.
-    let listed = deployments.list(&ws).await.unwrap();
+    let listed = deployments.list(&ws, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap();
     assert_eq!(listed.len(), 3);
 }
 

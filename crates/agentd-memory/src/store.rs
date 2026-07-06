@@ -10,7 +10,7 @@
 //! - resolve happens through [`VersionSelector`] so callers (sessions,
 //!   dreams) choose `latest` or a pinned version explicitly.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
 use crate::types::{
@@ -110,7 +110,11 @@ pub trait MemoryPersistence: Send + Sync {
         id: &MemoryStoreId,
     ) -> Result<MemoryStoreEntity, StoreError>;
     /// All stores.
-    async fn list_stores(&self, ws: &WorkspaceId) -> Result<Vec<MemoryStoreEntity>, StoreError>;
+    async fn list_stores(
+        &self,
+        ws: &WorkspaceId,
+        page: &Pagination,
+    ) -> Result<Vec<MemoryStoreEntity>, StoreError>;
 
     /// Insert a brand-new memory (version 1 chain). Fails on occupied path.
     async fn insert_memory(

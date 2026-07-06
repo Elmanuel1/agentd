@@ -5,7 +5,7 @@ use std::sync::Arc;
 use agentd_core::hash::content_sha256;
 use agentd_core::limits::{required, validate_bytes_max, validate_sha256_hex, values};
 use agentd_core::metadata::MetadataPolicy;
-use agentd_core::{ApiError, AuthContext, ErrorType, Timestamp};
+use agentd_core::{ApiError, AuthContext, ErrorType, Pagination, Timestamp};
 
 use crate::store::{MemoryPersistence, MemoryRecord, StoreError, VersionRecord, VersionSelector};
 use crate::types::{
@@ -157,9 +157,13 @@ impl MemoriesService {
     }
 
     /// `GET /v1/memory_stores`.
-    pub async fn list_stores(&self, ctx: &AuthContext) -> Result<Vec<MemoryStoreEntity>, ApiError> {
+    pub async fn list_stores(
+        &self,
+        ctx: &AuthContext,
+        page: &Pagination,
+    ) -> Result<Vec<MemoryStoreEntity>, ApiError> {
         self.store
-            .list_stores(&ctx.workspace)
+            .list_stores(&ctx.workspace, page)
             .await
             .map_err(map_store)
     }

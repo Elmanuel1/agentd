@@ -1,7 +1,7 @@
 //! `SessionsStore` on Postgres via Diesel — session rows + the shared
 //! append-only event log (SSE tails `session_events` by `seq`).
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use agentd_sessions::events::Event;
 use agentd_sessions::store::{SessionsStore, StoreError};
 use agentd_sessions::types::{Session, SessionId};
@@ -122,12 +122,14 @@ impl SessionsStore for PgSessionsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Session>, StoreError> {
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Session>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = sessions::table
             .filter(sessions::workspace_id.eq(ws.as_str()))
             .order(sessions::created_at.asc())
             .select(sessions::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;

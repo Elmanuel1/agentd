@@ -7,7 +7,7 @@
 use agentd_agents::store::{AgentsStore, StoreError};
 use agentd_agents::Agent;
 use agentd_agents::types::AgentId;
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
 use crate::entities::vseg;
@@ -116,7 +116,7 @@ impl AgentsStore for DynamoAgentsStore {
         Ok(versions)
     }
 
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Agent>, StoreError> {
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Agent>, StoreError> {
         let all: Vec<Agent> = self
             .aws
             .dynamo
@@ -134,6 +134,6 @@ impl AgentsStore for DynamoAgentsStore {
                 }
             }
         }
-        Ok(latest.into_values().collect())
+        Ok(page.window(latest.into_values().collect()))
     }
 }

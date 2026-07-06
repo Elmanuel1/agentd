@@ -1,6 +1,6 @@
 //! `EnvironmentsStore` on Postgres via Diesel — org-scoped CRUD.
 
-use agentd_core::OrgId;
+use agentd_core::{OrgId, Pagination};
 use agentd_environments::store::{EnvironmentsStore, StoreError};
 use agentd_environments::types::{Environment, EnvironmentId};
 use async_trait::async_trait;
@@ -105,12 +105,14 @@ impl EnvironmentsStore for PgEnvironmentsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn list(&self, org: &OrgId) -> Result<Vec<Environment>, StoreError> {
+    async fn list(&self, org: &OrgId, page: &Pagination) -> Result<Vec<Environment>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = environments::table
             .filter(environments::org_id.eq(org.as_str()))
             .order(environments::created_at.asc())
             .select(environments::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;

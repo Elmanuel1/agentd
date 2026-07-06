@@ -7,7 +7,7 @@ use agentd_agents::AgentRef;
 use agentd_core::limits::{required, validate_array_max, values};
 use agentd_core::metadata::MetadataPolicy;
 use agentd_core::ports::{FireTarget, ScheduleSpec, SchedulerPort};
-use agentd_core::{ApiError, AuthContext, Timestamp};
+use agentd_core::{ApiError, AuthContext, Pagination, Timestamp};
 use async_trait::async_trait;
 use chrono::Utc;
 
@@ -153,8 +153,12 @@ impl DeploymentsService {
     }
 
     /// `GET /v1/deployments`.
-    pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<Deployment>, ApiError> {
-        self.store.list(&ctx.workspace).await.map_err(map_store)
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        page: &Pagination,
+    ) -> Result<Vec<Deployment>, ApiError> {
+        self.store.list(&ctx.workspace, page).await.map_err(map_store)
     }
 
     /// `POST /v1/deployments/{id}/pause` — reversible; manual runs allowed.

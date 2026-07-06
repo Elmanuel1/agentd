@@ -87,7 +87,7 @@ async fn duplicate_names_allowed_like_live_api() {
     let b = s.create(&ctx(&org), minimal()).await.unwrap();
     assert_ne!(a.id, b.id);
     assert_eq!(a.name, b.name);
-    assert_eq!(s.list(&ctx(&org)).await.unwrap().len(), 2);
+    assert_eq!(s.list(&ctx(&org), &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().len(), 2);
 }
 
 #[tokio::test]

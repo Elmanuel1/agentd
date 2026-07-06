@@ -7,7 +7,7 @@
 //!   `sk = "claim"` — a conditional `put_if_absent` is the atomic
 //!   exactly-once boundary across replicas.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use agentd_deployments::store::{DeploymentsStore, StoreError};
 use agentd_deployments::types::{Deployment, DeploymentId, DeploymentRun};
 use async_trait::async_trait;
@@ -75,16 +75,24 @@ impl DeploymentsStore for DynamoDeploymentsStore {
             .map_err(be)
     }
 
-    async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Deployment>, StoreError> {
-        self.aws
+    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Deployment>, StoreError> {
+        let all: Vec<Deployment> = self
+            .aws
             .dynamo
             .query(&self.dtable(), ws.as_str(), None)
             .await
-            .map_err(be)
+            .map_err(be)?;
+        Ok(page.window(all))
     }
 
     async fn count(&self, ws: &WorkspaceId) -> Result<usize, StoreError> {
-        Ok(self.list(ws).await?.len())
+        let all: Vec<Deployment> = self
+            .aws
+            .dynamo
+            .query(&self.dtable(), ws.as_str(), None)
+            .await
+            .map_err(be)?;
+        Ok(all.len())
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DeploymentRun) -> Result<(), StoreError> {

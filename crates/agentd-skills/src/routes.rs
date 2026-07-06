@@ -46,7 +46,7 @@ async fn list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let page = Pagination::from_list_params(&params)?;
-    Ok(Json(SkillListPage::paginate(svc.list(&ctx).await?, &page)).into_response())
+    Ok(Json(SkillListPage::from_fetched(svc.list(&ctx, &page).await?, &page)).into_response())
 }
 
 async fn get_one(
@@ -73,7 +73,7 @@ async fn list_versions(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let page = Pagination::from_list_params(&params)?;
-    Ok(Json(SkillListPage::paginate(svc.versions(&ctx, &id).await?, &page)).into_response())
+    Ok(Json(SkillListPage::from_fetched(svc.versions(&ctx, &id, &page).await?, &page)).into_response())
 }
 
 async fn delete_version(

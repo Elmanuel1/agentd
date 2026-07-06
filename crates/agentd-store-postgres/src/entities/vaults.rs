@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use agentd_blobs::BlobStore;
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use agentd_vaults::store::{StoreError, StoredCredential, VaultsStore};
 use agentd_vaults::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
 use async_trait::async_trait;
@@ -176,12 +176,18 @@ impl VaultsStore for PgVaultsStore {
         Ok(vault)
     }
 
-    async fn list_vaults(&self, ws: &WorkspaceId) -> Result<Vec<Vault>, StoreError> {
+    async fn list_vaults(
+        &self,
+        ws: &WorkspaceId,
+        page: &Pagination,
+    ) -> Result<Vec<Vault>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = vaults::table
             .filter(vaults::workspace_id.eq(ws.as_str()))
             .order(vaults::created_at.asc())
             .select(vaults::doc)
+            .limit(page.fetch_limit())
+            .offset(page.sql_offset())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;

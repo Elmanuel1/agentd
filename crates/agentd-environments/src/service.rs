@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use agentd_core::limits::{required, validate_string_len, values};
 use agentd_core::metadata::MetadataPolicy;
-use agentd_core::{ApiError, AuthContext, Scope, Timestamp};
+use agentd_core::{ApiError, AuthContext, Pagination, Scope, Timestamp};
 
 use crate::store::{EnvironmentsStore, StoreError};
 use crate::types::{
@@ -72,8 +72,12 @@ impl EnvironmentsService {
     }
 
     /// `GET /v1/environments`.
-    pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<Environment>, ApiError> {
-        self.store.list(&ctx.org).await.map_err(map_store)
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        page: &Pagination,
+    ) -> Result<Vec<Environment>, ApiError> {
+        self.store.list(&ctx.org, page).await.map_err(map_store)
     }
 
     /// `POST /v1/environments/{id}` — changes apply to new containers only.

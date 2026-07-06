@@ -85,7 +85,7 @@ async fn pg_environments_service_roundtrip() {
         .unwrap();
     assert_eq!(env.name, "prod");
     assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap().id, env.id);
-    assert_eq!(svc.list(&ctx).await.unwrap().len(), 1);
+    assert_eq!(svc.list(&ctx, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().len(), 1);
     // org isolation
     assert!(svc.get(&ctx_org("other"), env.id.as_str()).await.is_err());
     svc.delete(&ctx, env.id.as_str()).await.unwrap();

@@ -4,7 +4,7 @@
 //! by the egress injector) as [`StoredCredential`]; only the secret-free
 //! [`Credential`] projection ever leaves through the service.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
 use crate::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
@@ -45,7 +45,11 @@ pub trait VaultsStore: Send + Sync {
     /// Delete a vault (and its credentials).
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// All vaults, insertion order.
-    async fn list_vaults(&self, ws: &WorkspaceId) -> Result<Vec<Vault>, StoreError>;
+    async fn list_vaults(
+        &self,
+        ws: &WorkspaceId,
+        page: &Pagination,
+    ) -> Result<Vec<Vault>, StoreError>;
 
     /// Insert a credential into a vault.
     async fn insert_credential(
