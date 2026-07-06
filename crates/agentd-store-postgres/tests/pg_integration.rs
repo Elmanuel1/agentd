@@ -34,7 +34,7 @@ async fn backend() -> PgBackend {
 
 /// Unique workspace per test so shared tables don't cross-contaminate.
 fn uniq_ws(tag: &str) -> WorkspaceId {
-    WorkspaceId(format!(
+    WorkspaceId::new(format!(
         "wrkspc_{tag}{}",
         Timestamp::now().as_datetime().timestamp_micros()
     ))
@@ -42,7 +42,7 @@ fn uniq_ws(tag: &str) -> WorkspaceId {
 
 fn ctx(ws: &WorkspaceId) -> AuthContext {
     AuthContext {
-        org: OrgId("org_pg".into()),
+        org: OrgId::new("org_pg"),
         workspace: ws.clone(),
         api_key_id: "apikey_pg".into(),
     }

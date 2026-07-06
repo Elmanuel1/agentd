@@ -35,7 +35,7 @@ impl PgSkillsStore {
     }
 
     fn key(ws: &WorkspaceId, id: &SkillId, version: &str) -> String {
-        format!("skills/{}/{}/{version}", ws.0, id.as_str())
+        format!("skills/{}/{}/{version}", ws.as_str(), id.as_str())
     }
 }
 
@@ -81,7 +81,7 @@ impl SkillsStore for PgSkillsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(skills::table)
             .values(NewSkill {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 skill_id: skill.id.as_str().to_owned(),
                 display_name: skill.display_title.clone(),
                 created_at: skill.created_at.as_datetime(),
@@ -92,7 +92,7 @@ impl SkillsStore for PgSkillsStore {
             .map_err(diesel_be)?;
         diesel::insert_into(skill_versions::table)
             .values(NewSkillVersion {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 skill_id: version.skill_id.as_str().to_owned(),
                 version: version_col(&version.version),
                 created_at: version.created_at.as_datetime(),
@@ -107,7 +107,7 @@ impl SkillsStore for PgSkillsStore {
     async fn get(&self, ws: &WorkspaceId, id: &SkillId) -> Result<Skill, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = skills::table
-            .filter(skills::workspace_id.eq(&ws.0))
+            .filter(skills::workspace_id.eq(ws.as_str()))
             .filter(skills::skill_id.eq(id.as_str()))
             .select(skills::doc)
             .first(&mut conn)
@@ -120,7 +120,7 @@ impl SkillsStore for PgSkillsStore {
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Skill>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = skills::table
-            .filter(skills::workspace_id.eq(&ws.0))
+            .filter(skills::workspace_id.eq(ws.as_str()))
             .order(skills::created_at.desc())
             .select(skills::doc)
             .load(&mut conn)
@@ -136,7 +136,7 @@ impl SkillsStore for PgSkillsStore {
     ) -> Result<Vec<SkillVersion>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = skill_versions::table
-            .filter(skill_versions::workspace_id.eq(&ws.0))
+            .filter(skill_versions::workspace_id.eq(ws.as_str()))
             .filter(skill_versions::skill_id.eq(id.as_str()))
             .order(skill_versions::version.desc())
             .select(skill_versions::doc)
@@ -155,7 +155,7 @@ impl SkillsStore for PgSkillsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::delete(
             skill_versions::table
-                .filter(skill_versions::workspace_id.eq(&ws.0))
+                .filter(skill_versions::workspace_id.eq(ws.as_str()))
                 .filter(skill_versions::skill_id.eq(id.as_str()))
                 .filter(skill_versions::version.eq(version_col(version))),
         )
@@ -170,7 +170,7 @@ impl SkillsStore for PgSkillsStore {
             .await
             .map_err(blob_be)?;
         let remaining: i64 = skill_versions::table
-            .filter(skill_versions::workspace_id.eq(&ws.0))
+            .filter(skill_versions::workspace_id.eq(ws.as_str()))
             .filter(skill_versions::skill_id.eq(id.as_str()))
             .count()
             .get_result(&mut conn)
@@ -184,7 +184,7 @@ impl SkillsStore for PgSkillsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::delete(
             skill_versions::table
-                .filter(skill_versions::workspace_id.eq(&ws.0))
+                .filter(skill_versions::workspace_id.eq(ws.as_str()))
                 .filter(skill_versions::skill_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -192,7 +192,7 @@ impl SkillsStore for PgSkillsStore {
         .map_err(diesel_be)?;
         let affected = diesel::delete(
             skills::table
-                .filter(skills::workspace_id.eq(&ws.0))
+                .filter(skills::workspace_id.eq(ws.as_str()))
                 .filter(skills::skill_id.eq(id.as_str())),
         )
         .execute(&mut conn)

@@ -48,7 +48,7 @@ impl AgentsStore for DynamoAgentsStore {
     async fn insert(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
         self.aws
             .dynamo
-            .put(&self.table(), &ws.0, &Self::sk(&agent.id, agent.version), &agent)
+            .put(&self.table(), ws.as_str(), &Self::sk(&agent.id, agent.version), &agent)
             .await
             .map_err(be)
     }
@@ -57,7 +57,7 @@ impl AgentsStore for DynamoAgentsStore {
         let mut versions: Vec<Agent> = self
             .aws
             .dynamo
-            .query(&self.table(), &ws.0, Some(&Self::prefix(id)))
+            .query(&self.table(), ws.as_str(), Some(&Self::prefix(id)))
             .await
             .map_err(be)?;
         versions.sort_by_key(|a| a.version);
@@ -72,7 +72,7 @@ impl AgentsStore for DynamoAgentsStore {
     ) -> Result<Agent, StoreError> {
         self.aws
             .dynamo
-            .get(&self.table(), &ws.0, &Self::sk(id, version))
+            .get(&self.table(), ws.as_str(), &Self::sk(id, version))
             .await
             .map_err(be)?
             .ok_or(StoreError::NotFound)
@@ -83,7 +83,7 @@ impl AgentsStore for DynamoAgentsStore {
         let exists: Vec<Agent> = self
             .aws
             .dynamo
-            .query(&self.table(), &ws.0, Some(&Self::prefix(&agent.id)))
+            .query(&self.table(), ws.as_str(), Some(&Self::prefix(&agent.id)))
             .await
             .map_err(be)?;
         if exists.is_empty() {
@@ -97,7 +97,7 @@ impl AgentsStore for DynamoAgentsStore {
         let current = self.latest(ws, &agent.id).await?;
         self.aws
             .dynamo
-            .put(&self.table(), &ws.0, &Self::sk(&agent.id, current.version), &agent)
+            .put(&self.table(), ws.as_str(), &Self::sk(&agent.id, current.version), &agent)
             .await
             .map_err(be)
     }
@@ -106,7 +106,7 @@ impl AgentsStore for DynamoAgentsStore {
         let mut versions: Vec<Agent> = self
             .aws
             .dynamo
-            .query(&self.table(), &ws.0, Some(&Self::prefix(id)))
+            .query(&self.table(), ws.as_str(), Some(&Self::prefix(id)))
             .await
             .map_err(be)?;
         if versions.is_empty() {
@@ -120,7 +120,7 @@ impl AgentsStore for DynamoAgentsStore {
         let all: Vec<Agent> = self
             .aws
             .dynamo
-            .query(&self.table(), &ws.0, None)
+            .query(&self.table(), ws.as_str(), None)
             .await
             .map_err(be)?;
         // Latest of each agent id, insertion-stable by id.

@@ -37,13 +37,13 @@ impl PgVaultsStore {
     }
 
     fn secret_key(ws: &WorkspaceId, vault: &VaultId, id: &CredentialId) -> String {
-        format!("secrets/{}/{}/{}", ws.0, vault.as_str(), id.as_str())
+        format!("secrets/{}/{}/{}", ws.as_str(), vault.as_str(), id.as_str())
     }
 
     async fn require_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<String> = vaults::table
-            .filter(vaults::workspace_id.eq(&ws.0))
+            .filter(vaults::workspace_id.eq(ws.as_str()))
             .filter(vaults::vault_id.eq(id.as_str()))
             .select(vaults::vault_id)
             .first(&mut conn)
@@ -103,7 +103,7 @@ impl VaultsStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(vaults::table)
             .values(NewVault {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 vault_id: vault.id.as_str().to_owned(),
                 display_name: vault.display_name.clone(),
                 created_at: vault.created_at.as_datetime(),
@@ -118,7 +118,7 @@ impl VaultsStore for PgVaultsStore {
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = vaults::table
-            .filter(vaults::workspace_id.eq(&ws.0))
+            .filter(vaults::workspace_id.eq(ws.as_str()))
             .filter(vaults::vault_id.eq(id.as_str()))
             .select(vaults::doc)
             .first(&mut conn)
@@ -132,7 +132,7 @@ impl VaultsStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             vaults::table
-                .filter(vaults::workspace_id.eq(&ws.0))
+                .filter(vaults::workspace_id.eq(ws.as_str()))
                 .filter(vaults::vault_id.eq(vault.id.as_str())),
         )
         .set((
@@ -156,7 +156,7 @@ impl VaultsStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::delete(
             credentials::table
-                .filter(credentials::workspace_id.eq(&ws.0))
+                .filter(credentials::workspace_id.eq(ws.as_str()))
                 .filter(credentials::vault_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -164,7 +164,7 @@ impl VaultsStore for PgVaultsStore {
         .map_err(diesel_be)?;
         diesel::delete(
             vaults::table
-                .filter(vaults::workspace_id.eq(&ws.0))
+                .filter(vaults::workspace_id.eq(ws.as_str()))
                 .filter(vaults::vault_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -179,7 +179,7 @@ impl VaultsStore for PgVaultsStore {
     async fn list_vaults(&self, ws: &WorkspaceId) -> Result<Vec<Vault>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = vaults::table
-            .filter(vaults::workspace_id.eq(&ws.0))
+            .filter(vaults::workspace_id.eq(ws.as_str()))
             .order(vaults::created_at.asc())
             .select(vaults::doc)
             .load(&mut conn)
@@ -199,7 +199,7 @@ impl VaultsStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(credentials::table)
             .values(NewCredential {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 vault_id: vault.as_str().to_owned(),
                 credential_id: cred.wire.id.as_str().to_owned(),
                 display_name: cred.wire.display_name.clone(),
@@ -221,7 +221,7 @@ impl VaultsStore for PgVaultsStore {
     ) -> Result<StoredCredential, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let row: Option<(serde_json::Value, bool)> = credentials::table
-            .filter(credentials::workspace_id.eq(&ws.0))
+            .filter(credentials::workspace_id.eq(ws.as_str()))
             .filter(credentials::vault_id.eq(vault.as_str()))
             .filter(credentials::credential_id.eq(id.as_str()))
             .select((credentials::doc, credentials::has_secret))
@@ -253,7 +253,7 @@ impl VaultsStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             credentials::table
-                .filter(credentials::workspace_id.eq(&ws.0))
+                .filter(credentials::workspace_id.eq(ws.as_str()))
                 .filter(credentials::vault_id.eq(vault.as_str()))
                 .filter(credentials::credential_id.eq(cred.wire.id.as_str())),
         )
@@ -281,7 +281,7 @@ impl VaultsStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::delete(
             credentials::table
-                .filter(credentials::workspace_id.eq(&ws.0))
+                .filter(credentials::workspace_id.eq(ws.as_str()))
                 .filter(credentials::vault_id.eq(vault.as_str()))
                 .filter(credentials::credential_id.eq(id.as_str())),
         )
@@ -301,7 +301,7 @@ impl VaultsStore for PgVaultsStore {
         // Secret-free listing: `auth` is fetched per-credential on demand.
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = credentials::table
-            .filter(credentials::workspace_id.eq(&ws.0))
+            .filter(credentials::workspace_id.eq(ws.as_str()))
             .filter(credentials::vault_id.eq(vault.as_str()))
             .order(credentials::created_at.asc())
             .select(credentials::doc)

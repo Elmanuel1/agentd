@@ -48,8 +48,8 @@ impl ApiKeyRegistry {
         self.inner.write().insert(
             key.into(),
             AuthContext {
-                org: OrgId(org.into()),
-                workspace: WorkspaceId(workspace.into()),
+                org: OrgId::new(org),
+                workspace: WorkspaceId::new(workspace),
                 api_key_id: api_key_id.into(),
             },
         );

@@ -51,7 +51,7 @@ impl DreamsStore for PgDreamsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(dreams::table)
             .values(NewDream {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 dream_id: d.id.as_str().to_owned(),
                 name: d.name.clone(),
                 status: enum_str(&d.status),
@@ -67,7 +67,7 @@ impl DreamsStore for PgDreamsStore {
     async fn get(&self, ws: &WorkspaceId, id: &DreamId) -> Result<Dream, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = dreams::table
-            .filter(dreams::workspace_id.eq(&ws.0))
+            .filter(dreams::workspace_id.eq(ws.as_str()))
             .filter(dreams::dream_id.eq(id.as_str()))
             .select(dreams::doc)
             .first(&mut conn)
@@ -81,7 +81,7 @@ impl DreamsStore for PgDreamsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             dreams::table
-                .filter(dreams::workspace_id.eq(&ws.0))
+                .filter(dreams::workspace_id.eq(ws.as_str()))
                 .filter(dreams::dream_id.eq(d.id.as_str())),
         )
         .set((
@@ -101,7 +101,7 @@ impl DreamsStore for PgDreamsStore {
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Dream>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = dreams::table
-            .filter(dreams::workspace_id.eq(&ws.0))
+            .filter(dreams::workspace_id.eq(ws.as_str()))
             .order(dreams::created_at.desc())
             .select(dreams::doc)
             .load(&mut conn)
@@ -113,7 +113,7 @@ impl DreamsStore for PgDreamsStore {
     async fn push_run(&self, ws: &WorkspaceId, run: DreamRun) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<String> = dreams::table
-            .filter(dreams::workspace_id.eq(&ws.0))
+            .filter(dreams::workspace_id.eq(ws.as_str()))
             .filter(dreams::dream_id.eq(run.dream_id.as_str()))
             .select(dreams::dream_id)
             .first(&mut conn)
@@ -125,7 +125,7 @@ impl DreamsStore for PgDreamsStore {
         }
         diesel::insert_into(dream_runs::table)
             .values(NewRun {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 dream_id: run.dream_id.as_str().to_owned(),
                 run_id: run.id.as_str().to_owned(),
                 created_at: run.created_at.as_datetime(),
@@ -140,7 +140,7 @@ impl DreamsStore for PgDreamsStore {
     async fn runs(&self, ws: &WorkspaceId, id: &DreamId) -> Result<Vec<DreamRun>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = dream_runs::table
-            .filter(dream_runs::workspace_id.eq(&ws.0))
+            .filter(dream_runs::workspace_id.eq(ws.as_str()))
             .filter(dream_runs::dream_id.eq(id.as_str()))
             .order(dream_runs::seq.desc())
             .select(dream_runs::doc)

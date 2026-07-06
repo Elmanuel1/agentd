@@ -43,7 +43,7 @@ impl PgFilesStore {
     }
 
     fn key(ws: &WorkspaceId, id: &FileId) -> String {
-        format!("{}/{}", ws.0, id.as_str())
+        format!("{}/{}", ws.as_str(), id.as_str())
     }
 }
 
@@ -74,7 +74,7 @@ impl FilesStore for PgFilesStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(files::table)
             .values(NewFile {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 file_id: f.meta.id.as_str().to_owned(),
                 filename: f.meta.filename.clone(),
                 scope_id: f.scope_id.clone(),
@@ -91,7 +91,7 @@ impl FilesStore for PgFilesStore {
     async fn get(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = files::table
-            .filter(files::workspace_id.eq(&ws.0))
+            .filter(files::workspace_id.eq(ws.as_str()))
             .filter(files::file_id.eq(id.as_str()))
             .select(files::doc)
             .first(&mut conn)
@@ -112,7 +112,7 @@ impl FilesStore for PgFilesStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::delete(
             files::table
-                .filter(files::workspace_id.eq(&ws.0))
+                .filter(files::workspace_id.eq(ws.as_str()))
                 .filter(files::file_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -130,7 +130,7 @@ impl FilesStore for PgFilesStore {
         // Metadata-only list — no S3 round-trips; scope filter is SQL.
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let mut q = files::table
-            .filter(files::workspace_id.eq(&ws.0))
+            .filter(files::workspace_id.eq(ws.as_str()))
             .into_boxed();
         if let Some(s) = scope_id {
             q = q.filter(files::scope_id.eq(s.to_owned()));

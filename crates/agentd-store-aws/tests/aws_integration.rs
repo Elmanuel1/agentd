@@ -37,12 +37,12 @@ async fn backend(tag: &str) -> AwsBackend {
 }
 
 fn ws(n: &str) -> WorkspaceId {
-    WorkspaceId(n.to_owned())
+    WorkspaceId::new(n.to_owned())
 }
 
 fn ctx() -> AuthContext {
     AuthContext {
-        org: OrgId("org_t".into()),
+        org: OrgId::new("org_t"),
         workspace: ws("wrkspc_01aws"),
         api_key_id: "apikey_01aws".into(),
     }

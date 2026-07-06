@@ -41,7 +41,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(environments::table)
             .values(NewEnvironment {
-                org_id: org.0.clone(),
+                org_id: org.as_str().to_owned(),
                 environment_id: env.id.as_str().to_owned(),
                 name: env.name.clone(),
                 state: enum_str(&env.state),
@@ -57,7 +57,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
     async fn get(&self, org: &OrgId, id: &EnvironmentId) -> Result<Environment, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = environments::table
-            .filter(environments::org_id.eq(&org.0))
+            .filter(environments::org_id.eq(org.as_str()))
             .filter(environments::environment_id.eq(id.as_str()))
             .select(environments::doc)
             .first(&mut conn)
@@ -72,7 +72,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
         let doc = to_doc(&env)?;
         let affected = diesel::update(
             environments::table
-                .filter(environments::org_id.eq(&org.0))
+                .filter(environments::org_id.eq(org.as_str()))
                 .filter(environments::environment_id.eq(env.id.as_str())),
         )
         .set((
@@ -94,7 +94,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = diesel::delete(
             environments::table
-                .filter(environments::org_id.eq(&org.0))
+                .filter(environments::org_id.eq(org.as_str()))
                 .filter(environments::environment_id.eq(id.as_str())),
         )
         .returning(environments::doc)
@@ -108,7 +108,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
     async fn list(&self, org: &OrgId) -> Result<Vec<Environment>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = environments::table
-            .filter(environments::org_id.eq(&org.0))
+            .filter(environments::org_id.eq(org.as_str()))
             .order(environments::created_at.asc())
             .select(environments::doc)
             .load(&mut conn)

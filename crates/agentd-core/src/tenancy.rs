@@ -10,12 +10,48 @@ use serde::{Deserialize, Serialize};
 /// Organization identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct OrgId(pub String);
+pub struct OrgId(String);
 
 /// Workspace identifier (`wrkspc_…` on the admin API).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct WorkspaceId(pub String);
+pub struct WorkspaceId(String);
+
+impl OrgId {
+    /// Wrap a raw org id.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+    /// Borrow the raw id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl WorkspaceId {
+    /// Wrap a raw workspace id.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+    /// Borrow the raw id.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for OrgId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::Display for WorkspaceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// The resolved identity of a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,16 +81,16 @@ mod tests {
     fn ids_are_distinct_types() {
         // Compile-time property: OrgId and WorkspaceId cannot be swapped.
         fn takes_org(_: &OrgId) {}
-        let org = OrgId("org_a".into());
+        let org = OrgId::new("org_a");
         takes_org(&org);
-        // takes_org(&WorkspaceId("w".into())); // ← does not compile, by design
+        // takes_org(&WorkspaceId::new("w")); // ← wrong type, does not compile, by design
     }
 
     #[test]
     fn actor_from_context() {
         let ctx = AuthContext {
-            org: OrgId("org_a".into()),
-            workspace: WorkspaceId("wrkspc_01".into()),
+            org: OrgId::new("org_a"),
+            workspace: WorkspaceId::new("wrkspc_01"),
             api_key_id: "apikey_01".into(),
         };
         assert_eq!(

@@ -41,7 +41,7 @@ impl DynamoFilesStore {
         self.aws.table("files")
     }
     fn key(ws: &WorkspaceId, id: &FileId) -> String {
-        format!("{}/{}", ws.0, id.as_str())
+        format!("{}/{}", ws.as_str(), id.as_str())
     }
 }
 
@@ -64,7 +64,7 @@ impl FilesStore for DynamoFilesStore {
         };
         self.aws
             .dynamo
-            .put(&self.table(), &ws.0, f.meta.id.as_str(), &doc)
+            .put(&self.table(), ws.as_str(), f.meta.id.as_str(), &doc)
             .await
             .map_err(be)
     }
@@ -73,7 +73,7 @@ impl FilesStore for DynamoFilesStore {
         let doc: FileDoc = self
             .aws
             .dynamo
-            .get(&self.table(), &ws.0, id.as_str())
+            .get(&self.table(), ws.as_str(), id.as_str())
             .await
             .map_err(be)?
             .ok_or(StoreError::NotFound)?;
@@ -94,7 +94,7 @@ impl FilesStore for DynamoFilesStore {
         let existing = self.get(ws, id).await?;
         self.aws
             .dynamo
-            .delete::<FileDoc>(&self.table(), &ws.0, id.as_str())
+            .delete::<FileDoc>(&self.table(), ws.as_str(), id.as_str())
             .await
             .map_err(be)?;
         self.aws
@@ -111,7 +111,7 @@ impl FilesStore for DynamoFilesStore {
         scope_id: Option<&str>,
     ) -> Result<Vec<StoredFile>, StoreError> {
         let docs: Vec<FileDoc> =
-            self.aws.dynamo.query(&self.table(), &ws.0, None).await.map_err(be)?;
+            self.aws.dynamo.query(&self.table(), ws.as_str(), None).await.map_err(be)?;
         // List is metadata-only in practice (the service maps to `.meta`), so
         // we skip the per-file S3 fetch and return empty bytes.
         Ok(docs

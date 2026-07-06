@@ -39,7 +39,7 @@ impl PgMemoryStore {
     }
 
     fn blob_key(ws: &WorkspaceId, store: &MemoryStoreId, version: &MemoryVersionId) -> String {
-        format!("memory/{}/{}/{}", ws.0, store.as_str(), version.as_str())
+        format!("memory/{}/{}/{}", ws.as_str(), store.as_str(), version.as_str())
     }
 
     async fn require_store(
@@ -49,7 +49,7 @@ impl PgMemoryStore {
     ) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<String> = memory_stores::table
-            .filter(memory_stores::workspace_id.eq(&ws.0))
+            .filter(memory_stores::workspace_id.eq(ws.as_str()))
             .filter(memory_stores::store_id.eq(store.as_str()))
             .select(memory_stores::store_id)
             .first(&mut conn)
@@ -67,7 +67,7 @@ impl PgMemoryStore {
     ) -> Result<Vec<VersionRecord>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let rows: Vec<(serde_json::Value, bool)> = memory_versions::table
-            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::workspace_id.eq(ws.as_str()))
             .filter(memory_versions::store_id.eq(store.as_str()))
             .filter(memory_versions::memory_id.eq(memory_id.as_str()))
             .order(memory_versions::seq.asc())
@@ -119,7 +119,7 @@ impl PgMemoryStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(memory_versions::table)
             .values((
-                memory_versions::workspace_id.eq(&ws.0),
+                memory_versions::workspace_id.eq(ws.as_str()),
                 memory_versions::store_id.eq(store.as_str()),
                 memory_versions::memory_id.eq(memory_id.as_str()),
                 memory_versions::version_id.eq(v.version.id.as_str()),
@@ -152,7 +152,7 @@ impl PgMemoryStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(memories::table)
             .values((
-                memories::workspace_id.eq(&ws.0),
+                memories::workspace_id.eq(ws.as_str()),
                 memories::store_id.eq(store.as_str()),
                 memories::memory_id.eq(record.head.id.as_str()),
                 memories::path.eq(&record.head.path),
@@ -186,7 +186,7 @@ impl MemoryPersistence for PgMemoryStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(memory_stores::table)
             .values((
-                memory_stores::workspace_id.eq(&ws.0),
+                memory_stores::workspace_id.eq(ws.as_str()),
                 memory_stores::store_id.eq(s.id.as_str()),
                 memory_stores::name.eq(&s.name),
                 memory_stores::created_at.eq(s.created_at.as_datetime()),
@@ -205,7 +205,7 @@ impl MemoryPersistence for PgMemoryStore {
     ) -> Result<MemoryStoreEntity, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = memory_stores::table
-            .filter(memory_stores::workspace_id.eq(&ws.0))
+            .filter(memory_stores::workspace_id.eq(ws.as_str()))
             .filter(memory_stores::store_id.eq(id.as_str()))
             .select(memory_stores::doc)
             .first(&mut conn)
@@ -219,7 +219,7 @@ impl MemoryPersistence for PgMemoryStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             memory_stores::table
-                .filter(memory_stores::workspace_id.eq(&ws.0))
+                .filter(memory_stores::workspace_id.eq(ws.as_str()))
                 .filter(memory_stores::store_id.eq(s.id.as_str())),
         )
         .set((memory_stores::name.eq(&s.name), memory_stores::doc.eq(to_doc(&s)?)))
@@ -240,7 +240,7 @@ impl MemoryPersistence for PgMemoryStore {
         let store = self.get_store(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let version_ids: Vec<String> = memory_versions::table
-            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::workspace_id.eq(ws.as_str()))
             .filter(memory_versions::store_id.eq(id.as_str()))
             .filter(memory_versions::has_blob.eq(true))
             .select(memory_versions::version_id)
@@ -249,7 +249,7 @@ impl MemoryPersistence for PgMemoryStore {
             .map_err(diesel_be)?;
         diesel::delete(
             memory_versions::table
-                .filter(memory_versions::workspace_id.eq(&ws.0))
+                .filter(memory_versions::workspace_id.eq(ws.as_str()))
                 .filter(memory_versions::store_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -257,7 +257,7 @@ impl MemoryPersistence for PgMemoryStore {
         .map_err(diesel_be)?;
         diesel::delete(
             memories::table
-                .filter(memories::workspace_id.eq(&ws.0))
+                .filter(memories::workspace_id.eq(ws.as_str()))
                 .filter(memories::store_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -265,14 +265,14 @@ impl MemoryPersistence for PgMemoryStore {
         .map_err(diesel_be)?;
         diesel::delete(
             memory_stores::table
-                .filter(memory_stores::workspace_id.eq(&ws.0))
+                .filter(memory_stores::workspace_id.eq(ws.as_str()))
                 .filter(memory_stores::store_id.eq(id.as_str())),
         )
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;
         for vid in version_ids {
-            let key = format!("memory/{}/{}/{}", ws.0, id.as_str(), vid);
+            let key = format!("memory/{}/{}/{}", ws.as_str(), id.as_str(), vid);
             match self.blobs.delete(&key).await {
                 Ok(()) | Err(agentd_blobs::BlobError::NotFound(_)) => {}
                 Err(e) => return Err(blob_be(e)),
@@ -284,7 +284,7 @@ impl MemoryPersistence for PgMemoryStore {
     async fn list_stores(&self, ws: &WorkspaceId) -> Result<Vec<MemoryStoreEntity>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = memory_stores::table
-            .filter(memory_stores::workspace_id.eq(&ws.0))
+            .filter(memory_stores::workspace_id.eq(ws.as_str()))
             .order(memory_stores::created_at.desc())
             .select(memory_stores::doc)
             .load(&mut conn)
@@ -322,7 +322,7 @@ impl MemoryPersistence for PgMemoryStore {
         self.require_store(ws, store).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let row: Option<(serde_json::Value, bool)> = memories::table
-            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::workspace_id.eq(ws.as_str()))
             .filter(memories::store_id.eq(store.as_str()))
             .filter(memories::memory_id.eq(id.as_str()))
             .select((memories::doc, memories::deleted))
@@ -352,7 +352,7 @@ impl MemoryPersistence for PgMemoryStore {
         self.require_store(ws, store).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<String> = memories::table
-            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::workspace_id.eq(ws.as_str()))
             .filter(memories::store_id.eq(store.as_str()))
             .filter(memories::memory_id.eq(record.head.id.as_str()))
             .select(memories::memory_id)
@@ -389,7 +389,7 @@ impl MemoryPersistence for PgMemoryStore {
         self.require_store(ws, store).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let mut q = memories::table
-            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::workspace_id.eq(ws.as_str()))
             .filter(memories::store_id.eq(store.as_str()))
             .filter(memories::deleted.eq(false))
             .into_boxed();
@@ -428,7 +428,7 @@ impl MemoryPersistence for PgMemoryStore {
     ) -> Result<Option<MemoryId>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = memories::table
-            .filter(memories::workspace_id.eq(&ws.0))
+            .filter(memories::workspace_id.eq(ws.as_str()))
             .filter(memories::store_id.eq(store.as_str()))
             .filter(memories::path.eq(path))
             .filter(memories::deleted.eq(false))
@@ -455,7 +455,7 @@ impl MemoryPersistence for PgMemoryStore {
         self.require_store(ws, store).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let mut q = memory_versions::table
-            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::workspace_id.eq(ws.as_str()))
             .filter(memory_versions::store_id.eq(store.as_str()))
             .into_boxed();
         if let Some(mid) = memory_id {
@@ -485,7 +485,7 @@ impl MemoryPersistence for PgMemoryStore {
     ) -> Result<(MemoryId, VersionRecord), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let row: Option<(serde_json::Value, bool)> = memory_versions::table
-            .filter(memory_versions::workspace_id.eq(&ws.0))
+            .filter(memory_versions::workspace_id.eq(ws.as_str()))
             .filter(memory_versions::store_id.eq(store.as_str()))
             .filter(memory_versions::version_id.eq(id.as_str()))
             .select((memory_versions::doc, memory_versions::has_blob))

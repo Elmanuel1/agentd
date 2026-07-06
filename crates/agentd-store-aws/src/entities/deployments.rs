@@ -39,7 +39,7 @@ impl DynamoDeploymentsStore {
         self.aws.table("deployment_claims")
     }
     fn run_pk(ws: &WorkspaceId, id: &DeploymentId) -> String {
-        format!("{}#{}", ws.0, id.as_str())
+        format!("{}#{}", ws.as_str(), id.as_str())
     }
 }
 
@@ -52,7 +52,7 @@ impl DeploymentsStore for DynamoDeploymentsStore {
     async fn insert(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
         self.aws
             .dynamo
-            .put(&self.dtable(), &ws.0, d.id.as_str(), &d)
+            .put(&self.dtable(), ws.as_str(), d.id.as_str(), &d)
             .await
             .map_err(be)
     }
@@ -60,7 +60,7 @@ impl DeploymentsStore for DynamoDeploymentsStore {
     async fn get(&self, ws: &WorkspaceId, id: &DeploymentId) -> Result<Deployment, StoreError> {
         self.aws
             .dynamo
-            .get(&self.dtable(), &ws.0, id.as_str())
+            .get(&self.dtable(), ws.as_str(), id.as_str())
             .await
             .map_err(be)?
             .ok_or(StoreError::NotFound)
@@ -70,7 +70,7 @@ impl DeploymentsStore for DynamoDeploymentsStore {
         // put is upsert; existence already implied by the caller having read it.
         self.aws
             .dynamo
-            .put(&self.dtable(), &ws.0, d.id.as_str(), &d)
+            .put(&self.dtable(), ws.as_str(), d.id.as_str(), &d)
             .await
             .map_err(be)
     }
@@ -78,7 +78,7 @@ impl DeploymentsStore for DynamoDeploymentsStore {
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Deployment>, StoreError> {
         self.aws
             .dynamo
-            .query(&self.dtable(), &ws.0, None)
+            .query(&self.dtable(), ws.as_str(), None)
             .await
             .map_err(be)
     }
@@ -122,7 +122,7 @@ impl DeploymentsStore for DynamoDeploymentsStore {
     ) -> Result<bool, StoreError> {
         // Conditional write: the FIRST replica to write this key wins; every
         // other gets false. This is the real cross-replica exactly-once.
-        let pk = format!("{}#{}#{scheduled_at}", ws.0, deployment.as_str());
+        let pk = format!("{}#{}#{scheduled_at}", ws.as_str(), deployment.as_str());
         self.aws
             .dynamo
             .put_if_absent(&self.ctable(), &pk, "claim")

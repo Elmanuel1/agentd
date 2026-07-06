@@ -42,7 +42,7 @@ struct NewAgent {
 
 fn row(ws: &WorkspaceId, a: &Agent) -> Result<NewAgent, StoreError> {
     Ok(NewAgent {
-        workspace_id: ws.0.clone(),
+        workspace_id: ws.as_str().to_owned(),
         agent_id: a.id.as_str().to_owned(),
         version: a.version as i64,
         name: a.name.clone(),
@@ -67,7 +67,7 @@ impl AgentsStore for PgAgentsStore {
     async fn latest(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Agent, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = agents::table
-            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::workspace_id.eq(ws.as_str()))
             .filter(agents::agent_id.eq(id.as_str()))
             .order(agents::version.desc())
             .select(agents::doc)
@@ -86,7 +86,7 @@ impl AgentsStore for PgAgentsStore {
     ) -> Result<Agent, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = agents::table
-            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::workspace_id.eq(ws.as_str()))
             .filter(agents::agent_id.eq(id.as_str()))
             .filter(agents::version.eq(version as i64))
             .select(agents::doc)
@@ -100,7 +100,7 @@ impl AgentsStore for PgAgentsStore {
     async fn append_version(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<i64> = agents::table
-            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::workspace_id.eq(ws.as_str()))
             .filter(agents::agent_id.eq(agent.id.as_str()))
             .select(agents::version)
             .first(&mut conn)
@@ -121,7 +121,7 @@ impl AgentsStore for PgAgentsStore {
     async fn replace_latest(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let max: Option<i64> = agents::table
-            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::workspace_id.eq(ws.as_str()))
             .filter(agents::agent_id.eq(agent.id.as_str()))
             .select(diesel::dsl::max(agents::version))
             .first(&mut conn)
@@ -133,7 +133,7 @@ impl AgentsStore for PgAgentsStore {
         let doc = to_doc(&agent)?;
         let affected = diesel::update(
             agents::table
-                .filter(agents::workspace_id.eq(&ws.0))
+                .filter(agents::workspace_id.eq(ws.as_str()))
                 .filter(agents::agent_id.eq(agent.id.as_str()))
                 .filter(agents::version.eq(maxv)),
         )
@@ -154,7 +154,7 @@ impl AgentsStore for PgAgentsStore {
     async fn versions(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Vec<Agent>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = agents::table
-            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::workspace_id.eq(ws.as_str()))
             .filter(agents::agent_id.eq(id.as_str()))
             .order(agents::version.asc())
             .select(agents::doc)
@@ -171,7 +171,7 @@ impl AgentsStore for PgAgentsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         // "Latest of each agent" — Postgres DISTINCT ON, one indexed query.
         let docs: Vec<serde_json::Value> = agents::table
-            .filter(agents::workspace_id.eq(&ws.0))
+            .filter(agents::workspace_id.eq(ws.as_str()))
             .distinct_on(agents::agent_id)
             .order((agents::agent_id, agents::version.desc()))
             .select(agents::doc)

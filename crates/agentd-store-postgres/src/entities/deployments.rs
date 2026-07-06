@@ -71,7 +71,7 @@ impl DeploymentsStore for PgDeploymentsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(deployments::table)
             .values(NewDeployment {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 deployment_id: d.id.as_str().to_owned(),
                 name: d.name.clone(),
                 status: status_str(&d).to_owned(),
@@ -88,7 +88,7 @@ impl DeploymentsStore for PgDeploymentsStore {
     async fn get(&self, ws: &WorkspaceId, id: &DeploymentId) -> Result<Deployment, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = deployments::table
-            .filter(deployments::workspace_id.eq(&ws.0))
+            .filter(deployments::workspace_id.eq(ws.as_str()))
             .filter(deployments::deployment_id.eq(id.as_str()))
             .select(deployments::doc)
             .first(&mut conn)
@@ -102,7 +102,7 @@ impl DeploymentsStore for PgDeploymentsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             deployments::table
-                .filter(deployments::workspace_id.eq(&ws.0))
+                .filter(deployments::workspace_id.eq(ws.as_str()))
                 .filter(deployments::deployment_id.eq(d.id.as_str())),
         )
         .set((
@@ -123,7 +123,7 @@ impl DeploymentsStore for PgDeploymentsStore {
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Deployment>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = deployments::table
-            .filter(deployments::workspace_id.eq(&ws.0))
+            .filter(deployments::workspace_id.eq(ws.as_str()))
             .order(deployments::created_at.desc())
             .select(deployments::doc)
             .load(&mut conn)
@@ -135,7 +135,7 @@ impl DeploymentsStore for PgDeploymentsStore {
     async fn count(&self, ws: &WorkspaceId) -> Result<usize, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let n: i64 = deployments::table
-            .filter(deployments::workspace_id.eq(&ws.0))
+            .filter(deployments::workspace_id.eq(ws.as_str()))
             .count()
             .get_result(&mut conn)
             .await
@@ -147,7 +147,7 @@ impl DeploymentsStore for PgDeploymentsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(deployment_runs::table)
             .values(NewRun {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 deployment_id: run.deployment_id.as_str().to_owned(),
                 run_id: run.id.as_str().to_owned(),
                 created_at: run.created_at.as_datetime(),
@@ -168,7 +168,7 @@ impl DeploymentsStore for PgDeploymentsStore {
     ) -> Result<Vec<DeploymentRun>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let mut q = deployment_runs::table
-            .filter(deployment_runs::workspace_id.eq(&ws.0))
+            .filter(deployment_runs::workspace_id.eq(ws.as_str()))
             .filter(deployment_runs::deployment_id.eq(deployment.as_str()))
             .into_boxed();
         if let Some(want) = has_error {
@@ -194,7 +194,7 @@ impl DeploymentsStore for PgDeploymentsStore {
         // insert affects a row; the rest do nothing.
         let affected = diesel::insert_into(deployment_claims::table)
             .values(NewClaim {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 deployment_id: deployment.as_str().to_owned(),
                 scheduled_at: scheduled_at.to_owned(),
             })

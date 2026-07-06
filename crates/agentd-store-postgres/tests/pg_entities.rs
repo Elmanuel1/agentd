@@ -43,12 +43,12 @@ fn stamp() -> i64 {
 }
 
 fn uniq_ws(tag: &str) -> WorkspaceId {
-    WorkspaceId(format!("wrkspc_{tag}{}", stamp()))
+    WorkspaceId::new(format!("wrkspc_{tag}{}", stamp()))
 }
 
 fn ctx_ws(ws: &WorkspaceId) -> AuthContext {
     AuthContext {
-        org: OrgId(format!("org_{}", ws.0)),
+        org: OrgId::new(format!("org_{}", ws.as_str())),
         workspace: ws.clone(),
         api_key_id: "apikey_ent".into(),
     }
@@ -57,8 +57,8 @@ fn ctx_ws(ws: &WorkspaceId) -> AuthContext {
 fn ctx_org(tag: &str) -> AuthContext {
     let org = format!("org_{tag}{}", stamp());
     AuthContext {
-        org: OrgId(org),
-        workspace: WorkspaceId("wrkspc_ent".into()),
+        org: OrgId::new(org),
+        workspace: WorkspaceId::new("wrkspc_ent"),
         api_key_id: "apikey_ent".into(),
     }
 }

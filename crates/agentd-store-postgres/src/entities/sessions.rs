@@ -28,7 +28,7 @@ impl PgSessionsStore {
     async fn require_session(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<String> = sessions::table
-            .filter(sessions::workspace_id.eq(&ws.0))
+            .filter(sessions::workspace_id.eq(ws.as_str()))
             .filter(sessions::session_id.eq(id.as_str()))
             .select(sessions::session_id)
             .first(&mut conn)
@@ -55,7 +55,7 @@ impl SessionsStore for PgSessionsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(sessions::table)
             .values(NewSession {
-                workspace_id: ws.0.clone(),
+                workspace_id: ws.as_str().to_owned(),
                 session_id: s.id.as_str().to_owned(),
                 status: enum_str(&s.status),
                 created_at: s.created_at.as_datetime(),
@@ -70,7 +70,7 @@ impl SessionsStore for PgSessionsStore {
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = sessions::table
-            .filter(sessions::workspace_id.eq(&ws.0))
+            .filter(sessions::workspace_id.eq(ws.as_str()))
             .filter(sessions::session_id.eq(id.as_str()))
             .select(sessions::doc)
             .first(&mut conn)
@@ -84,7 +84,7 @@ impl SessionsStore for PgSessionsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             sessions::table
-                .filter(sessions::workspace_id.eq(&ws.0))
+                .filter(sessions::workspace_id.eq(ws.as_str()))
                 .filter(sessions::session_id.eq(s.id.as_str())),
         )
         .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(to_doc(&s)?)))
@@ -102,7 +102,7 @@ impl SessionsStore for PgSessionsStore {
         // Log rows first so a crash never orphans events.
         diesel::delete(
             session_events::table
-                .filter(session_events::workspace_id.eq(&ws.0))
+                .filter(session_events::workspace_id.eq(ws.as_str()))
                 .filter(session_events::session_id.eq(id.as_str())),
         )
         .execute(&mut conn)
@@ -111,7 +111,7 @@ impl SessionsStore for PgSessionsStore {
         // Delete + return the row in one statement (no separate get).
         let doc: Option<serde_json::Value> = diesel::delete(
             sessions::table
-                .filter(sessions::workspace_id.eq(&ws.0))
+                .filter(sessions::workspace_id.eq(ws.as_str()))
                 .filter(sessions::session_id.eq(id.as_str())),
         )
         .returning(sessions::doc)
@@ -125,7 +125,7 @@ impl SessionsStore for PgSessionsStore {
     async fn list(&self, ws: &WorkspaceId) -> Result<Vec<Session>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = sessions::table
-            .filter(sessions::workspace_id.eq(&ws.0))
+            .filter(sessions::workspace_id.eq(ws.as_str()))
             .order(sessions::created_at.asc())
             .select(sessions::doc)
             .load(&mut conn)
@@ -145,7 +145,7 @@ impl SessionsStore for PgSessionsStore {
         // DB stamps the log time (authoritative ordering is `seq` bigserial).
         diesel::insert_into(session_events::table)
             .values((
-                session_events::workspace_id.eq(&ws.0),
+                session_events::workspace_id.eq(ws.as_str()),
                 session_events::session_id.eq(id.as_str()),
                 session_events::event_id.eq(event.id.as_str()),
                 session_events::created_at.eq(diesel::dsl::now),
@@ -166,7 +166,7 @@ impl SessionsStore for PgSessionsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             session_events::table
-                .filter(session_events::workspace_id.eq(&ws.0))
+                .filter(session_events::workspace_id.eq(ws.as_str()))
                 .filter(session_events::session_id.eq(id.as_str()))
                 .filter(session_events::event_id.eq(event.id.as_str())),
         )
@@ -184,7 +184,7 @@ impl SessionsStore for PgSessionsStore {
         self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = session_events::table
-            .filter(session_events::workspace_id.eq(&ws.0))
+            .filter(session_events::workspace_id.eq(ws.as_str()))
             .filter(session_events::session_id.eq(id.as_str()))
             .order(session_events::seq.asc())
             .select(session_events::doc)

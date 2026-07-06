@@ -122,8 +122,8 @@ impl DreamsService {
                     id: dream.id.as_str().to_owned(),
                 },
                 tenant: agentd_core::ports::TenantRef {
-                    org_id: ctx.org.0.clone(),
-                    workspace_id: ctx.workspace.0.clone(),
+                    org_id: ctx.org.as_str().to_owned(),
+                    workspace_id: ctx.workspace.as_str().to_owned(),
                 },
             })
             .await

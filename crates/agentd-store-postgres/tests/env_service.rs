@@ -35,8 +35,8 @@ fn uniq_org() -> String {
 
 fn ctx(org: &str) -> AuthContext {
     AuthContext {
-        org: OrgId(org.into()),
-        workspace: WorkspaceId("wrkspc_01a".into()),
+        org: OrgId::new(org),
+        workspace: WorkspaceId::new("wrkspc_01a"),
         api_key_id: "apikey_01".into(),
     }
 }
@@ -44,8 +44,8 @@ fn ctx(org: &str) -> AuthContext {
 /// Same org, different workspace — env must still be visible (org scope).
 fn ctx_other_ws(org: &str) -> AuthContext {
     AuthContext {
-        org: OrgId(org.into()),
-        workspace: WorkspaceId("wrkspc_02b".into()),
+        org: OrgId::new(org),
+        workspace: WorkspaceId::new("wrkspc_02b"),
         api_key_id: "apikey_02".into(),
     }
 }
@@ -212,8 +212,8 @@ mod routes {
         let svc = Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend))));
         let org = format!("org_rt{}", Timestamp::now().as_datetime().timestamp_micros());
         let ctx = AuthContext {
-            org: OrgId(org),
-            workspace: WorkspaceId("wrkspc_01t".into()),
+            org: OrgId::new(org),
+            workspace: WorkspaceId::new("wrkspc_01t"),
             api_key_id: "apikey_01t".into(),
         };
         agentd_environments::routes::router()
