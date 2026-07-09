@@ -3,7 +3,7 @@
 //! Layout: `{prefix}_files` `pk = workspace`, `sk = file_id`, doc = metadata
 //! + scope_id; bytes at S3 `{bucket}/{workspace}/{file_id}`.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{IdCursor, WorkspaceId};
 use agentd_files::store::{FilesStore, StoreError, StoredFile};
 use agentd_files::types::{FileId, FileMetadata};
 use async_trait::async_trait;
@@ -109,12 +109,14 @@ impl FilesStore for DynamoFilesStore {
         &self,
         ws: &WorkspaceId,
         scope_id: Option<&str>,
-    ) -> Result<Vec<StoredFile>, StoreError> {
+        cursor: &IdCursor,
+    ) -> Result<(Vec<StoredFile>, bool), StoreError> {
         let docs: Vec<FileDoc> =
             self.aws.dynamo.query(&self.table(), ws.as_str(), None).await.map_err(be)?;
         // List is metadata-only in practice (the service maps to `.meta`), so
-        // we skip the per-file S3 fetch and return empty bytes.
-        Ok(docs
+        // we skip the per-file S3 fetch and return empty bytes. DynamoDB returns
+        // the whole partition, so the id-cursor is applied in memory here.
+        let all: Vec<StoredFile> = docs
             .into_iter()
             .filter(|d| scope_id.is_none_or(|s| d.scope_id.as_deref() == Some(s)))
             .map(|d| StoredFile {
@@ -122,6 +124,7 @@ impl FilesStore for DynamoFilesStore {
                 bytes: Bytes::new(),
                 scope_id: d.scope_id,
             })
-            .collect())
+            .collect();
+        Ok(cursor.window(all, |f| f.meta.id.as_str()))
     }
 }

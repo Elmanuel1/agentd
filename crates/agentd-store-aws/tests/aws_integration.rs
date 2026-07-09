@@ -213,9 +213,9 @@ async fn dynamo_s3_files_roundtrip() {
     assert_eq!(got.meta.filename, "data.csv");
 
     // scope filter over DynamoDB
-    let scoped = store.list(&ctx().workspace, Some("sesn_01A")).await.unwrap();
+    let scoped = store.list(&ctx().workspace, Some("sesn_01A"), &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().0;
     assert_eq!(scoped.len(), 1);
-    let other = store.list(&ctx().workspace, Some("sesn_01Z")).await.unwrap();
+    let other = store.list(&ctx().workspace, Some("sesn_01Z"), &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().0;
     assert!(other.is_empty());
 
     store.delete(&ctx().workspace, &id).await.unwrap();

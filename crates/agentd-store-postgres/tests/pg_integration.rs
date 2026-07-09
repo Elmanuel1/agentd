@@ -190,9 +190,9 @@ async fn pg_files_roundtrip() {
         .unwrap();
     let got = store.get(&ws, &id).await.unwrap();
     assert_eq!(&got.bytes[..], b"a,b\n1,2\n");
-    let scoped = store.list(&ws, Some("sesn_01A")).await.unwrap();
+    let scoped = store.list(&ws, Some("sesn_01A"), &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().0;
     assert_eq!(scoped.len(), 1);
-    assert!(store.list(&ws, Some("sesn_01Z")).await.unwrap().is_empty());
+    assert!(store.list(&ws, Some("sesn_01Z"), &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().0.is_empty());
     store.delete(&ws, &id).await.unwrap();
     assert!(store.get(&ws, &id).await.is_err());
 }

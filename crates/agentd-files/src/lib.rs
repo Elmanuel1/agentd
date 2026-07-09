@@ -22,7 +22,7 @@ pub mod types;
 use std::sync::Arc;
 
 use agentd_core::limits::required;
-use agentd_core::{ApiError, AuthContext, Timestamp};
+use agentd_core::{ApiError, AuthContext, IdCursor, Timestamp};
 use bytes::Bytes;
 
 use store::{FilesStore, StoreError, StoredFile};
@@ -98,20 +98,19 @@ impl FilesService {
             .map_err(map_store)
     }
 
-    /// `GET /v1/files?scope_id=…`.
+    /// `GET /v1/files?scope_id=…` — one id-cursor page + `has_more`.
     pub async fn list(
         &self,
         ctx: &AuthContext,
         scope_id: Option<&str>,
-    ) -> Result<Vec<FileMetadata>, ApiError> {
-        Ok(self
+        cursor: &IdCursor,
+    ) -> Result<(Vec<FileMetadata>, bool), ApiError> {
+        let (files, has_more) = self
             .store
-            .list(&ctx.workspace, scope_id)
+            .list(&ctx.workspace, scope_id, cursor)
             .await
-            .map_err(map_store)?
-            .into_iter()
-            .map(|f| f.meta)
-            .collect())
+            .map_err(map_store)?;
+        Ok((files.into_iter().map(|f| f.meta).collect(), has_more))
     }
 
     /// `DELETE /v1/files/{id}`.

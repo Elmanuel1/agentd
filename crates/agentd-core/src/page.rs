@@ -154,40 +154,86 @@ pub struct IdPage<T> {
 }
 
 impl<T> IdPage<T> {
-    /// Paginate an ordered set by id cursor. `id_of` extracts each item's id;
-    /// `after_id`/`before_id` are exclusive bounds and `limit` (1..=100,
-    /// default 20) caps the page.
+    /// Paginate a fully-materialized ordered set by id cursor (for backends
+    /// that return the whole set). Prefer pushing the cursor DB-side via
+    /// [`IdCursor`] + [`Self::from_page`] on the default store.
     pub fn paginate(
         all: Vec<T>,
         params: &HashMap<String, String>,
         id_of: impl Fn(&T) -> &str,
     ) -> Result<Self, ApiError> {
-        let limit = Pagination::from_params(params)?.limit;
-        let start = match params.get("after_id") {
+        let cursor = IdCursor::from_params(params)?;
+        let (data, has_more) = cursor.window(all, &id_of);
+        Ok(Self::from_page(data, has_more, id_of))
+    }
+
+    /// Build the envelope from a page the store already sliced (DB-side keyset:
+    /// fetch `limit + 1`, `has_more = fetched > limit`). Only the two cursor ids
+    /// are owned, not one `String` per row.
+    #[must_use]
+    pub fn from_page(data: Vec<T>, has_more: bool, id_of: impl Fn(&T) -> &str) -> Self {
+        let first_id = data.first().map(|t| id_of(t).to_owned());
+        let last_id = data.last().map(|t| id_of(t).to_owned());
+        Self {
+            data,
+            has_more,
+            first_id,
+            last_id,
+        }
+    }
+}
+
+/// Parsed Files-API id-cursor controls: `after_id`/`before_id` exclusive bounds
+/// and a page `limit`. The default store resolves the bounds to sort keys and
+/// pushes a keyset predicate into SQL; partition-scan backends fall back to
+/// [`Self::window`] over the full set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdCursor {
+    /// Exclusive lower bound: items strictly after this id in list order.
+    pub after_id: Option<String>,
+    /// Exclusive upper bound: items strictly before this id in list order.
+    pub before_id: Option<String>,
+    /// Page size (1..=100).
+    pub limit: usize,
+}
+
+impl IdCursor {
+    /// Parse `limit`/`after_id`/`before_id` (limit validated like every list).
+    pub fn from_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
+        Ok(Self {
+            after_id: params.get("after_id").cloned(),
+            before_id: params.get("before_id").cloned(),
+            limit: Pagination::from_params(params)?.limit,
+        })
+    }
+
+    /// SQL `LIMIT` to fetch: `limit + 1` (the extra row proves "more remain").
+    #[must_use]
+    pub fn fetch_limit(&self) -> i64 {
+        self.limit.saturating_add(1).min(i64::MAX as usize) as i64
+    }
+
+    /// Apply the cursor to a fully-materialized ordered set, returning the page
+    /// rows plus `has_more`. A missing `after_id`/`before_id` is a no-op bound
+    /// (matches the Files API: an unknown cursor id does not clamp the page).
+    #[must_use]
+    pub fn window<T>(&self, all: Vec<T>, id_of: impl Fn(&T) -> &str) -> (Vec<T>, bool) {
+        let start = match &self.after_id {
             Some(a) => all.iter().position(|t| id_of(t) == a).map_or(0, |p| p + 1),
             None => 0,
         };
-        let end_bound = match params.get("before_id") {
+        let end = match &self.before_id {
             Some(b) => all.iter().position(|t| id_of(t) == b).unwrap_or(all.len()),
             None => all.len(),
         };
         let window: Vec<T> = all
             .into_iter()
             .enumerate()
-            .filter(|(i, _)| *i >= start && *i < end_bound)
+            .filter(|(i, _)| *i >= start && *i < end)
             .map(|(_, t)| t)
             .collect();
-        let has_more = window.len() > limit;
-        let data: Vec<T> = window.into_iter().take(limit).collect();
-        // Only the two cursor ids are owned (not one String per row).
-        let first_id = data.first().map(|t| id_of(t).to_owned());
-        let last_id = data.last().map(|t| id_of(t).to_owned());
-        Ok(Self {
-            data,
-            has_more,
-            first_id,
-            last_id,
-        })
+        let has_more = window.len() > self.limit;
+        (window.into_iter().take(self.limit).collect(), has_more)
     }
 }
 
@@ -227,6 +273,34 @@ mod tests {
         // Live: an empty list is {"data":[]} (next_page omitted).
         let p: Page<u8> = Page::of(vec![]);
         assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"data":[]}"#);
+    }
+
+    #[test]
+    fn id_cursor_window_bounds_and_has_more() {
+        #[allow(clippy::ptr_arg)] // the &String matches window's `Fn(&T)` HRTB
+        fn key(s: &String) -> &str {
+            s.as_str()
+        }
+        // Items are ids "0".."9" in list order.
+        let all: Vec<String> = (0..10).map(|n| n.to_string()).collect();
+
+        // after_id excludes everything up to and including it; limit caps + flags more.
+        let c = IdCursor { after_id: Some("2".into()), before_id: None, limit: 3 };
+        let (data, more) = c.window(all.clone(), key);
+        assert_eq!(data, vec!["3", "4", "5"]);
+        assert!(more);
+
+        // before_id is an exclusive upper bound.
+        let c = IdCursor { after_id: Some("2".into()), before_id: Some("6".into()), limit: 10 };
+        let (data, more) = c.window(all.clone(), key);
+        assert_eq!(data, vec!["3", "4", "5"]);
+        assert!(!more);
+
+        // Unknown cursor id is a no-op bound (whole set, from the start).
+        let c = IdCursor { after_id: Some("nope".into()), before_id: None, limit: 100 };
+        let (data, more) = c.window(all, key);
+        assert_eq!(data.len(), 10);
+        assert!(!more);
     }
 
     #[test]

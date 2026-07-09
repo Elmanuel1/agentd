@@ -41,7 +41,7 @@ pub use error::{ApiError, BackendError, ErrorType};
 pub use extract::{wire_response, ApiJson, ApiJsonError, RouteError};
 pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;
-pub use page::{reject_unknown_params, IdPage, Page, Pagination};
+pub use page::{reject_unknown_params, IdCursor, IdPage, Page, Pagination};
 pub use scope::Scope;
 pub use tenancy::{AuthContext, OrgId, WorkspaceId};
 pub use time::Timestamp;

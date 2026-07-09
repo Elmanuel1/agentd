@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{reject_unknown_params, AuthContext, IdPage, RouteError};
+use agentd_core::{reject_unknown_params, AuthContext, IdCursor, IdPage, RouteError};
 use axum::extract::{Extension, Multipart, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -62,8 +62,9 @@ async fn list(
     // /v1/files is the shared Files API — it paginates with {has_more, first_id,
     // last_id} + after_id/before_id, NOT the managed-agents next_page cursor.
     let scope = params.get("scope_id").map(String::as_str);
-    let files = svc.list(&ctx, scope).await?;
-    let page = IdPage::paginate(files, &params, |f| f.id.as_str())?;
+    let cursor = IdCursor::from_params(&params)?;
+    let (files, has_more) = svc.list(&ctx, scope, &cursor).await?;
+    let page = IdPage::from_page(files, has_more, |f| f.id.as_str());
     Ok(Json(page).into_response())
 }
 

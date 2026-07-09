@@ -4,13 +4,13 @@
 use std::sync::Arc;
 
 use agentd_blobs::BlobStore;
-use agentd_core::WorkspaceId;
+use agentd_core::{IdCursor, WorkspaceId};
 use agentd_files::store::{FilesStore, StoreError, StoredFile};
 use agentd_files::types::{FileId, FileMetadata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
 
@@ -126,22 +126,76 @@ impl FilesStore for PgFilesStore {
         &self,
         ws: &WorkspaceId,
         scope_id: Option<&str>,
-    ) -> Result<Vec<StoredFile>, StoreError> {
-        // Metadata-only list — no S3 round-trips; scope filter is SQL.
+        cursor: &IdCursor,
+    ) -> Result<(Vec<StoredFile>, bool), StoreError> {
+        // Metadata-only list — no S3 round-trips. The id-cursor is pushed into
+        // SQL as a keyset on the total order (created_at DESC, file_id DESC):
+        // resolve each bound id to its sort key, then fetch limit+1 rows.
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+
+        // Resolve a cursor id to its (created_at, file_id) sort key. A missing
+        // id yields None (a no-op bound), matching the Files API.
+        async fn sort_key(
+            conn: &mut diesel_async::pooled_connection::deadpool::Object<
+                diesel_async::AsyncPgConnection,
+            >,
+            ws: &WorkspaceId,
+            scope_id: Option<&str>,
+            id: &str,
+        ) -> Result<Option<(DateTime<Utc>, String)>, StoreError> {
+            let mut q = files::table
+                .filter(files::workspace_id.eq(ws.as_str()))
+                .filter(files::file_id.eq(id.to_owned()))
+                .into_boxed();
+            if let Some(s) = scope_id {
+                q = q.filter(files::scope_id.eq(s.to_owned()));
+            }
+            q.select((files::created_at, files::file_id))
+                .first(conn)
+                .await
+                .optional()
+                .map_err(diesel_be)
+        }
+
+        let after_key = match &cursor.after_id {
+            Some(a) => sort_key(&mut conn, ws, scope_id, a).await?,
+            None => None,
+        };
+        let before_key = match &cursor.before_id {
+            Some(b) => sort_key(&mut conn, ws, scope_id, b).await?,
+            None => None,
+        };
+
         let mut q = files::table
             .filter(files::workspace_id.eq(ws.as_str()))
             .into_boxed();
         if let Some(s) = scope_id {
             q = q.filter(files::scope_id.eq(s.to_owned()));
         }
+        // Keyset: strictly-after the cursor in DESC order = a smaller sort key.
+        if let Some((ca, fid)) = after_key {
+            q = q.filter(
+                files::created_at
+                    .lt(ca)
+                    .or(files::created_at.eq(ca).and(files::file_id.lt(fid))),
+            );
+        }
+        if let Some((ca, fid)) = before_key {
+            q = q.filter(
+                files::created_at
+                    .gt(ca)
+                    .or(files::created_at.eq(ca).and(files::file_id.gt(fid))),
+            );
+        }
         let docs: Vec<serde_json::Value> = q
-            .order(files::created_at.desc())
+            .order((files::created_at.desc(), files::file_id.desc()))
             .select(files::doc)
+            .limit(cursor.fetch_limit())
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter()
+        let mut rows: Vec<StoredFile> = docs
+            .into_iter()
             .map(|d| {
                 let doc: FileDoc = parse_doc(d)?;
                 Ok(StoredFile {
@@ -150,6 +204,9 @@ impl FilesStore for PgFilesStore {
                     scope_id: doc.scope_id,
                 })
             })
-            .collect()
+            .collect::<Result<_, StoreError>>()?;
+        let has_more = rows.len() > cursor.limit;
+        rows.truncate(cursor.limit);
+        Ok((rows, has_more))
     }
 }

@@ -1,6 +1,6 @@
 //! File persistence — workspace-scoped blobs.
 
-use agentd_core::WorkspaceId;
+use agentd_core::{IdCursor, WorkspaceId};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -37,10 +37,12 @@ pub trait FilesStore: Send + Sync {
     async fn get(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError>;
     /// Delete.
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError>;
-    /// List, optionally filtered by scope.
+    /// One page of files (id-cursor), optionally scope-filtered. Returns the
+    /// page rows plus whether more remain. Pushed DB-side on the default store.
     async fn list(
         &self,
         ws: &WorkspaceId,
         scope_id: Option<&str>,
-    ) -> Result<Vec<StoredFile>, StoreError>;
+        cursor: &IdCursor,
+    ) -> Result<(Vec<StoredFile>, bool), StoreError>;
 }
