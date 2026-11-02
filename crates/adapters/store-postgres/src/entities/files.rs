@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use ::files::store::{FilesStore, StoreError, StoredFile};
 use ::files::types::{FileId, FileMetadata};
+use ::files::FileFilter;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -113,9 +114,10 @@ impl FilesStore for PgFilesStore {
     async fn list(
         &self,
         ws: &WorkspaceId,
-        scope_id: Option<&str>,
+        filter: &FileFilter,
         cursor: &IdCursor,
     ) -> Result<(Vec<StoredFile>, bool), StoreError> {
+        let scope_id = filter.scope_id.as_deref();
         // Metadata-only list — no S3 round-trips. The id-cursor is pushed into
         // SQL as a keyset on the total order (created_at DESC, file_id DESC):
         // resolve each bound id to its sort key, then fetch limit+1 rows.
@@ -151,6 +153,9 @@ impl FilesStore for PgFilesStore {
         let mut q = files::table.filter(files::workspace_id.eq(ws.as_str())).into_boxed();
         if let Some(s) = scope_id {
             q = q.filter(files::scope_id.eq(s.to_owned()));
+        }
+        if !filter.ids.is_empty() {
+            q = q.filter(files::file_id.eq_any(filter.ids.clone()));
         }
         // Keyset: strictly-after the cursor in DESC order = a smaller sort key.
         if let Some((ca, fid)) = after_key {

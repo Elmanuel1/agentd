@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use shared::{Pagination, WorkspaceId};
 
-use crate::{Skill, SkillId, SkillVersion};
+use crate::{Skill, SkillId, SkillVersion, VersionRef};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -34,13 +34,16 @@ pub trait SkillsStore: Send + Sync {
     async fn get(&self, ws: &WorkspaceId, id: &SkillId) -> Result<Skill, StoreError>;
     /// One page of skills, newest first (fetched DB-side with `limit + 1`).
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Skill>, StoreError>;
+    /// Replace a skill row (a new version moves its latest).
+    async fn replace(&self, ws: &WorkspaceId, skill: Skill) -> Result<(), StoreError>;
     /// Delete the skill and all its versions/bundles.
     async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError>;
 }
 
 /// A skill's versions and their bundles. Versions have their own lifecycle:
-/// they are listed, retrieved and deleted on their own, after the skill and
-/// its first version are created together through [`SkillsStore::create`].
+/// they are added, listed, retrieved and deleted on their own, after the
+/// skill and its first version are created together through
+/// [`SkillsStore::create`].
 #[async_trait]
 pub trait SkillVersionsStore: Send + Sync {
     /// One page of a skill's versions, newest first (fetched DB-side).
@@ -50,7 +53,19 @@ pub trait SkillVersionsStore: Send + Sync {
         id: &SkillId,
         page: &Pagination,
     ) -> Result<Vec<SkillVersion>, StoreError>;
-    /// Delete one version; returns whether the skill has any versions left.
-    async fn delete_version(&self, ws: &WorkspaceId, id: &SkillId, version: &str)
-        -> Result<bool, StoreError>;
+    /// Add a version and its bundle.
+    async fn add(&self, ws: &WorkspaceId, version: SkillVersion, bundle: Bytes) -> Result<(), StoreError>;
+    /// The version `which` names.
+    async fn get(
+        &self,
+        ws: &WorkspaceId,
+        id: &SkillId,
+        which: &VersionRef,
+    ) -> Result<SkillVersion, StoreError>;
+    /// How many versions the skill has.
+    async fn count(&self, ws: &WorkspaceId, id: &SkillId) -> Result<usize, StoreError>;
+    /// A version's bundle.
+    async fn bundle(&self, ws: &WorkspaceId, version: &SkillVersion) -> Result<Bytes, StoreError>;
+    /// Delete one version and its bundle.
+    async fn delete_version(&self, ws: &WorkspaceId, version: &SkillVersion) -> Result<(), StoreError>;
 }

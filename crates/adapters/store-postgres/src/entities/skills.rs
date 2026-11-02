@@ -81,7 +81,7 @@ impl SkillsStore for PgSkillsStore {
             .values(NewSkill {
                 workspace_id: ws.as_str().to_owned(),
                 skill_id: skill.id.as_str().to_owned(),
-                display_name: skill.display_title.clone(),
+                display_name: skill.display_name.clone(),
                 created_at: skill.created_at.as_datetime(),
                 doc: to_doc(&skill)?,
             })
@@ -127,6 +127,23 @@ impl SkillsStore for PgSkillsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(parse_doc).collect()
+    }
+
+    async fn replace(&self, ws: &WorkspaceId, skill: Skill) -> Result<(), StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let affected = diesel::update(
+            skills::table
+                .filter(skills::workspace_id.eq(ws.as_str()))
+                .filter(skills::skill_id.eq(skill.id.as_str())),
+        )
+        .set(skills::doc.eq(to_doc(&skill)?))
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        if affected == 0 {
+            return Err(StoreError::SkillNotFound);
+        }
+        Ok(())
     }
 
     async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError> {
