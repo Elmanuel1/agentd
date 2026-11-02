@@ -76,7 +76,7 @@ impl MemoriesService {
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
         self.require_writable(ctx, &sid).await?;
-        let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
+        let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         let new_content = match req.content {
             Some(c) => {
                 validate_bytes_max("content", c.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
@@ -109,17 +109,17 @@ impl MemoriesService {
             Some(&new_content),
             now,
         );
-        let (ver_id, sha) = (version.id.clone(), version.content_sha256.clone().unwrap_or_default());
-        record.chain.push(VersionRecord { version, blob: Some(new_content) });
-        // Advance the `latest` ref.
-        record.head.memory_version_id = ver_id;
-        record.head.content_sha256 = sha;
-        record.head.content_size_bytes =
-            record.chain.last().and_then(|v| v.version.content_size_bytes).unwrap_or_default();
-        record.head.path = new_path;
-        record.head.updated_at = now;
-        let head = record.head.clone();
-        self.store.replace_memory(&ctx.workspace, &sid, record).await.map_err(map_store)?;
+        let mut head = record.head;
+        let expected = std::mem::replace(&mut head.memory_version_id, version.id.clone());
+        head.content_sha256 = version.content_sha256.clone().unwrap_or_default();
+        head.content_size_bytes = new_content.len() as u64;
+        head.path = new_path;
+        head.updated_at = now;
+        let version = VersionRecord { version, blob: Some(new_content) };
+        self.store
+            .append_version(&ctx.workspace, &sid, &head, false, &expected, &version)
+            .await
+            .map_err(map_store)?;
         Ok(head)
     }
 
@@ -134,7 +134,7 @@ impl MemoriesService {
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
         self.require_writable(ctx, &sid).await?;
-        let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
+        let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         if let Some(expected) = expected_content_sha256 {
             validate_sha256_hex("expected_content_sha256", expected)?;
             if record.head.content_sha256 != expected {
@@ -152,11 +152,14 @@ impl MemoriesService {
             None,
             now,
         );
-        record.chain.push(VersionRecord { version, blob: None });
-        record.deleted = true;
-        record.head.updated_at = now;
-        let head = record.head.clone();
-        self.store.replace_memory(&ctx.workspace, &sid, record).await.map_err(map_store)?;
+        let mut head = record.head;
+        head.updated_at = now;
+        let expected = head.memory_version_id.clone();
+        let version = VersionRecord { version, blob: None };
+        self.store
+            .append_version(&ctx.workspace, &sid, &head, true, &expected, &version)
+            .await
+            .map_err(map_store)?;
         Ok(head)
     }
 }

@@ -383,3 +383,42 @@ async fn pg_memory_overlapping_paths_written_at_once_admit_one() {
         assert_eq!(ok, 1, "round {round}: exactly one of a path and its child is admitted");
     }
 }
+
+#[tokio::test]
+async fn pg_memory_concurrent_updates_never_lose_a_version() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memupd").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs))));
+    let ctx = ctx_ws(&uniq_ws("memupd"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    let req = serde_json::from_value(json!({"path": "/c.md", "content": "0"})).unwrap();
+    let m = svc.create_memory(&ctx, ms.id.as_str(), req).await.unwrap();
+    let writes = (1..=8).map(|i| {
+        let (svc, ctx, sid, mid) = (svc.clone(), ctx.clone(), ms.id.to_string(), m.id.to_string());
+        tokio::spawn(async move {
+            let req = serde_json::from_value(json!({"content": format!("{i}")})).unwrap();
+            svc.update_memory(&ctx, &sid, &mid, req).await
+        })
+    });
+    let mut applied = 0;
+    for w in writes.collect::<Vec<_>>() {
+        match w.await.unwrap() {
+            Ok(_) => applied += 1,
+            Err(e) => assert_eq!(e.status, 409, "a lost race is a 409: {e:?}"),
+        }
+    }
+    assert!(applied >= 1);
+    let filter = memory::store::VersionFilter { memory_id: Some(m.id.to_string()), ..Default::default() };
+    let page = shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap();
+    let view = memory::service::View::Full;
+    let versions = svc.list_versions(&ctx, ms.id.as_str(), &filter, view, &page).await.unwrap();
+    assert_eq!(versions.len(), applied + 1, "one version per applied update, plus the create");
+    let head = svc.get_memory(&ctx, ms.id.as_str(), m.id.as_str(), view).await.unwrap();
+    assert_eq!(head.memory_version_id, versions[0].id, "the head is the newest version");
+    assert_eq!(head.content, versions[0].content);
+}

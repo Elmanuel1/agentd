@@ -1,14 +1,15 @@
-//! Writing a memory's head row, with the live path-overlap rule.
+//! Writing a memory's head row and its versions, with the live path-overlap
+//! rule and the expected-head guard.
 
 use diesel::sql_types::{Array, Text};
-use diesel::upsert::excluded;
 use diesel::ExpressionMethods;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use memory::store::{MemoryRecord, StoreError};
-use memory::types::{Memory, MemoryStoreId};
+use memory::store::{StoreError, VersionRecord};
+use memory::types::{Memory, MemoryStoreId, MemoryVersionId};
 use shared::WorkspaceId;
 
+use super::versions::version_row;
 use super::PgMemoryStore;
 use crate::schema::memories;
 use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow};
@@ -21,38 +22,63 @@ const OVERLAP: &str = "SELECT doc FROM memories
     WHERE workspace_id = $1 AND store_id = $2 AND NOT deleted AND memory_id <> $3
       AND (path = ANY($4) OR (path ~>=~ $5 AND path ~<~ $6)) LIMIT 1";
 
+/// One head write: the head row, the versions written with it, whether the
+/// path-overlap rule applies, and the head it must still find (none for an
+/// insert).
+pub(super) struct HeadWrite<'a> {
+    pub head: &'a Memory,
+    pub deleted: bool,
+    pub versions: &'a [VersionRecord],
+    pub check: bool,
+    pub expected: Option<&'a MemoryVersionId>,
+}
+
+enum Outcome {
+    Written,
+    Conflict(serde_json::Value),
+    Moved,
+}
+
 impl PgMemoryStore {
-    /// Upsert the head. With `check`, the overlap check and the write run in
-    /// one transaction under a per-store advisory lock: only the exact path
-    /// has a unique index, so two writers of `/x` and `/x/y.md` would
-    /// otherwise both pass the check.
+    /// Write the head and its versions' rows in one transaction, after their
+    /// blobs. With `check`, the overlap check runs first in that transaction
+    /// under a per-store advisory lock: only the exact path has a unique
+    /// index, so two writers of `/x` and `/x/y.md` would otherwise both pass.
     pub(super) async fn write_head(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        record: &MemoryRecord,
-        check: bool,
+        w: &HeadWrite<'_>,
     ) -> Result<(), StoreError> {
+        for v in w.versions {
+            self.put_blob(ws, store, v).await?;
+        }
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let head = to_doc(&record.head)?;
-        let conflict = conn
+        let doc = to_doc(w.head)?;
+        let outcome = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
                 async move {
-                    if check {
-                        if let Some(row) = overlap(c, ws, store, record).await? {
-                            return Ok(Some(row.doc));
+                    if w.check {
+                        if let Some(row) = overlap(c, ws, store, w.head).await? {
+                            return Ok(Outcome::Conflict(row.doc));
                         }
                     }
-                    upsert(c, ws, store, record, head).await?;
-                    Ok(None)
+                    if !head_row(c, ws, store, w, doc).await? {
+                        return Ok(Outcome::Moved);
+                    }
+                    for v in w.versions {
+                        version_row(c, ws, store, &w.head.id, v).await?;
+                    }
+                    Ok(Outcome::Written)
                 }
                 .scope_boxed()
             })
             .await
             .map_err(diesel_be)?;
-        match conflict {
-            None => Ok(()),
-            Some(doc) => {
+        match outcome {
+            Outcome::Written => Ok(()),
+            Outcome::Moved => Err(StoreError::HeadMoved),
+            Outcome::Conflict(doc) => {
                 let other: Memory = parse_doc(doc)?;
                 Err(StoreError::PathConflict { path: other.path, memory_id: other.id })
             }
@@ -64,20 +90,20 @@ async fn overlap(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     store: &MemoryStoreId,
-    record: &MemoryRecord,
+    head: &Memory,
 ) -> Result<Option<DocRow>, diesel::result::Error> {
     diesel::sql_query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind::<Text, _>(format!("memory:{}:{}", ws.as_str(), store.as_str()))
         .execute(c)
         .await?;
-    let path = &record.head.path;
+    let path = &head.path;
     let mut exact: Vec<String> =
         path.match_indices('/').filter(|(i, _)| *i > 0).map(|(i, _)| path[..i].to_owned()).collect();
     exact.push(path.clone());
     let rows: Vec<DocRow> = diesel::sql_query(OVERLAP)
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(store.as_str())
-        .bind::<Text, _>(record.head.id.as_str())
+        .bind::<Text, _>(head.id.as_str())
         .bind::<Array<Text>, _>(&exact)
         .bind::<Text, _>(format!("{path}/"))
         // `0` is the byte after `/`, so the range is every `{path}/…`.
@@ -87,33 +113,45 @@ async fn overlap(
     Ok(rows.into_iter().next())
 }
 
-async fn upsert(
+/// Insert or update the head row; with `expected`, only while the stored
+/// head is still that version. False when the head had moved.
+async fn head_row(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     store: &MemoryStoreId,
-    record: &MemoryRecord,
+    w: &HeadWrite<'_>,
     doc: serde_json::Value,
-) -> Result<(), diesel::result::Error> {
-    diesel::insert_into(memories::table)
-        .values((
-            memories::workspace_id.eq(ws.as_str()),
-            memories::store_id.eq(store.as_str()),
-            memories::memory_id.eq(record.head.id.as_str()),
-            memories::path.eq(&record.head.path),
-            memories::head_version_id.eq(record.head.memory_version_id.as_str()),
-            memories::deleted.eq(record.deleted),
-            memories::created_at.eq(record.head.created_at.as_datetime()),
-            memories::doc.eq(doc),
-        ))
-        .on_conflict((memories::workspace_id, memories::store_id, memories::memory_id))
-        .do_update()
-        .set((
-            memories::path.eq(excluded(memories::path)),
-            memories::head_version_id.eq(excluded(memories::head_version_id)),
-            memories::deleted.eq(excluded(memories::deleted)),
-            memories::doc.eq(excluded(memories::doc)),
-        ))
-        .execute(c)
-        .await?;
-    Ok(())
+) -> Result<bool, diesel::result::Error> {
+    let (head, deleted) = (w.head, w.deleted);
+    let changes = (
+        memories::path.eq(&head.path),
+        memories::head_version_id.eq(head.memory_version_id.as_str()),
+        memories::deleted.eq(deleted),
+        memories::doc.eq(doc),
+    );
+    let rows = match w.expected {
+        Some(expected) => {
+            diesel::update(memories::table)
+                .filter(memories::workspace_id.eq(ws.as_str()))
+                .filter(memories::store_id.eq(store.as_str()))
+                .filter(memories::memory_id.eq(head.id.as_str()))
+                .filter(memories::head_version_id.eq(expected.as_str()))
+                .set(changes)
+                .execute(c)
+                .await?
+        }
+        None => {
+            diesel::insert_into(memories::table)
+                .values((
+                    memories::workspace_id.eq(ws.as_str()),
+                    memories::store_id.eq(store.as_str()),
+                    memories::memory_id.eq(head.id.as_str()),
+                    memories::created_at.eq(head.created_at.as_datetime()),
+                    changes,
+                ))
+                .execute(c)
+                .await?
+        }
+    };
+    Ok(rows == 1)
 }

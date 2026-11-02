@@ -19,7 +19,7 @@ mod records;
 pub use filters::{StoreFilter, VersionFilter};
 pub use records::{MemoryRecord, VersionRecord, VersionSelector};
 
-use crate::types::{MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersionId};
+use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersionId};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -41,6 +41,9 @@ pub enum StoreError {
         /// Who occupies it.
         memory_id: MemoryId,
     },
+    /// The head moved after the caller read it.
+    #[error("memory head moved")]
+    HeadMoved,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
@@ -91,19 +94,24 @@ pub trait MemoryRecordPersistence: Send + Sync {
         store: &MemoryStoreId,
         record: MemoryRecord,
     ) -> Result<(), StoreError>;
-    /// Fetch a memory record (head + chain).
+    /// A live memory's head with its current version as the only chain entry.
     async fn get_memory(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
         id: &MemoryId,
     ) -> Result<MemoryRecord, StoreError>;
-    /// Replace a memory record (append version / advance head / delete mark).
-    async fn replace_memory(
+    /// Write `version` and move the head to it (with the new head fields and
+    /// deleted mark), only while the head is still `expected`: a head another
+    /// writer moved first is [`StoreError::HeadMoved`] and writes nothing.
+    async fn append_version(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        record: MemoryRecord,
+        head: &Memory,
+        deleted: bool,
+        expected: &MemoryVersionId,
+        version: &VersionRecord,
     ) -> Result<(), StoreError>;
     /// Live (non-deleted) memories in a store, path order.
     async fn list_memories(
@@ -133,6 +141,14 @@ pub trait MemoryVersionPersistence: Send + Sync {
         filter: &VersionFilter,
         page: &Pagination,
     ) -> Result<Vec<VersionRecord>, StoreError>;
+    /// Rewrite one stored version in place (redact).
+    async fn replace_version(
+        &self,
+        ws: &WorkspaceId,
+        store: &MemoryStoreId,
+        memory_id: &MemoryId,
+        version: &VersionRecord,
+    ) -> Result<(), StoreError>;
     /// Fetch one version (searches all memories incl. deleted).
     async fn get_version(
         &self,

@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods};
 use diesel_async::RunQueryDsl;
-use memory::store::{MemoryRecord, MemoryRecordPersistence, StoreError};
-use memory::types::{Memory, MemoryId, MemoryStoreId};
+use memory::store::{
+    MemoryRecord, MemoryRecordPersistence, MemoryVersionPersistence, StoreError, VersionRecord,
+};
+use memory::types::{Memory, MemoryId, MemoryStoreId, MemoryVersionId};
 use shared::WorkspaceId;
 
+use super::heads::HeadWrite;
 use super::PgMemoryStore;
 use crate::schema::memories;
 use crate::{diesel_be, parse_doc, pool_be};
@@ -18,11 +21,14 @@ impl MemoryRecordPersistence for PgMemoryStore {
         record: MemoryRecord,
     ) -> Result<(), StoreError> {
         self.require_store(ws, store).await?;
-        self.write_head(ws, store, &record, true).await?;
-        for v in &record.chain {
-            self.upsert_version(ws, store, &record.head.id, v).await?;
-        }
-        Ok(())
+        let write = HeadWrite {
+            head: &record.head,
+            deleted: false,
+            versions: &record.chain,
+            check: true,
+            expected: None,
+        };
+        self.write_head(ws, store, &write).await
     }
 
     async fn get_memory(
@@ -50,35 +56,22 @@ impl MemoryRecordPersistence for PgMemoryStore {
             return Err(StoreError::MemoryNotFound);
         }
         let head: Memory = parse_doc(doc)?;
-        let chain = self.chain_full(ws, store, id).await?;
-        Ok(MemoryRecord { head, deleted, chain })
+        let (_, current) = self.get_version(ws, store, &head.memory_version_id).await?;
+        Ok(MemoryRecord { head, deleted, chain: vec![current] })
     }
 
-    async fn replace_memory(
+    async fn append_version(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        record: MemoryRecord,
+        head: &Memory,
+        deleted: bool,
+        expected: &MemoryVersionId,
+        version: &VersionRecord,
     ) -> Result<(), StoreError> {
-        self.require_store(ws, store).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let exists: Option<String> = memories::table
-            .filter(memories::workspace_id.eq(ws.as_str()))
-            .filter(memories::store_id.eq(store.as_str()))
-            .filter(memories::memory_id.eq(record.head.id.as_str()))
-            .select(memories::memory_id)
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?;
-        if exists.is_none() {
-            return Err(StoreError::MemoryNotFound);
-        }
-        self.write_head(ws, store, &record, !record.deleted).await?;
-        for v in &record.chain {
-            self.upsert_version(ws, store, &record.head.id, v).await?;
-        }
-        Ok(())
+        let versions = std::slice::from_ref(version);
+        let write = HeadWrite { head, deleted, versions, check: !deleted, expected: Some(expected) };
+        self.write_head(ws, store, &write).await
     }
 
     async fn list_memories(

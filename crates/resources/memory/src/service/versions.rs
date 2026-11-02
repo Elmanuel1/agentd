@@ -1,7 +1,7 @@
 use shared::{ApiError, AuthContext, Pagination};
 
 use super::{map_store, parse_mem_id, parse_mem_pair, parse_store_id, MemoriesService, View};
-use crate::store::{VersionFilter, VersionRecord, VersionSelector};
+use crate::store::{StoreError, VersionFilter, VersionRecord, VersionSelector};
 use crate::types::{Memory, MemoryId, MemoryStoreId, MemoryVersion, MemoryVersionId};
 
 impl MemoriesService {
@@ -56,9 +56,14 @@ impl MemoriesService {
         let sid = parse_store_id(raw_store_id)?;
         let vid = parse_version_id(raw_version_id)?;
         let (mem_id, mut v) = self.store.get_version(&ctx.workspace, &sid, &vid).await.map_err(map_store)?;
-        let mut record = self.store.get_memory(&ctx.workspace, &sid, &mem_id).await.map_err(map_store)?;
+        // A version whose memory is not found belongs to a deleted memory.
+        let live_head = match self.store.get_memory(&ctx.workspace, &sid, &mem_id).await {
+            Ok(record) => record.head.memory_version_id == vid,
+            Err(StoreError::MemoryNotFound) => false,
+            Err(e) => return Err(map_store(e)),
+        };
         // Live: the current head of a live memory cannot be redacted.
-        if !record.deleted && record.head.memory_version_id == vid {
+        if live_head {
             return Err(ApiError::conflict_invalid_request(
                 "cannot redact the current version of a live memory; update or delete the memory first",
             ));
@@ -70,12 +75,7 @@ impl MemoriesService {
         v.version.path = None;
         v.version.redacted_by = Some(ctx.actor());
         v.version.redacted_at = Some(shared::Timestamp::now());
-        for entry in &mut record.chain {
-            if entry.version.id == vid {
-                *entry = v.clone();
-            }
-        }
-        self.store.replace_memory(&ctx.workspace, &sid, record).await.map_err(map_store)?;
+        self.store.replace_version(&ctx.workspace, &sid, &mem_id, &v).await.map_err(map_store)?;
         Ok(project_version(&v, View::Basic))
     }
 
@@ -90,9 +90,16 @@ impl MemoriesService {
         selector: &VersionSelector,
     ) -> Result<MemoryVersion, ApiError> {
         let record = self.store.get_memory(&ctx.workspace, store_id, mem_id).await.map_err(map_store)?;
-        record
-            .resolve(selector)
-            .map(|v| project_version(v, View::Full))
+        let version = match selector {
+            VersionSelector::Latest => record.resolve(selector).cloned(),
+            VersionSelector::Pinned(id) => {
+                let (owner, v) =
+                    self.store.get_version(&ctx.workspace, store_id, id).await.map_err(map_store)?;
+                (&owner == mem_id).then_some(v)
+            }
+        };
+        version
+            .map(|v| project_version(&v, View::Full))
             .ok_or_else(|| ApiError::not_found("memory version not found"))
     }
 
