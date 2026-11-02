@@ -2,9 +2,13 @@
 
 Chosen because agentd is **dashboard-first**. Everything a UI needs —
 list, filter, sort, search, paginate, count — is plain SQL, with no second
-search copy to build or keep in sync. agentd stays **stateless across
-replicas** (all state in Postgres), and multi-replica **exactly-once** is a
-native `INSERT … ON CONFLICT DO NOTHING`.
+search copy to build or keep in sync. Records live in Postgres and blobs in
+object storage, and a schedule's fire is claimed exactly once with a native
+`INSERT … ON CONFLICT DO NOTHING`. Two things still live in the process: the
+event-stream fan-out and the local scheduler's timers. Run one replica until
+a shared event bus and scheduler replace them; with two, a stream misses
+events written on the other replica, and schedules exist only where they were
+created.
 
 ## Versions (Flyway-compatible)
 

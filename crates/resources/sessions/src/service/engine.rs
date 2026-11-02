@@ -33,13 +33,14 @@ impl EngineContract for SessionsService {
         stop_reason: Option<StopReason>,
     ) -> Result<(), ApiError> {
         let mut s = self.store.get(ws, session).await.map_err(map_store)?;
+        let read = s.clone();
         // Terminated is absorbing.
         if s.status == SessionStatus::Terminated {
             return Err(ApiError::conflict_invalid_request("session is terminated"));
         }
         s.status = status;
         s.updated_at = Timestamp::now();
-        self.store.replace(ws, s).await.map_err(map_store)?;
+        self.store.replace(ws, &read, s).await.map_err(map_store)?;
         let payload = match status {
             SessionStatus::Idle => EventPayload::Session(SessionEvent::StatusIdle {
                 stop_reason: stop_reason.unwrap_or(StopReason::EndTurn {}),
@@ -73,9 +74,10 @@ impl EngineContract for SessionsService {
 
     async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError> {
         let mut s = self.store.get(ws, session).await.map_err(map_store)?;
+        let read = s.clone();
         s.usage.add(usage);
         s.updated_at = Timestamp::now();
-        self.store.replace(ws, s).await.map_err(map_store)
+        self.store.replace(ws, &read, s).await.map_err(map_store)
     }
 
     async fn record_outcome(
@@ -85,12 +87,13 @@ impl EngineContract for SessionsService {
         eval: OutcomeEvaluation,
     ) -> Result<(), ApiError> {
         let mut s = self.store.get(ws, session).await.map_err(map_store)?;
+        let read = s.clone();
         // Replace the entry for this outcome or append.
         match s.outcome_evaluations.iter_mut().find(|e| e.outcome_id == eval.outcome_id) {
             Some(slot) => *slot = eval,
             None => s.outcome_evaluations.push(eval),
         }
         s.updated_at = Timestamp::now();
-        self.store.replace(ws, s).await.map_err(map_store)
+        self.store.replace(ws, &read, s).await.map_err(map_store)
     }
 }

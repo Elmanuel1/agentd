@@ -129,7 +129,9 @@ impl Backends {
             SecretsConfig::Blob => Arc::new(BlobSecretStore::new(blobs.clone())),
         };
         let stores = match &config.store {
-            StoreConfig::Postgres { url } => Stores::postgres(PgBackend::connect(url).await?, blobs, secrets),
+            StoreConfig::Postgres { url, pool } => {
+                Stores::postgres(PgBackend::connect_with(url, *pool).await?, blobs, secrets)
+            }
         };
         let keys: Arc<dyn KeySource> = match &config.keys {
             KeysConfig::Env(keys) => Arc::new(EnvKeySource::new(keys)),
