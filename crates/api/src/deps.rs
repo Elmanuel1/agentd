@@ -129,7 +129,9 @@ impl DeploymentDeps for RealDeploymentDeps {
             .iter()
             .map(|e| match e {
                 InitialEvent::UserMessage { content } => {
-                    sessions::events::EventPayload::UserMessage { content: content.clone() }
+                    sessions::events::EventPayload::User(sessions::events::UserEvent::Message {
+                        content: content.clone(),
+                    })
                 }
             })
             .collect();

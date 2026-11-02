@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use sessions::events::{EventPayload, ModelUsage, Rubric};
+use sessions::events::{EventPayload, ModelUsage, Rubric, SpanEvent};
 use sessions::types::{OutcomeEvaluation, OutcomeId, OutcomeResult, SessionId};
 use sessions::EngineContract;
 use shared::{ApiError, WorkspaceId};
@@ -94,7 +94,10 @@ impl OutcomeLoop {
                 .emit(
                     &self.ws,
                     &self.session_id,
-                    EventPayload::SpanOutcomeEvaluationStart { outcome_id: outcome_id.clone(), iteration },
+                    EventPayload::Span(SpanEvent::OutcomeEvaluationStart {
+                        outcome_id: outcome_id.clone(),
+                        iteration,
+                    }),
                 )
                 .await?;
             let verdict = self.grader.grade(description, rubric, iteration).await?;
@@ -108,14 +111,14 @@ impl OutcomeLoop {
                 .emit(
                     &self.ws,
                     &self.session_id,
-                    EventPayload::SpanOutcomeEvaluationEnd {
+                    EventPayload::Span(SpanEvent::OutcomeEvaluationEnd {
                         outcome_evaluation_start_id: start.id,
                         outcome_id: outcome_id.clone(),
                         result,
                         explanation: Some(verdict.explanation.clone()),
                         iteration,
                         usage: verdict.usage,
-                    },
+                    }),
                 )
                 .await?;
             self.contract

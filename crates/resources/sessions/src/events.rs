@@ -1,17 +1,24 @@
-//! The session event protocol — one exhaustive enum for every wire event.
+//! The session event protocol: one exhaustive enum per event category.
 //!
 //! Envelope (observed): every event carries `id` (`sevt_…`), `type`
 //! (dot-namespaced), and `processed_at` (null until the agent consumes a
 //! client-sent event). Payload fields are flattened beside the envelope.
 
-use serde::{Deserialize, Serialize};
-use shared::{ContentBlock, Id, Resource, Timestamp};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
+use shared::{Id, Resource, Timestamp};
 
-use crate::types::OutcomeId;
-
+mod agent;
 mod fields;
+mod session;
+mod span;
+mod user;
 
+pub use agent::AgentEvent;
 pub use fields::{ConfirmationResult, ModelUsage, Rubric, StopReason};
+pub use session::SessionEvent;
+pub use span::SpanEvent;
+pub use user::UserEvent;
 
 /// Marker for `sevt_…` ids.
 #[derive(Debug, Clone, Copy)]
@@ -23,216 +30,58 @@ impl Resource for EventResource_ {
 /// `Id<EventResource_>` alias.
 pub type EventId = Id<EventResource_>;
 
-/// Every event type on the wire — exhaustive by construction; adding a
-/// variant forces every consumer match-site to update.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type")]
+/// Every event on the wire, by category. The `type` prefix names the
+/// category (`system.message` is a client event), so a new event is a variant
+/// of one category enum and its consumers match only that category.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum EventPayload {
-    // ── client → session ──────────────────────────────────────────────────
-    /// A user message.
-    #[serde(rename = "user.message")]
-    UserMessage {
-        /// Content blocks.
-        content: Vec<ContentBlock>,
-    },
-    /// Interrupt: jumps the queue, forces idle.
-    #[serde(rename = "user.interrupt")]
-    UserInterrupt {},
-    /// Approve/deny a pending tool.
-    #[serde(rename = "user.tool_confirmation")]
-    UserToolConfirmation {
-        /// The `agent.tool_use` event id being answered.
-        tool_use_id: EventId,
-        /// allow | deny.
-        result: ConfirmationResult,
-        /// Optional deny explanation, surfaced to the model.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        deny_message: Option<String>,
-    },
-    /// Result for a custom (client-executed) tool.
-    #[serde(rename = "user.custom_tool_result")]
-    UserCustomToolResult {
-        /// The `agent.custom_tool_use` event id.
-        custom_tool_use_id: EventId,
-        /// Result content.
-        content: Vec<ContentBlock>,
-        /// Whether the tool failed.
-        #[serde(default)]
-        is_error: bool,
-    },
-    /// Start a rubric-graded outcome loop.
-    #[serde(rename = "user.define_outcome")]
-    UserDefineOutcome {
-        /// The task.
-        description: String,
-        /// The rubric.
-        rubric: Rubric,
-        /// 1–20, default 3.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        max_iterations: Option<u32>,
-        /// Server-assigned on echo.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        outcome_id: Option<OutcomeId>,
-    },
-    /// Mid-session system prompt update.
-    #[serde(rename = "system.message")]
-    SystemMessage {
-        /// Content blocks (1–1000 text items).
-        content: Vec<ContentBlock>,
-    },
-
-    // ── agent → client ────────────────────────────────────────────────────
-    /// Agent text output.
-    #[serde(rename = "agent.message")]
-    AgentMessage {
-        /// Content blocks.
-        content: Vec<ContentBlock>,
-    },
-    /// Extended thinking.
-    #[serde(rename = "agent.thinking")]
-    AgentThinking {
-        /// Summarized/omitted thinking text.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<String>,
-    },
-    /// Built-in tool call.
-    #[serde(rename = "agent.tool_use")]
-    AgentToolUse {
-        /// Tool name (bash/read/write/…).
-        name: String,
-        /// Tool input.
-        input: serde_json::Value,
-        /// `allow` (executed) or `ask` (awaiting confirmation).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        evaluated_permission: Option<String>,
-    },
-    /// Built-in tool result.
-    #[serde(rename = "agent.tool_result")]
-    AgentToolResult {
-        /// The tool_use event id.
-        tool_use_id: EventId,
-        /// Result content.
-        content: Vec<ContentBlock>,
-        /// Whether it errored.
-        #[serde(default)]
-        is_error: bool,
-    },
-    /// MCP tool call.
-    #[serde(rename = "agent.mcp_tool_use")]
-    AgentMcpToolUse {
-        /// Server name.
-        mcp_server_name: String,
-        /// Tool name.
-        name: String,
-        /// Input.
-        input: serde_json::Value,
-    },
-    /// MCP tool result.
-    #[serde(rename = "agent.mcp_tool_result")]
-    AgentMcpToolResult {
-        /// The mcp_tool_use event id.
-        mcp_tool_use_id: EventId,
-        /// Content.
-        content: Vec<ContentBlock>,
-        /// Error flag.
-        #[serde(default)]
-        is_error: bool,
-    },
-    /// Custom tool call — session idles until the client answers.
-    #[serde(rename = "agent.custom_tool_use")]
-    AgentCustomToolUse {
-        /// Tool name.
-        name: String,
-        /// Input.
-        input: serde_json::Value,
-    },
-    /// History was compacted.
-    #[serde(rename = "agent.thread_context_compacted")]
-    AgentThreadContextCompacted {},
-
-    // ── session status ────────────────────────────────────────────────────
-    /// Awaiting input; inspect `stop_reason`.
-    #[serde(rename = "session.status_idle")]
-    SessionStatusIdle {
-        /// Why.
-        stop_reason: StopReason,
-    },
-    /// Actively working.
-    #[serde(rename = "session.status_running")]
-    SessionStatusRunning {},
-    /// Rescheduling after a retryable error.
-    #[serde(rename = "session.status_rescheduled")]
-    SessionStatusRescheduled {},
-    /// Terminal.
-    #[serde(rename = "session.status_terminated")]
-    SessionStatusTerminated {},
-    /// An error surfaced mid-run.
-    #[serde(rename = "session.error")]
-    SessionError {
-        /// Error detail.
-        error: serde_json::Value,
-    },
-
-    // ── spans ─────────────────────────────────────────────────────────────
-    /// Model inference started.
-    #[serde(rename = "span.model_request_start")]
-    SpanModelRequestStart {},
-    /// Model inference finished.
-    #[serde(rename = "span.model_request_end")]
-    SpanModelRequestEnd {
-        /// The matching start event.
-        model_request_start_id: EventId,
-        /// Whether it errored.
-        #[serde(default)]
-        is_error: bool,
-        /// Usage.
-        model_usage: ModelUsage,
-    },
-    /// Grader began an iteration.
-    #[serde(rename = "span.outcome_evaluation_start")]
-    SpanOutcomeEvaluationStart {
-        /// Outcome.
-        outcome_id: OutcomeId,
-        /// 0-indexed iteration.
-        iteration: u32,
-    },
-    /// Grader heartbeat.
-    #[serde(rename = "span.outcome_evaluation_ongoing")]
-    SpanOutcomeEvaluationOngoing {
-        /// Outcome.
-        outcome_id: OutcomeId,
-    },
-    /// Grader verdict for one iteration.
-    #[serde(rename = "span.outcome_evaluation_end")]
-    SpanOutcomeEvaluationEnd {
-        /// The matching start event.
-        outcome_evaluation_start_id: EventId,
-        /// Outcome.
-        outcome_id: OutcomeId,
-        /// Verdict.
-        result: crate::types::OutcomeResult,
-        /// Explanation.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        explanation: Option<String>,
-        /// Iteration.
-        iteration: u32,
-        /// Grader usage.
-        usage: ModelUsage,
-    },
+    /// Sent by the client.
+    User(UserEvent),
+    /// Emitted by the agent.
+    Agent(AgentEvent),
+    /// Session status changes and errors.
+    Session(SessionEvent),
+    /// Timing spans.
+    Span(SpanEvent),
 }
+
+impl<'de> Deserialize<'de> for EventPayload {
+    /// Dispatch on the `type` prefix, so serde's own messages for the
+    /// category (`missing field \`content\``) reach the caller unchanged.
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        let category = match value.get("type").and_then(serde_json::Value::as_str) {
+            Some(t) => t.split('.').next().unwrap_or_default().to_owned(),
+            None => return Err(D::Error::missing_field("type")),
+        };
+        let payload = match category.as_str() {
+            "user" | "system" => serde_json::from_value(value).map(Self::User),
+            "agent" => serde_json::from_value(value).map(Self::Agent),
+            "session" => serde_json::from_value(value).map(Self::Session),
+            "span" => serde_json::from_value(value).map(Self::Span),
+            _ => return Err(D::Error::custom(format!("unknown variant `{category}`"))),
+        };
+        payload.map_err(D::Error::custom)
+    }
+}
+
+macro_rules! from_category {
+    ($($category:ident => $variant:ident),+) => {$(
+        impl From<$category> for EventPayload {
+            fn from(event: $category) -> Self {
+                Self::$variant(event)
+            }
+        }
+    )+};
+}
+
+from_category!(UserEvent => User, AgentEvent => Agent, SessionEvent => Session, SpanEvent => Span);
 
 impl EventPayload {
     /// Is this a client-sent event (subject to `processed_at` stamping)?
     pub fn is_user_event(&self) -> bool {
-        matches!(
-            self,
-            Self::UserMessage { .. }
-                | Self::UserInterrupt {}
-                | Self::UserToolConfirmation { .. }
-                | Self::UserCustomToolResult { .. }
-                | Self::UserDefineOutcome { .. }
-                | Self::SystemMessage { .. }
-        )
+        matches!(self, Self::User(_))
     }
 }
 
