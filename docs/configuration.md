@@ -23,7 +23,7 @@ stops the boot with an error naming the variable.
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_URL` | `postgres://agentd:agentd@localhost:5432/agentd` | Postgres connection |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
-| `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection; past it the request fails instead of queueing |
+| `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
 | `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |
 | `AGENTD_S3_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Bucket region |
 | `AGENTD_AWS_ENDPOINT` | unset (AWS S3) | Custom S3 endpoint (MinIO, LocalStack) |
