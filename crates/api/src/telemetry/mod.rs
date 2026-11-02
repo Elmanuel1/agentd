@@ -27,7 +27,7 @@ use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
-use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::filter::{filter_fn, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -110,11 +110,18 @@ impl Drop for Telemetry {
 /// reach the tracer through the `tracing` layer). Logs
 /// still go to stdout; over OTLP they carry the trace and span ids.
 pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // RUST_LOG picks the logs, on stdout and over OTLP alike; it does not
+    // pick the spans, so quieter logs never switch tracing off.
+    let log_filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt = if json {
-        tracing_subscriber::fmt::layer().json().flatten_event(true).with_current_span(true).boxed()
+        tracing_subscriber::fmt::layer()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_filter(log_filter())
+            .boxed()
     } else {
-        tracing_subscriber::fmt::layer().boxed()
+        tracing_subscriber::fmt::layer().with_filter(log_filter()).boxed()
     };
     let mut telemetry = Telemetry::default();
     let otel = if otlp {
@@ -133,15 +140,20 @@ pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
         opentelemetry::global::set_text_map_propagator(
             opentelemetry_sdk::propagation::TraceContextPropagator::new(),
         );
-        let layer = tracing_opentelemetry::layer().with_tracer(tracer.tracer("agentd")).and_then(
-            OpenTelemetryTracingBridge::new(&logger).with_filter(filter_fn(|m| !exporter_internal(m))),
-        );
+        let spans = tracing_opentelemetry::layer()
+            .with_tracer(tracer.tracer("agentd"))
+            .with_filter(LevelFilter::INFO)
+            .with_filter(filter_fn(|m| !exporter_internal(m)));
+        let records = OpenTelemetryTracingBridge::new(&logger)
+            .with_filter(log_filter())
+            .with_filter(filter_fn(|m| !exporter_internal(m)));
+        let layer = spans.and_then(records);
         telemetry = Telemetry { tracer: Some(tracer), meter: Some(meter), logger: Some(logger) };
         Some(layer)
     } else {
         None
     };
-    tracing_subscriber::registry().with(filter).with(fmt).with(otel).try_init().map_err(|e| e.to_string())?;
+    tracing_subscriber::registry().with(fmt).with(otel).try_init().map_err(|e| e.to_string())?;
     Ok(telemetry)
 }
 
