@@ -12,9 +12,11 @@ async-trait = { workspace = true }
 bollard = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+tar = "0.4"
 
 [dev-dependencies]
-tokio = { workspace = true }
 
 [lints]
 workspace = true

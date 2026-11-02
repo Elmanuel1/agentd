@@ -32,4 +32,33 @@ pub enum SessionEvent {
     /// The session was deleted; the last event on its stream.
     #[serde(rename = "session.deleted")]
     Deleted {},
+    /// A coordinator started a thread for a roster agent. The thread's id is
+    /// the envelope's `session_thread_id`.
+    #[serde(rename = "session.thread_created")]
+    ThreadCreated {
+        /// The agent the thread runs.
+        agent_name: String,
+    },
+    /// A thread started working.
+    #[serde(rename = "session.thread_status_running")]
+    ThreadStatusRunning {
+        /// The agent the thread runs.
+        agent_name: String,
+    },
+    /// A thread is waiting for input.
+    #[serde(rename = "session.thread_status_idle")]
+    ThreadStatusIdle {
+        /// The agent the thread runs.
+        agent_name: String,
+        /// Why it stopped.
+        stop_reason: StopReason,
+        /// Live sends `null`.
+        stop_details: Option<serde_json::Value>,
+    },
+    /// A thread finished for good.
+    #[serde(rename = "session.thread_status_terminated")]
+    ThreadStatusTerminated {
+        /// The agent the thread runs.
+        agent_name: String,
+    },
 }

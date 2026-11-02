@@ -21,7 +21,7 @@ use tokio::sync::broadcast;
 
 use crate::events::{Event, EventPayload, StopReason};
 use crate::store::{SessionEventLog, SessionsStore, StoreError};
-use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus};
+use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadId};
 
 use agents::AgentSnapshot;
 
@@ -30,6 +30,9 @@ mod events;
 mod lifecycle;
 mod resources;
 mod sandbox;
+mod threads;
+
+pub use threads::threads_projection;
 
 pub use events::Subscription;
 
@@ -55,15 +58,21 @@ pub trait SessionDeps: Send + Sync {
     ) -> Result<serde_json::Value, ApiError>;
 }
 
-/// What the engine (task-side loop) is allowed to do to a session — the
-/// sessions↔engine seam.
+/// What the engine (the agent loop in agentd) may do to a session: the
+/// sessions to engine seam.
 #[async_trait]
 pub trait EngineContract: Send + Sync {
-    /// Append an agent/span event and broadcast it.
+    /// The session.
+    async fn session(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Session, ApiError>;
+    /// Every event of the session and its threads, oldest first.
+    async fn events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError>;
+    /// Append an agent, span or session event and broadcast it; `thread`
+    /// names a secondary thread or the thread a lifecycle event is about.
     async fn emit(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
+        thread: Option<&ThreadId>,
         payload: EventPayload,
     ) -> Result<Event, ApiError>;
     /// Transition status (emits the matching `session.status_*` event).
@@ -87,6 +96,14 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
 }
 
+/// Starts the agent loop when a session has new client events. Waking a
+/// session whose loop already runs only nudges that loop.
+pub trait TurnTrigger: Send + Sync {
+    /// The session has unprocessed client events; `ctx` is the caller who
+    /// sent them, whose workspace and organization the loop acts in.
+    fn wake(&self, ctx: &AuthContext, session: &SessionId);
+}
+
 /// The live fan-out: one broadcast channel per session that has a listener.
 type Channels = Arc<Mutex<HashMap<SessionId, broadcast::Sender<Event>>>>;
 
@@ -101,6 +118,8 @@ pub struct SessionsService {
     catalog: ModelCatalog,
     /// Runs one sandbox per session; `None` runs no sandbox.
     sandbox: Option<Arc<dyn Runtime>>,
+    /// Runs the agent loop; unset, the service only stores events.
+    trigger: std::sync::OnceLock<Arc<dyn TurnTrigger>>,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -118,7 +137,15 @@ impl SessionsService {
         deps: Arc<dyn SessionDeps>,
         catalog: ModelCatalog,
     ) -> Self {
-        Self { store, events, deps, catalog, channels: Channels::default(), sandbox: None }
+        Self {
+            store,
+            events,
+            deps,
+            catalog,
+            channels: Channels::default(),
+            sandbox: None,
+            trigger: std::sync::OnceLock::new(),
+        }
     }
 
     /// Run each session's sandbox on `runtime`.
@@ -126,6 +153,13 @@ impl SessionsService {
     pub fn with_sandbox(mut self, runtime: Arc<dyn Runtime>) -> Self {
         self.sandbox = Some(runtime);
         self
+    }
+
+    /// Run the agent loop through `trigger` when client events arrive. Set
+    /// once, after construction, because the loop calls back into this
+    /// service.
+    pub fn set_trigger(&self, trigger: Arc<dyn TurnTrigger>) {
+        let _ = self.trigger.set(trigger);
     }
 }
 

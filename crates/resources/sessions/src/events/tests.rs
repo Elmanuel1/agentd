@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ThreadId;
 
 #[test]
 fn status_idle_wire_shape_matches_documented_example() {
@@ -8,6 +9,7 @@ fn status_idle_wire_shape_matches_documented_example() {
     let ev = Event {
         id: EventId::generate(),
         processed_at: Some(Timestamp::now()),
+        session_thread_id: None,
         payload: EventPayload::Session(SessionEvent::StatusIdle {
             stop_reason: StopReason::RequiresAction { event_ids: vec![blocking.clone()] },
         }),
@@ -120,4 +122,40 @@ fn every_category_round_trips_through_its_type_prefix() {
     }
     let system: EventPayload = serde_json::from_str(r#"{"type":"system.message","content":[]}"#).unwrap();
     assert!(system.is_user_event());
+}
+
+#[test]
+fn thread_lifecycle_events_match_the_live_capture() {
+    let raw = r#"{"agent_name":"checklist-extractor","id":"sevt_012ZaEb8siicuYL29EF8H2PK","processed_at":"2026-10-08T01:39:50.652964Z","session_thread_id":"sthr_01AgN17nyx4ypnbzQW5d1W7F","stop_details":null,"stop_reason":{"type":"end_turn"},"type":"session.thread_status_idle"}"#;
+    let ev: Event = serde_json::from_str(raw).unwrap();
+    assert!(matches!(ev.payload, EventPayload::Session(SessionEvent::ThreadStatusIdle { .. })));
+    let back = serde_json::to_value(&ev).unwrap();
+    assert_eq!(back, serde_json::from_str::<serde_json::Value>(raw).unwrap());
+    assert!(ev.on_session_stream());
+}
+
+#[test]
+fn a_secondary_threads_work_stays_off_the_session_stream_unless_it_blocks() {
+    let thread = ThreadId::generate();
+    let mut used = Event::new(EventPayload::Agent(AgentEvent::ToolUse {
+        name: "bash".into(),
+        input: serde_json::json!({"command": "ls"}),
+        evaluated_permission: Some("allow".into()),
+        evaluation: None,
+    }));
+    used.session_thread_id = Some(thread.clone());
+    assert!(!used.on_session_stream());
+    assert!(used.on_thread_stream(Some(&thread)));
+    assert!(used.thread_wire().get("session_thread_id").is_none());
+    if let EventPayload::Agent(AgentEvent::ToolUse { evaluated_permission, .. }) = &mut used.payload {
+        *evaluated_permission = Some("ask".into());
+    }
+    assert!(used.on_session_stream());
+}
+
+#[test]
+fn thread_messages_carry_the_other_threads_id() {
+    let raw = r#"{"content":[{"text":"Done","type":"text"}],"id":"sevt_018H2JFdMhFywaP4x3YjVZu6","processed_at":"2026-10-08T01:39:48.613249Z","to_session_thread_id":"sthr_01EDFRXKtrzgXEfDqJU6qkWD","type":"agent.thread_message_sent"}"#;
+    let ev: Event = serde_json::from_str(raw).unwrap();
+    assert_eq!(serde_json::to_value(&ev).unwrap(), serde_json::from_str::<serde_json::Value>(raw).unwrap());
 }

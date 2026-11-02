@@ -16,10 +16,12 @@ use shared::Module;
 use skills::SkillsService;
 use vaults::VaultsService;
 
-use crate::backends::Backends;
+use crate::assets::RealSessionAssets;
+use crate::backends::{AgentBackends, Backends};
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
+use engine::{Dispatcher, Engine, ModelRouter};
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
@@ -41,20 +43,31 @@ impl AppState {
     /// Build every service over `backends`, assemble the modules, and register
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
-    pub fn build(backends: Backends) -> Result<Self, FireError> {
-        let Backends { stores, keys, scheduler, fires, runtime, metrics } = backends;
-        let agents = Arc::new(AgentsService::new(stores.agents, ModelCatalog::default_catalog()));
+    pub fn build(backends: Backends) -> Result<Self, BuildError> {
+        let Backends { stores, keys, scheduler, fires, runtime, agent, metrics } = backends;
+        let catalog = catalog(agent.as_ref());
+        let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let sessions = SessionsService::new(
             stores.sessions,
             stores.session_events,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
-            ModelCatalog::default_catalog(),
+            catalog,
         );
         let sessions = Arc::new(match runtime {
             Some(runtime) => sessions.with_sandbox(runtime),
             None => sessions,
         });
+        let files = Arc::new(FilesService::new(stores.files));
+        let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
+        if let Some(agent) = agent {
+            let assets = RealSessionAssets {
+                files: files.clone(),
+                skills: skills.clone(),
+                environments: environments.clone(),
+            };
+            sessions.set_trigger(Arc::new(dispatcher(agent, sessions.clone(), assets)?));
+        }
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
             Arc::new(RealDeploymentDeps {
@@ -69,8 +82,8 @@ impl AppState {
             environments::module(environments),
             vaults::module(Arc::new(VaultsService::new(stores.vaults))),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
-            files::module(Arc::new(FilesService::new(stores.files))),
-            skills::module(Arc::new(SkillsService::new(stores.skills, stores.skill_versions))),
+            files::module(files),
+            skills::module(skills),
             sessions::module(sessions),
             deployments::module(deployments),
         ];
@@ -79,4 +92,39 @@ impl AppState {
         }
         Ok(Self { keys, modules, metrics })
     }
+}
+
+/// The app could not be assembled.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildError {
+    /// Two modules claim one fire kind.
+    #[error(transparent)]
+    Fire(#[from] FireError),
+    /// The model providers could not be set up.
+    #[error("models: {0}")]
+    Models(String),
+}
+
+/// The built-in Anthropic models, plus the ones config adds.
+fn catalog(agent: Option<&AgentBackends>) -> ModelCatalog {
+    ModelCatalog::default_catalog().with(agent.map(|a| a.config.extra_models.clone()).unwrap_or_default())
+}
+
+/// The agent loop over `sessions`, started by each session's client events.
+fn dispatcher(
+    agent: AgentBackends,
+    sessions: Arc<SessionsService>,
+    assets: RealSessionAssets,
+) -> Result<Dispatcher, BuildError> {
+    let models = ModelRouter::from_config(&agent.config.providers).map_err(BuildError::Models)?;
+    let engine = Engine {
+        contract: sessions,
+        models: Arc::new(models),
+        sandbox: agent.sandbox,
+        assets: Arc::new(assets),
+        http: engine::tools::web::client(),
+        search_key: agent.config.search_key.clone(),
+        max_tokens: agent.config.max_tokens,
+    };
+    Ok(Dispatcher::new(Arc::new(engine), agent.leases))
 }

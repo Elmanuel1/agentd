@@ -7,7 +7,7 @@ use shared::limits::required;
 use shared::{ApiError, AuthContext, IdCursor, Timestamp};
 
 use crate::store::{FilesStore, StoreError, StoredFile};
-use crate::types::{FileId, FileMetadata, FileTag};
+use crate::types::{FileId, FileMetadata, FileScope, FileTag};
 
 /// `expires_in_seconds` bounds (live files/10).
 const EXPIRES_MIN: i64 = 3600;
@@ -63,21 +63,62 @@ impl FilesService {
                 Some(Timestamp::from_datetime(created_at.as_datetime() + chrono::Duration::seconds(secs)))
             }
         };
+        let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".into());
         let meta = FileMetadata {
             created_at,
             downloadable: false,
             expires_at,
             filename,
             id: FileId::generate(),
-            mime_type: mime_type.unwrap_or_else(|| "application/octet-stream".into()),
+            mime_type,
             size_bytes: bytes.len() as u64,
             tag: FileTag::File,
+            scope: None,
         };
+        self.insert(ctx, meta, bytes, scope_id).await
+    }
+
+    async fn insert(
+        &self,
+        ctx: &AuthContext,
+        meta: FileMetadata,
+        bytes: Bytes,
+        scope_id: Option<String>,
+    ) -> Result<FileMetadata, ApiError> {
         self.store
             .insert(&ctx.workspace, StoredFile { meta: meta.clone(), bytes, scope_id })
             .await
             .map_err(|e| map_store(e, meta.id.as_str()))?;
         Ok(meta)
+    }
+
+    /// Keep a file a session wrote to `/mnt/session/outputs/`: scoped to the
+    /// session and downloadable, as live serves outputs.
+    pub async fn save_output(
+        &self,
+        ctx: &AuthContext,
+        session_id: &str,
+        filename: &str,
+        bytes: Bytes,
+    ) -> Result<FileMetadata, ApiError> {
+        let mime = match filename.rsplit_once('.').map(|(_, ext)| ext) {
+            Some("json") => "application/json",
+            Some("txt" | "md" | "csv") => "text/plain",
+            Some("pdf") => "application/pdf",
+            _ => "application/octet-stream",
+        };
+        let meta = FileMetadata {
+            created_at: Timestamp::now(),
+            downloadable: true,
+            expires_at: None,
+            filename: filename.to_owned(),
+            id: FileId::generate(),
+            mime_type: mime.into(),
+            size_bytes: bytes.len() as u64,
+            tag: FileTag::File,
+            scope: Some(FileScope::Session { id: session_id.to_owned() }),
+        };
+        self.insert(ctx, meta, bytes, Some(session_id.to_owned())).await
     }
 
     /// `GET /v1/files/{id}`; an expired file is not found.
@@ -97,9 +138,19 @@ impl FilesService {
             e.extra.insert("details".into(), serde_json::json!({"error_code": "file_not_downloadable"}));
             return Err(e);
         }
+        Ok((file.meta, self.bytes(ctx, raw_id).await?))
+    }
+
+    /// A file's bytes whether or not the API lets them be downloaded: what a
+    /// session mounts in its sandbox.
+    pub async fn content(&self, ctx: &AuthContext, raw_id: &str) -> Result<(FileMetadata, Bytes), ApiError> {
+        let file = self.live(ctx, raw_id).await?;
+        Ok((file.meta, self.bytes(ctx, raw_id).await?))
+    }
+
+    async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
         let id = parse_id(raw_id)?;
-        let bytes = self.store.content(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))?;
-        Ok((file.meta, bytes))
+        self.store.content(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))
     }
 
     /// `GET /v1/files`: one id-cursor page and whether more remain, newest

@@ -8,6 +8,8 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use shared::{Id, Resource, Timestamp};
 
+use crate::types::ThreadId;
+
 mod agent;
 mod fields;
 mod session;
@@ -95,6 +97,10 @@ pub struct Event {
     /// queued without it, then processed with it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processed_at: Option<Timestamp>,
+    /// The thread the event belongs to: set on thread lifecycle events and
+    /// on every event of a thread other than the primary one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_thread_id: Option<ThreadId>,
     /// The typed payload, flattened beside the envelope.
     #[serde(flatten)]
     pub payload: EventPayload,
@@ -103,7 +109,46 @@ pub struct Event {
 impl Event {
     /// Wrap a payload with a fresh id and no processed stamp.
     pub fn new(payload: EventPayload) -> Self {
-        Self { id: EventId::generate(), processed_at: None, payload }
+        Self { id: EventId::generate(), processed_at: None, session_thread_id: None, payload }
+    }
+
+    /// Whether the session's own stream shows this event: everything but a
+    /// secondary thread's work, which shows only where it blocks (a tool
+    /// awaiting confirmation or a custom tool).
+    pub fn on_session_stream(&self) -> bool {
+        self.session_thread_id.is_none()
+            || match &self.payload {
+                EventPayload::Session(_) => true,
+                EventPayload::Agent(AgentEvent::ToolUse { evaluated_permission, .. }) => {
+                    evaluated_permission.as_deref() == Some("ask")
+                }
+                EventPayload::Agent(AgentEvent::CustomToolUse { .. }) => true,
+                _ => false,
+            }
+    }
+
+    /// Whether thread `thread`'s stream shows this event; `None` names the
+    /// primary thread, whose stream is the session's.
+    pub fn on_thread_stream(&self, thread: Option<&ThreadId>) -> bool {
+        match thread {
+            None => self.on_session_stream(),
+            Some(t) => {
+                self.session_thread_id.as_ref() == Some(t)
+                    && !matches!(self.payload, EventPayload::Session(SessionEvent::ThreadCreated { .. }))
+            }
+        }
+    }
+
+    /// The event as a thread's stream shows it: the thread id stays only on
+    /// lifecycle events, as live sends them.
+    pub fn thread_wire(&self) -> serde_json::Value {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        if !matches!(self.payload, EventPayload::Session(_)) {
+            if let Some(map) = v.as_object_mut() {
+                map.remove("session_thread_id");
+            }
+        }
+        v
     }
 }
 

@@ -5,7 +5,9 @@
 pub mod blobs;
 pub mod fire;
 pub mod keys;
+pub mod lease;
 pub mod runtime;
+pub mod sandbox;
 pub mod scheduler;
 pub mod secrets;
 

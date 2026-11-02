@@ -44,6 +44,9 @@ impl SessionsService {
             self.broadcast(&id, &ev);
             out.push(ev);
         }
+        if let Some(trigger) = self.trigger.get() {
+            trigger.wake(ctx, &id);
+        }
         Ok(out)
     }
 

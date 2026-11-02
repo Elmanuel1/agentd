@@ -3,12 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::AgentRef;
+use super::{AgentRef, AgentSnapshot};
 
 /// A coordinator roster member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RosterMember {
+    /// A stored agent expanded in full, as a session's snapshot serves it.
+    Snapshot(Box<AgentSnapshot>),
     /// A stored agent at a concrete version.
     Agent(AgentRef),
     /// A model the coordinator may consult.
@@ -89,4 +91,31 @@ pub enum Multiagent {
         /// Workflow runs.
         workflows: Members,
     },
+}
+
+impl Multiagent {
+    /// The expanded roster agent called `name`, in a session's snapshot.
+    pub fn roster_agent(&self, name: &str) -> Option<&AgentSnapshot> {
+        match self {
+            Self::Coordinator { agents } => agents.iter().find_map(|m| match m {
+                RosterMember::Snapshot(a) if a.config.name == name => Some(&**a),
+                _ => None,
+            }),
+            Self::V20261001 { .. } => None,
+        }
+    }
+
+    /// Every expanded roster agent, in roster order.
+    pub fn roster_agents(&self) -> Vec<&AgentSnapshot> {
+        match self {
+            Self::Coordinator { agents } => agents
+                .iter()
+                .filter_map(|m| match m {
+                    RosterMember::Snapshot(a) => Some(&**a),
+                    _ => None,
+                })
+                .collect(),
+            Self::V20261001 { .. } => Vec::new(),
+        }
+    }
 }

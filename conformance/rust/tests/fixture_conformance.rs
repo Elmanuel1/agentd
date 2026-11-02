@@ -57,6 +57,7 @@ async fn app() -> Option<Router> {
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         runtime: Some(Arc::new(FakeRuntime::new())),
+        agent: None,
         metrics: Arc::new(api::telemetry::Metrics::global()),
     };
     Some(build_router(AppState::build(backends).unwrap()))

@@ -41,6 +41,13 @@ impl ModelCatalog {
         ])
     }
 
+    /// The catalog with `extra` ids accepted as well.
+    #[must_use]
+    pub fn with(mut self, extra: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.models.extend(extra.into_iter().map(Into::into));
+        self
+    }
+
     /// Whether a model id is accepted.
     #[must_use]
     pub fn supports(&self, id: &str) -> bool {

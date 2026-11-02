@@ -22,7 +22,7 @@ use std::sync::Arc;
 use shared::module::BodyLimit;
 use shared::Module;
 
-pub use bundle::{parse_bundle, Bundle, UploadFile};
+pub use bundle::{parse_bundle, unpack, Bundle, Unpacked, UploadFile};
 pub use service::SkillsService;
 pub use store::{SkillVersionsStore, SkillsStore, StoreError};
 pub use types::{

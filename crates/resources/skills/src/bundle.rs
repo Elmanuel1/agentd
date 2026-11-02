@@ -127,3 +127,33 @@ fn zip(files: &[UploadFile]) -> Result<Bytes, ApiError> {
 
 #[cfg(test)]
 mod tests;
+
+/// A stored bundle's files, as a sandbox unpacks them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unpacked {
+    /// The bundle's top-level directory.
+    pub directory: String,
+    /// `(path below the directory, bytes)`.
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// Unzip a stored bundle.
+pub fn unpack(archive: &[u8]) -> Result<Unpacked, ApiError> {
+    let bad = |e: zip::result::ZipError| ApiError::internal(format!("skill bundle: {e}"));
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).map_err(bad)?;
+    let mut directory = String::new();
+    let mut files = Vec::new();
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(bad)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_owned();
+        let Some((top, rel)) = name.split_once('/') else { continue };
+        directory = top.to_owned();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|e| ApiError::internal(format!("skill bundle: {e}")))?;
+        files.push((rel.to_owned(), bytes));
+    }
+    Ok(Unpacked { directory, files })
+}

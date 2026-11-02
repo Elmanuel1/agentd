@@ -115,6 +115,10 @@ impl SessionEventLog for PgSessionEventLog {
                AND ($5::timestamptz IS NULL OR {processed} >= $5)
                AND ($6::timestamptz IS NULL OR {processed} < $6)
                AND ($7::timestamptz IS NULL OR {processed} <= $7)
+               AND (CASE WHEN $10::text IS NULL THEN
+                      doc->>'session_thread_id' IS NULL OR doc->>'type' LIKE 'session.%'
+                      OR doc->>'evaluated_permission' = 'ask' OR doc->>'type' = 'agent.custom_tool_use'
+                    ELSE doc->>'session_thread_id' = $10 AND doc->>'type' <> 'session.thread_created' END)
              ORDER BY {processed} {order} NULLS LAST, seq {order}
              LIMIT $8 OFFSET $9"
         ))
@@ -127,6 +131,7 @@ impl SessionEventLog for PgSessionEventLog {
         .bind::<Nullable<Timestamptz>, _>(p.lte.map(|t| t.as_datetime()))
         .bind::<BigInt, _>(page.fetch_limit())
         .bind::<BigInt, _>(page.sql_offset())
+        .bind::<Nullable<Text>, _>(filter.thread.as_ref().map(|t| t.as_str()))
         .load(&mut conn)
         .await
         .map_err(diesel_be)?;

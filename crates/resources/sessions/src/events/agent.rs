@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use shared::ContentBlock;
 
 use super::EventId;
+use crate::types::ThreadId;
 
 /// The agent → client events (`type` `agent.*`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,10 @@ pub enum AgentEvent {
         /// `allow` (executed) or `ask` (awaiting confirmation).
         #[serde(skip_serializing_if = "Option::is_none")]
         evaluated_permission: Option<String>,
+        /// How the permission was reached, e.g.
+        /// `{"type":"auto","evaluated_permission":{"type":"allow"}}`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evaluation: Option<serde_json::Value>,
     },
     /// Built-in tool result.
     #[serde(rename = "agent.tool_result")]
@@ -72,6 +77,27 @@ pub enum AgentEvent {
         name: String,
         /// Input.
         input: serde_json::Value,
+    },
+    /// A message this thread sent to another thread.
+    #[serde(rename = "agent.thread_message_sent")]
+    ThreadMessageSent {
+        /// The message.
+        content: Vec<ContentBlock>,
+        /// The receiving agent, when the message starts or names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_agent_name: Option<String>,
+        /// The receiving thread.
+        to_session_thread_id: ThreadId,
+    },
+    /// A message this thread received from another thread.
+    #[serde(rename = "agent.thread_message_received")]
+    ThreadMessageReceived {
+        /// The message.
+        content: Vec<ContentBlock>,
+        /// The sending agent.
+        from_agent_name: String,
+        /// The sending thread.
+        from_session_thread_id: ThreadId,
     },
     /// History was compacted.
     #[serde(rename = "agent.thread_context_compacted")]

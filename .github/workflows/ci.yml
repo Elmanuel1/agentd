@@ -106,9 +106,13 @@ jobs:
       AGENTD_ADDR: 127.0.0.1:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
       AGENTD_TEST_KEY: sdk-conformance-key
-      # Each session gets its container on the runner's Docker daemon.
+      # Each session gets its container on the runner's Docker daemon, and the
+      # agent loop runs, every model call answered by the scripted model.
       AGENTD_RUNTIME: docker
+      AGENTD_SANDBOX_IMAGE: agentd-sandbox
+      AGENTD_MOCK_MODEL: conformance/fixtures/mock-model.json
       AGENTD_TEST_DOCKER: "1"
+      AGENTD_TEST_RUNTIME: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -128,6 +132,7 @@ jobs:
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql migrate
+      - run: docker build -t agentd-sandbox docker/sandbox
       - run: cargo build --locked -p api
       - name: Start agentd
         run: |

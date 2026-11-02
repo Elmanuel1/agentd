@@ -174,6 +174,7 @@ async fn pg_files_roundtrip() {
         mime_type: "text/csv".into(),
         size_bytes: 8,
         tag: files::types::FileTag::File,
+        scope: None,
     };
     let id = meta.id.clone();
     store

@@ -6,7 +6,7 @@ use shared::page::filters::CreatedRange;
 use shared::{Pagination, WorkspaceId};
 
 use crate::events::Event;
-use crate::types::{Session, SessionId, SessionStatus};
+use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -62,11 +62,14 @@ pub struct EventFilter {
     pub order: Order,
     /// Only these event types (any type when empty).
     pub types: Vec<String>,
+    /// `None`: the session's own events (see `Event::on_session_stream`); a
+    /// secondary thread's id: that thread's events.
+    pub thread: Option<ThreadId>,
 }
 
 impl Default for EventFilter {
     fn default() -> Self {
-        Self { processed: CreatedRange::default(), order: Order::Asc, types: Vec::new() }
+        Self { processed: CreatedRange::default(), order: Order::Asc, types: Vec::new(), thread: None }
     }
 }
 

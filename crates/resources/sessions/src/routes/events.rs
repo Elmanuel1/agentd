@@ -64,6 +64,7 @@ async fn list_events(
         processed: CreatedRange::from_query(&params)?,
         order: order(params.get("order").map(String::as_str), Order::Asc)?,
         types: query.all("types").into_iter().map(str::to_owned).collect(),
+        thread: None,
     };
     Ok(Json(Page::from_fetched(svc.list_events(&ctx, &id, &filter, &page).await?, &page)).into_response())
 }
@@ -96,12 +97,13 @@ async fn stream_events(
         }
         loop {
             match rx.recv().await {
-                Ok(ev) => {
+                Ok(ev) if ev.on_session_stream() => {
                     let last = matches!(ev.payload, EventPayload::Session(SessionEvent::Deleted {}));
                     if let Some(frame) = frame(&ev) {
                         return Some((Ok(frame), (rx, last)));
                     }
                 }
+                Ok(_) => {}
                 Err(RecvError::Lagged(_) | RecvError::Closed) => return None,
             }
         }

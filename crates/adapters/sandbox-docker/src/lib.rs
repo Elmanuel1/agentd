@@ -15,6 +15,8 @@ use bollard::Docker;
 use futures::TryStreamExt;
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 
+mod exec;
+
 /// What one sandbox may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxLimits {

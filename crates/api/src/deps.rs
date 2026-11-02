@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use agents::types::{Multiagent, RosterMember};
 use agents::{AgentRef, AgentSnapshot, AgentsService};
 use async_trait::async_trait;
 use deployments::service::DeploymentDeps;
@@ -46,7 +47,18 @@ impl SessionDeps for RealSessionDeps {
             Some(v) if v != latest.version => self.agents.get(ctx, agent_id, Some(v)).await?,
             _ => latest,
         };
-        Ok(agent.snapshot())
+        let mut snapshot = agent.snapshot();
+        // A session's snapshot carries each roster agent in full, as live
+        // serves it, so the session runs the versions it started with.
+        if let Some(Multiagent::Coordinator { agents }) = &mut snapshot.config.multiagent {
+            for member in agents.iter_mut() {
+                if let RosterMember::Agent(r) = member {
+                    let full = self.agents.get(ctx, r.id.as_str(), Some(r.version)).await?;
+                    *member = RosterMember::Snapshot(Box::new(full.snapshot()));
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     async fn resolve_environment(
