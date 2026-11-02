@@ -118,7 +118,7 @@ async fn list_versions(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = LIST.parse(&params.into_iter().filter(|(k, _)| k != "source").collect())?;
+    let page = LIST.parse(&params)?;
     let beta = betas.has(SKILLS);
     let rows = svc.versions(&ctx, &id, &page).await?.iter().map(|v| v.wire(beta)).collect();
     Ok(Json(page_of(rows, &page, beta)).into_response())

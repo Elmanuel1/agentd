@@ -141,9 +141,10 @@ impl FilesStore for PgFilesStore {
             q.select((files::created_at, files::file_id)).first(conn).await.optional().map_err(diesel_be)
         }
 
-        let after_key = match &cursor.after_id {
-            Some(a) => sort_key(&mut conn, ws, scope_id, a).await?,
-            None => None,
+        let after_key = match (&cursor.after_id, cursor.after_created) {
+            (Some(a), Some(t)) => Some((t.as_datetime(), a.clone())),
+            (Some(a), None) => sort_key(&mut conn, ws, scope_id, a).await?,
+            (None, _) => None,
         };
         let before_key = match &cursor.before_id {
             Some(b) => sort_key(&mut conn, ws, scope_id, b).await?,
@@ -157,6 +158,9 @@ impl FilesStore for PgFilesStore {
         if !filter.ids.is_empty() {
             q = q.filter(files::file_id.eq_any(filter.ids.clone()));
         }
+        q = q.filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "(doc->>'expires_at' IS NULL OR (doc->>'expires_at')::timestamptz > now())",
+        ));
         // Keyset: strictly-after the cursor in DESC order = a smaller sort key.
         if let Some((ca, fid)) = after_key {
             q = q.filter(files::created_at.lt(ca).or(files::created_at.eq(ca).and(files::file_id.lt(fid))));
