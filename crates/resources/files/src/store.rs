@@ -5,6 +5,7 @@ use bytes::Bytes;
 use shared::{IdCursor, WorkspaceId};
 
 use crate::types::{FileId, FileMetadata};
+use crate::FileFilter;
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -22,7 +23,8 @@ pub enum StoreError {
 pub struct StoredFile {
     /// Wire metadata.
     pub meta: FileMetadata,
-    /// Content.
+    /// Content on insert; empty on reads, whose bytes come from
+    /// [`FilesStore::content`].
     pub bytes: Bytes,
     /// Session scope (outputs written to `/mnt/session/outputs/`).
     pub scope_id: Option<String>,
@@ -33,8 +35,10 @@ pub struct StoredFile {
 pub trait FilesStore: Send + Sync {
     /// Insert.
     async fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> Result<(), StoreError>;
-    /// Fetch.
+    /// Fetch the metadata (no content).
     async fn get(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError>;
+    /// Fetch the content.
+    async fn content(&self, ws: &WorkspaceId, id: &FileId) -> Result<Bytes, StoreError>;
     /// Delete.
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError>;
     /// One page of files (id-cursor), optionally scope-filtered. Returns the
@@ -42,7 +46,7 @@ pub trait FilesStore: Send + Sync {
     async fn list(
         &self,
         ws: &WorkspaceId,
-        scope_id: Option<&str>,
+        filter: &FileFilter,
         cursor: &IdCursor,
     ) -> Result<(Vec<StoredFile>, bool), StoreError>;
 }

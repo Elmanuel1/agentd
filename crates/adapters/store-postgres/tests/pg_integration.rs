@@ -168,6 +168,7 @@ async fn pg_files_roundtrip() {
     let meta = files::types::FileMetadata {
         created_at: Timestamp::now(),
         downloadable: true,
+        expires_at: None,
         filename: "data.csv".into(),
         id: files::types::FileId::generate(),
         mime_type: "text/csv".into(),
@@ -187,11 +188,12 @@ async fn pg_files_roundtrip() {
         .await
         .unwrap();
     let got = store.get(&ws, &id).await.unwrap();
-    assert_eq!(&got.bytes[..], b"a,b\n1,2\n");
+    assert!(got.bytes.is_empty(), "metadata reads leave the blob alone");
+    assert_eq!(&store.content(&ws, &id).await.unwrap()[..], b"a,b\n1,2\n");
     let scoped = store
         .list(
             &ws,
-            Some("sesn_01A"),
+            &files::FileFilter { scope_id: Some("sesn_01A".into()), ids: vec![] },
             &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap(),
         )
         .await
@@ -201,7 +203,7 @@ async fn pg_files_roundtrip() {
     assert!(store
         .list(
             &ws,
-            Some("sesn_01Z"),
+            &files::FileFilter { scope_id: Some("sesn_01Z".into()), ids: vec![] },
             &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()
         )
         .await

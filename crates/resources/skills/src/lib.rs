@@ -22,12 +22,12 @@ use std::sync::Arc;
 use shared::module::BodyLimit;
 use shared::Module;
 
-pub use bundle::{parse_bundle, Bundle};
+pub use bundle::{parse_bundle, Bundle, UploadFile};
 pub use service::SkillsService;
 pub use store::{SkillVersionsStore, SkillsStore, StoreError};
 pub use types::{
-    Skill, SkillId, SkillListPage, SkillResource, SkillSource, SkillTag, SkillVersion, SkillVersionId,
-    SkillVersionResource, SkillVersionTag,
+    beta_version_id, Skill, SkillId, SkillListPage, SkillResource, SkillSource, SkillTag, SkillVersion,
+    SkillVersionId, SkillVersionResource, SkillVersionTag, VersionRef,
 };
 
 /// The skills module: its routes, with the Skills API's 30 MB body cap.

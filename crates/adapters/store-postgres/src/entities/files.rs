@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use ::files::store::{FilesStore, StoreError, StoredFile};
 use ::files::types::{FileId, FileMetadata};
+use ::files::FileFilter;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -93,19 +94,27 @@ impl FilesStore for PgFilesStore {
             .optional()
             .map_err(diesel_be)?;
         let doc: FileDoc = parse_doc(doc.ok_or(StoreError::NotFound)?)?;
-        let bytes = self.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)?;
-        Ok(StoredFile { meta: doc.meta, bytes, scope_id: doc.scope_id })
+        Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
+    }
+
+    async fn content(&self, ws: &WorkspaceId, id: &FileId) -> Result<Bytes, StoreError> {
+        self.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
         let existing = self.get(ws, id).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        diesel::delete(
-            files::table.filter(files::workspace_id.eq(ws.as_str())).filter(files::file_id.eq(id.as_str())),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
+        {
+            let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+            diesel::delete(
+                files::table
+                    .filter(files::workspace_id.eq(ws.as_str()))
+                    .filter(files::file_id.eq(id.as_str())),
+            )
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        }
+        // The pooled connection is back before the object-store round trip.
         self.blobs.delete(&Self::key(ws, id)).await.map_err(blob_be)?;
         Ok(existing)
     }
@@ -113,9 +122,10 @@ impl FilesStore for PgFilesStore {
     async fn list(
         &self,
         ws: &WorkspaceId,
-        scope_id: Option<&str>,
+        filter: &FileFilter,
         cursor: &IdCursor,
     ) -> Result<(Vec<StoredFile>, bool), StoreError> {
+        let scope_id = filter.scope_id.as_deref();
         // Metadata-only list — no S3 round-trips. The id-cursor is pushed into
         // SQL as a keyset on the total order (created_at DESC, file_id DESC):
         // resolve each bound id to its sort key, then fetch limit+1 rows.
@@ -139,9 +149,10 @@ impl FilesStore for PgFilesStore {
             q.select((files::created_at, files::file_id)).first(conn).await.optional().map_err(diesel_be)
         }
 
-        let after_key = match &cursor.after_id {
-            Some(a) => sort_key(&mut conn, ws, scope_id, a).await?,
-            None => None,
+        let after_key = match (&cursor.after_id, cursor.after_created) {
+            (Some(a), Some(t)) => Some((t.as_datetime(), a.clone())),
+            (Some(a), None) => sort_key(&mut conn, ws, scope_id, a).await?,
+            (None, _) => None,
         };
         let before_key = match &cursor.before_id {
             Some(b) => sort_key(&mut conn, ws, scope_id, b).await?,
@@ -152,6 +163,12 @@ impl FilesStore for PgFilesStore {
         if let Some(s) = scope_id {
             q = q.filter(files::scope_id.eq(s.to_owned()));
         }
+        if !filter.ids.is_empty() {
+            q = q.filter(files::file_id.eq_any(filter.ids.clone()));
+        }
+        q = q.filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+            "(doc->>'expires_at' IS NULL OR (doc->>'expires_at')::timestamptz > now())",
+        ));
         // Keyset: strictly-after the cursor in DESC order = a smaller sort key.
         if let Some((ca, fid)) = after_key {
             q = q.filter(files::created_at.lt(ca).or(files::created_at.eq(ca).and(files::file_id.lt(fid))));
