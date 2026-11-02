@@ -25,7 +25,7 @@ x-agentd: &agentd
     AWS_SECRET_ACCESS_KEY: test
     AWS_DEFAULT_REGION: us-east-1
     # Each session's sandbox runs on the host's Docker daemon, reached through
-    # a proxy that allows only the calls the sandbox runtime makes.
+    # a proxy that allows only the API groups the sandbox runtime uses.
     DOCKER_HOST: tcp://docker:2375
     RUST_LOG: info
 
@@ -43,10 +43,18 @@ services:
       postgres:
         condition: service_healthy
 
-  # ── one dev API key, made through the CLI at startup ───────────────────
+  # ── the dev API key, made through the CLI at startup ───────────────────
+  # Each start revokes the previous dev key and prints a new one, so exactly
+  # one is ever active.
   keys:
     <<: *agentd
-    command: ["keys", "create", "--org", "org_dev", "--workspace", "wrkspc_01dev", "--name", "dev"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        agentd keys list
+        | awk -F '\t' '$$3 == "wrkspc_01dev" && $$4 == "active" && $$7 == "dev" { print $$1 }'
+        | xargs -r -n1 agentd keys revoke
+        && agentd keys create --org org_dev --workspace wrkspc_01dev --name dev
     depends_on:
       flyway:
         condition: service_completed_successfully
@@ -101,8 +109,10 @@ services:
       timeout: 10s
       retries: 90
 
-  # The sandbox runtime's Docker API: networks, images and containers only.
-  # agentd never holds the raw socket, which is root on the host.
+  # The sandbox runtime's Docker API: networks, images and containers only,
+  # so agentd never holds the raw socket. Creating containers is still as
+  # strong as root on that daemon's host: in production give agentd a Docker
+  # daemon on a host or VM of its own (docs/configuration.md, Security).
   docker:
     image: tecnativa/docker-socket-proxy:v0.4.1
     environment:

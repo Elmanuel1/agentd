@@ -95,8 +95,13 @@ async fn no_key_is_stored_only_its_digest() {
 async fn ids_outside_the_charset_and_empty_names_are_refused() {
     let Some(backend) = backend().await else { return };
     let keys = keys(&backend, 11);
-    for (org, ws, name) in [("org/x", "wrkspc_a", "n"), ("org_a", "wrkspc a", "n"), ("org_a", "wrkspc_a", "")]
-    {
+    for (org, ws, name) in [
+        ("org/x", "wrkspc_a", "n"),
+        ("org_a", "wrkspc a", "n"),
+        ("org_a", "wrkspc_a", ""),
+        ("org_a", "wrkspc_a", "a\tb"),
+        ("org_a", "wrkspc_a", "a\nb"),
+    ] {
         assert!(keys.create(org, ws, name).await.is_err(), "{org} {ws} {name:?}");
     }
 }

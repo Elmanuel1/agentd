@@ -46,6 +46,15 @@ impl AwsSecretStore {
             Err(e) if e.as_service_error().is_some_and(CreateSecretError::is_resource_exists_exception) => {
                 decode(&name, &self.read(&name).await?)
             }
+            Err(e)
+                if e.as_service_error().is_some_and(CreateSecretError::is_invalid_request_exception)
+                    && self.scheduled_for_deletion(&name).await? =>
+            {
+                Err(SecretError::Backend(format!(
+                    "the API key pepper {name} is scheduled for deletion; restore it with RestoreSecret, \
+                     or no API key resolves"
+                )))
+            }
             Err(e) => Err(failure("secretsmanager:CreateSecret", &name, &e)),
         }
     }

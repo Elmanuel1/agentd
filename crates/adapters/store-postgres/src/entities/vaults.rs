@@ -49,6 +49,27 @@ impl PgVaultsStore {
             .map_err(diesel_be)?;
         exists.map(|_| ()).ok_or(StoreError::VaultNotFound)
     }
+
+    /// The credential's wire object and whether it has a secret.
+    async fn credential_row(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<(Credential, bool), StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let row: Option<(serde_json::Value, bool)> = credentials::table
+            .filter(credentials::workspace_id.eq(ws.as_str()))
+            .filter(credentials::vault_id.eq(vault.as_str()))
+            .filter(credentials::credential_id.eq(id.as_str()))
+            .select((credentials::doc, credentials::has_secret))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        let (doc, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
+        Ok((parse_doc(doc)?, has_secret))
+    }
 }
 
 #[derive(diesel::Insertable)]
@@ -200,18 +221,7 @@ impl VaultsStore for PgVaultsStore {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let row: Option<(serde_json::Value, bool)> = credentials::table
-            .filter(credentials::workspace_id.eq(ws.as_str()))
-            .filter(credentials::vault_id.eq(vault.as_str()))
-            .filter(credentials::credential_id.eq(id.as_str()))
-            .select((credentials::doc, credentials::has_secret))
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?;
-        let (doc, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
-        let wire: Credential = parse_doc(doc)?;
+        let (wire, has_secret) = self.credential_row(ws, vault, id).await?;
         let auth = if has_secret { Some(self.read_secret(ws, vault, id).await?) } else { None };
         Ok(StoredCredential { wire, auth })
     }
@@ -248,7 +258,9 @@ impl VaultsStore for PgVaultsStore {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError> {
-        let existing = self.get_credential(ws, vault, id).await?;
+        // The secret is not read: a credential whose secret is already gone
+        // must still be deletable, and the caller returns only the wire object.
+        let (wire, _) = self.credential_row(ws, vault, id).await?;
         diesel::delete(
             credentials::table
                 .filter(credentials::workspace_id.eq(ws.as_str()))
@@ -259,7 +271,7 @@ impl VaultsStore for PgVaultsStore {
         .await
         .map_err(diesel_be)?;
         self.put_secret(ws, vault, id, &None).await?;
-        Ok(existing)
+        Ok(StoredCredential { wire, auth: None })
     }
 
     async fn list_credentials(

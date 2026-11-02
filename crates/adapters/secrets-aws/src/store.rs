@@ -15,7 +15,7 @@ impl AwsSecretStore {
     /// Whether `name` exists and is scheduled for deletion: Secrets Manager
     /// answers a call on such a secret with `InvalidRequestException`, which
     /// other faults share.
-    async fn scheduled_for_deletion(&self, name: &str) -> Result<bool, SecretError> {
+    pub(crate) async fn scheduled_for_deletion(&self, name: &str) -> Result<bool, SecretError> {
         match self.client.describe_secret().secret_id(name).send().await {
             Ok(out) => Ok(out.deleted_date.is_some()),
             Err(e)

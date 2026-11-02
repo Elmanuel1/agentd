@@ -97,8 +97,10 @@ impl PgApiKeys {
         if !is_id_charset(org) || !is_id_charset(workspace) {
             return Err(KeyError("the org and workspace ids must be in the id charset".into()));
         }
-        if name.is_empty() || name.chars().count() > 255 {
-            return Err(KeyError("the name must be 1 to 255 characters".into()));
+        if name.is_empty() || name.chars().count() > 255 || name.chars().any(char::is_control) {
+            return Err(KeyError(
+                "the name must be 1 to 255 characters, none of them control characters".into(),
+            ));
         }
         let key = material::generate();
         let digest = material::digest(&self.pepper, key.expose_secret())

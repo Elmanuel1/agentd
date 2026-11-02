@@ -106,12 +106,16 @@ There is no switch that weakens any of these; each is the only behaviour.
   There is no plain store.
 - API keys are peppered digests in Postgres, made by `agentd keys`. No key is
   read from the environment and there is no default key.
-- Every session runs in a Docker sandbox; there is no mode without one. Run
-  agentd against a Docker API that allows only networks, images and
-  containers (the dev stack uses `tecnativa/docker-socket-proxy`), never the
-  raw socket.
+- Every session runs in a Docker sandbox; there is no mode without one. Give
+  agentd a Docker API that allows only networks, images and containers (the
+  dev stack uses `tecnativa/docker-socket-proxy`), never the raw socket. The
+  right to create containers is still as strong as root on that daemon's
+  host, so in production that daemon runs on a host or VM of its own, with
+  nothing else on it.
 - An AWS endpoint override is `https://`, or plain `http://` only to the
   machine itself or a single-label container name, as an emulator runs on.
+  Such a name must resolve on the private network (a Compose or Kubernetes
+  service), never through a DNS search domain to another host.
 - `DATABASE_URL` has no default, and the configuration's `Debug` shows it
   without its password.
 - agentd serves plain HTTP. Put it behind a TLS-terminating load balancer or

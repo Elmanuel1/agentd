@@ -40,16 +40,17 @@ pub enum StoreConfig {
     },
 }
 
-/// Shows the URL without its password.
+/// Shows the URL without its password or its query, where libpq also takes one.
 impl std::fmt::Debug for StoreConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self::Postgres { url, pool } = self;
-        let shown = match url.split_once('@') {
+        let url = url.split('?').next().unwrap_or_default();
+        let shown = match url.rsplit_once('@') {
             Some((credentials, rest)) => {
-                let user = credentials.rsplit_once(':').map_or(credentials, |(user, _)| user);
+                let user = credentials.split_once(':').map_or(credentials, |(user, _)| user);
                 format!("{user}:***@{rest}")
             }
-            None => url.clone(),
+            None => url.to_owned(),
         };
         f.debug_struct("Postgres").field("url", &shown).field("pool", pool).finish()
     }

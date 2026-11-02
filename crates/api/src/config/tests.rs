@@ -56,6 +56,10 @@ fn debug_output_omits_the_database_password() {
     let shown = format!("{:?}", config(&[]).unwrap());
     assert!(!shown.contains("s3cr3t-pass"), "{shown}");
     assert!(shown.contains("db:5432/agentd"), "{shown}");
+    for url in ["postgres://agentd@db/agentd?password=s3cr3t-pass", "postgres://a:s3cr3t-pass@x@db/agentd"] {
+        let shown = format!("{:?}", config(&[("DATABASE_URL", url)]).unwrap());
+        assert!(!shown.contains("s3cr3t-pass"), "{shown}");
+    }
 }
 
 #[test]

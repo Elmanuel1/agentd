@@ -9,7 +9,8 @@
 #   THRESHOLDS=thresholds.smoke.json perf/run.sh   only the failure-rate thresholds
 set -eu
 cd "$(dirname "$0")/.."
-compose() { docker compose -p agentd-perf --project-directory docker -f docker/docker-compose.yml -f perf/compose.yaml "$@"; }
+# PERF_PROJECT names the Compose project (default agentd-perf), so two stacks can coexist.
+compose() { docker compose -p "${PERF_PROJECT:-agentd-perf}" --project-directory docker -f docker/docker-compose.yml -f perf/compose.yaml "$@"; }
 case "${1:-}" in
   --down) POSTGRES_PASSWORD=unset API_KEY=unset compose --profile run down -v; exit 0 ;;
   --observe) export OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317 ;;
