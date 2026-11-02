@@ -147,7 +147,9 @@ impl Backends {
             RuntimeConfig::Docker { image } => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                Some(Arc::new(DockerRuntime::new(docker, image.clone())))
+                let runtime = DockerRuntime::new(docker, image.clone());
+                runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
+                Some(Arc::new(runtime))
             }
         };
         Ok(Self { stores, keys, scheduler, fires, runtime })

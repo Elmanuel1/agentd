@@ -1,5 +1,5 @@
 use shared::ports::{JobKind, JobSpec, RuntimeError};
-use shared::{ApiError, AuthContext};
+use shared::{ApiError, AuthContext, ErrorType};
 
 use super::SessionsService;
 use crate::types::{Session, SessionId};
@@ -25,10 +25,21 @@ impl SessionsService {
             environment,
             env: Default::default(),
         };
-        runtime.launch(job).await.map(|_| ()).map_err(|e| ApiError::internal(format!("sandbox: {e}")))
+        match runtime.launch(job).await {
+            Ok(_) => Ok(()),
+            // A daemon that cannot be reached is transient: 529, which the
+            // SDKs retry.
+            Err(e @ RuntimeError::Unavailable(_)) => Err(ApiError {
+                status: ErrorType::Overloaded.status(),
+                error_type: ErrorType::Overloaded,
+                message: format!("sandbox: {e}"),
+                extra: serde_json::Map::new(),
+            }),
+            Err(e) => Err(ApiError::internal(format!("sandbox: {e}"))),
+        }
     }
 
-    /// Remove the session's sandbox. The session's own state is the source
+    /// Remove the session's sandbox (on archive, delete and terminate). The session's own state is the source
     /// of truth, so a runtime that cannot be reached is logged, not raised:
     /// an archive or delete never waits on the sandbox host.
     pub(super) async fn stop_sandbox(&self, id: &SessionId) {

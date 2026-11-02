@@ -25,6 +25,7 @@ async fn a_container_comes_and_goes() {
     }
     let docker = Docker::connect_with_local_defaults().unwrap();
     let runtime = DockerRuntime::new(docker, "alpine:3.20");
+    runtime.prepare().await.unwrap();
     let target = format!("test-{}", std::process::id());
     let job = JobSpec {
         kind: JobKind::Session,

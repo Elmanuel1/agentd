@@ -33,7 +33,9 @@ impl DockerRuntime {
         format!("agentd-{target_id}")
     }
 
-    async fn ensure_image(&self) -> Result<(), RuntimeError> {
+    /// Pull the image unless the daemon has it, so a launch never waits on
+    /// a registry. Run once at boot.
+    pub async fn prepare(&self) -> Result<(), RuntimeError> {
         match self.docker.inspect_image(&self.image).await {
             Ok(_) => return Ok(()),
             Err(e) if not_found(&e) => {}
@@ -48,6 +50,9 @@ impl DockerRuntime {
         Ok(())
     }
 }
+
+/// The most processes one sandbox may run.
+const PIDS_LIMIT: i64 = 1024;
 
 /// `limited` networking gets no network: the allow-list proxy is a later
 /// step, and denying all egress is the safe reading of `limited` until then.
@@ -65,7 +70,6 @@ fn not_found(e: &DockerError) -> bool {
 #[async_trait]
 impl Runtime for DockerRuntime {
     async fn launch(&self, job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
-        self.ensure_image().await?;
         let name = Self::container_name(&job.target_id);
         let mut env: Vec<String> = job.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         env.push(format!("AGENTD_TARGET_ID={}", job.target_id));
@@ -82,6 +86,9 @@ impl Runtime for DockerRuntime {
             host_config: Some(HostConfig {
                 network_mode: Some(network_mode(&job.environment).to_owned()),
                 init: Some(true),
+                cap_drop: Some(vec!["ALL".into()]),
+                security_opt: Some(vec!["no-new-privileges".into()]),
+                pids_limit: Some(PIDS_LIMIT),
                 ..Default::default()
             }),
             ..Default::default()
