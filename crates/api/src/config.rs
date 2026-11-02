@@ -166,6 +166,7 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
         endpoint,
         role_arn: get("AGENTD_S3_ROLE_ARN"),
         create_bucket: flag(get, "AGENTD_S3_CREATE_BUCKET", false)?,
+        location_constraint: get("AGENTD_S3_LOCATION_CONSTRAINT"),
     })
 }
 
