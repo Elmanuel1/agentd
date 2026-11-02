@@ -3,7 +3,6 @@
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
 use blobs_s3::S3Config;
-use sandbox_docker::SandboxLimits;
 use store_postgres::PoolSettings;
 
 use crate::keys::env_keys;
@@ -26,11 +25,8 @@ pub struct Config {
     pub scheduler: SchedulerConfig,
     /// Sandbox runtime (`AGENTD_RUNTIME`).
     pub runtime: RuntimeConfig,
-    /// Export traces, metrics and logs over OTLP (`OTEL_EXPORTER_OTLP_ENDPOINT`
-    /// is set; the OpenTelemetry SDK reads the `OTEL_*` variables itself).
-    pub otlp: bool,
-    /// Logs as JSON lines (`AGENTD_LOG_FORMAT=json`), else text.
-    pub json_logs: bool,
+    /// Where logs, traces and metrics go.
+    pub telemetry: TelemetryConfig,
 }
 
 /// `AGENTD_STORE`.
@@ -75,22 +71,6 @@ pub enum SchedulerConfig {
     Local,
 }
 
-/// `AGENTD_RUNTIME`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeConfig {
-    /// `none`: no sandbox; sessions run without one.
-    None,
-    /// `docker`: one container per session from `image`
-    /// (`AGENTD_SANDBOX_IMAGE`), on the daemon `DOCKER_HOST` names.
-    Docker {
-        /// The sandbox image.
-        image: String,
-        /// `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) and
-        /// `AGENTD_SANDBOX_MILLICPUS` (default 2000) per sandbox.
-        limits: SandboxLimits,
-    },
-}
-
 /// A configuration value agentd cannot boot with.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{var}: {reason}")]
@@ -131,35 +111,12 @@ impl Config {
             "local" => SchedulerConfig::Local,
             other => return Err(unknown("AGENTD_SCHEDULER", other)),
         };
-        let runtime = match selector(&get, "AGENTD_RUNTIME", "none").as_str() {
-            "none" => RuntimeConfig::None,
-            "docker" => RuntimeConfig::Docker {
-                image: get("AGENTD_SANDBOX_IMAGE").unwrap_or_else(|| DEFAULT_SANDBOX_IMAGE.into()),
-                limits: SandboxLimits {
-                    memory_mib: number(&get, "AGENTD_SANDBOX_MEMORY_MIB", 2048)?,
-                    millicpus: number(&get, "AGENTD_SANDBOX_MILLICPUS", 2000)?,
-                },
-            },
-            other => return Err(unknown("AGENTD_RUNTIME", other)),
-        };
+        let runtime = RuntimeConfig::from_lookup(&get)?;
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
-        let otlp = get("OTEL_EXPORTER_OTLP_ENDPOINT").is_some_and(|e| !e.is_empty());
-        let json_logs = match selector(&get, "AGENTD_LOG_FORMAT", "text").as_str() {
-            "text" => false,
-            "json" => true,
-            other => {
-                return Err(ConfigError {
-                    var: "AGENTD_LOG_FORMAT",
-                    reason: format!("unknown format `{other}`"),
-                })
-            }
-        };
-        Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime, otlp, json_logs })
+        let telemetry = TelemetryConfig::from_lookup(&get)?;
+        Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime, telemetry })
     }
 }
-
-/// The image a Docker sandbox runs when `AGENTD_SANDBOX_IMAGE` is unset.
-pub const DEFAULT_SANDBOX_IMAGE: &str = "alpine:3.20";
 
 /// A positive whole number from `var`, or `default` when it is unset.
 fn number<T: std::str::FromStr + PartialOrd + From<u8>>(
@@ -211,6 +168,12 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
         create_bucket: flag(get, "AGENTD_S3_CREATE_BUCKET", false)?,
     })
 }
+
+mod runtime;
+mod telemetry;
+
+pub use runtime::{RuntimeConfig, DEFAULT_SANDBOX_IMAGE};
+pub use telemetry::TelemetryConfig;
 
 #[cfg(test)]
 mod tests;
