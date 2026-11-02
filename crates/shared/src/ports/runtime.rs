@@ -26,6 +26,10 @@ pub struct JobSpec {
     pub workspace_id: String,
     /// Environment id (resolves image/networking template).
     pub environment_id: String,
+    /// The environment's `config` as resolved when the job was made (its
+    /// `networking` and `packages`).
+    #[serde(default)]
+    pub environment: serde_json::Value,
     /// Extra environment variables for the task (non-secret; secrets go
     /// through vault egress, never into the task).
     pub env: BTreeMap<String, String>,
@@ -74,6 +78,11 @@ pub trait Runtime: Send + Sync {
     async fn status(&self, handle: &RuntimeHandle) -> Result<TaskState, RuntimeError>;
     /// Stop a task.
     async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError>;
+    /// The handle of `target_id`'s task, for a backend that names each task
+    /// after its target and so finds it again after a restart.
+    fn handle_for(&self, _target_id: &str) -> Option<RuntimeHandle> {
+        None
+    }
 }
 
 /// Deterministic in-memory [`Runtime`] for tests.
@@ -149,6 +158,7 @@ mod tests {
             target_id: "sesn_01x".into(),
             workspace_id: "wrkspc_01x".into(),
             environment_id: "env_01x".into(),
+            environment: serde_json::Value::Null,
             env: BTreeMap::new(),
         }
     }

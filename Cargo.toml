@@ -18,6 +18,7 @@ members = [
     "crates/adapters/store-postgres",
     "crates/adapters/blobs-s3",
     "crates/adapters/secrets-blob",
+    "crates/adapters/sandbox-docker",
 ]
 
 [workspace.package]
@@ -44,6 +45,7 @@ api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }
 secrets-blob = { path = "crates/adapters/secrets-blob" }
+sandbox-docker = { path = "crates/adapters/sandbox-docker" }
 
 # external
 serde = { version = "1", features = ["derive"] }
@@ -64,6 +66,7 @@ tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
 futures = "0.3"
+bollard = "0.21"
 tracing = "0.1"
 bytes = "1"
 parking_lot = "0.12"

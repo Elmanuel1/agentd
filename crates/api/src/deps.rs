@@ -53,14 +53,18 @@ impl SessionDeps for RealSessionDeps {
         Ok(agent.snapshot())
     }
 
-    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError> {
+    async fn resolve_environment(
+        &self,
+        ctx: &AuthContext,
+        env_id: &str,
+    ) -> Result<serde_json::Value, ApiError> {
         let env = self.environments.get(ctx, env_id).await?;
         if env.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request(
                 "environment is archived; new sessions cannot reference it",
             ));
         }
-        Ok(())
+        serde_json::to_value(&env.config).map_err(|e| ApiError::internal(e.to_string()))
     }
 }
 

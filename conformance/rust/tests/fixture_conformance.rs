@@ -56,7 +56,7 @@ async fn app() -> Option<Router> {
         keys: Arc::new(keys),
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
-        runtime: Arc::new(FakeRuntime::new()),
+        runtime: Some(Arc::new(FakeRuntime::new())),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

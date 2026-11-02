@@ -14,7 +14,7 @@ stops the boot with an error naming the variable.
 | Secret store | `AGENTD_SECRETS` | `blob`: secrets as objects in the blob store, not encrypted |
 | API keys | `AGENTD_KEYS` | `env`: the keys in `AGENTD_API_KEYS` |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
-| Sandbox runtime | `AGENTD_RUNTIME` | `none`: no sandbox, a launch fails |
+| Sandbox runtime | `AGENTD_RUNTIME` | `none`: sessions run without a sandbox. `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `alpine:3.20`) on the daemon `DOCKER_HOST` names (default the local socket). Archive and delete remove it. `limited` networking runs it with no network |
 
 ## Settings
 

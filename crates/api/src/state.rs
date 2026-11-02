@@ -38,15 +38,19 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, FireError> {
-        let Backends { stores, keys, scheduler, fires, runtime: _ } = backends;
+        let Backends { stores, keys, scheduler, fires, runtime } = backends;
         let agents = Arc::new(AgentsService::new(stores.agents, ModelCatalog::default_catalog()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
-        let sessions = Arc::new(SessionsService::new(
+        let sessions = SessionsService::new(
             stores.sessions,
             stores.session_events,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
             ModelCatalog::default_catalog(),
-        ));
+        );
+        let sessions = Arc::new(match runtime {
+            Some(runtime) => sessions.with_sandbox(runtime),
+            None => sessions,
+        });
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
             Arc::new(RealDeploymentDeps {

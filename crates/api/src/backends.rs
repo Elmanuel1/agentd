@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agents::AgentsStore;
-use async_trait::async_trait;
 use blobs_s3::{BlobError, S3BlobStore};
 use deployments::DeploymentsStore;
 use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
+use sandbox_docker::DockerRuntime;
 use scheduler_local::LocalScheduler;
 use secrets_blob::BlobSecretStore;
 use sessions::{SessionEventLog, SessionsStore};
@@ -19,7 +19,7 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
 use shared::ports::secrets::SecretStore;
-use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, SchedulerPort, TaskState};
+use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
     PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
@@ -94,8 +94,8 @@ pub struct Backends {
     pub scheduler: Arc<dyn SchedulerPort>,
     /// Where the scheduler delivers fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
-    /// The sandbox runtime.
-    pub runtime: Arc<dyn Runtime>,
+    /// The sandbox runtime; `None` runs sessions without one.
+    pub runtime: Option<Arc<dyn Runtime>>,
 }
 
 impl std::fmt::Debug for Backends {
@@ -113,6 +113,9 @@ pub enum BootError {
     /// The blob store.
     #[error("blobs: {0}")]
     Blobs(#[from] BlobError),
+    /// The sandbox runtime.
+    #[error("sandbox: {0}")]
+    Sandbox(String),
 }
 
 impl Backends {
@@ -139,28 +142,14 @@ impl Backends {
                 local
             }
         };
-        let runtime: Arc<dyn Runtime> = match config.runtime {
-            RuntimeConfig::None => Arc::new(NoRuntime),
+        let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
+            RuntimeConfig::None => None,
+            RuntimeConfig::Docker { image } => {
+                let docker = bollard::Docker::connect_with_defaults()
+                    .map_err(|e| BootError::Sandbox(e.to_string()))?;
+                Some(Arc::new(DockerRuntime::new(docker, image.clone())))
+            }
         };
         Ok(Self { stores, keys, scheduler, fires, runtime })
-    }
-}
-
-/// The `none` runtime: there is no sandbox, so nothing can be launched.
-#[derive(Debug, Clone, Copy)]
-pub struct NoRuntime;
-
-#[async_trait]
-impl Runtime for NoRuntime {
-    async fn launch(&self, _job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
-        Err(RuntimeError::Unavailable("no sandbox runtime is configured (AGENTD_RUNTIME=none)".into()))
-    }
-
-    async fn status(&self, handle: &RuntimeHandle) -> Result<TaskState, RuntimeError> {
-        Err(RuntimeError::Unknown(handle.id.clone()))
-    }
-
-    async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Unknown(handle.id.clone()))
     }
 }

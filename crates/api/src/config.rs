@@ -66,10 +66,16 @@ pub enum SchedulerConfig {
 }
 
 /// `AGENTD_RUNTIME`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeConfig {
-    /// `none`: no sandbox; a launch fails.
+    /// `none`: no sandbox; sessions run without one.
     None,
+    /// `docker`: one container per session from `image`
+    /// (`AGENTD_SANDBOX_IMAGE`), on the daemon `DOCKER_HOST` names.
+    Docker {
+        /// The sandbox image.
+        image: String,
+    },
 }
 
 /// A configuration value agentd cannot boot with.
@@ -110,12 +116,18 @@ impl Config {
         };
         let runtime = match selector(&get, "AGENTD_RUNTIME", "none").as_str() {
             "none" => RuntimeConfig::None,
+            "docker" => RuntimeConfig::Docker {
+                image: get("AGENTD_SANDBOX_IMAGE").unwrap_or_else(|| DEFAULT_SANDBOX_IMAGE.into()),
+            },
             other => return Err(unknown("AGENTD_RUNTIME", other)),
         };
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime })
     }
 }
+
+/// The image a Docker sandbox runs when `AGENTD_SANDBOX_IMAGE` is unset.
+pub const DEFAULT_SANDBOX_IMAGE: &str = "alpine:3.20";
 
 fn selector(get: &impl Fn(&str) -> Option<String>, var: &str, default: &str) -> String {
     get(var).unwrap_or_else(|| default.to_owned())

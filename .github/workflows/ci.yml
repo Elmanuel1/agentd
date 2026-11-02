@@ -53,6 +53,7 @@ jobs:
     env:
       DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
       AGENTD_PG_TESTS: "1"
+      AGENTD_DOCKER_TESTS: "1"
       AGENTD_AWS_ENDPOINT: http://localhost:4566
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -105,6 +106,9 @@ jobs:
       AGENTD_ADDR: 127.0.0.1:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
       AGENTD_TEST_KEY: sdk-conformance-key
+      # Each session gets its container on the runner's Docker daemon.
+      AGENTD_RUNTIME: docker
+      AGENTD_TEST_DOCKER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
