@@ -36,11 +36,7 @@ impl std::fmt::Debug for LocalTokioRuntime {
 impl LocalTokioRuntime {
     /// Build with a job factory.
     pub fn new(factory: JobFactory) -> Self {
-        Self {
-            factory,
-            tasks: Mutex::new(BTreeMap::new()),
-            counter: Mutex::new(0),
-        }
+        Self { factory, tasks: Mutex::new(BTreeMap::new()), counter: Mutex::new(0) }
     }
 }
 
@@ -66,9 +62,7 @@ impl Runtime for LocalTokioRuntime {
             match g.get(&handle.id) {
                 None => return Err(RuntimeError::Unknown(handle.id.clone())),
                 Some(task) if !task.is_finished() => return Ok(TaskState::Running),
-                Some(_) => g
-                    .remove(&handle.id)
-                    .ok_or_else(|| RuntimeError::Unknown(handle.id.clone()))?,
+                Some(_) => g.remove(&handle.id).ok_or_else(|| RuntimeError::Unknown(handle.id.clone()))?,
             }
         };
         match finished_task.await {
@@ -105,9 +99,7 @@ mod tests {
 
     #[tokio::test]
     async fn launch_completes_and_reports_exit() {
-        let rt = LocalTokioRuntime::new(Arc::new(|_job| {
-            Box::pin(async { Ok(()) }) as JobFuture
-        }));
+        let rt = LocalTokioRuntime::new(Arc::new(|_job| Box::pin(async { Ok(()) }) as JobFuture));
         let h = rt.launch(spec()).await.unwrap();
         // Let the task finish.
         tokio::task::yield_now().await;
@@ -125,9 +117,8 @@ mod tests {
 
     #[tokio::test]
     async fn failing_job_reports_failed() {
-        let rt = LocalTokioRuntime::new(Arc::new(|_job| {
-            Box::pin(async { Err("boom".to_owned()) }) as JobFuture
-        }));
+        let rt =
+            LocalTokioRuntime::new(Arc::new(|_job| Box::pin(async { Err("boom".to_owned()) }) as JobFuture));
         let h = rt.launch(spec()).await.unwrap();
         tokio::task::yield_now().await;
         let mut state = rt.status(&h).await.unwrap();
@@ -152,9 +143,6 @@ mod tests {
         let h = rt.launch(spec()).await.unwrap();
         assert_eq!(rt.status(&h).await.unwrap(), TaskState::Running);
         rt.stop(&h).await.unwrap();
-        assert!(matches!(
-            rt.status(&h).await,
-            Err(RuntimeError::Unknown(_))
-        ));
+        assert!(matches!(rt.status(&h).await, Err(RuntimeError::Unknown(_))));
     }
 }

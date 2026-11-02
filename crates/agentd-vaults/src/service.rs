@@ -40,11 +40,7 @@ impl VaultsService {
     // ── Vault CRUD ────────────────────────────────────────────────────────
 
     /// `POST /v1/vaults`.
-    pub async fn create_vault(
-        &self,
-        ctx: &AuthContext,
-        req: CreateVaultRequest,
-    ) -> Result<Vault, ApiError> {
+    pub async fn create_vault(&self, ctx: &AuthContext, req: CreateVaultRequest) -> Result<Vault, ApiError> {
         let display_name = required("display_name", req.display_name)?;
         validate_string_len("display_name", &display_name, values::NAME_MIN, values::NAME_MAX)?;
         req.metadata.validate(MetadataPolicy::capped())?;
@@ -58,32 +54,19 @@ impl VaultsService {
             tag: VaultTag::Vault,
             updated_at: now,
         };
-        self.store
-            .insert_vault(&ctx.workspace, vault.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert_vault(&ctx.workspace, vault.clone()).await.map_err(map_store)?;
         Ok(vault)
     }
 
     /// `GET /v1/vaults/{id}`.
     pub async fn get_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        self.store
-            .get_vault(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.get_vault(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     /// `GET /v1/vaults`.
-    pub async fn list_vaults(
-        &self,
-        ctx: &AuthContext,
-        page: &Pagination,
-    ) -> Result<Vec<Vault>, ApiError> {
-        self.store
-            .list_vaults(&ctx.workspace, page)
-            .await
-            .map_err(map_store)
+    pub async fn list_vaults(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Vault>, ApiError> {
+        self.store.list_vaults(&ctx.workspace, page).await.map_err(map_store)
     }
 
     /// `POST /v1/vaults/{id}`.
@@ -94,15 +77,9 @@ impl VaultsService {
         req: UpdateVaultRequest,
     ) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        let mut vault = self
-            .store
-            .get_vault(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)?;
+        let mut vault = self.store.get_vault(&ctx.workspace, &id).await.map_err(map_store)?;
         if vault.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot update an archived vault",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot update an archived vault"));
         }
         if let Some(n) = req.display_name {
             validate_string_len("display_name", &n, values::NAME_MIN, values::NAME_MAX)?;
@@ -113,28 +90,18 @@ impl VaultsService {
             vault.metadata = m;
         }
         vault.updated_at = Timestamp::now();
-        self.store
-            .replace_vault(&ctx.workspace, vault.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.replace_vault(&ctx.workspace, vault.clone()).await.map_err(map_store)?;
         Ok(vault)
     }
 
     /// `POST /v1/vaults/{id}/archive`.
     pub async fn archive_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        let mut vault = self
-            .store
-            .get_vault(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)?;
+        let mut vault = self.store.get_vault(&ctx.workspace, &id).await.map_err(map_store)?;
         if vault.archived_at.is_none() {
             vault.archived_at = Some(Timestamp::now());
             vault.updated_at = Timestamp::now();
-            self.store
-                .replace_vault(&ctx.workspace, vault.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace_vault(&ctx.workspace, vault.clone()).await.map_err(map_store)?;
         }
         Ok(vault)
     }
@@ -142,10 +109,7 @@ impl VaultsService {
     /// `DELETE /v1/vaults/{id}`.
     pub async fn delete_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        self.store
-            .delete_vault(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.delete_vault(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     // ── Credential CRUD ───────────────────────────────────────────────────
@@ -158,34 +122,19 @@ impl VaultsService {
         req: CreateCredentialRequest,
     ) -> Result<Credential, ApiError> {
         let vault_id = parse_vault_id(raw_vault_id)?;
-        let vault = self
-            .store
-            .get_vault(&ctx.workspace, &vault_id)
-            .await
-            .map_err(map_store)?;
+        let vault = self.store.get_vault(&ctx.workspace, &vault_id).await.map_err(map_store)?;
         if vault.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot add credentials to an archived vault",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot add credentials to an archived vault"));
         }
         let display_name = required("display_name", req.display_name)?;
         let auth = required("auth", req.auth)?;
         validate_auth(&auth)?;
-        let existing = self
-            .store
-            .list_credentials(&ctx.workspace, &vault_id)
-            .await
-            .map_err(map_store)?;
-        validate_array_max(
-            "credentials",
-            existing.len() + 1,
-            values::CREDENTIALS_PER_VAULT_MAX,
-        )?;
+        let existing = self.store.list_credentials(&ctx.workspace, &vault_id).await.map_err(map_store)?;
+        validate_array_max("credentials", existing.len() + 1, values::CREDENTIALS_PER_VAULT_MAX)?;
         // Unique key among ACTIVE credentials (archived ones freed theirs).
         let key = auth.unique_key().to_owned();
         if existing.iter().any(|c| {
-            c.wire.archived_at.is_none()
-                && c.auth.as_ref().map(|a| a.unique_key()) == Some(key.as_str())
+            c.wire.archived_at.is_none() && c.auth.as_ref().map(|a| a.unique_key()) == Some(key.as_str())
         }) {
             return Err(ApiError::conflict_invalid_request(format!(
                 "a credential for `{key}` already exists in this vault"
@@ -208,10 +157,7 @@ impl VaultsService {
             .insert_credential(
                 &ctx.workspace,
                 &vault_id,
-                StoredCredential {
-                    wire: cred.clone(),
-                    auth: Some(auth),
-                },
+                StoredCredential { wire: cred.clone(), auth: Some(auth) },
             )
             .await
             .map_err(map_store)?;
@@ -226,11 +172,7 @@ impl VaultsService {
         raw_cred_id: &str,
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
-        self.store
-            .get_credential(&ctx.workspace, &vid, &cid)
-            .await
-            .map(|c| c.wire)
-            .map_err(map_store)
+        self.store.get_credential(&ctx.workspace, &vid, &cid).await.map(|c| c.wire).map_err(map_store)
     }
 
     /// `GET /v1/vaults/{id}/credentials`.
@@ -260,23 +202,13 @@ impl VaultsService {
         req: UpdateCredentialRequest,
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
-        let mut stored = self
-            .store
-            .get_credential(&ctx.workspace, &vid, &cid)
-            .await
-            .map_err(map_store)?;
+        let mut stored = self.store.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
         if stored.wire.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot update an archived credential",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot update an archived credential"));
         }
         if let Some(new_auth) = req.auth {
             validate_auth(&new_auth)?;
-            let old_key = stored
-                .auth
-                .as_ref()
-                .map(|a| a.unique_key().to_owned())
-                .unwrap_or_default();
+            let old_key = stored.auth.as_ref().map(|a| a.unique_key().to_owned()).unwrap_or_default();
             if new_auth.unique_key() != old_key {
                 return Err(ApiError::conflict_invalid_request(format!(
                     "credential keys are immutable: cannot change `{old_key}` to `{}`; archive and create a new credential",
@@ -308,10 +240,7 @@ impl VaultsService {
             stored.wire.display_name = n;
         }
         stored.wire.updated_at = Timestamp::now();
-        self.store
-            .replace_credential(&ctx.workspace, &vid, stored.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.replace_credential(&ctx.workspace, &vid, stored.clone()).await.map_err(map_store)?;
         Ok(stored.wire)
     }
 
@@ -324,19 +253,12 @@ impl VaultsService {
         raw_cred_id: &str,
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
-        let mut stored = self
-            .store
-            .get_credential(&ctx.workspace, &vid, &cid)
-            .await
-            .map_err(map_store)?;
+        let mut stored = self.store.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
         if stored.wire.archived_at.is_none() {
             stored.wire.archived_at = Some(Timestamp::now());
             stored.wire.updated_at = Timestamp::now();
             stored.auth = None; // secret purged
-            self.store
-                .replace_credential(&ctx.workspace, &vid, stored.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace_credential(&ctx.workspace, &vid, stored.clone()).await.map_err(map_store)?;
         }
         Ok(stored.wire)
     }
@@ -349,11 +271,7 @@ impl VaultsService {
         raw_cred_id: &str,
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
-        self.store
-            .delete_credential(&ctx.workspace, &vid, &cid)
-            .await
-            .map(|c| c.wire)
-            .map_err(map_store)
+        self.store.delete_credential(&ctx.workspace, &vid, &cid).await.map(|c| c.wire).map_err(map_store)
     }
 }
 
@@ -371,10 +289,7 @@ fn parse_pair(v: &str, c: &str) -> Result<(VaultId, CredentialId), ApiError> {
 /// `auth.networking: Field required` (an exact nested field-path message serde
 /// can't produce, so it's validated here).
 fn validate_auth(auth: &crate::types::CredentialAuthInput) -> Result<(), ApiError> {
-    if let crate::types::CredentialAuthInput::EnvironmentVariable {
-        networking: None, ..
-    } = auth
-    {
+    if let crate::types::CredentialAuthInput::EnvironmentVariable { networking: None, .. } = auth {
         return Err(ApiError::invalid_request("auth.networking: Field required"));
     }
     Ok(())

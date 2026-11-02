@@ -30,15 +30,9 @@ pub struct SendEventsBody {
 pub fn router() -> Router {
     Router::new()
         .route("/v1/sessions", post(create).get(list))
-        .route(
-            "/v1/sessions/{id}",
-            get(get_one).post(update).delete(delete),
-        )
+        .route("/v1/sessions/{id}", get(get_one).post(update).delete(delete))
         .route("/v1/sessions/{id}/archive", post(archive))
-        .route(
-            "/v1/sessions/{id}/events",
-            get(list_events).post(send_events),
-        )
+        .route("/v1/sessions/{id}/events", get(list_events).post(send_events))
         .route("/v1/sessions/{id}/events/stream", get(stream_events))
         .route("/v1/sessions/{id}/threads", get(list_threads))
 }
@@ -134,8 +128,7 @@ async fn stream_events(
     use futures::StreamExt;
     let rx = svc.subscribe(&ctx, &id).await?;
     // Live opens the stream with a `: connected` comment frame before events.
-    let connected =
-        futures::stream::once(async { Ok(SseEvent::default().comment("connected")) });
+    let connected = futures::stream::once(async { Ok(SseEvent::default().comment("connected")) });
     let events = futures::stream::unfold(rx, |mut rx| async move {
         loop {
             match rx.recv().await {

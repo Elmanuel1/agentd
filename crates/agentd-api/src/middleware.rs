@@ -17,20 +17,10 @@ fn envelope(e: &ApiError) -> Response {
 
 /// `x-api-key` → [`AuthContext`]. Missing/unknown → 401 envelope
 /// (`authentication_error`), matching the live error family.
-pub async fn auth(
-    State(keys): State<ApiKeyRegistry>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    let key = req
-        .headers()
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+pub async fn auth(State(keys): State<ApiKeyRegistry>, mut req: Request, next: Next) -> Response {
+    let key = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()).map(str::to_owned);
     let Some(key) = key else {
-        return envelope(&ApiError::authentication(
-            "missing x-api-key header",
-        ));
+        return envelope(&ApiError::authentication("missing x-api-key header"));
     };
     let Some(ctx) = keys.resolve(&key) else {
         return envelope(&ApiError::authentication("invalid x-api-key"));
@@ -60,10 +50,7 @@ pub async fn beta_gate(req: Request, next: Next) -> Response {
         || path.starts_with("/v1/memory_stores")
         || path.starts_with("/v1/deployments")
         || path.starts_with("/v1/deployment_runs");
-    let is_bodied = matches!(
-        req.method().as_str(),
-        "POST" | "PUT" | "PATCH"
-    );
+    let is_bodied = matches!(req.method().as_str(), "POST" | "PUT" | "PATCH");
     if !is_managed_route || has_beta || !is_bodied {
         return next.run(req).await;
     }
@@ -73,13 +60,9 @@ pub async fn beta_gate(req: Request, next: Next) -> Response {
     let (parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => {
-            return envelope(&ApiError::invalid_request("Failed to parse request body"))
-        }
+        Err(_) => return envelope(&ApiError::invalid_request("Failed to parse request body")),
     };
-    if let Ok(serde_json::Value::Object(map)) =
-        serde_json::from_slice::<serde_json::Value>(&bytes)
-    {
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&bytes) {
         if let Some(unknown) = map.keys().find(|k| !NON_BETA_FIELDS.contains(&k.as_str())) {
             return envelope(&ApiError::invalid_request(format!(
                 "Failed to parse request body: unknown field \"{unknown}\""

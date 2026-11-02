@@ -335,10 +335,9 @@ mod tests {
         let a: AgentRefInput = serde_json::from_str("\"agent_01XdReZgC7eHpg9b9Nvrwdcm\"").unwrap();
         assert_eq!(a.id(), "agent_01XdReZgC7eHpg9b9Nvrwdcm");
         assert_eq!(a.version(), None);
-        let b: AgentRefInput = serde_json::from_str(
-            r#"{"type":"agent","id":"agent_01XdReZgC7eHpg9b9Nvrwdcm","version":3}"#,
-        )
-        .unwrap();
+        let b: AgentRefInput =
+            serde_json::from_str(r#"{"type":"agent","id":"agent_01XdReZgC7eHpg9b9Nvrwdcm","version":3}"#)
+                .unwrap();
         assert_eq!(b.version(), Some(3));
     }
 

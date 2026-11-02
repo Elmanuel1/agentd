@@ -313,11 +313,7 @@ pub struct Event {
 impl Event {
     /// Wrap a payload with a fresh id and no processed stamp.
     pub fn new(payload: EventPayload) -> Self {
-        Self {
-            id: EventId::generate(),
-            processed_at: None,
-            payload,
-        }
+        Self { id: EventId::generate(), processed_at: None, payload }
     }
 }
 
@@ -334,9 +330,7 @@ mod tests {
             id: EventId::generate(),
             processed_at: Some(Timestamp::now()),
             payload: EventPayload::SessionStatusIdle {
-                stop_reason: StopReason::RequiresAction {
-                    event_ids: vec![blocking.clone()],
-                },
+                stop_reason: StopReason::RequiresAction { event_ids: vec![blocking.clone()] },
             },
         };
         let v = serde_json::to_value(&ev).unwrap();

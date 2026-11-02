@@ -87,7 +87,13 @@ async fn duplicate_names_allowed_like_live_api() {
     let b = s.create(&ctx(&org), minimal()).await.unwrap();
     assert_ne!(a.id, b.id);
     assert_eq!(a.name, b.name);
-    assert_eq!(s.list(&ctx(&org), &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().len(), 2);
+    assert_eq!(
+        s.list(&ctx(&org), &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -109,19 +115,10 @@ async fn missing_fields_use_required_error() {
     }
     let s = svc().await;
     let org = uniq_org();
-    let e = s
-        .create(&ctx(&org), CreateEnvironmentRequest::default())
-        .await
-        .unwrap_err();
+    let e = s.create(&ctx(&org), CreateEnvironmentRequest::default()).await.unwrap_err();
     assert_eq!(e.message, "name: Field required");
     let e = s
-        .create(
-            &ctx(&org),
-            CreateEnvironmentRequest {
-                name: Some("x".into()),
-                ..Default::default()
-            },
-        )
+        .create(&ctx(&org), CreateEnvironmentRequest { name: Some("x".into()), ..Default::default() })
         .await
         .unwrap_err();
     assert_eq!(e.message, "config: Field required");
@@ -150,10 +147,7 @@ async fn archive_then_update_conflicts() {
     let archived = s.archive(&ctx(&org), e.id.as_str()).await.unwrap();
     assert!(archived.archived_at.is_some());
     assert_eq!(archived.state, EnvironmentState::Archived);
-    let err = s
-        .update(&ctx(&org), e.id.as_str(), UpdateEnvironmentRequest::default())
-        .await
-        .unwrap_err();
+    let err = s.update(&ctx(&org), e.id.as_str(), UpdateEnvironmentRequest::default()).await.unwrap_err();
     assert_eq!(err.status, 409);
 }
 
@@ -189,10 +183,7 @@ async fn update_replaces_config_and_bumps_updated_at() {
         )
         .await
         .unwrap();
-    assert!(matches!(
-        updated.config,
-        agentd_environments::EnvironmentConfig::SelfHosted {}
-    ));
+    assert!(matches!(updated.config, agentd_environments::EnvironmentConfig::SelfHosted {}));
     assert_eq!(updated.description, "now self hosted");
 }
 
@@ -216,9 +207,7 @@ mod routes {
             workspace: WorkspaceId::new("wrkspc_01t"),
             api_key_id: "apikey_01t".into(),
         };
-        agentd_environments::routes::router()
-            .layer(Extension(svc))
-            .layer(Extension(ctx))
+        agentd_environments::routes::router().layer(Extension(svc)).layer(Extension(ctx))
     }
 
     async fn call(
@@ -274,16 +263,11 @@ mod routes {
             return;
         }
         let app = app().await;
-        let (_, created) = call(
-            &app,
-            "POST",
-            "/v1/environments",
-            Some(r#"{"name":"e","config":{"type":"self_hosted"}}"#),
-        )
-        .await;
+        let (_, created) =
+            call(&app, "POST", "/v1/environments", Some(r#"{"name":"e","config":{"type":"self_hosted"}}"#))
+                .await;
         let id = created["id"].as_str().unwrap();
-        let (st, archived) =
-            call(&app, "POST", &format!("/v1/environments/{id}/archive"), None).await;
+        let (st, archived) = call(&app, "POST", &format!("/v1/environments/{id}/archive"), None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(archived["state"], "archived");
         assert!(archived["archived_at"].is_string());

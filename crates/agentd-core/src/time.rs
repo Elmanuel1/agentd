@@ -63,8 +63,8 @@ mod tests {
     #[test]
     fn wire_format_matches_live_fixture() {
         // From the live probe: "created_at": "2026-07-03T22:32:35.588293Z"
-        let dt = Utc.with_ymd_and_hms(2026, 7, 3, 22, 32, 35).unwrap()
-            + chrono::Duration::microseconds(588_293);
+        let dt =
+            Utc.with_ymd_and_hms(2026, 7, 3, 22, 32, 35).unwrap() + chrono::Duration::microseconds(588_293);
         let ts = Timestamp::from_datetime(dt);
         assert_eq!(ts.to_wire(), "2026-07-03T22:32:35.588293Z");
     }
@@ -72,10 +72,7 @@ mod tests {
     #[test]
     fn always_six_fraction_digits_even_at_zero() {
         let dt = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        assert_eq!(
-            Timestamp::from_datetime(dt).to_wire(),
-            "2026-01-01T00:00:00.000000Z"
-        );
+        assert_eq!(Timestamp::from_datetime(dt).to_wire(), "2026-01-01T00:00:00.000000Z");
     }
 
     #[test]
@@ -84,10 +81,7 @@ mod tests {
         let json = serde_json::to_string(&ts).unwrap();
         let back: Timestamp = serde_json::from_str(&json).unwrap();
         // Round-trips at microsecond precision.
-        assert_eq!(
-            ts.as_datetime().timestamp_micros(),
-            back.as_datetime().timestamp_micros()
-        );
+        assert_eq!(ts.as_datetime().timestamp_micros(), back.as_datetime().timestamp_micros());
     }
 
     #[test]

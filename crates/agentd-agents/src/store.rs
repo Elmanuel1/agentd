@@ -29,12 +29,7 @@ pub trait AgentsStore: Send + Sync {
     /// Fetch the latest version.
     async fn latest(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Agent, StoreError>;
     /// Fetch a specific version.
-    async fn version(
-        &self,
-        ws: &WorkspaceId,
-        id: &AgentId,
-        version: u64,
-    ) -> Result<Agent, StoreError>;
+    async fn version(&self, ws: &WorkspaceId, id: &AgentId, version: u64) -> Result<Agent, StoreError>;
     /// Append a new version (the service computes it as latest+1).
     async fn append_version(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError>;
     /// Replace the latest version in place (archive stamping only).

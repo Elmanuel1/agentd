@@ -16,10 +16,7 @@ use crate::types::{CreateEnvironmentRequest, UpdateEnvironmentRequest};
 pub fn router() -> Router {
     Router::new()
         .route("/v1/environments", post(create).get(list))
-        .route(
-            "/v1/environments/{id}",
-            get(get_one).post(update).delete(delete),
-        )
+        .route("/v1/environments/{id}", get(get_one).post(update).delete(delete))
         .route("/v1/environments/{id}/archive", post(archive))
 }
 

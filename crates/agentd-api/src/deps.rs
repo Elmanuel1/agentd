@@ -104,31 +104,24 @@ impl DeploymentDeps for RealDeploymentDeps {
     async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError> {
         let env = self.environments.get(ctx, env_id).await?;
         if env.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "environment is archived",
-            ));
+            return Err(ApiError::conflict_invalid_request("environment is archived"));
         }
         Ok(())
     }
 
-    async fn create_session(
-        &self,
-        ctx: &AuthContext,
-        deployment: &Deployment,
-    ) -> Result<String, ApiError> {
+    async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError> {
         // Build the session create from the frozen deployment config.
-        let req: agentd_sessions::types::CreateSessionRequest =
-            serde_json::from_value(serde_json::json!({
-                "agent": {
-                    "type": "agent",
-                    "id": deployment.agent.id.as_str(),
-                    "version": deployment.agent.version,
-                },
-                "environment_id": deployment.environment_id,
-                "title": deployment.name,
-                "vault_ids": deployment.vault_ids,
-            }))
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let req: agentd_sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
+            "agent": {
+                "type": "agent",
+                "id": deployment.agent.id.as_str(),
+                "version": deployment.agent.version,
+            },
+            "environment_id": deployment.environment_id,
+            "title": deployment.name,
+            "vault_ids": deployment.vault_ids,
+        }))
+        .map_err(|e| ApiError::internal(e.to_string()))?;
         let session = self.sessions.create(ctx, req).await?;
         // Queue the deployment's initial events as the kickoff.
         let payloads: Vec<agentd_sessions::events::EventPayload> = deployment
@@ -136,15 +129,11 @@ impl DeploymentDeps for RealDeploymentDeps {
             .iter()
             .map(|e| match e {
                 InitialEvent::UserMessage { content } => {
-                    agentd_sessions::events::EventPayload::UserMessage {
-                        content: content.clone(),
-                    }
+                    agentd_sessions::events::EventPayload::UserMessage { content: content.clone() }
                 }
             })
             .collect();
-        self.sessions
-            .send_events(ctx, session.id.as_str(), payloads)
-            .await?;
+        self.sessions.send_events(ctx, session.id.as_str(), payloads).await?;
         Ok(session.id.as_str().to_owned())
     }
 }

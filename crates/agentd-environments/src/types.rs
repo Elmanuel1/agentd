@@ -212,8 +212,7 @@ mod tests {
     fn minimal_cloud_config_expands_to_canonical_defaults() {
         // Input from the live probe: {"type":"cloud","networking":{"type":"unrestricted"}}
         let c: EnvironmentConfig =
-            serde_json::from_str(r#"{"type":"cloud","networking":{"type":"unrestricted"}}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"type":"cloud","networking":{"type":"unrestricted"}}"#).unwrap();
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["type"], "cloud");
         assert_eq!(v["packages"]["type"], "packages");
@@ -226,10 +225,7 @@ mod tests {
     #[test]
     fn self_hosted_is_bare() {
         let c: EnvironmentConfig = serde_json::from_str(r#"{"type":"self_hosted"}"#).unwrap();
-        assert_eq!(
-            serde_json::to_value(&c).unwrap(),
-            serde_json::json!({"type":"self_hosted"})
-        );
+        assert_eq!(serde_json::to_value(&c).unwrap(), serde_json::json!({"type":"self_hosted"}));
     }
 
     #[test]

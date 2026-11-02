@@ -84,11 +84,7 @@ impl DreamsStore for PgDreamsStore {
                 .filter(dreams::workspace_id.eq(ws.as_str()))
                 .filter(dreams::dream_id.eq(d.id.as_str())),
         )
-        .set((
-            dreams::name.eq(&d.name),
-            dreams::status.eq(enum_str(&d.status)),
-            dreams::doc.eq(to_doc(&d)?),
-        ))
+        .set((dreams::name.eq(&d.name), dreams::status.eq(enum_str(&d.status)), dreams::doc.eq(to_doc(&d)?)))
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;

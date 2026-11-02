@@ -5,15 +5,7 @@
 //! [`types::AgentSnapshot`] (sessions/threads) or [`types::AgentRef`]
 //! (deployments) — both exported here.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod routes;
 pub mod service;

@@ -106,15 +106,9 @@ async fn list_runs(
         .get("deployment_id")
         .cloned()
         .ok_or_else(|| ApiError::invalid_request("deployment_id: Field required"))?;
-    let has_error = params
-        .get("has_error")
-        .and_then(|v| v.parse::<bool>().ok());
+    let has_error = params.get("has_error").and_then(|v| v.parse::<bool>().ok());
     let page = Pagination::from_params(&params)?;
-    Ok(Json(Page::paginate(
-        svc.runs(&ctx, &deployment_id, has_error).await?,
-        &page,
-    ))
-    .into_response())
+    Ok(Json(Page::paginate(svc.runs(&ctx, &deployment_id, has_error).await?, &page)).into_response())
 }
 
 /// Scheduler → agentd. Business failures were already recorded as error
@@ -126,8 +120,6 @@ async fn internal_fire(
     Extension(ctx): Extension<AuthContext>,
     ApiJson(body): ApiJson<FireBody>,
 ) -> Result<Response, RouteError> {
-    let run = svc
-        .fire_scheduled(&ctx, &body.deployment_id, body.scheduled_at)
-        .await?;
+    let run = svc.fire_scheduled(&ctx, &body.deployment_id, body.scheduled_at).await?;
     Ok(Json(serde_json::json!({ "fired": run.is_some(), "run": run })).into_response())
 }

@@ -42,11 +42,7 @@ impl PgMemoryStore {
         format!("memory/{}/{}/{}", ws.as_str(), store.as_str(), version.as_str())
     }
 
-    async fn require_store(
-        &self,
-        ws: &WorkspaceId,
-        store: &MemoryStoreId,
-    ) -> Result<(), StoreError> {
+    async fn require_store(&self, ws: &WorkspaceId, store: &MemoryStoreId) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let exists: Option<String> = memory_stores::table
             .filter(memory_stores::workspace_id.eq(ws.as_str()))
@@ -81,11 +77,7 @@ impl PgMemoryStore {
         let fetches = rows.into_iter().map(|(doc, has_blob)| async move {
             let version: MemoryVersion = parse_doc(doc)?;
             let blob = if has_blob {
-                let bytes = self
-                    .blobs
-                    .get(&Self::blob_key(ws, store, &version.id))
-                    .await
-                    .map_err(blob_be)?;
+                let bytes = self.blobs.get(&Self::blob_key(ws, store, &version.id)).await.map_err(blob_be)?;
                 Some(String::from_utf8_lossy(&bytes).into_owned())
             } else {
                 None
@@ -104,11 +96,9 @@ impl PgMemoryStore {
     ) -> Result<(), StoreError> {
         let key = Self::blob_key(ws, store, &v.version.id);
         match &v.blob {
-            Some(content) => self
-                .blobs
-                .put(&key, Bytes::from(content.clone().into_bytes()))
-                .await
-                .map_err(blob_be)?,
+            Some(content) => {
+                self.blobs.put(&key, Bytes::from(content.clone().into_bytes())).await.map_err(blob_be)?
+            }
             None => match self.blobs.delete(&key).await {
                 Ok(()) | Err(agentd_blobs::BlobError::NotFound(_)) => {}
                 Err(e) => return Err(blob_be(e)),
@@ -161,11 +151,7 @@ impl PgMemoryStore {
                 memories::created_at.eq(record.head.created_at.as_datetime()),
                 memories::doc.eq(to_doc(&record.head)?),
             ))
-            .on_conflict((
-                memories::workspace_id,
-                memories::store_id,
-                memories::memory_id,
-            ))
+            .on_conflict((memories::workspace_id, memories::store_id, memories::memory_id))
             .do_update()
             .set((
                 memories::path.eq(excluded(memories::path)),
@@ -198,11 +184,7 @@ impl MemoryPersistence for PgMemoryStore {
         Ok(())
     }
 
-    async fn get_store(
-        &self,
-        ws: &WorkspaceId,
-        id: &MemoryStoreId,
-    ) -> Result<MemoryStoreEntity, StoreError> {
+    async fn get_store(&self, ws: &WorkspaceId, id: &MemoryStoreId) -> Result<MemoryStoreEntity, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = memory_stores::table
             .filter(memory_stores::workspace_id.eq(ws.as_str()))
@@ -307,10 +289,7 @@ impl MemoryPersistence for PgMemoryStore {
     ) -> Result<(), StoreError> {
         self.require_store(ws, store).await?;
         if let Some(occupied) = self.find_by_path(ws, store, &record.head.path).await? {
-            return Err(StoreError::PathConflict {
-                path: record.head.path.clone(),
-                memory_id: occupied,
-            });
+            return Err(StoreError::PathConflict { path: record.head.path.clone(), memory_id: occupied });
         }
         self.upsert_head(ws, store, &record).await?;
         for v in &record.chain {
@@ -342,11 +321,7 @@ impl MemoryPersistence for PgMemoryStore {
         }
         let head: Memory = parse_doc(doc)?;
         let chain = self.chain_full(ws, store, id).await?;
-        Ok(MemoryRecord {
-            head,
-            deleted,
-            chain,
-        })
+        Ok(MemoryRecord { head, deleted, chain })
     }
 
     async fn replace_memory(
@@ -406,23 +381,13 @@ impl MemoryPersistence for PgMemoryStore {
             let escaped = p.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
             q = q.filter(memories::path.like(format!("{escaped}%")));
         }
-        let heads: Vec<serde_json::Value> = q
-            .order(memories::path.asc())
-            .select(memories::doc)
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
+        let heads: Vec<serde_json::Value> =
+            q.order(memories::path.asc()).select(memories::doc).load(&mut conn).await.map_err(diesel_be)?;
         // The listing projects the head only (basic view), so skip the
         // per-memory version-chain fetch entirely — no N+1.
         heads
             .into_iter()
-            .map(|doc| {
-                Ok(MemoryRecord {
-                    head: parse_doc(doc)?,
-                    deleted: false,
-                    chain: Vec::new(),
-                })
-            })
+            .map(|doc| Ok(MemoryRecord { head: parse_doc(doc)?, deleted: false, chain: Vec::new() }))
             .collect()
     }
 
@@ -473,14 +438,7 @@ impl MemoryPersistence for PgMemoryStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter()
-            .map(|d| {
-                Ok(VersionRecord {
-                    version: parse_doc(d)?,
-                    blob: None,
-                })
-            })
-            .collect()
+        docs.into_iter().map(|d| Ok(VersionRecord { version: parse_doc(d)?, blob: None })).collect()
     }
 
     async fn get_version(
@@ -502,11 +460,7 @@ impl MemoryPersistence for PgMemoryStore {
         let (doc, has_blob) = row.ok_or(StoreError::VersionNotFound)?;
         let version: MemoryVersion = parse_doc(doc)?;
         let blob = if has_blob {
-            let bytes = self
-                .blobs
-                .get(&Self::blob_key(ws, store, id))
-                .await
-                .map_err(blob_be)?;
+            let bytes = self.blobs.get(&Self::blob_key(ws, store, id)).await.map_err(blob_be)?;
             Some(String::from_utf8_lossy(&bytes).into_owned())
         } else {
             None
@@ -523,12 +477,8 @@ impl MemoryPersistence for PgMemoryStore {
         to: &MemoryVersionId,
     ) -> Result<MemoryRecord, StoreError> {
         let mut record = self.get_memory(ws, store, id).await?;
-        let target = record
-            .chain
-            .iter()
-            .find(|v| &v.version.id == to)
-            .cloned()
-            .ok_or(StoreError::VersionNotFound)?;
+        let target =
+            record.chain.iter().find(|v| &v.version.id == to).cloned().ok_or(StoreError::VersionNotFound)?;
         record.head.memory_version_id = target.version.id.clone();
         if let (Some(sha), Some(size), Some(path)) = (
             target.version.content_sha256.clone(),

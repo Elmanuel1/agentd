@@ -4,9 +4,6 @@
 # product is dashboard-first (list / filter / sort / search / count are plain
 # SQL). agentd stays stateless across replicas (all state in Postgres);
 # multi-replica exactly-once is a native INSERT … ON CONFLICT DO NOTHING.
-#
-# Alternative: the DynamoDB + S3 backend (agentd-store-aws) for extreme-scale
-# / write-heavy workloads — bring it up with `--profile aws`.
 
 services:
   # ── migrations: Flyway 11 applies the schema, then exits ──────────────
@@ -78,15 +75,6 @@ services:
     ports:
       - "9000:9000"
 
-  # ── optional all-AWS backend (records in DynamoDB, bytes in S3, via Floci) ─
-  aws:
-    image: ${AGENTD_AWS_IMAGE:-floci/floci:latest}
-    profiles: ["aws"]
-    ports:
-      - "4566:4566"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    user: root
 
 volumes:
   pg_data:

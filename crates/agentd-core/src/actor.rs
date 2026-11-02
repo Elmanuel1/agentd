@@ -31,9 +31,7 @@ mod tests {
     #[test]
     fn api_actor_matches_live_fixture() {
         // Live: "created_by": {"api_key_id":"apikey_01Wnw5ximjHVpuyEXdDxFe5x","type":"api_actor"}
-        let a = Actor::ApiActor {
-            api_key_id: "apikey_01Wnw5ximjHVpuyEXdDxFe5x".into(),
-        };
+        let a = Actor::ApiActor { api_key_id: "apikey_01Wnw5ximjHVpuyEXdDxFe5x".into() };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(v["type"], "api_actor");
         assert_eq!(v["api_key_id"], "apikey_01Wnw5ximjHVpuyEXdDxFe5x");
@@ -42,15 +40,9 @@ mod tests {
     #[test]
     fn roundtrip_all_variants() {
         for a in [
-            Actor::ApiActor {
-                api_key_id: "apikey_x".into(),
-            },
-            Actor::SessionActor {
-                session_id: "sesn_x".into(),
-            },
-            Actor::UserActor {
-                user_id: "user_x".into(),
-            },
+            Actor::ApiActor { api_key_id: "apikey_x".into() },
+            Actor::SessionActor { session_id: "sesn_x".into() },
+            Actor::UserActor { user_id: "user_x".into() },
         ] {
             let s = serde_json::to_string(&a).unwrap();
             let b: Actor = serde_json::from_str(&s).unwrap();

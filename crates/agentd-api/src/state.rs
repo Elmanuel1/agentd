@@ -107,31 +107,18 @@ impl AppState {
             Arc::new(PgAgentsStore::new(backend.clone())),
             ModelCatalog::default_catalog(),
         ));
-        let environments = Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(
-            backend.clone(),
-        ))));
-        let vaults = Arc::new(VaultsService::new(Arc::new(PgVaultsStore::new(
-            backend.clone(),
-            blobs.clone(),
-        ))));
-        let memories = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(
-            backend.clone(),
-            blobs.clone(),
-        ))));
-        let files = Arc::new(FilesService::new(Arc::new(PgFilesStore::new(
-            backend.clone(),
-            blobs.clone(),
-        ))));
-        let skills = Arc::new(SkillsService::new(Arc::new(PgSkillsStore::new(
-            backend.clone(),
-            blobs.clone(),
-        ))));
+        let environments =
+            Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend.clone()))));
+        let vaults =
+            Arc::new(VaultsService::new(Arc::new(PgVaultsStore::new(backend.clone(), blobs.clone()))));
+        let memories =
+            Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend.clone(), blobs.clone()))));
+        let files = Arc::new(FilesService::new(Arc::new(PgFilesStore::new(backend.clone(), blobs.clone()))));
+        let skills =
+            Arc::new(SkillsService::new(Arc::new(PgSkillsStore::new(backend.clone(), blobs.clone()))));
         let sessions = Arc::new(SessionsService::new(
             Arc::new(PgSessionsStore::new(backend.clone())),
-            Arc::new(RealSessionDeps {
-                agents: agents.clone(),
-                environments: environments.clone(),
-            }),
+            Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
         ));
         let deployments = Arc::new(DeploymentsService::new(
             Arc::new(PgDeploymentsStore::new(backend)),
@@ -142,16 +129,6 @@ impl AppState {
             }),
             scheduler,
         ));
-        Self {
-            keys,
-            agents,
-            environments,
-            vaults,
-            memories,
-            files,
-            skills,
-            sessions,
-            deployments,
-        }
+        Self { keys, agents, environments, vaults, memories, files, skills, sessions, deployments }
     }
 }

@@ -9,15 +9,7 @@
 //! Anthropic Managed Agents API (`anthropic-beta: managed-agents-2026-04-01`),
 //! not from documentation. Where the two disagree, the fixtures win.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod actor;
 pub mod content;

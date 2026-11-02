@@ -136,12 +136,7 @@ impl SessionsStore for PgSessionsStore {
         docs.into_iter().map(parse_doc).collect()
     }
 
-    async fn append_event(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        event: Event,
-    ) -> Result<(), StoreError> {
+    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
         self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         // DB stamps the log time (authoritative ordering is `seq` bigserial).
@@ -159,12 +154,7 @@ impl SessionsStore for PgSessionsStore {
         Ok(())
     }
 
-    async fn replace_event(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        event: Event,
-    ) -> Result<(), StoreError> {
+    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let affected = diesel::update(
             session_events::table

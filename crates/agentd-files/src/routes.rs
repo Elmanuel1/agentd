@@ -41,15 +41,7 @@ async fn upload(
             _ => {}
         }
     }
-    let meta = svc
-        .upload(
-            &ctx,
-            filename,
-            mime,
-            bytes.unwrap_or_default(),
-            scope_id,
-        )
-        .await?;
+    let meta = svc.upload(&ctx, filename, mime, bytes.unwrap_or_default(), scope_id).await?;
     Ok(Json(meta).into_response())
 }
 
@@ -82,11 +74,7 @@ async fn download(
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
     let (meta, bytes) = svc.download(&ctx, &id).await?;
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, meta.mime_type)],
-        bytes,
-    )
-        .into_response())
+    Ok(([(axum::http::header::CONTENT_TYPE, meta.mime_type)], bytes).into_response())
 }
 
 async fn delete(

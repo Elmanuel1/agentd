@@ -81,9 +81,7 @@ fn map_rejection(rejection: &JsonRejection) -> ApiError {
         return ApiError::invalid_request(format!("{field}: Field required"));
     }
     if let Some(field) = between(&text, "unknown field `", "`") {
-        return ApiError::invalid_request(format!(
-            "Failed to parse request body: unknown field \"{field}\""
-        ));
+        return ApiError::invalid_request(format!("Failed to parse request body: unknown field \"{field}\""));
     }
     ApiError::invalid_request("Failed to parse request body")
 }
@@ -101,13 +99,7 @@ mod tests {
 
     #[test]
     fn extracts_field_name() {
-        assert_eq!(
-            between("missing field `version` at line 1", "missing field `", "`"),
-            Some("version")
-        );
-        assert_eq!(
-            between("unknown field `bogus`, expected", "unknown field `", "`"),
-            Some("bogus")
-        );
+        assert_eq!(between("missing field `version` at line 1", "missing field `", "`"), Some("version"));
+        assert_eq!(between("unknown field `bogus`, expected", "unknown field `", "`"), Some("bogus"));
     }
 }

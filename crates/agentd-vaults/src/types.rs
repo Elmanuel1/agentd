@@ -160,10 +160,7 @@ pub struct InjectionLocation {
 
 impl Default for InjectionLocation {
     fn default() -> Self {
-        Self {
-            body: true,
-            header: true,
-        }
+        Self { body: true, header: true }
     }
 }
 
@@ -219,31 +216,23 @@ impl CredentialAuthInput {
     /// The wire projection — provably secret-free (see [`CredentialAuthWire`]).
     pub fn to_wire(&self) -> CredentialAuthWire {
         match self {
-            Self::McpOauth {
-                mcp_server_url,
-                expires_at,
-                refresh,
-                ..
-            } => CredentialAuthWire::McpOauth {
+            Self::McpOauth { mcp_server_url, expires_at, refresh, .. } => CredentialAuthWire::McpOauth {
                 mcp_server_url: mcp_server_url.clone(),
                 expires_at: *expires_at,
                 has_refresh: refresh.is_some(),
             },
-            Self::StaticBearer { mcp_server_url, .. } => CredentialAuthWire::StaticBearer {
-                mcp_server_url: mcp_server_url.clone(),
-            },
-            Self::EnvironmentVariable {
-                secret_name,
-                networking,
-                injection_location,
-                ..
-            } => CredentialAuthWire::EnvironmentVariable {
-                secret_name: secret_name.clone(),
-                // Service validated Some before this projection; default is
-                // defensive-only.
-                networking: networking.clone().unwrap_or(CredentialNetworking::Unrestricted),
-                injection_location: injection_location.clone().unwrap_or_default(),
-            },
+            Self::StaticBearer { mcp_server_url, .. } => {
+                CredentialAuthWire::StaticBearer { mcp_server_url: mcp_server_url.clone() }
+            }
+            Self::EnvironmentVariable { secret_name, networking, injection_location, .. } => {
+                CredentialAuthWire::EnvironmentVariable {
+                    secret_name: secret_name.clone(),
+                    // Service validated Some before this projection; default is
+                    // defensive-only.
+                    networking: networking.clone().unwrap_or(CredentialNetworking::Unrestricted),
+                    injection_location: injection_location.clone().unwrap_or_default(),
+                }
+            }
         }
     }
 
@@ -254,38 +243,27 @@ impl CredentialAuthInput {
     /// shape, so `unseal` is a plain round-trip.
     pub fn seal(&self) -> String {
         match self {
-            Self::McpOauth {
-                mcp_server_url,
-                access_token,
-                expires_at,
-                refresh,
-            } => serde_json::json!({
+            Self::McpOauth { mcp_server_url, access_token, expires_at, refresh } => serde_json::json!({
                 "type": "mcp_oauth",
                 "mcp_server_url": mcp_server_url,
                 "access_token": access_token.expose(),
                 "expires_at": expires_at,
                 "refresh": refresh.as_ref().map(OauthRefreshInput::seal_value),
             }),
-            Self::StaticBearer {
-                mcp_server_url,
-                token,
-            } => serde_json::json!({
+            Self::StaticBearer { mcp_server_url, token } => serde_json::json!({
                 "type": "static_bearer",
                 "mcp_server_url": mcp_server_url,
                 "token": token.expose(),
             }),
-            Self::EnvironmentVariable {
-                secret_name,
-                secret_value,
-                networking,
-                injection_location,
-            } => serde_json::json!({
-                "type": "environment_variable",
-                "secret_name": secret_name,
-                "secret_value": secret_value.expose(),
-                "networking": networking,
-                "injection_location": injection_location,
-            }),
+            Self::EnvironmentVariable { secret_name, secret_value, networking, injection_location } => {
+                serde_json::json!({
+                    "type": "environment_variable",
+                    "secret_name": secret_name,
+                    "secret_value": secret_value.expose(),
+                    "networking": networking,
+                    "injection_location": injection_location,
+                })
+            }
         }
         .to_string()
     }
@@ -465,10 +443,9 @@ mod tests {
 
     #[test]
     fn env_var_networking_shapes() {
-        let n: CredentialNetworking = serde_json::from_str(
-            r#"{"type":"limited","allowed_hosts":["api.twilio.com","*.twilio.com"]}"#,
-        )
-        .unwrap();
+        let n: CredentialNetworking =
+            serde_json::from_str(r#"{"type":"limited","allowed_hosts":["api.twilio.com","*.twilio.com"]}"#)
+                .unwrap();
         assert!(matches!(n, CredentialNetworking::Limited { .. }));
     }
 }

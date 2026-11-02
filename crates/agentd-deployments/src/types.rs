@@ -94,11 +94,8 @@ impl WireSchedule {
     /// Recompute `upcoming_runs_at` from `after`.
     pub fn refresh_upcoming(&mut self, after: DateTime<Utc>) -> Result<(), ApiError> {
         let compiled = self.compile()?;
-        self.upcoming_runs_at = compiled
-            .upcoming_runs_at(after)
-            .into_iter()
-            .map(Timestamp::from_datetime)
-            .collect();
+        self.upcoming_runs_at =
+            compiled.upcoming_runs_at(after).into_iter().map(Timestamp::from_datetime).collect();
         Ok(())
     }
 }
@@ -288,9 +285,8 @@ mod tests {
             kind: CronKind::Cron,
             upcoming_runs_at: vec![],
         };
-        let after = chrono::DateTime::parse_from_rfc3339("2026-07-03T22:41:34Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let after =
+            chrono::DateTime::parse_from_rfc3339("2026-07-03T22:41:34Z").unwrap().with_timezone(&chrono::Utc);
         s.refresh_upcoming(after).unwrap();
         assert_eq!(s.upcoming_runs_at.len(), 5);
         assert_eq!(s.upcoming_runs_at[0].to_wire(), "2027-01-01T05:00:00.000000Z");

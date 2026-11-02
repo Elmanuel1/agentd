@@ -13,9 +13,7 @@
 use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
-use crate::types::{
-    Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId,
-};
+use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
 
 /// How a reader resolves a memory to a concrete version.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,17 +90,9 @@ pub trait MemoryPersistence: Send + Sync {
     /// Insert a store.
     async fn insert_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError>;
     /// Fetch a store.
-    async fn get_store(
-        &self,
-        ws: &WorkspaceId,
-        id: &MemoryStoreId,
-    ) -> Result<MemoryStoreEntity, StoreError>;
+    async fn get_store(&self, ws: &WorkspaceId, id: &MemoryStoreId) -> Result<MemoryStoreEntity, StoreError>;
     /// Replace a store.
-    async fn replace_store(
-        &self,
-        ws: &WorkspaceId,
-        s: MemoryStoreEntity,
-    ) -> Result<(), StoreError>;
+    async fn replace_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError>;
     /// Delete a store (and all memories).
     async fn delete_store(
         &self,

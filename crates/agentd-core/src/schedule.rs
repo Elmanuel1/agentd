@@ -11,8 +11,7 @@
 //! - `upcoming_runs_at` returns exactly 5 next fires (live-verified).
 
 use chrono::{
-    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone,
-    Timelike, Utc,
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
 };
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
@@ -56,10 +55,8 @@ impl CronSchedule {
     /// Parse and validate, returning the compiled matcher.
     pub fn compile(&self) -> Result<CompiledSchedule, ScheduleError> {
         let expr = CronExpr::parse(&self.expression)?;
-        let tz: Tz = self
-            .timezone
-            .parse()
-            .map_err(|_| ScheduleError::InvalidTimezone(self.timezone.clone()))?;
+        let tz: Tz =
+            self.timezone.parse().map_err(|_| ScheduleError::InvalidTimezone(self.timezone.clone()))?;
         Ok(CompiledSchedule { expr, tz })
     }
 }
@@ -141,19 +138,15 @@ struct CronExpr {
     dow_restricted: bool,
 }
 
-const MONTH_NAMES: [&str; 12] = [
-    "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
-];
+const MONTH_NAMES: [&str; 12] =
+    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const DOW_NAMES: [&str; 7] = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 
 impl CronExpr {
     fn parse(expr: &str) -> Result<Self, ScheduleError> {
         let fields: Vec<&str> = expr.split_whitespace().collect();
         if fields.len() != 5 {
-            return Err(ScheduleError::InvalidCron(format!(
-                "expected 5 fields, got {}",
-                fields.len()
-            )));
+            return Err(ScheduleError::InvalidCron(format!("expected 5 fields, got {}", fields.len())));
         }
         let (f_min, f_hour, f_dom, f_mon, f_dow) = match fields.as_slice() {
             [a, b, c, d, e] => (*a, *b, *c, *d, *e),
@@ -183,11 +176,7 @@ impl CronExpr {
     fn day_matches(&self, date: NaiveDate) -> bool {
         let dom_ok = self.dom.get(date.day() as usize).copied().unwrap_or(false);
         // chrono: num_days_from_sunday() → 0 = Sunday.
-        let dow_ok = self
-            .dow
-            .get(date.weekday().num_days_from_sunday() as usize)
-            .copied()
-            .unwrap_or(false);
+        let dow_ok = self.dow.get(date.weekday().num_days_from_sunday() as usize).copied().unwrap_or(false);
         // POSIX rule: if both dom and dow are restricted, EITHER matches.
         match (self.dom_restricted, self.dow_restricted) {
             (true, true) => dom_ok || dow_ok,
@@ -201,13 +190,7 @@ impl CronExpr {
         let mut time = Some(from.time());
         // Scan bound: 5 years of days.
         for _ in 0..(366 * 5) {
-            if self
-                .months
-                .get(date.month() as usize)
-                .copied()
-                .unwrap_or(false)
-                && self.day_matches(date)
-            {
+            if self.months.get(date.month() as usize).copied().unwrap_or(false) && self.day_matches(date) {
                 let start = time.take().unwrap_or(NaiveTime::MIN);
                 if let Some(t) = self.next_time_in_day(start) {
                     return Some(date.and_time(t));
@@ -239,10 +222,7 @@ impl CronExpr {
 
 fn name_to_num(token: &str, names: &[&str]) -> Option<u32> {
     let upper = token.to_ascii_uppercase();
-    names
-        .iter()
-        .position(|n| *n == upper)
-        .map(|i| i as u32 + if names.len() == 12 { 1 } else { 0 })
+    names.iter().position(|n| *n == upper).map(|i| i as u32 + if names.len() == 12 { 1 } else { 0 })
 }
 
 fn parse_value(token: &str, names: &[&str]) -> Result<u32, ScheduleError> {
@@ -267,9 +247,8 @@ fn parse_field(
     for part in field.split(',') {
         let (range_part, step) = match part.split_once('/') {
             Some((r, s)) => {
-                let step: u32 = s
-                    .parse()
-                    .map_err(|_| ScheduleError::InvalidCron(format!("bad step `{s}`")))?;
+                let step: u32 =
+                    s.parse().map_err(|_| ScheduleError::InvalidCron(format!("bad step `{s}`")))?;
                 if step == 0 {
                     return Err(ScheduleError::InvalidCron("step must be > 0".into()));
                 }
@@ -284,7 +263,11 @@ fn parse_field(
         } else {
             let v = parse_value(range_part, names)?;
             // A bare value with a step (e.g. `5/15`) means `5-max/15`.
-            if step > 1 { (v, max) } else { (v, v) }
+            if step > 1 {
+                (v, max)
+            } else {
+                (v, v)
+            }
         };
         if lo < min || hi > max || lo > hi {
             return Err(ScheduleError::InvalidCron(format!(
@@ -322,13 +305,7 @@ mod tests {
     use super::*;
 
     fn sched(expr: &str, tz: &str) -> CompiledSchedule {
-        CronSchedule {
-            kind: CronKind::Cron,
-            expression: expr.into(),
-            timezone: tz.into(),
-        }
-        .compile()
-        .unwrap()
+        CronSchedule { kind: CronKind::Cron, expression: expr.into(), timezone: tz.into() }.compile().unwrap()
     }
 
     fn utc(s: &str) -> DateTime<Utc> {
@@ -343,10 +320,7 @@ mod tests {
         //  "2030-01-01T05:00:00Z","2031-01-01T05:00:00Z"]
         let s = sched("0 0 1 1 *", "America/New_York");
         let runs = s.upcoming_runs_at(utc("2026-07-03T22:41:34Z"));
-        let got: Vec<String> = runs
-            .iter()
-            .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
-            .collect();
+        let got: Vec<String> = runs.iter().map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()).collect();
         assert_eq!(
             got,
             vec![
@@ -441,10 +415,7 @@ mod tests {
 
     #[test]
     fn parse_errors() {
-        assert!(matches!(
-            CronExpr::parse("0 0 1 1"),
-            Err(ScheduleError::InvalidCron(_))
-        ));
+        assert!(matches!(CronExpr::parse("0 0 1 1"), Err(ScheduleError::InvalidCron(_))));
         assert!(CronExpr::parse("60 0 * * *").is_err());
         assert!(CronExpr::parse("0 24 * * *").is_err());
         assert!(CronExpr::parse("0 0 0 * *").is_err()); // dom starts at 1
@@ -462,10 +433,7 @@ mod tests {
             timezone: "Mars/Olympus".into(),
         }
         .compile();
-        assert_eq!(
-            r.err(),
-            Some(ScheduleError::InvalidTimezone("Mars/Olympus".into()))
-        );
+        assert_eq!(r.err(), Some(ScheduleError::InvalidTimezone("Mars/Olympus".into())));
     }
 
     #[test]

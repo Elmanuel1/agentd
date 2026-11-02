@@ -67,9 +67,7 @@ pub struct ModelResponse {
 impl ModelResponse {
     /// Whether the turn wants tool execution.
     pub fn has_tool_use(&self) -> bool {
-        self.outputs
-            .iter()
-            .any(|o| matches!(o, ModelOutput::ToolUse { .. }))
+        self.outputs.iter().any(|o| matches!(o, ModelOutput::ToolUse { .. }))
     }
 }
 
@@ -103,10 +101,7 @@ impl MockModel {
     pub fn scripted(responses: Vec<ModelResponse>) -> Self {
         let mut script = responses;
         script.reverse(); // pop() plays front-first
-        Self {
-            script: Mutex::new(script),
-            requests: Mutex::new(Vec::new()),
-        }
+        Self { script: Mutex::new(script), requests: Mutex::new(Vec::new()) }
     }
 
     /// The requests the loop actually sent (assertable).
@@ -190,10 +185,7 @@ pub mod anthropic {
                 .await
                 .map_err(|e| ModelError::Call(e.to_string()))?;
             let status = resp.status();
-            let v: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| ModelError::Call(e.to_string()))?;
+            let v: serde_json::Value = resp.json().await.map_err(|e| ModelError::Call(e.to_string()))?;
             if !status.is_success() {
                 return Err(ModelError::Call(v.to_string()));
             }
@@ -213,9 +205,7 @@ pub mod anthropic {
             let usage = ModelUsage {
                 input_tokens: v["usage"]["input_tokens"].as_u64().unwrap_or(0),
                 output_tokens: v["usage"]["output_tokens"].as_u64().unwrap_or(0),
-                cache_read_input_tokens: v["usage"]["cache_read_input_tokens"]
-                    .as_u64()
-                    .unwrap_or(0),
+                cache_read_input_tokens: v["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0),
                 cache_creation_input_tokens: 0,
             };
             Ok(ModelResponse { outputs, usage })
@@ -239,20 +229,13 @@ mod tests {
                 usage: ModelUsage::default(),
             },
         ]);
-        let req = ModelRequest {
-            model: "claude-sonnet-4-6".into(),
-            system: None,
-            messages: vec![],
-            tools: vec![],
-        };
+        let req =
+            ModelRequest { model: "claude-sonnet-4-6".into(), system: None, messages: vec![], tools: vec![] };
         let a = mock.complete(req.clone()).await.unwrap();
         let b = mock.complete(req.clone()).await.unwrap();
         assert_eq!(a.outputs, vec![ModelOutput::Text { text: "one".into() }]);
         assert_eq!(b.outputs, vec![ModelOutput::Text { text: "two".into() }]);
-        assert!(matches!(
-            mock.complete(req).await,
-            Err(ModelError::Exhausted)
-        ));
+        assert!(matches!(mock.complete(req).await, Err(ModelError::Exhausted)));
         assert_eq!(mock.requests().len(), 3);
     }
 }

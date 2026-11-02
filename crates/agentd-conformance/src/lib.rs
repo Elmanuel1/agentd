@@ -15,15 +15,7 @@
 //!   bodies are diffed. Live mode creates + cleans real resources — it is
 //!   deliberately opt-in.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 use serde_json::Value;
 
@@ -32,11 +24,9 @@ use serde_json::Value;
 /// comparison.
 pub fn normalize(v: &Value) -> Value {
     match v {
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, val)| (k.clone(), normalize_field(k, val)))
-                .collect(),
-        ),
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, val)| (k.clone(), normalize_field(k, val))).collect())
+        }
         Value::Array(items) => Value::Array(items.iter().map(normalize).collect()),
         other => other.clone(),
     }
@@ -69,12 +59,7 @@ fn normalize_field(key: &str, v: &Value) -> Value {
     // upcoming_runs_at arrays of timestamps.
     if key == "upcoming_runs_at" {
         if let Value::Array(items) = v {
-            return Value::Array(
-                items
-                    .iter()
-                    .map(|_| Value::String("<timestamp>".into()))
-                    .collect(),
-            );
+            return Value::Array(items.iter().map(|_| Value::String("<timestamp>".into())).collect());
         }
     }
     normalize(v)
@@ -104,11 +89,7 @@ fn walk(path: &str, e: &Value, a: &Value, out: &mut Vec<String>) {
         }
         (Value::Array(ea), Value::Array(aa)) => {
             if ea.len() != aa.len() {
-                out.push(format!(
-                    "{path}: array length {} != {}",
-                    ea.len(),
-                    aa.len()
-                ));
+                out.push(format!("{path}: array length {} != {}", ea.len(), aa.len()));
             }
             for (i, (ev, av)) in ea.iter().zip(aa.iter()).enumerate() {
                 walk(&format!("{path}[{i}]"), ev, av, out);

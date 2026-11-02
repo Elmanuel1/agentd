@@ -67,9 +67,7 @@ pub struct AuthContext {
 impl AuthContext {
     /// Audit actor for mutations performed under this context.
     pub fn actor(&self) -> crate::Actor {
-        crate::Actor::ApiActor {
-            api_key_id: self.api_key_id.clone(),
-        }
+        crate::Actor::ApiActor { api_key_id: self.api_key_id.clone() }
     }
 }
 
@@ -93,11 +91,6 @@ mod tests {
             workspace: WorkspaceId::new("wrkspc_01"),
             api_key_id: "apikey_01".into(),
         };
-        assert_eq!(
-            ctx.actor(),
-            crate::Actor::ApiActor {
-                api_key_id: "apikey_01".into()
-            }
-        );
+        assert_eq!(ctx.actor(), crate::Actor::ApiActor { api_key_id: "apikey_01".into() });
     }
 }

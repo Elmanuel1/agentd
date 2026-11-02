@@ -78,12 +78,7 @@ impl AgentsStore for PgAgentsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn version(
-        &self,
-        ws: &WorkspaceId,
-        id: &AgentId,
-        version: u64,
-    ) -> Result<Agent, StoreError> {
+    async fn version(&self, ws: &WorkspaceId, id: &AgentId, version: u64) -> Result<Agent, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = agents::table
             .filter(agents::workspace_id.eq(ws.as_str()))

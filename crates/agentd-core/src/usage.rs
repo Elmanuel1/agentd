@@ -41,17 +41,8 @@ mod tests {
 
     #[test]
     fn accumulation() {
-        let mut a = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            ..Default::default()
-        };
-        a.add(&Usage {
-            input_tokens: 1,
-            output_tokens: 2,
-            cache_read_input_tokens: 3,
-            cache_creation: None,
-        });
+        let mut a = Usage { input_tokens: 10, output_tokens: 5, ..Default::default() };
+        a.add(&Usage { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 3, cache_creation: None });
         assert_eq!(a.input_tokens, 11);
         assert_eq!(a.output_tokens, 7);
         assert_eq!(a.cache_read_input_tokens, 3);

@@ -74,10 +74,7 @@ impl SkillsStore for PgSkillsStore {
         version: SkillVersion,
         bundle: Bytes,
     ) -> Result<(), StoreError> {
-        self.blobs
-            .put(&Self::key(ws, &skill.id, &version.version), bundle)
-            .await
-            .map_err(blob_be)?;
+        self.blobs.put(&Self::key(ws, &skill.id, &version.version), bundle).await.map_err(blob_be)?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(skills::table)
             .values(NewSkill {
@@ -170,10 +167,7 @@ impl SkillsStore for PgSkillsStore {
         if affected == 0 {
             return Err(StoreError::VersionNotFound);
         }
-        self.blobs
-            .delete(&Self::key(ws, id, version))
-            .await
-            .map_err(blob_be)?;
+        self.blobs.delete(&Self::key(ws, id, version)).await.map_err(blob_be)?;
         let remaining: i64 = skill_versions::table
             .filter(skill_versions::workspace_id.eq(ws.as_str()))
             .filter(skill_versions::skill_id.eq(id.as_str()))
@@ -194,10 +188,8 @@ impl SkillsStore for PgSkillsStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        let versions: Vec<SkillVersion> = version_docs
-            .into_iter()
-            .map(parse_doc)
-            .collect::<Result<_, StoreError>>()?;
+        let versions: Vec<SkillVersion> =
+            version_docs.into_iter().map(parse_doc).collect::<Result<_, StoreError>>()?;
         diesel::delete(
             skill_versions::table
                 .filter(skill_versions::workspace_id.eq(ws.as_str()))
@@ -218,10 +210,7 @@ impl SkillsStore for PgSkillsStore {
             return Err(StoreError::SkillNotFound);
         }
         for v in versions {
-            self.blobs
-                .delete(&Self::key(ws, id, &v.version))
-                .await
-                .map_err(blob_be)?;
+            self.blobs.delete(&Self::key(ws, id, &v.version)).await.map_err(blob_be)?;
         }
         Ok(())
     }

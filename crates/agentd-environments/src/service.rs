@@ -58,10 +58,7 @@ impl EnvironmentsService {
             metadata: req.metadata,
             scope: Scope::Organization,
         };
-        self.store
-            .insert(&ctx.org, env.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert(&ctx.org, env.clone()).await.map_err(map_store)?;
         Ok(env)
     }
 
@@ -72,11 +69,7 @@ impl EnvironmentsService {
     }
 
     /// `GET /v1/environments`.
-    pub async fn list(
-        &self,
-        ctx: &AuthContext,
-        page: &Pagination,
-    ) -> Result<Vec<Environment>, ApiError> {
+    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Environment>, ApiError> {
         self.store.list(&ctx.org, page).await.map_err(map_store)
     }
 
@@ -90,9 +83,7 @@ impl EnvironmentsService {
         let id = parse_id(raw_id)?;
         let mut env = self.store.get(&ctx.org, &id).await.map_err(map_store)?;
         if env.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot update an archived environment",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot update an archived environment"));
         }
         if let Some(name) = req.name {
             validate_string_len("name", &name, values::NAME_MIN, values::NAME_MAX)?;
@@ -109,10 +100,7 @@ impl EnvironmentsService {
             env.metadata = m;
         }
         env.updated_at = Timestamp::now();
-        self.store
-            .replace(&ctx.org, env.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.replace(&ctx.org, env.clone()).await.map_err(map_store)?;
         Ok(env)
     }
 
@@ -124,10 +112,7 @@ impl EnvironmentsService {
             env.archived_at = Some(Timestamp::now());
             env.state = EnvironmentState::Archived;
             env.updated_at = Timestamp::now();
-            self.store
-                .replace(&ctx.org, env.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace(&ctx.org, env.clone()).await.map_err(map_store)?;
         }
         Ok(env)
     }

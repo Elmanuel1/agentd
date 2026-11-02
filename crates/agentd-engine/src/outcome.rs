@@ -59,12 +59,7 @@ impl OutcomeLoop {
         ws: WorkspaceId,
         session_id: SessionId,
     ) -> Self {
-        Self {
-            contract,
-            grader,
-            ws,
-            session_id,
-        }
+        Self { contract, grader, ws, session_id }
     }
 
     /// Drive iterate→grade→revise until terminal. The runner executes the
@@ -89,9 +84,7 @@ impl OutcomeLoop {
                     explanation: None,
                     iteration,
                 };
-                self.contract
-                    .record_outcome(&self.ws, &self.session_id, eval)
-                    .await?;
+                self.contract.record_outcome(&self.ws, &self.session_id, eval).await?;
                 return Ok(OutcomeResult::Interrupted);
             }
 
@@ -101,17 +94,12 @@ impl OutcomeLoop {
                 .emit(
                     &self.ws,
                     &self.session_id,
-                    EventPayload::SpanOutcomeEvaluationStart {
-                        outcome_id: outcome_id.clone(),
-                        iteration,
-                    },
+                    EventPayload::SpanOutcomeEvaluationStart { outcome_id: outcome_id.clone(), iteration },
                 )
                 .await?;
             let verdict = self.grader.grade(description, rubric, iteration).await?;
             // needs_revision at the cap becomes max_iterations_reached.
-            let result = if verdict.result == OutcomeResult::NeedsRevision
-                && iteration + 1 >= cap
-            {
+            let result = if verdict.result == OutcomeResult::NeedsRevision && iteration + 1 >= cap {
                 OutcomeResult::MaxIterationsReached
             } else {
                 verdict.result

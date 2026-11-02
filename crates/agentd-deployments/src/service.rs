@@ -13,9 +13,8 @@ use chrono::Utc;
 
 use crate::store::{DeploymentsStore, StoreError};
 use crate::types::{
-    CreateDeploymentRequest, Deployment, DeploymentId, DeploymentRun, DeploymentRunId,
-    DeploymentRunTag, DeploymentStatus, DeploymentTag, PausedReason, RunError, RunErrorKind,
-    TriggerContext, WireSchedule,
+    CreateDeploymentRequest, Deployment, DeploymentId, DeploymentRun, DeploymentRunId, DeploymentRunTag,
+    DeploymentStatus, DeploymentTag, PausedReason, RunError, RunErrorKind, TriggerContext, WireSchedule,
 };
 
 /// What deployments need from other entities — resolved via ports so tests
@@ -33,11 +32,7 @@ pub trait DeploymentDeps: Send + Sync {
     /// Verify the environment is usable (→ `environment_archived`).
     async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError>;
     /// Create a session for a fire; returns the session id.
-    async fn create_session(
-        &self,
-        ctx: &AuthContext,
-        deployment: &Deployment,
-    ) -> Result<String, ApiError>;
+    async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError>;
 }
 
 /// Deployment service.
@@ -60,11 +55,7 @@ impl DeploymentsService {
         deps: Arc<dyn DeploymentDeps>,
         scheduler: Arc<dyn SchedulerPort>,
     ) -> Self {
-        Self {
-            store,
-            deps,
-            scheduler,
-        }
+        Self { store, deps, scheduler }
     }
 
     /// `POST /v1/deployments`.
@@ -78,22 +69,13 @@ impl DeploymentsService {
         let environment_id = required("environment_id", req.environment_id)?;
         let schedule_input = required("schedule", req.schedule)?;
         if req.initial_events.is_empty() {
-            return Err(ApiError::invalid_request(
-                "initial_events: Field required",
-            ));
+            return Err(ApiError::invalid_request("initial_events: Field required"));
         }
         req.metadata.validate(MetadataPolicy::capped())?;
-        let count = self
-            .store
-            .count(&ctx.workspace)
-            .await
-            .map_err(map_store)?;
+        let count = self.store.count(&ctx.workspace).await.map_err(map_store)?;
         validate_array_max("deployments", count + 1, values::DEPLOYMENTS_PER_ORG_MAX)?;
 
-        let agent = self
-            .deps
-            .resolve_agent_ref(ctx, agent_ref_input.id(), agent_ref_input.version())
-            .await?;
+        let agent = self.deps.resolve_agent_ref(ctx, agent_ref_input.id(), agent_ref_input.version()).await?;
         self.deps.check_environment(ctx, &environment_id).await?;
 
         let mut schedule = WireSchedule {
@@ -124,18 +106,13 @@ impl DeploymentsService {
             updated_at: now,
             vault_ids: req.vault_ids,
         };
-        self.store
-            .insert(&ctx.workspace, d.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert(&ctx.workspace, d.clone()).await.map_err(map_store)?;
         // Register the durable timer.
         self.scheduler
             .upsert(ScheduleSpec {
                 cron: d.schedule.expression.clone(),
                 timezone: d.schedule.timezone.clone(),
-                target: FireTarget::Deployment {
-                    id: d.id.as_str().to_owned(),
-                },
+                target: FireTarget::Deployment { id: d.id.as_str().to_owned() },
                 tenant: agentd_core::ports::TenantRef {
                     org_id: ctx.org.as_str().to_owned(),
                     workspace_id: ctx.workspace.as_str().to_owned(),
@@ -153,11 +130,7 @@ impl DeploymentsService {
     }
 
     /// `GET /v1/deployments`.
-    pub async fn list(
-        &self,
-        ctx: &AuthContext,
-        page: &Pagination,
-    ) -> Result<Vec<Deployment>, ApiError> {
+    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Deployment>, ApiError> {
         self.store.list(&ctx.workspace, page).await.map_err(map_store)
     }
 
@@ -169,14 +142,9 @@ impl DeploymentsService {
         d.status = DeploymentStatus::Paused;
         d.paused_reason = Some(PausedReason::Manual);
         d.updated_at = Timestamp::now();
-        self.store
-            .replace(&ctx.workspace, d.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
         self.scheduler
-            .pause(&FireTarget::Deployment {
-                id: d.id.as_str().to_owned(),
-            })
+            .pause(&FireTarget::Deployment { id: d.id.as_str().to_owned() })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(d)
@@ -192,14 +160,9 @@ impl DeploymentsService {
         d.paused_reason = None;
         d.updated_at = Timestamp::now();
         d.schedule.refresh_upcoming(Utc::now())?;
-        self.store
-            .replace(&ctx.workspace, d.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
         self.scheduler
-            .unpause(&FireTarget::Deployment {
-                id: d.id.as_str().to_owned(),
-            })
+            .unpause(&FireTarget::Deployment { id: d.id.as_str().to_owned() })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(d)
@@ -213,33 +176,19 @@ impl DeploymentsService {
             d.status = DeploymentStatus::Archived;
             d.archived_at = Some(Timestamp::now());
             d.updated_at = Timestamp::now();
-            self.store
-                .replace(&ctx.workspace, d.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
             // Best-effort: the timer may already be gone.
-            let _ = self
-                .scheduler
-                .delete(&FireTarget::Deployment {
-                    id: d.id.as_str().to_owned(),
-                })
-                .await;
+            let _ = self.scheduler.delete(&FireTarget::Deployment { id: d.id.as_str().to_owned() }).await;
         }
         Ok(d)
     }
 
     /// `POST /v1/deployments/{id}/run` — manual fire; allowed while paused.
-    pub async fn run_manual(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-    ) -> Result<DeploymentRun, ApiError> {
+    pub async fn run_manual(&self, ctx: &AuthContext, raw_id: &str) -> Result<DeploymentRun, ApiError> {
         let id = parse_id(raw_id)?;
         let d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         if d.status == DeploymentStatus::Archived {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot run an archived deployment",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot run an archived deployment"));
         }
         self.fire(ctx, d, TriggerContext::Manual {}).await
     }
@@ -273,9 +222,7 @@ impl DeploymentsService {
                 if !claimed {
                     return Ok(None);
                 }
-                let run = self
-                    .fire(ctx, d, TriggerContext::Schedule { scheduled_at })
-                    .await?;
+                let run = self.fire(ctx, d, TriggerContext::Schedule { scheduled_at }).await?;
                 Ok(Some(run))
             }
         }
@@ -289,10 +236,7 @@ impl DeploymentsService {
         has_error: Option<bool>,
     ) -> Result<Vec<DeploymentRun>, ApiError> {
         let id = parse_id(raw_deployment_id)?;
-        self.store
-            .runs(&ctx.workspace, &id, has_error)
-            .await
-            .map_err(map_store)
+        self.store.runs(&ctx.workspace, &id, has_error).await.map_err(map_store)
     }
 
     /// One fire: freeze → create session → record run. Business failures
@@ -318,37 +262,20 @@ impl DeploymentsService {
             trigger_context: trigger.clone(),
             tag: DeploymentRunTag::DeploymentRun,
         };
-        self.store
-            .push_run(&ctx.workspace, run.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.push_run(&ctx.workspace, run.clone()).await.map_err(map_store)?;
         // Stamp last_run_at + refresh upcoming for scheduled fires.
         if let TriggerContext::Schedule { scheduled_at } = &trigger {
             d.schedule.last_run_at = Some(*scheduled_at);
             let _ = d.schedule.refresh_upcoming(Utc::now());
         }
         // Documented: agent archived/deleted → deployment auto-archives.
-        if matches!(
-            error,
-            Some(RunError {
-                kind: RunErrorKind::AgentArchived,
-                ..
-            })
-        ) {
+        if matches!(error, Some(RunError { kind: RunErrorKind::AgentArchived, .. })) {
             d.status = DeploymentStatus::Archived;
             d.archived_at = Some(Timestamp::now());
-            let _ = self
-                .scheduler
-                .delete(&FireTarget::Deployment {
-                    id: d.id.as_str().to_owned(),
-                })
-                .await;
+            let _ = self.scheduler.delete(&FireTarget::Deployment { id: d.id.as_str().to_owned() }).await;
         }
         d.updated_at = Timestamp::now();
-        self.store
-            .replace(&ctx.workspace, d)
-            .await
-            .map_err(map_store)?;
+        self.store.replace(&ctx.workspace, d).await.map_err(map_store)?;
         Ok(run)
     }
 }
@@ -372,9 +299,7 @@ fn classify_fire_error(e: &ApiError) -> RunError {
 
 fn guard_not_archived(d: &Deployment) -> Result<(), ApiError> {
     if d.status == DeploymentStatus::Archived {
-        return Err(ApiError::conflict_invalid_request(
-            "deployment is archived and immutable",
-        ));
+        return Err(ApiError::conflict_invalid_request("deployment is archived and immutable"));
     }
     Ok(())
 }

@@ -9,15 +9,7 @@
 //! - `DELETE` returned 200 (docs claim 204).
 //! - `description` canonicalizes to `""` (empty string), not null.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod routes;
 pub mod service;

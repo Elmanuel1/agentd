@@ -22,9 +22,6 @@ mod tests {
 
     #[test]
     fn serializes_as_live_wire_string() {
-        assert_eq!(
-            serde_json::to_string(&Scope::Organization).unwrap(),
-            "\"organization\""
-        );
+        assert_eq!(serde_json::to_string(&Scope::Organization).unwrap(), "\"organization\"");
     }
 }

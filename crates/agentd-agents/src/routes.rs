@@ -7,9 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{
-    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RouteError,
-};
+use agentd_core::{reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RouteError};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -25,10 +23,7 @@ pub fn router() -> Router {
         .route("/v1/agents", post(create).get(list))
         // DELETE is registered so 405s advertise `Allow: DELETE, GET, HEAD,
         // POST` (live), but agents are NOT deletable — DELETE itself 404s.
-        .route(
-            "/v1/agents/{id}",
-            get(get_one).post(update).delete(delete_not_supported),
-        )
+        .route("/v1/agents/{id}", get(get_one).post(update).delete(delete_not_supported))
         .route("/v1/agents/{id}/archive", post(archive))
         .route("/v1/agents/{id}/versions", get(versions))
 }

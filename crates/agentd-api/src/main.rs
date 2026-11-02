@@ -26,11 +26,7 @@ struct InProcessSink {
 
 #[async_trait]
 impl FireSink for InProcessSink {
-    async fn fire(
-        &self,
-        target: &FireTarget,
-        scheduled_at: DateTime<Utc>,
-    ) -> Result<(), FireError> {
+    async fn fire(&self, target: &FireTarget, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
         let Some(state) = self.state.get() else {
             return Err(FireError("state not initialized".into()));
         };
@@ -44,18 +40,12 @@ impl FireSink for InProcessSink {
             return Err(FireError("no dev tenant".into()));
         };
         match target {
-            FireTarget::Deployment { id } => {
-                state
-                    .deployments
-                    .fire_scheduled(
-                        &ctx,
-                        id,
-                        agentd_core::Timestamp::from_datetime(scheduled_at),
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| FireError(e.to_string()))
-            }
+            FireTarget::Deployment { id } => state
+                .deployments
+                .fire_scheduled(&ctx, id, agentd_core::Timestamp::from_datetime(scheduled_at))
+                .await
+                .map(|_| ())
+                .map_err(|e| FireError(e.to_string())),
             FireTarget::Dream { .. } => Ok(()), // dreams service wiring: next phase
         }
     }
@@ -64,9 +54,7 @@ impl FireSink for InProcessSink {
 #[tokio::main]
 async fn main() {
     tracing_subscriber_init();
-    let sink = Arc::new(InProcessSink {
-        state: std::sync::OnceLock::new(),
-    });
+    let sink = Arc::new(InProcessSink { state: std::sync::OnceLock::new() });
     let scheduler = Arc::new(LocalScheduler::new(sink.clone()));
 
     let database_url = std::env::var("DATABASE_URL")
@@ -89,14 +77,12 @@ async fn main() {
     let state = AppState::from_postgres(backend, blobs, scheduler.clone());
 
     // Keys from env: AGENTD_API_KEYS="key:org:workspace,key2:org2:ws2"
-    let keys_env = std::env::var("AGENTD_API_KEYS")
-        .unwrap_or_else(|_| "agentd-dev-key:org_dev:wrkspc_01dev".into());
+    let keys_env =
+        std::env::var("AGENTD_API_KEYS").unwrap_or_else(|_| "agentd-dev-key:org_dev:wrkspc_01dev".into());
     for (i, triple) in keys_env.split(',').enumerate() {
         let mut parts = triple.splitn(3, ':');
         if let (Some(key), Some(org), Some(ws)) = (parts.next(), parts.next(), parts.next()) {
-            state
-                .keys
-                .register(key, org, ws, format!("apikey_01local{i:010}"));
+            state.keys.register(key, org, ws, format!("apikey_01local{i:010}"));
         }
     }
     let _ = sink.state.set(state.clone());
@@ -120,9 +106,7 @@ async fn main() {
 fn tracing_subscriber_init() {
     // Minimal env-filter logging without extra deps.
     let level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
-    let _ = tracing::subscriber::set_global_default(
-        tracing_subscriber_stub::Subscriber::new(level),
-    );
+    let _ = tracing::subscriber::set_global_default(tracing_subscriber_stub::Subscriber::new(level));
 }
 
 /// Tiny stdout subscriber (avoids pulling tracing-subscriber; swap freely).
@@ -146,10 +130,7 @@ mod tracing_subscriber_stub {
                 "error" => tracing::Level::ERROR,
                 _ => tracing::Level::INFO,
             };
-            Self {
-                level,
-                ids: AtomicU64::new(1),
-            }
+            Self { level, ids: AtomicU64::new(1) }
         }
     }
 
@@ -165,23 +146,14 @@ mod tracing_subscriber_stub {
         fn event(&self, event: &tracing::Event<'_>) {
             struct V(String);
             impl tracing::field::Visit for V {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                     use std::fmt::Write;
                     let _ = write!(self.0, " {}={value:?}", field.name());
                 }
             }
             let mut v = V(String::new());
             event.record(&mut v);
-            println!(
-                "[{}] {}{}",
-                event.metadata().level(),
-                event.metadata().target(),
-                v.0
-            );
+            println!("[{}] {}{}", event.metadata().level(), event.metadata().target(), v.0);
         }
         fn enter(&self, _span: &span::Id) {}
         fn exit(&self, _span: &span::Id) {}
