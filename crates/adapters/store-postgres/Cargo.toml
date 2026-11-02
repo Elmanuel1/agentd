@@ -26,6 +26,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 diesel = { workspace = true }
 diesel-async = { workspace = true }
+deadpool = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
