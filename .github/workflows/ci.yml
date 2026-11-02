@@ -147,6 +147,14 @@ jobs:
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
       - run: echo "127.0.0.1 echo.agentd.test" | sudo tee -a /etc/hosts
       - run: cargo build --locked -p api -p egress
+      - name: Start agentd-egress
+        run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
+          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
+          cat egress.log; exit 1
       - name: Create the secrets KMS key on LocalStack
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
@@ -156,14 +164,6 @@ jobs:
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)
           echo "::add-mask::$key"
           echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
-      - name: Start agentd-egress
-        run: |
-          token=$(openssl rand -hex 32)
-          echo "::add-mask::$token"
-          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
-          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
-          cat egress.log; exit 1
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
@@ -261,6 +261,14 @@ jobs:
             -locations=filesystem:/flyway/sql migrate
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
       - run: cargo build --locked -p api -p egress
+      - name: Start agentd-egress
+        run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
+          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
+          cat egress.log; exit 1
       - name: Create the secrets KMS key on LocalStack
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
@@ -270,14 +278,6 @@ jobs:
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name demo)
           echo "::add-mask::$key"
           echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
-      - name: Start agentd-egress
-        run: |
-          token=$(openssl rand -hex 32)
-          echo "::add-mask::$token"
-          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
-          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
-          cat egress.log; exit 1
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
