@@ -3,6 +3,7 @@
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
 use blobs_s3::S3Config;
+use store_postgres::PoolSettings;
 
 use crate::keys::env_keys;
 pub use crate::keys::{ApiKey, DEV_KEY};
@@ -33,6 +34,9 @@ pub enum StoreConfig {
     Postgres {
         /// The connection URL.
         url: String,
+        /// `AGENTD_DB_POOL_SIZE` connections (default 10), each caller waiting
+        /// at most `AGENTD_DB_POOL_WAIT_MS` (default 5000) for one.
+        pool: PoolSettings,
     },
 }
 
@@ -89,6 +93,10 @@ impl Config {
             "postgres" => StoreConfig::Postgres {
                 url: get("DATABASE_URL")
                     .unwrap_or_else(|| "postgres://agentd:agentd@localhost:5432/agentd".into()),
+                pool: PoolSettings {
+                    max_size: number(&get, "AGENTD_DB_POOL_SIZE", 10)?,
+                    wait: std::time::Duration::from_millis(number(&get, "AGENTD_DB_POOL_WAIT_MS", 5000)?),
+                },
             },
             other => return Err(unknown("AGENTD_STORE", other)),
         };
@@ -114,6 +122,22 @@ impl Config {
         };
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime })
+    }
+}
+
+/// A positive whole number from `var`, or `default` when it is unset.
+fn number<T: std::str::FromStr + PartialOrd + From<u8>>(
+    get: &impl Fn(&str) -> Option<String>,
+    var: &'static str,
+    default: T,
+) -> Result<T, ConfigError> {
+    match get(var) {
+        None => Ok(default),
+        Some(v) => v
+            .parse::<T>()
+            .ok()
+            .filter(|n| *n > T::from(0))
+            .ok_or_else(|| ConfigError { var, reason: format!("`{v}` is not a positive whole number") }),
     }
 }
 

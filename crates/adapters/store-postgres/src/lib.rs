@@ -58,12 +58,38 @@ pub enum PgError {
     Connect(String),
 }
 
+/// The pool's size, and how long a caller waits for a connection before the
+/// request fails instead of queueing without end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSettings {
+    /// Connections per replica.
+    pub max_size: usize,
+    /// The longest wait for a free connection.
+    pub wait: std::time::Duration,
+}
+
+impl Default for PoolSettings {
+    fn default() -> Self {
+        Self { max_size: 10, wait: std::time::Duration::from_secs(5) }
+    }
+}
+
 impl PgBackend {
-    /// Connect using `database_url` (or `DATABASE_URL`), pooled.
+    /// Connect using `database_url` (or `DATABASE_URL`), pooled with the
+    /// default [`PoolSettings`].
     pub async fn connect(database_url: &str) -> Result<Self, PgError> {
+        Self::connect_with(database_url, PoolSettings::default()).await
+    }
+
+    /// Connect using `database_url`, pooled as `settings` says.
+    pub async fn connect_with(database_url: &str, settings: PoolSettings) -> Result<Self, PgError> {
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
-        let diesel =
-            DieselPool::builder(manager).max_size(10).build().map_err(|e| PgError::Connect(e.to_string()))?;
+        let diesel = DieselPool::builder(manager)
+            .max_size(settings.max_size)
+            .wait_timeout(Some(settings.wait))
+            .runtime(deadpool::Runtime::Tokio1)
+            .build()
+            .map_err(|e| PgError::Connect(e.to_string()))?;
         Ok(Self { diesel })
     }
 }
