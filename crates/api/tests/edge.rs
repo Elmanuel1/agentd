@@ -169,7 +169,7 @@ async fn unserved_methods_and_head_are_405() {
         put.body["error"],
         serde_json::json!({"message": "Method Not Allowed", "type": "invalid_request_error"})
     );
-    assert!(put.headers.get("allow").is_some());
+    assert_eq!(put.headers.get("allow").unwrap(), "GET");
     assert!(put.headers.get("anthropic-organization-id").is_none());
     let head =
         send(get_req("/v1/things").method("HEAD").header("x-api-key", KEY).body(Body::empty()).unwrap())
