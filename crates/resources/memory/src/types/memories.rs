@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use shared::Timestamp;
+use shared::limits::validate_sha256_hex;
+use shared::{ApiError, ErrorType, Timestamp};
 
 use super::{MemoryId, MemoryStoreId, MemoryVersionId};
 
@@ -92,6 +93,34 @@ pub enum Precondition {
         /// Expected lowercase-hex sha256 (64 chars).
         content_sha256: String,
     },
+}
+
+impl Precondition {
+    /// Whether `head` still holds what the caller expects; the live 409
+    /// `memory_precondition_failed` when it does not.
+    pub fn check(&self, head: &Memory) -> Result<(), ApiError> {
+        let Self::ContentSha256 { content_sha256 } = self;
+        validate_sha256_hex("precondition.content_sha256", content_sha256)?;
+        if &head.content_sha256 != content_sha256 {
+            return Err(ApiError {
+                status: 409,
+                error_type: ErrorType::MemoryPreconditionFailed,
+                message: "precondition failed: content_sha256 does not match the current content".into(),
+                extra: serde_json::Map::new(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Memory {
+    /// A memory path is absolute and names something below `/`.
+    pub fn validate_path(path: &str) -> Result<(), ApiError> {
+        if !path.starts_with('/') || path.len() < 2 {
+            return Err(ApiError::invalid_request("path: must be an absolute path like \"/notes.md\""));
+        }
+        Ok(())
+    }
 }
 
 /// `POST /v1/memory_stores/{id}/memories` body.

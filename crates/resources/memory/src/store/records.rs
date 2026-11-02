@@ -27,7 +27,8 @@ pub struct MemoryRecord {
     pub head: Memory,
     /// Whether the memory is deleted (chain retained for audit).
     pub deleted: bool,
-    /// The append-only chain, oldest first.
+    /// The versions read or written with the head, oldest first: on a read,
+    /// the current version only.
     pub chain: Vec<VersionRecord>,
 }
 

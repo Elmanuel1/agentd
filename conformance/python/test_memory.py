@@ -92,3 +92,14 @@ def test_versions_full_view_carries_content_and_archived_stores_refuse_deletes(c
     client.beta.memory_stores.archive(s.id)
     with pytest.raises(anthropic.ConflictError):
         client.beta.memory_stores.memories.delete(m.id, memory_store_id=s.id)
+
+
+def test_a_version_of_a_deleted_memory_can_be_redacted(client: anthropic.Anthropic) -> None:
+    s = store(client)
+    m = client.beta.memory_stores.memories.create(s.id, path="/gone.md", content="secret")
+    client.beta.memory_stores.memories.delete(m.id, memory_store_id=s.id)
+    created = client.beta.memory_stores.memory_versions.list(s.id, memory_id=m.id, operation="created").data[0]
+    redacted = client.beta.memory_stores.memory_versions.redact(created.id, memory_store_id=s.id)
+    assert redacted.redacted_at is not None
+    again = client.beta.memory_stores.memory_versions.retrieve(created.id, memory_store_id=s.id)
+    assert again.content is None and again.content_sha256 is None
