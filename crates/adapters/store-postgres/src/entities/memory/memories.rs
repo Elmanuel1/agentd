@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use diesel::upsert::excluded;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods};
 use diesel_async::RunQueryDsl;
 use memory::store::{MemoryRecord, MemoryRecordPersistence, StoreError};
@@ -8,41 +7,7 @@ use shared::WorkspaceId;
 
 use super::PgMemoryStore;
 use crate::schema::memories;
-use crate::{diesel_be, parse_doc, pool_be, to_doc};
-
-impl PgMemoryStore {
-    pub(super) async fn upsert_head(
-        &self,
-        ws: &WorkspaceId,
-        store: &MemoryStoreId,
-        record: &MemoryRecord,
-    ) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        diesel::insert_into(memories::table)
-            .values((
-                memories::workspace_id.eq(ws.as_str()),
-                memories::store_id.eq(store.as_str()),
-                memories::memory_id.eq(record.head.id.as_str()),
-                memories::path.eq(&record.head.path),
-                memories::head_version_id.eq(record.head.memory_version_id.as_str()),
-                memories::deleted.eq(record.deleted),
-                memories::created_at.eq(record.head.created_at.as_datetime()),
-                memories::doc.eq(to_doc(&record.head)?),
-            ))
-            .on_conflict((memories::workspace_id, memories::store_id, memories::memory_id))
-            .do_update()
-            .set((
-                memories::path.eq(excluded(memories::path)),
-                memories::head_version_id.eq(excluded(memories::head_version_id)),
-                memories::deleted.eq(excluded(memories::deleted)),
-                memories::doc.eq(excluded(memories::doc)),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        Ok(())
-    }
-}
+use crate::{diesel_be, parse_doc, pool_be};
 
 #[async_trait]
 impl MemoryRecordPersistence for PgMemoryStore {
@@ -53,10 +18,7 @@ impl MemoryRecordPersistence for PgMemoryStore {
         record: MemoryRecord,
     ) -> Result<(), StoreError> {
         self.require_store(ws, store).await?;
-        if let Some(occupied) = self.find_by_path(ws, store, &record.head.path).await? {
-            return Err(StoreError::PathConflict { path: record.head.path.clone(), memory_id: occupied });
-        }
-        self.upsert_head(ws, store, &record).await?;
+        self.write_head(ws, store, &record, true).await?;
         for v in &record.chain {
             self.upsert_version(ws, store, &record.head.id, v).await?;
         }
@@ -69,7 +31,6 @@ impl MemoryRecordPersistence for PgMemoryStore {
         store: &MemoryStoreId,
         id: &MemoryId,
     ) -> Result<MemoryRecord, StoreError> {
-        self.require_store(ws, store).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let row: Option<(serde_json::Value, bool)> = memories::table
             .filter(memories::workspace_id.eq(ws.as_str()))
@@ -80,7 +41,11 @@ impl MemoryRecordPersistence for PgMemoryStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        let (doc, deleted) = row.ok_or(StoreError::MemoryNotFound)?;
+        let Some((doc, deleted)) = row else {
+            // A miss is store-not-found when the store itself is missing.
+            self.require_store(ws, store).await?;
+            return Err(StoreError::MemoryNotFound);
+        };
         if deleted {
             return Err(StoreError::MemoryNotFound);
         }
@@ -109,17 +74,7 @@ impl MemoryRecordPersistence for PgMemoryStore {
         if exists.is_none() {
             return Err(StoreError::MemoryNotFound);
         }
-        if !record.deleted {
-            if let Some(other) = self.find_by_path(ws, store, &record.head.path).await? {
-                if other != record.head.id {
-                    return Err(StoreError::PathConflict {
-                        path: record.head.path.clone(),
-                        memory_id: other,
-                    });
-                }
-            }
-        }
-        self.upsert_head(ws, store, &record).await?;
+        self.write_head(ws, store, &record, !record.deleted).await?;
         for v in &record.chain {
             self.upsert_version(ws, store, &record.head.id, v).await?;
         }

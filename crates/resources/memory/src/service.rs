@@ -9,6 +9,8 @@ use crate::types::{MemoryId, MemoryStoreId};
 
 mod memories;
 mod memory_reads;
+
+pub use memory_reads::MemoryListQuery;
 mod stores;
 mod versions;
 

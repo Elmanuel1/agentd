@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use shared::{Metadata, Timestamp};
+use shared::{Metadata, MetadataPatch, Patch, Timestamp};
 
 use super::MemoryStoreId;
 
@@ -48,4 +48,19 @@ pub struct CreateStoreRequest {
     /// Optional.
     #[serde(default)]
     pub metadata: Metadata,
+}
+
+/// `POST /v1/memory_stores/{id}` body: a field left out keeps its value.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateStoreRequest {
+    /// The new name (`null` keeps it).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The new description; `null` or `""` clears it.
+    #[serde(default)]
+    pub description: Patch<String>,
+    /// Merge: strings upsert, `null` removes.
+    #[serde(default)]
+    pub metadata: Patch<MetadataPatch>,
 }
