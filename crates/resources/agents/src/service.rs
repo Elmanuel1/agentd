@@ -70,7 +70,7 @@ impl AgentsService {
         .map_err(map_store)
     }
 
-    /// `GET /v1/agents` — the latest version of each agent, newest first.
+    /// `GET /v1/agents`: the latest version of each agent, newest first.
     pub async fn list(
         &self,
         ctx: &AuthContext,
@@ -104,13 +104,19 @@ impl AgentsService {
             return Err(ApiError::invalid_request(CONCURRENT));
         }
         let draft = req.apply_to(&current, &self.catalog)?;
-        let this = AgentRef { id: current.id.clone(), tag: AgentTag::Agent, version: current.version + 1 };
         let stored = current.config.multiagent.as_ref();
-        let multiagent = self.resolve_multiagent(ctx, &this, stored, draft.multiagent).await?;
-        let config = AgentConfig { multiagent, ..draft.config };
-        if config == current.config && draft.metadata == current.metadata {
+        // `self` names the version being written. Resolved against the current
+        // version first, an unchanged configuration is recognised as a no-op.
+        let unchanged = current.reference();
+        let same = self.resolve_multiagent(ctx, &unchanged, stored, draft.multiagent.clone()).await?;
+        if (AgentConfig { multiagent: same, ..draft.config.clone() }) == current.config
+            && draft.metadata == current.metadata
+        {
             return Ok(current);
         }
+        let this = AgentRef { version: current.version + 1, ..unchanged };
+        let multiagent = self.resolve_multiagent(ctx, &this, stored, draft.multiagent).await?;
+        let config = AgentConfig { multiagent, ..draft.config };
         let next = Agent {
             config,
             metadata: draft.metadata,

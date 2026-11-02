@@ -131,6 +131,10 @@ async fn multiagent_references_resolve_to_concrete_versions() {
     assert!(matches!(&agents[0], RosterMember::Agent(r) if r.id == worker.id && r.version == 1));
     assert!(matches!(&agents[1], RosterMember::Agent(r) if r.id == lead.id && r.version == 1));
     assert!(matches!(&agents[2], RosterMember::Advisor(a) if a.model == "claude-opus-4-6"));
+    // Re-sending the same roster, self included, is a no-op.
+    let again = update(serde_json::json!({"multiagent": {"type": "coordinator", "agents": [
+        worker.id.as_str(), {"type": "self"}, {"type": "advisor", "model": "claude-opus-4-6"}]}}));
+    assert_eq!(svc.update(&ctx, lead.id.as_str(), again).await.unwrap().version, 1);
 
     let v2: UpdateAgentRequest = update(serde_json::json!({"multiagent": {"type": "multiagent_20261001",
         "subagents": {"type": "enabled", "inline_agents": {"type": "disabled"}, "predefined_agents": [worker.id.as_str()]}}}));

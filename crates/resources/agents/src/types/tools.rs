@@ -44,14 +44,17 @@ impl ToolDefaultConfig {
 
 /// One tool's resolved config inside a toolset. Agent-toolset configs carry
 /// `type` (the tool name) and their tool's options (`url_sources` and so on);
-/// MCP tool configs carry neither.
+/// MCP tool configs carry neither. The serde defaults read docs stored before
+/// configs were resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolConfig {
     /// Whether the tool is enabled.
+    #[serde(default = "enabled")]
     pub enabled: bool,
     /// Tool name (e.g. `bash`).
     pub name: String,
     /// Permission policy.
+    #[serde(default = "always_allow")]
     pub permission_policy: PermissionPolicy,
     /// The tool's `type` (agent toolset only).
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
@@ -77,8 +80,10 @@ pub enum Tool {
     #[serde(rename = "mcp_toolset")]
     McpToolset {
         /// Per-tool configs.
+        #[serde(default)]
         configs: Vec<ToolConfig>,
         /// Defaults.
+        #[serde(default = "mcp_defaults")]
         default_config: ToolDefaultConfig,
         /// Which `mcp_servers` entry this grants.
         mcp_server_name: String,
@@ -87,12 +92,25 @@ pub enum Tool {
     #[serde(rename = "custom")]
     Custom {
         /// Description shown to the model.
+        #[serde(default)]
         description: String,
         /// JSON schema of the input.
         input_schema: Value,
         /// Tool name.
         name: String,
     },
+}
+
+fn enabled() -> bool {
+    true
+}
+
+fn always_allow() -> PermissionPolicy {
+    PermissionPolicy::AlwaysAllow
+}
+
+fn mcp_defaults() -> ToolDefaultConfig {
+    ToolDefaultConfig::MCP_TOOLSET
 }
 
 impl Tool {
