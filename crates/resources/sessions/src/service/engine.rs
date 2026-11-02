@@ -50,6 +50,9 @@ impl EngineContract for SessionsService {
             SessionStatus::Terminated => EventPayload::Session(SessionEvent::StatusTerminated {}),
         };
         self.emit(ws, session, payload).await?;
+        if status == SessionStatus::Terminated {
+            self.stop_sandbox(session).await;
+        }
         Ok(())
     }
 

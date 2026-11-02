@@ -15,6 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use shared::limits::ModelCatalog;
+use shared::ports::Runtime;
 use shared::{ApiError, AuthContext, Usage, WorkspaceId};
 use tokio::sync::broadcast;
 
@@ -28,6 +29,7 @@ mod engine;
 mod events;
 mod lifecycle;
 mod resources;
+mod sandbox;
 
 pub use events::Subscription;
 
@@ -44,8 +46,13 @@ pub trait SessionDeps: Send + Sync {
         agent_id: &str,
         version: Option<u64>,
     ) -> Result<AgentSnapshot, ApiError>;
-    /// Verify the environment exists (org-scoped) and is not archived.
-    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError>;
+    /// The environment's `config`, after checking it exists (org-scoped) and
+    /// is not archived.
+    async fn resolve_environment(
+        &self,
+        ctx: &AuthContext,
+        env_id: &str,
+    ) -> Result<serde_json::Value, ApiError>;
 }
 
 /// What the engine (task-side loop) is allowed to do to a session — the
@@ -92,6 +99,8 @@ pub struct SessionsService {
     channels: Channels,
     /// The models an `agent_with_overrides` may name.
     catalog: ModelCatalog,
+    /// Runs one sandbox per session; `None` runs no sandbox.
+    sandbox: Option<Arc<dyn Runtime>>,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -109,7 +118,14 @@ impl SessionsService {
         deps: Arc<dyn SessionDeps>,
         catalog: ModelCatalog,
     ) -> Self {
-        Self { store, events, deps, catalog, channels: Channels::default() }
+        Self { store, events, deps, catalog, channels: Channels::default(), sandbox: None }
+    }
+
+    /// Run each session's sandbox on `runtime`.
+    #[must_use]
+    pub fn with_sandbox(mut self, runtime: Arc<dyn Runtime>) -> Self {
+        self.sandbox = Some(runtime);
+        self
     }
 }
 

@@ -25,6 +25,8 @@ engine = { workspace = true }
 store-postgres = { workspace = true }
 blobs-s3 = { workspace = true }
 secrets-blob = { workspace = true }
+sandbox-docker = { workspace = true }
+bollard = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

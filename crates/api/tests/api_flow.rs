@@ -29,6 +29,10 @@ fn enabled() -> bool {
 /// the integration env isn't configured (test skips). Unique tenants per call
 /// isolate the shared DB.
 async fn app() -> Option<Router> {
+    app_with(Arc::new(FakeRuntime::new())).await
+}
+
+async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
     if !enabled() {
         return None;
     }
@@ -47,7 +51,7 @@ async fn app() -> Option<Router> {
         keys: Arc::new(keys),
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
-        runtime: Arc::new(FakeRuntime::new()),
+        runtime: Some(runtime),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }
@@ -380,6 +384,30 @@ async fn exact_live_error_strings_survive_the_full_stack() {
         call(&app, "POST", "/v1/agents", Some(r#"{"name":"x","model":"claude-sonnet-4-6","bogus":1}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "Failed to parse request body: unknown field \"bogus\"");
+}
+
+#[tokio::test]
+async fn a_session_launches_its_sandbox_with_the_resolved_environment() {
+    let runtime = Arc::new(FakeRuntime::new());
+    let Some(app) = app_with(runtime.clone()).await else {
+        return;
+    };
+    let env_body = r#"{"name":"sbx","config":{"type":"cloud","networking":{"type":"limited"}}}"#;
+    let (_, env) = call(&app, "POST", "/v1/environments", Some(env_body)).await;
+    let (_, agent) =
+        call(&app, "POST", "/v1/agents", Some(r#"{"name":"sbx","model":"claude-sonnet-4-6"}"#)).await;
+    let body = format!(
+        r#"{{"agent":"{}","environment_id":"{}"}}"#,
+        agent["id"].as_str().unwrap(),
+        env["id"].as_str().unwrap()
+    );
+    let (st, session) = call(&app, "POST", "/v1/sessions", Some(&body)).await;
+    assert_eq!(st, StatusCode::OK);
+    let jobs = runtime.launched();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].target_id, session["id"].as_str().unwrap());
+    assert_eq!(jobs[0].environment_id, env["id"].as_str().unwrap());
+    assert_eq!(jobs[0].environment["networking"]["type"], "limited");
 }
 
 /// A stamp no other app in this test binary shares: tests run in parallel, and

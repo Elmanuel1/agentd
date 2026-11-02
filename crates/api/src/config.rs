@@ -3,6 +3,7 @@
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
 use blobs_s3::S3Config;
+use sandbox_docker::SandboxLimits;
 use store_postgres::PoolSettings;
 
 use crate::keys::env_keys;
@@ -70,10 +71,19 @@ pub enum SchedulerConfig {
 }
 
 /// `AGENTD_RUNTIME`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeConfig {
-    /// `none`: no sandbox; a launch fails.
+    /// `none`: no sandbox; sessions run without one.
     None,
+    /// `docker`: one container per session from `image`
+    /// (`AGENTD_SANDBOX_IMAGE`), on the daemon `DOCKER_HOST` names.
+    Docker {
+        /// The sandbox image.
+        image: String,
+        /// `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) and
+        /// `AGENTD_SANDBOX_MILLICPUS` (default 2000) per sandbox.
+        limits: SandboxLimits,
+    },
 }
 
 /// A configuration value agentd cannot boot with.
@@ -118,12 +128,22 @@ impl Config {
         };
         let runtime = match selector(&get, "AGENTD_RUNTIME", "none").as_str() {
             "none" => RuntimeConfig::None,
+            "docker" => RuntimeConfig::Docker {
+                image: get("AGENTD_SANDBOX_IMAGE").unwrap_or_else(|| DEFAULT_SANDBOX_IMAGE.into()),
+                limits: SandboxLimits {
+                    memory_mib: number(&get, "AGENTD_SANDBOX_MEMORY_MIB", 2048)?,
+                    millicpus: number(&get, "AGENTD_SANDBOX_MILLICPUS", 2000)?,
+                },
+            },
             other => return Err(unknown("AGENTD_RUNTIME", other)),
         };
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime })
     }
 }
+
+/// The image a Docker sandbox runs when `AGENTD_SANDBOX_IMAGE` is unset.
+pub const DEFAULT_SANDBOX_IMAGE: &str = "alpine:3.20";
 
 /// A positive whole number from `var`, or `default` when it is unset.
 fn number<T: std::str::FromStr + PartialOrd + From<u8>>(

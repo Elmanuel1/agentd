@@ -93,6 +93,7 @@ mod tests {
             target_id: "sesn_01x".into(),
             workspace_id: "wrkspc_01x".into(),
             environment_id: "env_01x".into(),
+            environment: serde_json::Value::Null,
             env: Map::new(),
         }
     }

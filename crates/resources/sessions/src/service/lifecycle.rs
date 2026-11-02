@@ -34,7 +34,7 @@ impl SessionsService {
         if let AgentRefInput::Tagged(overrides) = agent_ref {
             agent = overrides.apply(agent, &self.catalog)?;
         }
-        self.deps.check_environment(ctx, &environment_id).await?;
+        let environment = self.deps.resolve_environment(ctx, &environment_id).await?;
         let now = Timestamp::now();
         let session = Session {
             agent,
@@ -55,7 +55,11 @@ impl SessionsService {
             vault_ids: req.vault_ids,
             deployment_id: req.deployment_id,
         };
-        self.store.insert(&ctx.workspace, session.clone()).await.map_err(map_store)?;
+        self.launch_sandbox(ctx, &session, environment).await?;
+        if let Err(e) = self.store.insert(&ctx.workspace, session.clone()).await {
+            self.stop_sandbox(&session.id).await;
+            return Err(map_store(e));
+        }
         if !initial.is_empty() {
             self.send_events(ctx, session.id.as_str(), initial).await?;
         }
@@ -127,6 +131,7 @@ impl SessionsService {
             // events, so keeping its channel would leak the entry (and its
             // ring buffer) for the process lifetime.
             self.channels.lock().remove(&id);
+            self.stop_sandbox(&id).await;
         }
         Ok(s)
     }
@@ -148,6 +153,7 @@ impl SessionsService {
         if let Some(tx) = self.channels.lock().remove(&id) {
             let _ = tx.send(last);
         }
+        self.stop_sandbox(&id).await;
         Ok(deleted)
     }
 }
