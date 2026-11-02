@@ -87,6 +87,10 @@ impl PgBackend {
         let diesel = DieselPool::builder(manager)
             .max_size(settings.max_size)
             .wait_timeout(Some(settings.wait))
+            // Opening or recycling a connection counts against the same bound,
+            // so a stalled database cannot hold a checkout past it.
+            .create_timeout(Some(settings.wait))
+            .recycle_timeout(Some(settings.wait))
             .runtime(deadpool::Runtime::Tokio1)
             .build()
             .map_err(|e| PgError::Connect(e.to_string()))?;

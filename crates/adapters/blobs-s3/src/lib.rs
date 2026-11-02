@@ -17,6 +17,7 @@ use aws_sdk_s3::config::Region;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
 pub use shared::ports::blobs::{BlobError, BlobStore};
 
@@ -103,9 +104,18 @@ impl S3BlobStore {
             Err(SdkError::ServiceError(se))
                 if matches!(se.err(), HeadBucketError::NotFound(_)) || se.raw().status().as_u16() == 404 =>
             {
+                // Outside us-east-1, S3 refuses a create without the
+                // region as its location constraint.
+                let region = self.client.config().region().map(|r| r.as_ref().to_owned());
+                let location = region.filter(|r| r != "us-east-1").map(|r| {
+                    CreateBucketConfiguration::builder()
+                        .location_constraint(BucketLocationConstraint::from(r.as_str()))
+                        .build()
+                });
                 self.client
                     .create_bucket()
                     .bucket(&self.bucket)
+                    .set_create_bucket_configuration(location)
                     .send()
                     .await
                     .map_err(|e| BlobError::Backend(e.to_string()))?;
