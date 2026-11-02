@@ -4,21 +4,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use sessions::events::{EventId, EventPayload, Rubric, SessionEvent, StopReason, UserEvent};
+use sessions::events::{EventId, EventPayload, SessionEvent, StopReason};
 use sessions::types::{OutcomeEvaluation, OutcomeResult, Session, SessionStatus, ThreadId};
-use shared::{ApiError, ContentBlock};
+use shared::ApiError;
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinSet;
 
+use super::intake::rubric_text;
 use super::outcome::{self, Outcome};
 use super::team::Team;
 use super::SessionRun;
-use crate::turn::history::outcome_prompt;
-use crate::turn::{Delegation, Inbound, Runner, TurnEnd};
-
-fn texts(content: &[ContentBlock]) -> String {
-    content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("\n")
-}
+use crate::turn::{Delegation, Runner, TurnEnd};
 
 /// How often a run looks for client events no wake announced.
 const POLL: std::time::Duration = std::time::Duration::from_secs(2);
@@ -55,10 +51,6 @@ impl SessionRun {
         for m in team.members() {
             team.mark(&m.ctx.id);
         }
-        let rubric_text = |r: &Rubric, map: &HashMap<String, String>| match r {
-            Rubric::Text { content } => content.clone(),
-            Rubric::File { file_id } => map.get(file_id).cloned().unwrap_or_default(),
-        };
         let mut outcome: Option<Outcome> = outcome::active(&events, |r| rubric_text(r, &rubrics));
         let (cancel_tx, cancel_rx) = watch::channel(false);
         let mut runner = Runner {
@@ -77,53 +69,12 @@ impl SessionRun {
         loop {
             let drained = contract.drain_user_events(&self.ws, &self.session).await?;
             interrupted |= Self::cancel_on(&drained, &cancel_tx);
-            let mut answered = false;
-            for e in &drained {
-                let id = e.id.as_str().to_owned();
-                match &e.payload {
-                    EventPayload::User(UserEvent::Message { content }) => {
-                        team.deliver(&primary_id, Some(Inbound { event: id, text: texts(content) }))
-                    }
-                    EventPayload::User(UserEvent::SystemMessage { content }) => {
-                        team.deliver(
-                            &primary_id,
-                            Some(Inbound { event: id, text: format!("<system>{}</system>", texts(content)) }),
-                        );
-                    }
-                    EventPayload::User(UserEvent::DefineOutcome {
-                        description,
-                        rubric,
-                        max_iterations,
-                        outcome_id: Some(oid),
-                    }) => {
-                        if let Rubric::File { file_id } = rubric {
-                            if !rubrics.contains_key(file_id) {
-                                let bytes = self.engine.assets.file(&self.ctx, file_id).await?;
-                                rubrics.insert(file_id.clone(), String::from_utf8_lossy(&bytes).into_owned());
-                                runner.rubrics = Arc::new(rubrics.clone());
-                            }
-                        }
-                        let text = rubric_text(rubric, &rubrics);
-                        outcome = Some(Outcome {
-                            id: oid.clone(),
-                            description: description.clone(),
-                            rubric: text.clone(),
-                            max_iterations: max_iterations.unwrap_or(outcome::DEFAULT_MAX_ITERATIONS),
-                            iteration: 0,
-                        });
-                        team.deliver(
-                            &primary_id,
-                            Some(Inbound { event: id, text: outcome_prompt(description, &text) }),
-                        );
-                    }
-                    EventPayload::User(
-                        UserEvent::ToolConfirmation { .. }
-                        | UserEvent::CustomToolResult { .. }
-                        | UserEvent::ToolResult { .. },
-                    ) => answered = true,
-                    _ => {}
-                }
+            let got = self.intake(&drained, &team, &primary_id, &mut rubrics).await?;
+            if let Some(o) = got.outcome {
+                runner.rubrics = Arc::new(rubrics.clone());
+                outcome = Some(o);
             }
+            let answered = got.answered;
             if answered {
                 // The thread the answer is for picks it up from the log.
                 for (tid, _) in blocked.drain() {

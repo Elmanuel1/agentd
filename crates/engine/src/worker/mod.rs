@@ -21,6 +21,7 @@ use crate::turn::ThreadCtx;
 pub mod assets;
 pub mod dispatch;
 mod grade;
+mod intake;
 mod outcome;
 mod run;
 mod setup;
