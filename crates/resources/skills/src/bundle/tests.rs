@@ -42,3 +42,25 @@ fn the_live_layout_and_frontmatter_errors() {
     assert_eq!(msg(files(&[("a/SKILL.md", "# no frontmatter")])), FRONTMATTER);
     assert_eq!(msg(files(&[("a/SKILL.md", "---\nname: a\n---\n")])), FRONTMATTER);
 }
+
+#[test]
+fn paths_outside_the_bundle_and_duplicates_are_refused() {
+    let refused = |f: Vec<UploadFile>| parse_bundle(f).unwrap_err().status;
+    assert_eq!(refused(files(&[("../SKILL.md", MD)])), 400);
+    assert_eq!(refused(files(&[("/SKILL.md", MD)])), 400);
+    assert_eq!(refused(files(&[("a/./SKILL.md", MD)])), 400);
+    assert_eq!(refused(files(&[("a\\SKILL.md", MD)])), 400);
+    assert_eq!(refused(files(&[("a/SKILL.md", MD), ("a/SKILL.md", MD)])), 400);
+    let zipped = zip(&files(&[("../SKILL.md", MD)])).unwrap();
+    assert_eq!(refused(vec![("bundle.zip".into(), zipped)]), 400);
+}
+
+#[test]
+fn a_zip_that_expands_past_the_upload_limit_is_refused() {
+    // 31 MiB of one byte compresses to a few kilobytes.
+    let big = "x".repeat(31 * 1024 * 1024);
+    let zipped = zip(&files(&[("z/SKILL.md", MD), ("z/big.txt", &big)])).unwrap();
+    assert!(zipped.len() < 1024 * 1024, "the bomb is small on the wire");
+    let err = parse_bundle(vec![("bundle.zip".into(), zipped)]).unwrap_err();
+    assert_eq!(err.message, "files[]: the zip expands past the 30 MB Skills upload limit");
+}
