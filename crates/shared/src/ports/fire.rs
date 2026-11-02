@@ -1,5 +1,5 @@
 //! Scheduled fires. Each resource that owns scheduled work registers one
-//! [`FireHandler`] for its [`FireTarget::kind`]; the scheduler delivers every
+//! [`FireHandler`] for its [`crate::ports::FireTarget::kind`]; the scheduler delivers every
 //! tick to the [`FireRegistry`], which runs it under the schedule's tenant.
 
 use std::collections::BTreeMap;
@@ -28,7 +28,7 @@ pub enum FireError {
 /// Runs one scheduled tick of the resources of one kind.
 #[async_trait]
 pub trait FireHandler: Send + Sync {
-    /// The [`FireTarget::kind`] this handler owns.
+    /// The [`crate::ports::FireTarget::kind`] this handler owns.
     fn kind(&self) -> &'static str;
     /// Fire resource `id` for the tick at `scheduled_at`, as `tenant`.
     async fn fire(
