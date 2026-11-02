@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+tokio = { workspace = true }
 shared = { workspace = true }
 agents = { workspace = true }
 deployments = { workspace = true }
