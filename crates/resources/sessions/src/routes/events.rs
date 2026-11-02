@@ -87,10 +87,10 @@ async fn stream_events(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
-    let rx = svc.subscribe(&ctx, &id).await?;
+    let sub = svc.subscribe(&ctx, &id).await?;
     // Live opens the stream with a `: connected` comment frame before events.
     let connected = stream::once(async { Ok(SseEvent::default().comment("connected")) });
-    let events = stream::unfold((rx, false), |(mut rx, done)| async move {
+    let events = stream::unfold((sub, false), |(mut rx, done)| async move {
         if done {
             return None;
         }

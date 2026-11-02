@@ -444,3 +444,69 @@ async fn pg_memory_rollback_to_an_occupied_path_conflicts() {
     let err = svc.rollback(&ctx, sid, m1.id.as_str(), m1.memory_version_id.as_str()).await.unwrap_err();
     assert_eq!(err.status, 409, "{err:?}");
 }
+
+#[tokio::test]
+async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
+    if !enabled() {
+        return;
+    }
+    use sessions::events::{Event, EventPayload, UserEvent};
+    use sessions::store::{SessionEventLog, SessionsStore, StoreError};
+    use sessions::types::Session;
+    let store = PgSessionsStore::new(backend().await);
+    let log = PgSessionEventLog::new(backend().await);
+    let ws = uniq_ws("sessstale");
+    let read: Session =
+        serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
+    store.insert(&ws, read.clone()).await.unwrap();
+
+    let mut first = read.clone();
+    first.title = Some("first".into());
+    store.replace(&ws, &read, first.clone()).await.unwrap();
+    let mut second = read.clone();
+    second.title = Some("second".into());
+    assert!(matches!(store.replace(&ws, &read, second).await, Err(StoreError::Conflict)));
+    assert_eq!(store.get(&ws, &read.id).await.unwrap().title.as_deref(), Some("first"));
+
+    store.delete(&ws, &read.id).await.unwrap();
+    let late = Event::new(EventPayload::User(UserEvent::Interrupt {}));
+    assert!(matches!(log.append_event(&ws, &read.id, late).await, Err(StoreError::NotFound)));
+}
+
+#[tokio::test]
+async fn pg_memory_an_update_that_read_before_a_delete_cannot_revive_it() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memrevive").await else {
+        return;
+    };
+    use memory::store::{MemoryRecordPersistence, StoreError, VersionRecord};
+    use memory::types::{MemoryVersion, VersionOperation};
+    use memory::MemoriesService;
+    let store = Arc::new(PgMemoryStore::new(backend().await, blobs));
+    let svc = MemoriesService::new(store.clone());
+    let ctx = ctx_ws(&uniq_ws("memrevive"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    let req = serde_json::from_value(json!({"path": "/r.md", "content": "one"})).unwrap();
+    let m = svc.create_memory(&ctx, ms.id.as_str(), req).await.unwrap();
+    // The writer read the head, then the delete lands.
+    let read = m.clone();
+    svc.delete_memory(&ctx, ms.id.as_str(), m.id.as_str(), None).await.unwrap();
+    let version = MemoryVersion::record(
+        ctx.actor(),
+        m.id.clone(),
+        ms.id.clone(),
+        VersionOperation::Modified,
+        read.path.clone(),
+        Some("two"),
+        shared::Timestamp::now(),
+    );
+    let mut head = read.clone();
+    head.memory_version_id = version.id.clone();
+    let late = VersionRecord { version, blob: Some("two".into()) };
+    let result =
+        store.append_version(&ctx.workspace, &ms.id, &head, false, &read.memory_version_id, &late).await;
+    assert!(matches!(result, Err(StoreError::HeadMoved)), "{result:?}");
+    assert!(svc.get_memory(&ctx, ms.id.as_str(), m.id.as_str(), memory::service::View::Basic).await.is_err());
+}

@@ -120,7 +120,7 @@ async fn list_versions(
 ) -> Result<Response, RouteError> {
     let page = LIST.parse(&params)?;
     let beta = betas.has(SKILLS);
-    let rows = svc.versions(&ctx, &id, &page).await?.iter().map(|v| v.wire(beta)).collect();
+    let rows = svc.versions(&ctx, &id, &page, beta).await?.iter().map(|v| v.wire(beta)).collect();
     Ok(Json(page_of(rows, &page, beta)).into_response())
 }
 
