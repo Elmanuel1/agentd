@@ -16,7 +16,6 @@ skills = { workspace = true }
 sessions = { workspace = true }
 dreams = { workspace = true }
 memory = { workspace = true }
-blobs-s3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -31,6 +30,7 @@ diesel-async = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 blobs-s3 = { workspace = true }
+secrets-blob = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }

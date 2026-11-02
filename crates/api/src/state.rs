@@ -1,127 +1,50 @@
-//! Application state: every entity service constructed and wired, plus the
-//! API-key registry that maps keys to `(org, workspace)`.
+//! Application state: every resource's service built over the ports, and
+//! assembled into its module.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use agents::AgentsService;
-use blobs_s3::BlobStore;
 use deployments::DeploymentsService;
 use environments::EnvironmentsService;
 use files::FilesService;
 use memory::MemoriesService;
-use parking_lot::RwLock;
 use sessions::SessionsService;
 use shared::limits::ModelCatalog;
-use shared::ports::SchedulerPort;
-use shared::{AuthContext, OrgId, WorkspaceId};
+use shared::ports::keys::KeySource;
+use shared::Module;
 use skills::SkillsService;
-use store_postgres::{
-    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgFilesStore, PgMemoryStore,
-    PgSessionsStore, PgSkillsStore, PgVaultsStore,
-};
 use vaults::VaultsService;
 
+use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
 
-/// Maps API keys to their tenant. Populated from config at boot;
-/// dev/test mode registers keys programmatically.
-#[derive(Debug, Clone, Default)]
-pub struct ApiKeyRegistry {
-    inner: Arc<RwLock<HashMap<String, AuthContext>>>,
-}
-
-impl ApiKeyRegistry {
-    /// Empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register a key.
-    pub fn register(
-        &self,
-        key: impl Into<String>,
-        org: impl Into<String>,
-        workspace: impl Into<String>,
-        api_key_id: impl Into<String>,
-    ) {
-        self.inner.write().insert(
-            key.into(),
-            AuthContext {
-                org: OrgId::new(org),
-                workspace: WorkspaceId::new(workspace),
-                api_key_id: api_key_id.into(),
-            },
-        );
-    }
-
-    /// Resolve a key to its tenant.
-    pub fn resolve(&self, key: &str) -> Option<AuthContext> {
-        self.inner.read().get(key).cloned()
-    }
-}
-
-/// All services, wired.
-#[derive(Clone)]
+/// The assembled app: the key source and every resource's module.
 pub struct AppState {
-    /// Key → tenant registry.
-    pub keys: ApiKeyRegistry,
-    /// Agents.
-    pub agents: Arc<AgentsService>,
-    /// Environments.
-    pub environments: Arc<EnvironmentsService>,
-    /// Vaults.
-    pub vaults: Arc<VaultsService>,
-    /// Memory.
-    pub memories: Arc<MemoriesService>,
-    /// Files.
-    pub files: Arc<FilesService>,
-    /// Skills.
-    pub skills: Arc<SkillsService>,
-    /// Sessions.
-    pub sessions: Arc<SessionsService>,
-    /// Deployments.
-    pub deployments: Arc<DeploymentsService>,
+    /// API-key resolution.
+    pub keys: Arc<dyn KeySource>,
+    /// One module per resource.
+    pub modules: Vec<Module>,
 }
 
 impl std::fmt::Debug for AppState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AppState").finish_non_exhaustive()
+        f.debug_struct("AppState").field("modules", &self.modules).finish_non_exhaustive()
     }
 }
 
 impl AppState {
-    /// Build the durable stack: every entity store is Postgres (records) + a
-    /// shared object store (blobs/secrets). No in-memory state — replicas are
-    /// interchangeable. `backend` is a live pool; `blobs` is one object store
-    /// reused across files/skills/memory-content/vault-secrets (distinct key
-    /// prefixes). Only the key registry and model catalog stay in memory, both
-    /// loaded from central config at boot.
-    pub fn from_postgres(
-        backend: PgBackend,
-        blobs: Arc<dyn BlobStore>,
-        scheduler: Arc<dyn SchedulerPort>,
-    ) -> Self {
-        let keys = ApiKeyRegistry::new();
-        let agents = Arc::new(AgentsService::new(
-            Arc::new(PgAgentsStore::new(backend.clone())),
-            ModelCatalog::default_catalog(),
-        ));
-        let environments =
-            Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend.clone()))));
-        let vaults =
-            Arc::new(VaultsService::new(Arc::new(PgVaultsStore::new(backend.clone(), blobs.clone()))));
-        let memories =
-            Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend.clone(), blobs.clone()))));
-        let files = Arc::new(FilesService::new(Arc::new(PgFilesStore::new(backend.clone(), blobs.clone()))));
-        let skills =
-            Arc::new(SkillsService::new(Arc::new(PgSkillsStore::new(backend.clone(), blobs.clone()))));
+    /// Build every service over `backends`, assemble the modules, and register
+    /// their fire handlers with the scheduler's registry.
+    pub fn build(backends: Backends) -> Self {
+        let Backends { stores, keys, scheduler, fires, runtime: _ } = backends;
+        let agents = Arc::new(AgentsService::new(stores.agents, ModelCatalog::default_catalog()));
+        let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let sessions = Arc::new(SessionsService::new(
-            Arc::new(PgSessionsStore::new(backend.clone())),
+            stores.sessions,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
         ));
         let deployments = Arc::new(DeploymentsService::new(
-            Arc::new(PgDeploymentsStore::new(backend)),
+            stores.deployments,
             Arc::new(RealDeploymentDeps {
                 agents: agents.clone(),
                 environments: environments.clone(),
@@ -129,6 +52,19 @@ impl AppState {
             }),
             scheduler,
         ));
-        Self { keys, agents, environments, vaults, memories, files, skills, sessions, deployments }
+        let modules = vec![
+            agents::module(agents),
+            environments::module(environments),
+            vaults::module(Arc::new(VaultsService::new(stores.vaults))),
+            memory::module(Arc::new(MemoriesService::new(stores.memory))),
+            files::module(Arc::new(FilesService::new(stores.files))),
+            skills::module(Arc::new(SkillsService::new(stores.skills))),
+            sessions::module(sessions),
+            deployments::module(deployments),
+        ];
+        for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
+            fires.register(handler.clone());
+        }
+        Self { keys, modules }
     }
 }

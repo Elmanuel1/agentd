@@ -24,6 +24,7 @@ scheduler-local = { workspace = true }
 engine = { workspace = true }
 store-postgres = { workspace = true }
 blobs-s3 = { workspace = true }
+secrets-blob = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

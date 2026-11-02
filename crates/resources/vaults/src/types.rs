@@ -269,8 +269,8 @@ impl CredentialAuthInput {
     }
 
     /// Recover sealed material produced by [`Self::seal`].
-    pub fn unseal(sealed: &str) -> Option<Self> {
-        serde_json::from_str(sealed).ok()
+    pub fn unseal(sealed: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(sealed)
     }
 }
 

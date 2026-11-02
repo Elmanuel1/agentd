@@ -6,12 +6,12 @@ use std::sync::Arc;
 use ::files::store::{FilesStore, StoreError, StoredFile};
 use ::files::types::{FileId, FileMetadata};
 use async_trait::async_trait;
-use blobs_s3::BlobStore;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use serde::{Deserialize, Serialize};
+use shared::ports::blobs::BlobStore;
 use shared::{IdCursor, WorkspaceId};
 
 use crate::schema::files;

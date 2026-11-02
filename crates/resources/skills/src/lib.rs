@@ -17,6 +17,10 @@ mod service;
 mod store;
 mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
 pub use bundle::{parse_bundle, Bundle};
 pub use service::SkillsService;
 pub use store::{SkillsStore, StoreError};
@@ -24,3 +28,8 @@ pub use types::{
     Skill, SkillId, SkillListPage, SkillResource, SkillSource, SkillTag, SkillVersion, SkillVersionId,
     SkillVersionResource, SkillVersionTag,
 };
+
+/// The skills module: its routes.
+pub fn module(service: Arc<SkillsService>) -> Module {
+    Module::new(routes::router(), service)
+}

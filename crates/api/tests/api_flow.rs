@@ -5,13 +5,15 @@
 
 use std::sync::Arc;
 
-use api::{build_router, AppState};
+use api::{build_router, AppState, Backends, EnvKeySource, Stores};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
-use shared::ports::FakeScheduler;
+use secrets_blob::BlobSecretStore;
+use shared::ports::fire::FireRegistry;
+use shared::ports::{FakeRuntime, FakeScheduler};
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -34,13 +36,30 @@ async fn app() -> Option<Router> {
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let backend = PgBackend::connect(&url).await.unwrap();
     let bucket = format!("agentdapi{}", Timestamp::now().as_datetime().timestamp_micros());
-    let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(bucket).await.unwrap());
-    let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
+    let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(&s3_config(bucket)).await.unwrap());
     let stamp = Timestamp::now().as_datetime().timestamp_micros();
     let org = format!("org_t{stamp}");
-    state.keys.register(KEY, &org, format!("wrkspc_a{stamp}"), "apikey_01a");
-    state.keys.register(KEY_B, &org, format!("wrkspc_b{stamp}"), "apikey_01b");
-    Some(build_router(state))
+    let mut keys = EnvKeySource::default();
+    keys.register(KEY, &org, &format!("wrkspc_a{stamp}"), "apikey_01a");
+    keys.register(KEY_B, &org, &format!("wrkspc_b{stamp}"), "apikey_01b");
+    let backends = Backends {
+        stores: Stores::postgres(backend, blobs.clone(), Arc::new(BlobSecretStore::new(blobs))),
+        keys: Arc::new(keys),
+        scheduler: Arc::new(FakeScheduler::new()),
+        fires: Arc::new(FireRegistry::new()),
+        runtime: Arc::new(FakeRuntime::new()),
+    };
+    Some(build_router(AppState::build(backends)))
+}
+
+/// A test bucket on the emulator at `AGENTD_AWS_ENDPOINT`, created on connect.
+fn s3_config(bucket: String) -> S3Config {
+    S3Config {
+        endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+        path_style: true,
+        create_bucket: true,
+        ..S3Config::new(bucket)
+    }
 }
 
 /// Call with full header control.

@@ -128,6 +128,12 @@ pub(crate) fn to_doc<T: serde::Serialize, E: FromBackend>(v: &T) -> Result<serde
 }
 
 /// Map an object-store error into the entity `Backend` variant.
-pub(crate) fn blob_be<E: FromBackend>(e: blobs_s3::BlobError) -> E {
+pub(crate) fn blob_be<E: FromBackend>(e: shared::ports::blobs::BlobError) -> E {
+    E::backend(shared::BackendError::new(e))
+}
+
+/// Map a secret-store error, or unreadable secret material, into the entity
+/// `Backend` variant.
+pub(crate) fn secret_be<E: FromBackend, S: std::error::Error + Send + Sync + 'static>(e: S) -> E {
     E::backend(shared::BackendError::new(e))
 }

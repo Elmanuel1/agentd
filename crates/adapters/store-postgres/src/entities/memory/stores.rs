@@ -99,7 +99,7 @@ impl MemoryStorePersistence for PgMemoryStore {
         for vid in version_ids {
             let key = format!("memory/{}/{}/{}", ws.as_str(), id.as_str(), vid);
             match self.blobs.delete(&key).await {
-                Ok(()) | Err(blobs_s3::BlobError::NotFound(_)) => {}
+                Ok(()) | Err(shared::ports::blobs::BlobError::NotFound(_)) => {}
                 Err(e) => return Err(blob_be(e)),
             }
         }

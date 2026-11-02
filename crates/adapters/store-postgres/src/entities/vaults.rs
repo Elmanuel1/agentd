@@ -1,27 +1,26 @@
 //! `VaultsStore` on Postgres via Diesel — vault + secret-free credential rows;
-//! the secret material is sealed to object storage (a secret-manager stand-in),
-//! keyed by credential id, and NEVER written to the database.
+//! the secret material is sealed to the [`SecretStore`], keyed by credential
+//! id, and NEVER written to the database.
 
 use std::sync::Arc;
 
 use ::vaults::store::{StoreError, StoredCredential, VaultsStore};
 use ::vaults::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
 use async_trait::async_trait;
-use blobs_s3::BlobStore;
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
+use shared::ports::secrets::SecretStore;
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::{credentials, vaults};
-use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{diesel_be, parse_doc, pool_be, secret_be, to_doc, PgBackend};
 
 /// Postgres + secret-store backed vaults store (Diesel).
 #[derive(Clone)]
 pub struct PgVaultsStore {
     backend: PgBackend,
-    secrets: Arc<dyn BlobStore>,
+    secrets: Arc<dyn SecretStore>,
 }
 
 impl std::fmt::Debug for PgVaultsStore {
@@ -32,7 +31,7 @@ impl std::fmt::Debug for PgVaultsStore {
 
 impl PgVaultsStore {
     /// Wrap a backend + secret store.
-    pub fn new(backend: PgBackend, secrets: Arc<dyn BlobStore>) -> Self {
+    pub fn new(backend: PgBackend, secrets: Arc<dyn SecretStore>) -> Self {
         Self { backend, secrets }
     }
 
@@ -62,11 +61,8 @@ impl PgVaultsStore {
     ) -> Result<(), StoreError> {
         let key = Self::secret_key(ws, vault, id);
         match auth {
-            Some(a) => self.secrets.put(&key, Bytes::from(a.seal().into_bytes())).await.map_err(blob_be),
-            None => match self.secrets.delete(&key).await {
-                Ok(()) | Err(blobs_s3::BlobError::NotFound(_)) => Ok(()),
-                Err(e) => Err(blob_be(e)),
-            },
+            Some(a) => self.secrets.put(&key, &a.seal()).await.map_err(secret_be),
+            None => self.secrets.delete(&key).await.map_err(secret_be),
         }
     }
 }
@@ -227,8 +223,8 @@ impl VaultsStore for PgVaultsStore {
         let (doc, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
         let wire: Credential = parse_doc(doc)?;
         let auth = if has_secret {
-            let sealed = self.secrets.get(&Self::secret_key(ws, vault, id)).await.map_err(blob_be)?;
-            CredentialAuthInput::unseal(&String::from_utf8_lossy(&sealed))
+            let sealed = self.secrets.get(&Self::secret_key(ws, vault, id)).await.map_err(secret_be)?;
+            Some(CredentialAuthInput::unseal(&sealed).map_err(secret_be)?)
         } else {
             None
         };

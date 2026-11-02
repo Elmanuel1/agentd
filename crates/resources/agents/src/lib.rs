@@ -12,6 +12,15 @@ pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
 pub use service::AgentsService;
 pub use store::AgentsStore;
 pub use types::{Agent, AgentConfig, AgentRef, AgentSnapshot, ModelSpec};
+
+/// The agents module: its routes.
+pub fn module(service: Arc<AgentsService>) -> Module {
+    Module::new(routes::router(), service)
+}

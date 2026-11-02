@@ -1,19 +1,16 @@
-//! Swappable external ports.
+//! Swappable external ports. Each backend implements one trait and is chosen
+//! by config at the composition root; the in-memory fakes make every consumer
+//! testable.
 //!
-//! Two infrastructure dependencies are hidden behind traits so backends are
-//! config-selected and every consumer is testable with the in-memory fakes:
-//!
-//! - [`Runtime`] — where ephemeral engine jobs execute (Fargate, Firecracker,
-//!   Cloud Run, local Docker, in-process fake).
-//! - [`SchedulerPort`] — the durable timer that wakes agentd by POSTing
-//!   `/internal/fire` (Temporal, EventBridge, Postgres ticker, local).
-//!
-//! Port contracts (fixed, backend-independent):
-//! - Scheduler fire = `POST /internal/fire {target, scheduled_at}` with
-//!   **no retry** (`attempts = 1`) and **no backfill**; exactly-once per
-//!   `(target, scheduled_at)`.
-//! - `upcoming_runs_at` is computed by [`crate::schedule`], never by the
-//!   backend, so the wire is identical across backends.
+//! Scheduler fire contract (fixed, backend-independent): **no retry**
+//! (`attempts = 1`), **no backfill**, exactly-once per `(target, scheduled_at)`.
+//! `upcoming_runs_at` is computed by [`crate::schedule`], never by the backend,
+//! so the wire is identical across backends.
+
+pub mod blobs;
+pub mod fire;
+pub mod keys;
+pub mod secrets;
 
 use std::collections::BTreeMap;
 
@@ -96,29 +93,25 @@ pub trait Runtime: Send + Sync {
 
 // ─── Scheduler port ────────────────────────────────────────────────────────
 
-/// What a schedule fires.
+/// What a schedule fires: the owning resource's [`fire::FireHandler::kind`]
+/// and the id of the scheduled resource.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FireTarget {
-    /// A deployment (fires a session per tick).
-    Deployment {
-        /// `depl_…` id.
-        id: String,
-    },
-    /// A dream (fires a reflection run per tick).
-    Dream {
-        /// dream id.
-        id: String,
-    },
+pub struct FireTarget {
+    /// The fire handler kind (`deployment`, `dream`).
+    pub kind: String,
+    /// The scheduled resource's id.
+    pub id: String,
 }
 
 impl FireTarget {
+    /// Target `id` of the given handler kind.
+    pub fn new(kind: &str, id: impl Into<String>) -> Self {
+        Self { kind: kind.to_owned(), id: id.into() }
+    }
+
     /// Stable identity string, used as the schedule id and in `fire_id`.
     pub fn key(&self) -> String {
-        match self {
-            Self::Deployment { id } => format!("deployment/{id}"),
-            Self::Dream { id } => format!("dream/{id}"),
-        }
+        format!("{}/{}", self.kind, self.id)
     }
 }
 
@@ -130,6 +123,8 @@ pub struct TenantRef {
     pub org_id: String,
     /// Workspace.
     pub workspace_id: String,
+    /// The API key that registered the schedule (the audit actor of its fires).
+    pub api_key_id: String,
 }
 
 /// A durable schedule registration.
@@ -372,12 +367,12 @@ mod tests {
     #[tokio::test]
     async fn fake_scheduler_lifecycle() {
         let s = FakeScheduler::new();
-        let target = FireTarget::Deployment { id: "depl_01x".into() };
+        let target = FireTarget::new("deployment", "depl_01x");
         s.upsert(ScheduleSpec {
             cron: "0 0 * * *".into(),
             timezone: "UTC".into(),
             target: target.clone(),
-            tenant: TenantRef { org_id: "org_t".into(), workspace_id: "wrkspc_01t".into() },
+            tenant: tenant(),
         })
         .await
         .unwrap();
@@ -397,16 +392,18 @@ mod tests {
             .upsert(ScheduleSpec {
                 cron: "99 * * * *".into(),
                 timezone: "UTC".into(),
-                target: FireTarget::Dream { id: "d1".into() },
-                tenant: TenantRef { org_id: "org_t".into(), workspace_id: "wrkspc_01t".into() },
+                target: FireTarget::new("dream", "d1"),
+                tenant: tenant(),
             })
             .await;
         assert!(matches!(bad, Err(SchedulerError::InvalidSpec(_))));
     }
 
-    #[test]
-    fn fire_target_keys_are_stable() {
-        assert_eq!(FireTarget::Deployment { id: "depl_1".into() }.key(), "deployment/depl_1");
-        assert_eq!(FireTarget::Dream { id: "d1".into() }.key(), "dream/d1");
+    fn tenant() -> TenantRef {
+        TenantRef {
+            org_id: "org_t".into(),
+            workspace_id: "wrkspc_01t".into(),
+            api_key_id: "apikey_01t".into(),
+        }
     }
 }

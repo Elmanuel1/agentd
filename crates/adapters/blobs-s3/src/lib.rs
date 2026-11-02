@@ -1,42 +1,51 @@
-//! blobs-s3 — object storage behind a [`BlobStore`] port.
+//! blobs-s3 — the S3 implementation of [`BlobStore`].
 //!
-//! Bytes (file contents, session workspace snapshots, large memory content)
-//! **never** live in the record database — they belong in object storage.
-//! The record store keeps only metadata and the blob key.
-//!
-//! [`S3BlobStore`] targets any S3-compatible endpoint: real AWS S3, MinIO,
-//! or an S3 emulator such as LocalStack (via `AGENTD_AWS_ENDPOINT`).
+//! [`S3BlobStore`] targets any S3-compatible endpoint: real AWS S3, MinIO, or
+//! an emulator such as LocalStack. Credentials always come from the AWS
+//! default chain (env keys, profile, web identity, ECS task or EC2 instance
+//! role), optionally exchanged for an assumed role.
 
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
+use aws_config::sts::AssumeRoleProvider;
 use aws_config::BehaviorVersion;
-use aws_sdk_s3::config::{Credentials, Region};
+use aws_sdk_s3::config::Region;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
+pub use shared::ports::blobs::{BlobError, BlobStore};
 
-/// Blob-store failure.
-#[derive(Debug, thiserror::Error)]
-pub enum BlobError {
-    /// The object does not exist.
-    #[error("blob not found: {0}")]
-    NotFound(String),
-    /// Backend/transport failure.
-    #[error("blob backend: {0}")]
-    Backend(String),
+/// Where and how to reach the bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S3Config {
+    /// The bucket every blob lives in.
+    pub bucket: String,
+    /// The region; `None` takes it from the default chain, else `us-east-1`.
+    pub region: Option<String>,
+    /// A custom endpoint (MinIO, LocalStack); `None` is AWS S3.
+    pub endpoint: Option<String>,
+    /// Address the bucket in the path rather than the host name.
+    pub path_style: bool,
+    /// A role to assume with the default-chain credentials.
+    pub role_arn: Option<String>,
+    /// Create the bucket at connect when it does not exist.
+    pub create_bucket: bool,
 }
 
-/// Object storage: put/get/delete by key, within one bucket.
-#[async_trait]
-pub trait BlobStore: Send + Sync {
-    /// Store bytes at `key` (overwrites).
-    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), BlobError>;
-    /// Fetch bytes at `key`.
-    async fn get(&self, key: &str) -> Result<Bytes, BlobError>;
-    /// Delete `key` (idempotent).
-    async fn delete(&self, key: &str) -> Result<(), BlobError>;
+impl S3Config {
+    /// `bucket` on AWS S3 in the default-chain region, with no bucket creation.
+    pub fn new(bucket: impl Into<String>) -> Self {
+        Self {
+            bucket: bucket.into(),
+            region: None,
+            endpoint: None,
+            path_style: false,
+            role_arn: None,
+            create_bucket: false,
+        }
+    }
 }
 
 /// S3-backed blob store bound to one bucket.
@@ -53,21 +62,33 @@ impl std::fmt::Debug for S3BlobStore {
 }
 
 impl S3BlobStore {
-    /// Connect and ensure the bucket exists. `endpoint` overrides the AWS
-    /// endpoint for a local emulator (leave `None` for real AWS).
-    pub async fn connect(bucket: impl Into<String>) -> Result<Self, BlobError> {
-        let endpoint = std::env::var("AGENTD_AWS_ENDPOINT").ok();
-        let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".into());
-        let mut loader = aws_config::defaults(BehaviorVersion::latest()).region(Region::new(region));
-        if let Some(ep) = &endpoint {
-            loader = loader
-                .endpoint_url(ep)
-                .credentials_provider(Credentials::new("test", "test", None, None, "blobs-s3"));
+    /// Build the client from `config`, and create the bucket when the config
+    /// asks for it.
+    pub async fn connect(config: &S3Config) -> Result<Self, BlobError> {
+        let mut loader = aws_config::defaults(BehaviorVersion::latest());
+        if let Some(region) = &config.region {
+            loader = loader.region(Region::new(region.clone()));
         }
-        let shared = loader.load().await;
-        let conf = aws_sdk_s3::config::Builder::from(&shared).force_path_style(endpoint.is_some()).build();
-        let store = Self { client: aws_sdk_s3::Client::from_conf(conf), bucket: bucket.into() };
-        store.ensure_bucket().await?;
+        if let Some(endpoint) = &config.endpoint {
+            loader = loader.endpoint_url(endpoint);
+        }
+        let mut shared = loader.load().await;
+        if shared.region().is_none() {
+            shared = shared.into_builder().region(Region::from_static("us-east-1")).build();
+        }
+        if let Some(role_arn) = &config.role_arn {
+            let role =
+                AssumeRoleProvider::builder(role_arn).session_name("agentd").configure(&shared).build();
+            shared = shared
+                .into_builder()
+                .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(role.await))
+                .build();
+        }
+        let conf = aws_sdk_s3::config::Builder::from(&shared).force_path_style(config.path_style).build();
+        let store = Self { client: aws_sdk_s3::Client::from_conf(conf), bucket: config.bucket.clone() };
+        if config.create_bucket {
+            store.ensure_bucket().await?;
+        }
         Ok(store)
     }
 

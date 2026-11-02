@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use shared::limits::required;
-use shared::{ApiError, AuthContext, IdCursor, Timestamp};
+use shared::{ApiError, AuthContext, IdCursor, Module, Timestamp};
 
 use store::{FilesStore, StoreError, StoredFile};
 use types::{FileId, FileMetadata, FileTag};
@@ -102,4 +102,9 @@ fn map_store(e: StoreError) -> ApiError {
         StoreError::NotFound => ApiError::not_found("file not found"),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
+}
+
+/// The files module: its routes.
+pub fn module(service: Arc<FilesService>) -> Module {
+    Module::new(routes::router(), service)
 }

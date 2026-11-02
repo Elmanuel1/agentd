@@ -14,7 +14,8 @@
 
 use std::sync::Arc;
 
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
+use secrets_blob::BlobSecretStore;
 use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgVaultsStore};
@@ -33,7 +34,17 @@ async fn backend() -> PgBackend {
 async fn s3(tag: &str) -> Option<Arc<dyn BlobStore>> {
     std::env::var("AGENTD_AWS_ENDPOINT").ok()?;
     let bucket = format!("agentdent{tag}{}", stamp());
-    Some(Arc::new(S3BlobStore::connect(bucket).await.unwrap()))
+    Some(Arc::new(S3BlobStore::connect(&s3_config(bucket)).await.unwrap()))
+}
+
+/// A test bucket on the emulator at `AGENTD_AWS_ENDPOINT`, created on connect.
+fn s3_config(bucket: String) -> S3Config {
+    S3Config {
+        endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+        path_style: true,
+        create_bucket: true,
+        ..S3Config::new(bucket)
+    }
 }
 
 fn stamp() -> i64 {
@@ -108,7 +119,7 @@ async fn pg_vaults_secret_sealed_to_object_store() {
     use vaults::store::VaultsStore;
     use vaults::types::CredentialAuthInput;
     use vaults::VaultsService;
-    let store = Arc::new(PgVaultsStore::new(backend().await, secrets));
+    let store = Arc::new(PgVaultsStore::new(backend().await, Arc::new(BlobSecretStore::new(secrets))));
     let svc = VaultsService::new(store.clone());
     let ctx = ctx_ws(&uniq_ws("vaults"));
     let vault =

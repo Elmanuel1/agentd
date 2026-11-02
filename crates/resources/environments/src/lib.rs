@@ -16,6 +16,15 @@ pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
 pub use service::EnvironmentsService;
 pub use store::EnvironmentsStore;
 pub use types::{Environment, EnvironmentConfig, EnvironmentId};
+
+/// The environments module: its routes.
+pub fn module(service: Arc<EnvironmentsService>) -> Module {
+    Module::new(routes::router(), service)
+}

@@ -32,6 +32,7 @@ services:
       AGENTD_STORE: ${AGENTD_STORE:-postgres}
       DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:-agentd}@postgres:5432/agentd
       AGENTD_AWS_ENDPOINT: http://minio:9000     # blobs; drop this for real S3
+      AGENTD_S3_CREATE_BUCKET: "1"
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-agentd}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-agentd-dev-secret}
       AWS_DEFAULT_REGION: us-east-1

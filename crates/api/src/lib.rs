@@ -1,8 +1,10 @@
 //! api — the composed HTTP surface.
 //!
-//! This crate holds **no business logic**: it builds every entity service,
-//! wires the cross-entity dependency ports, and stacks the middleware that
-//! makes the wire byte-compatible:
+//! This crate holds **no business logic**: it selects a backend for every port
+//! from [`config::Config`] ([`backends::Backends`]), builds every entity
+//! service, wires the cross-entity dependency ports, assembles each
+//! resource's module, and stacks the middleware that makes the wire
+//! byte-compatible:
 //!
 //! 1. **auth** — `x-api-key` → [`AuthContext`] (org, workspace, key id);
 //!    missing/unknown → 401 `authentication_error` envelope,
@@ -14,36 +16,27 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod backends;
+pub mod config;
 pub mod deps;
+pub mod keys;
 pub mod middleware;
 pub mod state;
 
-pub use state::{ApiKeyRegistry, AppState};
+pub use backends::{Backends, Stores};
+pub use config::Config;
+pub use keys::EnvKeySource;
+pub use state::AppState;
 
 use axum::Router;
 
 /// Build the full agentd router with all middleware.
 pub fn build_router(state: AppState) -> Router {
-    let entity_routes = Router::new()
-        .merge(agents::routes::router())
-        .merge(environments::routes::router())
-        .merge(vaults::routes::router())
-        .merge(memory::routes::router())
-        .merge(files::routes::router())
-        .merge(skills::routes::router())
-        .merge(sessions::routes::router())
-        .merge(deployments::routes::router());
-
-    entity_routes
+    state
+        .modules
+        .into_iter()
+        .fold(Router::new(), |router, module| router.merge(module.router))
         .fallback(middleware::not_found)
         .layer(axum::middleware::from_fn(middleware::beta_gate))
-        .layer(axum::middleware::from_fn_with_state(state.keys.clone(), middleware::auth))
-        .layer(axum::Extension(state.agents.clone()))
-        .layer(axum::Extension(state.environments.clone()))
-        .layer(axum::Extension(state.vaults.clone()))
-        .layer(axum::Extension(state.memories.clone()))
-        .layer(axum::Extension(state.files.clone()))
-        .layer(axum::Extension(state.skills.clone()))
-        .layer(axum::Extension(state.sessions.clone()))
-        .layer(axum::Extension(state.deployments.clone()))
+        .layer(axum::middleware::from_fn_with_state(state.keys, middleware::auth))
 }

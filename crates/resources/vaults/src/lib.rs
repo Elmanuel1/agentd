@@ -17,6 +17,15 @@ pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
 pub use service::VaultsService;
 pub use store::VaultsStore;
 pub use types::{Credential, SecretString, Vault, VaultId};
+
+/// The vaults module: its routes.
+pub fn module(service: Arc<VaultsService>) -> Module {
+    Module::new(routes::router(), service)
+}

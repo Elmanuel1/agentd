@@ -4,9 +4,10 @@ use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
-use shared::{wire_response, ApiError, AuthContext};
+use std::sync::Arc;
 
-use crate::state::ApiKeyRegistry;
+use shared::ports::keys::KeySource;
+use shared::{wire_response, ApiError, AuthContext};
 
 /// The managed-agents beta header value (live).
 pub const MANAGED_AGENTS_BETA: &str = "managed-agents-2026-04-01";
@@ -17,12 +18,12 @@ fn envelope(e: &ApiError) -> Response {
 
 /// `x-api-key` → [`AuthContext`]. Missing/unknown → 401 envelope
 /// (`authentication_error`), matching the live error family.
-pub async fn auth(State(keys): State<ApiKeyRegistry>, mut req: Request, next: Next) -> Response {
+pub async fn auth(State(keys): State<Arc<dyn KeySource>>, mut req: Request, next: Next) -> Response {
     let key = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()).map(str::to_owned);
     let Some(key) = key else {
         return envelope(&ApiError::authentication("missing x-api-key header"));
     };
-    let Some(ctx) = keys.resolve(&key) else {
+    let Some(ctx) = keys.resolve(&key).await else {
         return envelope(&ApiError::authentication("invalid x-api-key"));
     };
     req.extensions_mut().insert::<AuthContext>(ctx);

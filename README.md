@@ -50,10 +50,12 @@ resolving `latest` adopts the promotion — promote-don't-replace.
 ## Run
 
 ```sh
-cargo run -p api                                 # dev: in-memory + local scheduler
 docker compose -f docker/docker-compose.yml up   # full stack
-cargo test --workspace                       # 250+ tests, all hermetic
+AGENTD_DEV_KEY=1 AGENTD_S3_CREATE_BUCKET=1 cargo run -p api   # against your own Postgres and S3
+cargo test --workspace                           # hermetic; AGENTD_PG_TESTS=1 adds the Postgres and S3 tests
 ```
+
+Backends and settings: [docs/configuration.md](docs/configuration.md).
 
 ## Compile-safety rules (workspace-enforced)
 

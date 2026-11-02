@@ -14,7 +14,7 @@ use std::sync::Arc;
 use agents::store::AgentsStore;
 use agents::types::{AgentId, AgentTag, ModelSpec, ModelSpeed};
 use agents::{Agent, AgentsService};
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use deployments::store::DeploymentsStore;
 use deployments::types::DeploymentId;
 use files::store::{FilesStore, StoredFile};
@@ -146,9 +146,14 @@ async fn pg_files_roundtrip() {
         return;
     }
     let blobs: Arc<dyn BlobStore> = Arc::new(
-        S3BlobStore::connect(format!("agentdpgtest{}", Timestamp::now().as_datetime().timestamp_micros()))
-            .await
-            .unwrap(),
+        S3BlobStore::connect(&S3Config {
+            endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+            path_style: true,
+            create_bucket: true,
+            ..S3Config::new(format!("agentdpgtest{}", Timestamp::now().as_datetime().timestamp_micros()))
+        })
+        .await
+        .unwrap(),
     );
     let store = PgFilesStore::new(backend().await, blobs);
     let ws = uniq_ws("files");

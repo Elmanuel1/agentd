@@ -58,6 +58,7 @@ dependencies = [
  "memory",
  "parking_lot",
  "scheduler-local",
+ "secrets-blob",
  "serde",
  "serde_json",
  "sessions",
@@ -622,6 +623,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "bytes",
+ "shared",
  "thiserror",
 ]
 
@@ -752,6 +754,7 @@ dependencies = [
  "blobs-s3",
  "http 1.4.2",
  "http-body-util",
+ "secrets-blob",
  "serde",
  "serde_json",
  "shared",
@@ -2487,7 +2490,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
- "thiserror",
  "tokio",
  "tracing",
 ]
@@ -2515,6 +2517,16 @@ checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
  "ring",
  "untrusted",
+]
+
+[[package]]
+name = "secrets-blob"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "shared",
+ "tokio",
 ]
 
 [[package]]
@@ -2671,6 +2683,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "bytes",
  "chrono",
  "chrono-tz",
  "hex",
@@ -2799,6 +2812,7 @@ dependencies = [
  "http 1.4.2",
  "http-body-util",
  "memory",
+ "secrets-blob",
  "serde",
  "serde_json",
  "sessions",

@@ -18,7 +18,16 @@ pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
 pub use events::{Event, EventId, EventPayload, StopReason};
 pub use service::{EngineContract, SessionDeps, SessionsService};
 pub use store::SessionsStore;
 pub use types::{Session, SessionId, SessionStatus};
+
+/// The sessions module: its routes.
+pub fn module(service: Arc<SessionsService>) -> Module {
+    Module::new(routes::router(), service)
+}

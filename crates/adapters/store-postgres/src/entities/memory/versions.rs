@@ -59,7 +59,7 @@ impl PgMemoryStore {
                 self.blobs.put(&key, Bytes::from(content.clone().into_bytes())).await.map_err(blob_be)?
             }
             None => match self.blobs.delete(&key).await {
-                Ok(()) | Err(blobs_s3::BlobError::NotFound(_)) => {}
+                Ok(()) | Err(shared::ports::blobs::BlobError::NotFound(_)) => {}
                 Err(e) => return Err(blob_be(e)),
             },
         }

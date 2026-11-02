@@ -16,9 +16,21 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod fire;
 pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use axum::Router;
+use shared::Module;
+
+pub use fire::DreamFire;
 pub use service::{DreamsService, Proposer, ReviewGate};
 pub use types::{Candidate, Dream, DreamId, DreamRun, Verdict};
+
+/// The dreams module: its scheduled fires. Dreams serve no routes.
+pub fn module(service: Arc<DreamsService>) -> Module {
+    Module::new(Router::new(), service.clone()).with_fire_handler(Arc::new(DreamFire::new(service)))
+}

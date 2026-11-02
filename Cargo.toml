@@ -17,6 +17,7 @@ members = [
     "conformance/rust",
     "crates/adapters/store-postgres",
     "crates/adapters/blobs-s3",
+    "crates/adapters/secrets-blob",
 ]
 
 [workspace.package]
@@ -42,6 +43,7 @@ engine = { path = "crates/engine" }
 api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }
+secrets-blob = { path = "crates/adapters/secrets-blob" }
 
 # external
 serde = { version = "1", features = ["derive"] }

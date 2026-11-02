@@ -25,9 +25,18 @@ pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
 pub use service::MemoriesService;
 pub use store::{
     MemoryPersistence, MemoryRecordPersistence, MemoryStorePersistence, MemoryVersionPersistence,
     VersionSelector,
 };
 pub use types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
+
+/// The memory module: its routes.
+pub fn module(service: Arc<MemoriesService>) -> Module {
+    Module::new(routes::router(), service)
+}

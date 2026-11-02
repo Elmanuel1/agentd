@@ -13,11 +13,22 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod fire;
 pub mod routes;
 pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::Module;
+
+pub use fire::DeploymentFire;
 pub use service::{DeploymentDeps, DeploymentsService};
 pub use store::DeploymentsStore;
 pub use types::{Deployment, DeploymentId, DeploymentRun, DeploymentRunId, RunError};
+
+/// The deployments module: its routes and its scheduled fires.
+pub fn module(service: Arc<DeploymentsService>) -> Module {
+    Module::new(routes::router(), service.clone()).with_fire_handler(Arc::new(DeploymentFire::new(service)))
+}

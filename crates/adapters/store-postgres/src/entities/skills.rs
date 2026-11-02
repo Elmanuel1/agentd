@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use ::skills::{Skill, SkillId, SkillVersion, SkillsStore, StoreError};
 use async_trait::async_trait;
-use blobs_s3::BlobStore;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
+use shared::ports::blobs::BlobStore;
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::{skill_versions, skills};

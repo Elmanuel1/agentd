@@ -9,14 +9,16 @@
 
 use std::sync::Arc;
 
-use api::{build_router, AppState};
+use api::{build_router, AppState, Backends, EnvKeySource, Stores};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
-use shared::ports::FakeScheduler;
+use secrets_blob::BlobSecretStore;
+use shared::ports::fire::FireRegistry;
+use shared::ports::{FakeRuntime, FakeScheduler};
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -37,11 +39,26 @@ async fn app() -> Option<Router> {
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let backend = PgBackend::connect(&url).await.unwrap();
     let stamp = Timestamp::now().as_datetime().timestamp_micros();
-    let blobs: Arc<dyn BlobStore> =
-        Arc::new(S3BlobStore::connect(format!("agentdconf{stamp}")).await.unwrap());
-    let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
-    state.keys.register(KEY, format!("org_c{stamp}"), format!("wrkspc_c{stamp}"), "apikey_01conf");
-    Some(build_router(state))
+    let blobs: Arc<dyn BlobStore> = Arc::new(
+        S3BlobStore::connect(&S3Config {
+            endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+            path_style: true,
+            create_bucket: true,
+            ..S3Config::new(format!("agentdconf{stamp}"))
+        })
+        .await
+        .unwrap(),
+    );
+    let mut keys = EnvKeySource::default();
+    keys.register(KEY, &format!("org_c{stamp}"), &format!("wrkspc_c{stamp}"), "apikey_01conf");
+    let backends = Backends {
+        stores: Stores::postgres(backend, blobs.clone(), Arc::new(BlobSecretStore::new(blobs))),
+        keys: Arc::new(keys),
+        scheduler: Arc::new(FakeScheduler::new()),
+        fires: Arc::new(FireRegistry::new()),
+        runtime: Arc::new(FakeRuntime::new()),
+    };
+    Some(build_router(AppState::build(backends)))
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, serde_json::Value) {
