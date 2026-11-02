@@ -8,15 +8,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use test_support::{MemorySecretStore, StaticKeySource};
 
-use api::{build_router, AppState, Backends, EnvKeySource, Stores};
+use api::{build_router, AppState, Backends, Stores};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
-use secrets_blob::BlobSecretStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::{FakeRuntime, FakeScheduler};
 use shared::Timestamp;
@@ -49,10 +49,10 @@ async fn app() -> Option<Router> {
         .await
         .unwrap(),
     );
-    let mut keys = EnvKeySource::default();
+    let mut keys = StaticKeySource::default();
     keys.register(KEY, &format!("org_c{stamp}"), &format!("wrkspc_c{stamp}"), "apikey_01conf");
     let backends = Backends {
-        stores: Stores::postgres(backend, blobs.clone(), Arc::new(BlobSecretStore::new(blobs))),
+        stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),

@@ -1,17 +1,18 @@
 [package]
-name = "secrets-blob"
+name = "test-support"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish = false
+
+# Fakes for tests. Only ever a dev-dependency: nothing in the binary can
+# select or link them.
 
 [dependencies]
 shared = { workspace = true }
 async-trait = { workspace = true }
-bytes = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true }
+parking_lot = { workspace = true }
 
 [lints]
 workspace = true
