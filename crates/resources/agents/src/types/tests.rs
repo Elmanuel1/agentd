@@ -183,13 +183,13 @@ fn create_request_is_permissive_about_missing_fields() {
 
 #[test]
 fn docs_stored_before_configs_were_resolved_still_read() {
-    let t: Tool = serde_json::from_str(
-        r#"{"type":"mcp_toolset","mcp_server_name":"gh"}"#,
-    )
-    .unwrap();
+    let t: Tool = serde_json::from_str(r#"{"type":"mcp_toolset","mcp_server_name":"gh"}"#).unwrap();
     assert!(matches!(t, Tool::McpToolset { ref configs, ref default_config, .. }
         if configs.is_empty() && *default_config == ToolDefaultConfig::MCP_TOOLSET));
-    let t: Tool = serde_json::from_str(r#"{"type":"agent_toolset_20260401","configs":[{"name":"bash"}],
-        "default_config":{"enabled":true,"permission_policy":{"type":"always_allow"}}}"#).unwrap();
+    let t: Tool = serde_json::from_str(
+        r#"{"type":"agent_toolset_20260401","configs":[{"name":"bash"}],
+        "default_config":{"enabled":true,"permission_policy":{"type":"always_allow"}}}"#,
+    )
+    .unwrap();
     assert!(matches!(t, Tool::AgentToolset { ref configs, .. } if configs[0].enabled));
 }
