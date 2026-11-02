@@ -44,8 +44,8 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, BuildError> {
-        let Backends { stores, keys, scheduler, fires, runtime, agent, metrics } = backends;
-        let catalog = catalog(agent.as_ref());
+        let Backends { stores, keys, scheduler, fires, runtime, agent, extra_models, metrics } = backends;
+        let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let sessions = SessionsService::new(
@@ -103,11 +103,6 @@ pub enum BuildError {
     /// The model providers could not be set up.
     #[error("models: {0}")]
     Models(String),
-}
-
-/// The built-in Anthropic models, plus the ones config adds.
-fn catalog(agent: Option<&AgentBackends>) -> ModelCatalog {
-    ModelCatalog::default_catalog().with(agent.map(|a| a.config.extra_models.clone()).unwrap_or_default())
 }
 
 /// The agent loop over `sessions`, started by each session's client events.

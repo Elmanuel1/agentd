@@ -125,9 +125,6 @@ fn zip(files: &[UploadFile]) -> Result<Bytes, ApiError> {
     Ok(Bytes::from(buf))
 }
 
-#[cfg(test)]
-mod tests;
-
 /// A stored bundle's files, as a sandbox unpacks them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unpacked {
@@ -157,3 +154,6 @@ pub fn unpack(archive: &[u8]) -> Result<Unpacked, ApiError> {
     }
     Ok(Unpacked { directory, files })
 }
+
+#[cfg(test)]
+mod tests;

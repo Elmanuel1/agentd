@@ -105,6 +105,8 @@ pub trait SessionEventLog: Send + Sync {
     async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
     /// Full event history, append order.
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
+    /// The client events the agent has not taken yet, append order.
+    async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
     /// One page of the events `filter` keeps, in its order.
     async fn events_page(
         &self,

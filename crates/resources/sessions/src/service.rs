@@ -85,6 +85,8 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
     /// Pull queued (unprocessed) user events, stamping them processed.
     async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError>;
+    /// Whether client events wait to be taken, without taking them.
+    async fn has_unprocessed(&self, ws: &WorkspaceId, session: &SessionId) -> Result<bool, ApiError>;
     /// Accumulate usage onto the session.
     async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError>;
     /// Record an outcome evaluation onto the session object.

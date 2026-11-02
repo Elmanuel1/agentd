@@ -182,3 +182,17 @@ fn an_outcome_shows_its_rubric_and_a_failed_round_its_findings() {
     let h = rebuild(&[&define, &feedback], &rubrics);
     assert!(matches!(&h.messages[0].content[1], Block::Text { text } if text.starts_with("name is wrong")));
 }
+
+#[test]
+fn the_primary_thread_leaves_out_answers_to_another_threads_calls() {
+    let sub = ThreadId::generate();
+    let custom = on(&sub, AgentEvent::CustomToolUse { name: "lookup".into(), input: json!({}) });
+    let answer = ev(UserEvent::CustomToolResult {
+        custom_tool_use_id: EventId::parse(custom.id.as_str()).unwrap(),
+        content: vec![ContentBlock::text("42")],
+        is_error: false,
+    });
+    let all = vec![user("go"), custom, answer];
+    let primary = thread_events(&all, None);
+    assert_eq!(primary.len(), 1);
+}

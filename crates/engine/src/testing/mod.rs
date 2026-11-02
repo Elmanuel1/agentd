@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use sha2::Digest;
 
 use shared::ports::sandbox::{ExecOutput, ExecRequest, Owner, Sandbox, SandboxFile};
 use shared::ports::RuntimeError;
@@ -83,6 +84,17 @@ impl Sandbox for FakeSandbox {
                 });
             }
         }
+        if req.argv.first().is_some_and(|a| a == "find") && req.argv.iter().any(|a| a == "sha256sum") {
+            let dir = format!("{}/", req.argv.get(1).map_or("", String::as_str));
+            let listing: String = self
+                .files
+                .lock()
+                .iter()
+                .filter(|(p, _)| p.starts_with(&dir))
+                .map(|(p, b)| format!("{}  {p}\n", hex::encode(sha2::Sha256::digest(b))))
+                .collect();
+            return Ok(ExecOutput { stdout: listing.into_bytes(), ..ExecOutput::default() });
+        }
         let out = (self.handler)(&req);
         self.execs.lock().push(req);
         Ok(out)
@@ -106,6 +118,9 @@ impl Sandbox for FakeSandbox {
         _target_id: &str,
         dir: &str,
     ) -> Result<BTreeMap<String, Vec<u8>>, RuntimeError> {
+        if let Some(bytes) = self.files.lock().get(dir) {
+            return Ok(BTreeMap::from([(dir.to_owned(), bytes.clone())]));
+        }
         let prefix = format!("{}/", dir.trim_end_matches('/'));
         Ok(self
             .files

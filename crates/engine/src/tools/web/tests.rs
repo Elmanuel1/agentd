@@ -15,8 +15,8 @@ fn allowed_hosts_follow_the_documented_matching() {
 
 #[tokio::test]
 async fn internal_addresses_are_refused() {
-    assert!(public_only("127.0.0.1", 80).await.is_err());
-    assert!(public_only("10.1.2.3", 80).await.is_err());
+    assert!(public_addrs("127.0.0.1", 80).await.is_err());
+    assert!(public_addrs("10.1.2.3", 80).await.is_err());
 }
 
 #[test]

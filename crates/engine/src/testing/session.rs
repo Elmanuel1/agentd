@@ -127,6 +127,10 @@ impl EngineContract for FakeSession {
         Ok(drained)
     }
 
+    async fn has_unprocessed(&self, _ws: &WorkspaceId, _id: &SessionId) -> Result<bool, ApiError> {
+        Ok(self.events.lock().iter().any(|e| e.payload.is_user_event() && e.processed_at.is_none()))
+    }
+
     async fn add_usage(&self, _ws: &WorkspaceId, _id: &SessionId, usage: &Usage) -> Result<(), ApiError> {
         self.session.lock().usage.add(usage);
         Ok(())

@@ -20,6 +20,9 @@ fn texts(content: &[ContentBlock]) -> String {
     content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("\n")
 }
 
+/// How often a run looks for client events no wake announced.
+const POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl SessionRun {
     pub(super) async fn drive(&self, session: Session, wake: Arc<Notify>) -> Result<(), ApiError> {
         let contract = self.engine.contract.clone();
@@ -195,6 +198,9 @@ impl SessionRun {
                     }
                 }
                 () = wake.notified() => {}
+                // Client events sent to another replica wake no one here; look
+                // for them now and then (an interrupt must not wait for a turn).
+                () = tokio::time::sleep(POLL) => {}
             }
         }
         let stop = if failed {

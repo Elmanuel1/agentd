@@ -40,7 +40,7 @@ fn tool_calls_and_results_use_the_messages_api_blocks() {
     assert_eq!(b["messages"][2]["content"][0]["tool_use_id"], "t1");
     assert_eq!(b["messages"][2]["content"][0]["cache_control"]["type"], "ephemeral");
     assert_eq!(b["tools"][0]["name"], "bash");
-    assert_eq!(b["output_config"]["effort"], "low");
+    assert!(b.get("output_config").is_none());
 }
 
 #[test]

@@ -2,6 +2,7 @@
 //! and outputs), and copying `/mnt/session/outputs/` back as session files.
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
 
 use agents::types::SkillRef;
 use agents::AgentSnapshot;
@@ -19,6 +20,8 @@ use crate::turn::prompt::{skill_description, SkillInfo, SKILLS_DIR};
 pub const UPLOADS: &str = "/mnt/session/uploads";
 /// Files written here become session-scoped files.
 pub const OUTPUTS: &str = "/mnt/session/outputs";
+/// The largest output file copied back.
+const MAX_OUTPUT: u64 = 100 * 1024 * 1024;
 /// agentd's own bookkeeping in the sandbox, owned by root.
 const STATE: &str = "/mnt/session/.agentd";
 
@@ -52,7 +55,7 @@ impl SessionRun {
         let target = session.id.as_str();
         let ctx = self.ctx.clone();
         let marker = format!("{STATE}/provisioned");
-        let probe = ExecRequest::new(["test", "-f", marker.as_str()], std::time::Duration::from_secs(30));
+        let probe = ExecRequest::new(["test", "-f", marker.as_str()], Duration::from_secs(30));
         let provisioned = self.engine.sandbox.exec(target, probe).await.map_err(err)?.exit_code == 0;
         let mut put = Vec::new();
         let mut skills = HashMap::new();
@@ -115,18 +118,33 @@ impl SessionRun {
         let state = self.engine.sandbox.read_tree(session, STATE).await.map_err(err)?;
         let mut synced: Synced =
             state.get(&state_path).and_then(|b| serde_json::from_slice(b).ok()).unwrap_or_default();
+        // Hash in the sandbox and fetch only what changed, each file at most
+        // MAX_OUTPUT bytes, so agentd never holds the whole tree.
+        let size = format!("-{}k", MAX_OUTPUT / 1024);
+        let list = ["find", OUTPUTS, "-type", "f", "-size", size.as_str(), "-exec", "sha256sum", "{}", "+"];
+        let listed = self
+            .engine
+            .sandbox
+            .exec(session, ExecRequest::new(list, Duration::from_secs(300)))
+            .await
+            .map_err(err)?;
         let mut changed = 0;
-        for (path, bytes) in self.engine.sandbox.read_tree(session, OUTPUTS).await.map_err(err)? {
-            let digest = hex::encode(Sha256::digest(&bytes));
-            let previous = synced.files.get(&path);
-            if previous.is_some_and(|(d, _)| *d == digest) {
+        for line in String::from_utf8_lossy(&listed.stdout).lines() {
+            let Some((digest, path)) = line.split_once("  ") else { continue };
+            let previous = synced.files.get(path);
+            if previous.is_some_and(|(d, _)| d == digest) {
                 continue;
             }
-            let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+            let Some(bytes) = self.engine.sandbox.read_tree(session, path).await.map_err(err)?.remove(path)
+            else {
+                continue;
+            };
+            let digest = hex::encode(Sha256::digest(&bytes));
+            let name = path.rsplit('/').next().unwrap_or(path).to_owned();
             let prior = previous.map(|(_, id)| id.clone());
             let id =
                 self.engine.assets.save_output(&self.ctx, session, &name, bytes, prior.as_deref()).await?;
-            synced.files.insert(path, (digest, id));
+            synced.files.insert(path.to_owned(), (digest, id));
             changed += 1;
         }
         if changed > 0 {

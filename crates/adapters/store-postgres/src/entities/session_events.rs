@@ -95,6 +95,22 @@ impl SessionEventLog for PgSessionEventLog {
         docs.into_iter().map(parse_doc).collect()
     }
 
+    async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let rows: Vec<DocRow> = diesel::sql_query(
+            "SELECT doc FROM session_events
+             WHERE workspace_id = $1 AND session_id = $2 AND doc->>'processed_at' IS NULL
+               AND (doc->>'type' LIKE 'user.%' OR doc->>'type' = 'system.message')
+             ORDER BY seq",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        rows.into_iter().map(|r| parse_doc(r.doc)).collect()
+    }
+
     async fn events_page(
         &self,
         ws: &WorkspaceId,

@@ -95,12 +95,11 @@ impl SandboxTools {
         if crate::json::at(input, "/files_with_matches").as_bool() == Some(true) {
             flags.push('l');
         }
-        let include =
-            crate::json::at(input, "/glob").as_str().map(|g| format!("--include={g}")).unwrap_or_default();
+        let include = crate::json::at(input, "/glob").as_str().unwrap_or_default();
         let script = format!(
-            "t=$(mktemp); grep {flags} $3 -- \"$1\" \"$2\" > \"$t\" 2>&1; s=$?; head -n {MAX_MATCHES} \"$t\"; rm -f \"$t\"; exit $s"
+            "t=$(mktemp); grep {flags} ${{3:+--include=\"$3\"}} -- \"$1\" \"$2\" > \"$t\" 2>&1; s=$?; head -n {MAX_MATCHES} \"$t\"; rm -f \"$t\"; exit $s"
         );
-        let out = self.run(shell(&script, &[pattern, path, &include]), None, FILE_TIMEOUT).await?;
+        let out = self.run(shell(&script, &[pattern, path, include]), None, FILE_TIMEOUT).await?;
         match out.exit_code {
             0 => Ok(ToolOutcome::ok(String::from_utf8_lossy(&out.stdout).into_owned())),
             1 => Ok(ToolOutcome::ok("No matches found")),

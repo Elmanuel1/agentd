@@ -104,6 +104,8 @@ pub struct Backends {
     /// What the agent loop runs on; `None` stores client events without
     /// running the agent (no sandbox to run its tools in).
     pub agent: Option<AgentBackends>,
+    /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
+    pub extra_models: Vec<String>,
     /// The instruments every boundary records into.
     pub metrics: Arc<Metrics>,
 }
@@ -193,6 +195,7 @@ impl Backends {
                 (Some(Arc::new(Observed::new(runtime as Arc<dyn Runtime>, metrics.clone()))), Some(agent))
             }
         };
-        Ok(Self { stores, keys, scheduler, fires, runtime, agent, metrics })
+        let extra_models = config.engine.extra_models.clone();
+        Ok(Self { stores, keys, scheduler, fires, runtime, agent, extra_models, metrics })
     }
 }

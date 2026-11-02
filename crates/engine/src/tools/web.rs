@@ -10,6 +10,9 @@ use serde_json::Value;
 
 use super::ToolOutcome;
 
+/// Most redirects one fetch follows.
+const MAX_REDIRECTS: usize = 5;
+
 /// Most bytes of a fetched page returned.
 const MAX_BODY: usize = 1_000_000;
 
@@ -52,9 +55,6 @@ impl WebTools {
     }
 
     pub(super) async fn fetch(&self, input: &Value) -> ToolOutcome {
-        let Some(http) = &self.http else {
-            return ToolOutcome::err("web_fetch is not available on this server");
-        };
         let Some(raw) = crate::json::at(input, "/url").as_str() else {
             return ToolOutcome::err("web_fetch: `url` is required");
         };
@@ -62,16 +62,50 @@ impl WebTools {
             Ok(u) if matches!(u.scheme(), "http" | "https") => u,
             _ => return ToolOutcome::err(format!("web_fetch: {raw} is not an http(s) URL")),
         };
-        let host = url.host_str().unwrap_or_default().to_owned();
-        if !self.host_allowed(&host) {
-            return ToolOutcome::err(format!("web_fetch: {host} is not in the environment's allowed hosts"));
+        if self.http.is_none() {
+            return ToolOutcome::err("web_fetch is not available on this server");
         }
-        if let Err(e) = public_only(&host, url.port_or_known_default().unwrap_or(443)).await {
-            return ToolOutcome::err(format!("web_fetch: {e}"));
-        }
-        let resp = match http.get(url).timeout(Duration::from_secs(30)).send().await {
-            Ok(r) => r,
-            Err(e) => return ToolOutcome::err(format!("web_fetch: {e}")),
+        let mut url = url;
+        let mut hops = 0;
+        let resp = loop {
+            let host = url.host_str().unwrap_or_default().to_owned();
+            if !self.host_allowed(&host) {
+                return ToolOutcome::err(format!(
+                    "web_fetch: {host} is not in the environment's allowed hosts"
+                ));
+            }
+            // Connect to the addresses just checked, so a second lookup cannot
+            // swap in an internal one, and check every redirect the same way.
+            let addrs = match public_addrs(&host, url.port_or_known_default().unwrap_or(443)).await {
+                Ok(a) => a,
+                Err(e) => return ToolOutcome::err(format!("web_fetch: {e}")),
+            };
+            let pinned = reqwest::Client::builder()
+                .user_agent("agentd")
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve_to_addrs(&host, &addrs)
+                .timeout(Duration::from_secs(30))
+                .build();
+            let sent = match pinned {
+                Ok(c) => c.get(url.clone()).send().await,
+                Err(e) => return ToolOutcome::err(format!("web_fetch: {e}")),
+            };
+            let resp = match sent {
+                Ok(r) => r,
+                Err(e) => return ToolOutcome::err(format!("web_fetch: {e}")),
+            };
+            let next = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|l| l.to_str().ok())
+                .and_then(|l| url.join(l).ok());
+            match next {
+                Some(next) if resp.status().is_redirection() && hops < MAX_REDIRECTS => {
+                    hops += 1;
+                    url = next;
+                }
+                _ => break resp,
+            }
         };
         let status = resp.status();
         let html = resp
@@ -126,11 +160,12 @@ impl WebTools {
     }
 }
 
-/// Refuse hosts that resolve to loopback, private, link-local or otherwise
-/// internal addresses.
-async fn public_only(host: &str, port: u16) -> Result<(), String> {
-    let addrs = tokio::net::lookup_host((host, port)).await.map_err(|e| format!("{host}: {e}"))?;
-    for addr in addrs {
+/// `host`'s addresses, refused when any is loopback, private, link-local or
+/// otherwise internal.
+async fn public_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+    let addrs: Vec<_> =
+        tokio::net::lookup_host((host, port)).await.map_err(|e| format!("{host}: {e}"))?.collect();
+    for addr in &addrs {
         let internal = match addr.ip() {
             IpAddr::V4(ip) => {
                 ip.is_private()
@@ -150,7 +185,7 @@ async fn public_only(host: &str, port: u16) -> Result<(), String> {
             return Err(format!("{host} resolves to an internal address"));
         }
     }
-    Ok(())
+    Ok(addrs)
 }
 
 /// The visible text of an HTML page, roughly: tags, scripts and styles out.

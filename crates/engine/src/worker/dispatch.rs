@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use sessions::events::{EventPayload, SessionEvent, StopReason};
+use sessions::events::{SessionEvent, StopReason};
 use sessions::types::{SessionId, SessionStatus};
 use sessions::TurnTrigger;
 use shared::ports::lease::Leases;
@@ -50,15 +50,6 @@ impl Dispatcher {
         let _ = contract.set_status(ws, id, SessionStatus::Idle, stop).await;
     }
 
-    async fn unprocessed(&self, ws: &WorkspaceId, id: &SessionId) -> bool {
-        match self.engine.contract.events(ws, id).await {
-            Ok(events) => {
-                events.iter().any(|e| matches!(e.payload, EventPayload::User(_)) && e.processed_at.is_none())
-            }
-            Err(_) => false,
-        }
-    }
-
     /// Run the session's loop while it has client events to take. A loop
     /// another replica holds the lease for is left to that replica, which
     /// reads the new events itself.
@@ -91,7 +82,9 @@ impl Dispatcher {
             // Leave the active map before the last look, so a wake that comes
             // after it starts a loop of its own instead of nudging this one.
             self.active.lock().remove(&id);
-            if !self.unprocessed(&ws, &id).await || self.active.lock().contains_key(&id) {
+            if !self.engine.contract.has_unprocessed(&ws, &id).await.unwrap_or(false)
+                || self.active.lock().contains_key(&id)
+            {
                 return;
             }
             self.active.lock().insert(id.clone(), wake.clone());

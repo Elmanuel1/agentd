@@ -47,16 +47,16 @@ impl History {
     }
 }
 
-/// The events of one thread: `None` is the primary thread, which also owns
-/// every client event; a secondary thread gets the client answers to its
-/// own tool calls.
+/// The events of one thread: `None` is the primary thread, which owns the
+/// client events but for answers to another thread's calls; a secondary
+/// thread gets the client answers to its own tool calls.
 pub fn thread_events<'a>(all: &'a [Event], scope: Option<&ThreadId>) -> Vec<&'a Event> {
     let own = |e: &Event| e.session_thread_id.as_ref() == scope;
     let calls: HashSet<&str> = all.iter().filter(|e| own(e)).map(|e| e.id.as_str()).collect();
     all.iter()
         .filter(|e| match (&e.payload, scope) {
             (EventPayload::User(u), Some(_)) => answer_to(u).is_some_and(|id| calls.contains(id)),
-            (EventPayload::User(_), None) => true,
+            (EventPayload::User(u), None) => answer_to(u).is_none_or(|id| calls.contains(id)),
             (EventPayload::Session(_), _) => false,
             _ => own(e),
         })

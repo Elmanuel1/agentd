@@ -26,7 +26,8 @@ impl AnthropicModel {
 
 /// The request body. The system prompt and the newest message carry cache
 /// breakpoints, so each step of a loop reads the conversation so far from
-/// the prompt cache.
+/// the prompt cache. The agent's effort is not sent: the Messages API takes
+/// it only for some models, and refuses the request for the rest.
 pub fn body(req: &ModelRequest) -> Value {
     let mut messages: Vec<Value> = req.messages.iter().map(message).collect();
     if let Some(last) = messages
@@ -54,9 +55,6 @@ pub fn body(req: &ModelRequest) -> Value {
                 )
                 .collect(),
         );
-    }
-    if let Some(effort) = &req.effort {
-        crate::json::set(&mut body, "output_config", json!({"effort": effort}));
     }
     body
 }
