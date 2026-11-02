@@ -34,6 +34,7 @@ pub use entities::files::PgFilesStore;
 pub use entities::memory::PgMemoryStore;
 pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
+pub use entities::skill_versions::PgSkillVersionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
 

@@ -24,7 +24,7 @@ use shared::Module;
 
 pub use bundle::{parse_bundle, Bundle};
 pub use service::SkillsService;
-pub use store::{SkillsStore, StoreError};
+pub use store::{SkillVersionsStore, SkillsStore, StoreError};
 pub use types::{
     Skill, SkillId, SkillListPage, SkillResource, SkillSource, SkillTag, SkillVersion, SkillVersionId,
     SkillVersionResource, SkillVersionTag,

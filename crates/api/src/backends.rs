@@ -20,10 +20,10 @@ use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
 use shared::ports::secrets::SecretStore;
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, SchedulerPort, TaskState};
-use skills::SkillsStore;
+use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
     PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
-    PgSessionEventLog, PgSessionsStore, PgSkillsStore, PgVaultsStore,
+    PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
 };
 use vaults::VaultsStore;
 
@@ -50,6 +50,8 @@ pub struct Stores {
     pub files: Arc<dyn FilesStore>,
     /// Skills.
     pub skills: Arc<dyn SkillsStore>,
+    /// Skill versions.
+    pub skill_versions: Arc<dyn SkillVersionsStore>,
     /// Sessions.
     pub sessions: Arc<dyn SessionsStore>,
     /// Session event logs.
@@ -73,7 +75,8 @@ impl Stores {
             vaults: Arc::new(PgVaultsStore::new(backend.clone(), secrets)),
             memory: Arc::new(PgMemoryStore::new(backend.clone(), blobs.clone())),
             files: Arc::new(PgFilesStore::new(backend.clone(), blobs.clone())),
-            skills: Arc::new(PgSkillsStore::new(backend.clone(), blobs)),
+            skills: Arc::new(PgSkillsStore::new(backend.clone(), blobs.clone())),
+            skill_versions: Arc::new(PgSkillVersionsStore::new(backend.clone(), blobs)),
             sessions: Arc::new(PgSessionsStore::new(backend.clone())),
             session_events: Arc::new(PgSessionEventLog::new(backend.clone())),
             deployments: Arc::new(PgDeploymentsStore::new(backend)),

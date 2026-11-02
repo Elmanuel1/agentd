@@ -34,6 +34,15 @@ pub trait SkillsStore: Send + Sync {
     async fn get(&self, ws: &WorkspaceId, id: &SkillId) -> Result<Skill, StoreError>;
     /// One page of skills, newest first (fetched DB-side with `limit + 1`).
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Skill>, StoreError>;
+    /// Delete the skill and all its versions/bundles.
+    async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError>;
+}
+
+/// A skill's versions and their bundles. Versions have their own lifecycle:
+/// they are listed, retrieved and deleted on their own, after the skill and
+/// its first version are created together through [`SkillsStore::create`].
+#[async_trait]
+pub trait SkillVersionsStore: Send + Sync {
     /// One page of a skill's versions, newest first (fetched DB-side).
     async fn versions(
         &self,
@@ -44,6 +53,4 @@ pub trait SkillsStore: Send + Sync {
     /// Delete one version; returns whether the skill has any versions left.
     async fn delete_version(&self, ws: &WorkspaceId, id: &SkillId, version: &str)
         -> Result<bool, StoreError>;
-    /// Delete the skill and all its versions/bundles.
-    async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError>;
 }
