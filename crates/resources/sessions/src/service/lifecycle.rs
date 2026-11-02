@@ -101,6 +101,8 @@ impl SessionsService {
             return Err(ApiError::conflict_invalid_request("cannot delete a running session"));
         }
         self.channels.lock().remove(&id);
+        // Log rows first so a crash never orphans events.
+        self.events.delete_events(&ctx.workspace, &id).await.map_err(map_store)?;
         self.store.delete(&ctx.workspace, &id).await.map_err(map_store)
     }
 }

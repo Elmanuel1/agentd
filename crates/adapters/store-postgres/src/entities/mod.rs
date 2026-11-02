@@ -7,6 +7,7 @@ pub mod dreams;
 pub mod environments;
 pub mod files;
 pub mod memory;
+pub mod session_events;
 pub mod sessions;
 pub mod skills;
 pub mod vaults;
