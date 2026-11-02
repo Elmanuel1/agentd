@@ -198,3 +198,28 @@ async fn a_port_operation_is_a_span_and_a_sample_with_its_outcome() {
     assert_eq!(outcome_of("delete"), Some(Value::from("ok")));
     assert!(h.span_names().contains(&"blobs.put".to_owned()));
 }
+
+#[test]
+fn quiet_logs_do_not_switch_tracing_off() {
+    use tracing_subscriber::filter::{filter_fn, LevelFilter};
+    use tracing_subscriber::{EnvFilter, Layer};
+    let out = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder().with_simple_exporter(out.clone()).build();
+    let fmt = tracing_subscriber::fmt::layer().with_filter(EnvFilter::new("warn")).boxed();
+    let spans = tracing_opentelemetry::layer()
+        .with_tracer(provider.tracer("t"))
+        .with_filter(LevelFilter::INFO)
+        .with_filter(filter_fn(|_| true));
+    let records = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::sink)
+        .with_filter(EnvFilter::new("warn"))
+        .with_filter(filter_fn(|_| true));
+    let subscriber = tracing_subscriber::registry().with(fmt).with(Some(spans.and_then(records)));
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info_span!("kept").in_scope(|| {});
+    });
+    provider.force_flush().unwrap();
+    let names: Vec<String> =
+        out.get_finished_spans().unwrap().into_iter().map(|s| s.name.into_owned()).collect();
+    assert_eq!(names, ["kept"]);
+}
