@@ -1,0 +1,198 @@
+{
+  "type": "object",
+  "description": "Vendor grouper output containing schedule of quantities grouped by trade/vendor category.",
+  "required": [
+    "source_agent",
+    "scope_label",
+    "vendor_groups"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "scope_label": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The part of the project this document's schedule covers, in the document's own words (\"ONSITE\", \"OFFSITE\", \"Phase 2\"); null when it declares no such split."
+    },
+    "source_agent": {
+      "type": "string",
+      "enum": [
+        "vendor-grouper"
+      ]
+    },
+    "vendor_groups": {
+      "type": "array",
+      "description": "Groups of line items organized by vendor/trade category. Empty array if no schedule of quantities found.",
+      "items": {
+        "type": "object",
+        "required": [
+          "group_name",
+          "masterformat_code",
+          "group_type",
+          "explanation",
+          "section_ref",
+          "scope_summary",
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "group_name": {
+            "type": "string",
+            "description": "Descriptive name for this group as it appears in or is derived from the document."
+          },
+          "group_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "subcontractor",
+              "supplier",
+              null
+            ],
+            "description": "Whether this group is typically a subcontractor or supplier. Use exact value or null."
+          },
+          "explanation": {
+            "type": "string",
+            "description": "Why these items belong to this group"
+          },
+          "masterformat_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "MasterFormat section code (e.g. '07 50 00'). Always attempt a lookup using the MasterFormat skills. For non-CSI documents, find the closest matching code for the trade. Null only if truly no match exists. Must be a valid MasterFormat code if present."
+          },
+          "section_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The document's own section reference for this group \u2014 whatever format the document uses (e.g. 'WP-03', 'Scope A', '4.2', '07 50 00'). Null if no section reference exists."
+          },
+          "scope_summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1-2 sentence description of the scope of work for this group. What does this group need to price and execute?"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "item_id",
+                "description",
+                "quantity",
+                "unit",
+                "explanation",
+                "citations",
+                "priced_by",
+                "owner_unit_price",
+                "owner_total",
+                "scope_label"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "item_id": {
+                  "type": "string",
+                  "description": "The number the document prints for the row, exactly as printed (e.g. '4.1', 'B-12', '6)'), with nothing added. Sibling schedules that restart their numbering keep the printed number; scope_label tells them apart. A sub-item is the parent's number, a space and its own printed mark ('A-4 a)'). An empty string when the row prints no number; never made up."
+                },
+                "description": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "unit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "square_meters",
+                    "square_feet",
+                    "square_yards",
+                    "cubic_meters",
+                    "cubic_feet",
+                    "cubic_yards",
+                    "meters",
+                    "feet",
+                    "inches",
+                    "kg",
+                    "lb",
+                    "tonne",
+                    "liters",
+                    "gallons",
+                    "each",
+                    "set",
+                    "lot",
+                    "lump_sum",
+                    "hours",
+                    "days",
+                    "weeks",
+                    "months",
+                    "percent",
+                    null
+                  ],
+                  "description": "Unit of measure. ALWAYS use exact snake_case value. NEVER output 'Square Metres', 'Linear Metres', 'Each (EA)', etc. When the printed unit fits none of these values (for example 'cup', '-' or a blank cell), unit is null and review_reason says what is printed."
+                },
+                "explanation": {
+                  "type": "string",
+                  "description": "Source reference for this item"
+                },
+                "priced_by": {
+                  "type": "string",
+                  "enum": [
+                    "bidder",
+                    "owner"
+                  ],
+                  "description": "'owner' when the owner has already filled in this row's unit price or total (an allowance, provisional sum, contingency or owner-set rate), so bidders do not price it; otherwise 'bidder'."
+                },
+                "owner_unit_price": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "The unit price the owner filled in, when priced_by is 'owner'; null otherwise."
+                },
+                "owner_total": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "The total the owner filled in, when priced_by is 'owner'; null otherwise."
+                },
+                "citations": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "citation.schema.json"
+                  }
+                },
+                "scope_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The schedule or part this row belongs to when the document has more than one (\"Part A\", \"Schedule of Additional Unit Prices\"); null when it has one schedule."
+                },
+                "review_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,273 @@
+{
+  "type": "object",
+  "description": "What one document changes in the current tender. Only changes this document states; nothing else.",
+  "required": [
+    "source_agent",
+    "issued_date",
+    "revision",
+    "items",
+    "questions_answers",
+    "changes"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "DocumentFact": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Read from anywhere on the pages (headers, footers, title blocks, revision tables, stamps), or from the file name when no page states it. null when neither does.",
+      "required": [
+        "value",
+        "source",
+        "quote",
+        "page"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "As written, with no reformatting."
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "page",
+            "file_name"
+          ]
+        },
+        "quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The exact words on the page. null when the source is the file name."
+        },
+        "page": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The page the quote is on. null when the source is the file name."
+        }
+      }
+    },
+    "AnyValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "additionalProperties": true
+        },
+        {
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "source_agent": {
+      "type": "string",
+      "enum": [
+        "change-detector"
+      ]
+    },
+    "issued_date": {
+      "$ref": "#/$defs/DocumentFact"
+    },
+    "revision": {
+      "$ref": "#/$defs/DocumentFact"
+    },
+    "items": {
+      "type": "array",
+      "description": "Every item the document contains, listed before deciding: each numbered item, specification section or clause, drawing sheet listed, question and answer, instruction to bidders and schedule row changed. Each ends as change or no_change with a reason; a change points to its entries in `changes`.",
+      "items": {
+        "type": "object",
+        "required": [
+          "ref",
+          "kind",
+          "quote",
+          "page",
+          "outcome",
+          "reason",
+          "change_indexes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "The item's own number or name as written: \"3\", \"Q2\", \"2.4\", \"C-101\"."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "numbered_item",
+              "specification_clause",
+              "drawing_sheet",
+              "question_answer",
+              "instruction",
+              "schedule_row",
+              "other"
+            ]
+          },
+          "quote": {
+            "type": "string",
+            "description": "The item's words, verbatim, the shortest span that identifies it."
+          },
+          "page": {
+            "type": "integer"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "change",
+              "no_change"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it changes the tender, or why it does not (restates it unchanged, changes no line or field)."
+          },
+          "change_indexes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "The positions in `changes` this item makes; empty for no_change."
+          }
+        }
+      }
+    },
+    "questions_answers": {
+      "type": "array",
+      "description": "Every question and its answer the document gives, each once, with what the answer does to the tender. Empty when the document has none. Every item of kind question_answer is here.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "number",
+          "question",
+          "answer",
+          "page",
+          "effect",
+          "change_indexes",
+          "reason"
+        ],
+        "properties": {
+          "number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The question's number as written: \"Q2\", \"3\", \"Question 14\". null when unnumbered."
+          },
+          "question": {
+            "type": "string",
+            "description": "The question, verbatim, as the page gives it."
+          },
+          "answer": {
+            "type": "string",
+            "description": "The answer, verbatim, as the page gives it."
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page the question is on."
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "changes",
+              "adds_requirement",
+              "adds_condition",
+              "no_change"
+            ],
+            "description": "changes: it changes a tender field, a list entry or a schedule line. adds_requirement: it adds a contract term (requirements). adds_condition: it adds a rule for bidding (conditions). no_change: it restates or confirms the documents."
+          },
+          "change_indexes": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "The positions in `changes` this answer makes; empty only for no_change."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the answer has this effect, in one sentence."
+          }
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "description": "Each thing this document changes, each made by an item in `items`. Empty when it changes nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "field",
+          "op",
+          "package",
+          "existing",
+          "value",
+          "quote",
+          "page"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "A result key: a tender field (closing_date, location, ...), a list (bonds, insurance, requirements, conditions, events, parties, obligations) or vendor_groups for a schedule line. A specification, drawing or Q&A revision is an update of each vendor_groups line it changes, its description amended."
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "update",
+              "add",
+              "remove"
+            ]
+          },
+          "package": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "vendor_groups only: the package the line is in, exactly as the current tender shows it. It says which line when the same line is in several packages, and where an added line goes; null when the tender has no such package. A package is never added, removed or renamed. null for everything that is not a line."
+          },
+          "existing": {
+            "description": "update or remove of a list entry or line: an exact copy of it from the current tender, as shown. null for a tender field and for an add.",
+            "$ref": "#/$defs/AnyValue"
+          },
+          "value": {
+            "description": "The new value, in the same shape as that field, entry or line in the result. null for a remove.",
+            "$ref": "#/$defs/AnyValue"
+          },
+          "quote": {
+            "type": "string",
+            "description": "The exact words in this document that make the change."
+          },
+          "page": {
+            "type": "integer",
+            "description": "The page of this document the quote is on."
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    }
+  }
+}

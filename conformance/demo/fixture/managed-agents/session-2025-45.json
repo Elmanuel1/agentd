@@ -1,0 +1,115 @@
+{
+ "agent": "agent_013iFKUwB5A4nSE3Ju5ZTqZ6",
+ "environment_id": "env_01LaBEmWH6ki8bMRNZxBWHm1",
+ "title": "Extraction agents: 2025-45 Welland Street (u0 + 2 addenda) Haiku 5.5",
+ "resources": [
+  {
+   "type": "file",
+   "file_id": "file_0148kaLdEXbTxXEnMZ1mzZnN",
+   "mount_path": "/extraction/docs/5170ec87-b072-5b79-b2f5-ebadc7d57aba/blocks.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01To8KWkc4q2gbYvsSyHktNz",
+   "mount_path": "/extraction/docs/5f252c9b-5653-59c0-8ed0-d2c3c002f60d/blocks.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_018ikbQPreZvrhuWjkLJuzWZ",
+   "mount_path": "/extraction/docs/67dcffc0-248a-51bc-aee8-fb0b78cf19df/blocks.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_017c5yXQEDpL3by5wuknpBnz",
+   "mount_path": "/extraction/bin/cite.py"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01XyjmLVSupakPaUs2AcjQhB",
+   "mount_path": "/extraction/bin/pages.py"
+  },
+  {
+   "type": "file",
+   "file_id": "file_011zw5Hpmxr5HPZR6XYrT11L",
+   "mount_path": "/extraction/schemas/addenda-processor.schema.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01Q3SAcWoY2597Gts2tjH3Pf",
+   "mount_path": "/extraction/schemas/bid-extractor.schema.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01MA2yDF5kArfekrJAhb6YhD",
+   "mount_path": "/extraction/schemas/change-detector.schema.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_019jVQBA5eSVRzZtjhs5VBUg",
+   "mount_path": "/extraction/schemas/citation.schema.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01KfnQF2ZrP2krtBkhW5Q2wH",
+   "mount_path": "/extraction/schemas/reviewer.schema.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01NJV7LMrJf6etFLQKPtdh4e",
+   "mount_path": "/extraction/schemas/vendor-grouper.schema.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_018wWRjnhADhxDef5M9UeK7h",
+   "mount_path": "/extraction/rules/output-schemas.md"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01SV94CdHVWAmfpoicuxSkiW",
+   "mount_path": "/extraction/rules/pipeline-rules.md"
+  },
+  {
+   "type": "file",
+   "file_id": "file_012FcztWrkrih6cGKf9iPSA2",
+   "mount_path": "/extraction/rules/workspace.md"
+  },
+  {
+   "type": "file",
+   "file_id": "file_012bTAK6RgLETBSeuXZ5afcn",
+   "mount_path": "/extraction/data/masterformat-codes.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_016YX1sS1UvkvFF37XQTKvcF",
+   "mount_path": "/extraction/data/masterformat.json"
+  },
+  {
+   "type": "file",
+   "file_id": "file_014Mhvf1s6aSkKGbXjk4arWf",
+   "mount_path": "/extraction/bin/verify.py"
+  },
+  {
+   "type": "file",
+   "file_id": "file_01Djrk3zHjcwsYiSUE52XDfL",
+   "mount_path": "/extraction/bin/signals.json"
+  }
+ ],
+ "budget": {
+  "type": "limit",
+  "max_list_cost": {
+   "amount": "1000",
+   "currency": "USD"
+  }
+ },
+ "initial_events": [
+  {
+   "type": "user.define_outcome",
+   "description": "Upload u0 (kind: first) of tender 2025-45 (Welland Street Trail and Road Reconstruction). Its document:\n- `5170ec87-b072-5b79-b2f5-ebadc7d57aba` \"2025-45.pdf\", 68 pages\n\nRun the first-upload pipeline in your instructions, and write the deliverable `/mnt/session/outputs/u0/result.json`. The rubric grades it one criterion per field, list and citation rule. The price schedule spans several trade sections; every schedule row is a line.",
+   "rubric": {
+    "type": "file",
+    "file_id": "file_0156m52UgUox4qyUrQXmg93q"
+   },
+   "max_iterations": 5
+  }
+ ]
+}
