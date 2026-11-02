@@ -20,6 +20,7 @@ pub mod types;
 
 use std::sync::Arc;
 
+use shared::beta::BetaGate;
 use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
@@ -27,7 +28,7 @@ pub use service::{EngineContract, SessionDeps, SessionsService};
 pub use store::SessionsStore;
 pub use types::{Session, SessionId, SessionStatus};
 
-/// The sessions module: its routes.
+/// The sessions module: its routes, behind the Managed Agents beta.
 pub fn module(service: Arc<SessionsService>) -> Module {
-    Module::new(routes::router(), service)
+    Module::new(routes::router(), service).with_beta(BetaGate::managed(&["/v1/sessions"]))
 }

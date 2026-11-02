@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn empty_page_matches_live_shape() {
-    // Live: an empty list is {"data":[]} (next_page omitted).
-    let p: Page<u8> = Page::of(vec![]);
+    // Live (July capture): an empty Managed Agents list is {"data":[]}.
+    let p: Page<u8> = Page::paginate(vec![], &Pagination { limit: 20, offset: 0 });
     assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"data":[]}"#);
 }
 

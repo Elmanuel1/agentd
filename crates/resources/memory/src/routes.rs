@@ -11,7 +11,7 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use shared::{reject_unknown_params, ApiJson, AuthContext, Page, Pagination, RouteError};
+use shared::{reject_unknown_params, ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
 
 use crate::service::{MemoriesService, View};
 use crate::types::{CreateMemoryRequest, CreateStoreRequest, UpdateMemoryRequest};
@@ -23,6 +23,11 @@ fn view_of(params: &HashMap<String, String>, default: View) -> View {
         _ => default,
     }
 }
+
+/// Memory-store lists read `limit` and `page` only.
+const LIST: ListSpec = ListSpec::managed(&[]);
+/// The memory-versions list.
+const VERSIONS: ListSpec = ListSpec::managed(&["view", "memory_id"]);
 
 /// Build the memory router.
 pub fn router() -> Router {
@@ -54,7 +59,7 @@ async fn list_stores(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::from_fetched(svc.list_stores(&ctx, &page).await?, &page)).into_response())
 }
 
@@ -79,7 +84,8 @@ async fn delete_store(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.delete_store(&ctx, &id).await?).into_response())
+    let store = svc.delete_store(&ctx, &id).await?;
+    Ok(Json(Deleted::new(store.id.as_str(), "memory_store_deleted")).into_response())
 }
 
 async fn create_memory(
@@ -133,7 +139,8 @@ async fn delete_memory(
 ) -> Result<Response, RouteError> {
     reject_unknown_params(&params, &["expected_content_sha256"])?;
     let expected = params.get("expected_content_sha256").map(String::as_str);
-    Ok(Json(svc.delete_memory(&ctx, &id, &mid, expected).await?).into_response())
+    let memory = svc.delete_memory(&ctx, &id, &mid, expected).await?;
+    Ok(Json(Deleted::new(memory.id.as_str(), "memory_deleted")).into_response())
 }
 
 async fn list_versions(
@@ -142,10 +149,9 @@ async fn list_versions(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["view", "memory_id", "limit", "page"])?;
     let view = view_of(&params, View::Basic);
     let memory_id = params.get("memory_id").map(String::as_str);
-    let page = Pagination::from_params(&params)?;
+    let page = VERSIONS.parse(&params)?;
     Ok(Json(Page::paginate(svc.list_versions(&ctx, &id, memory_id, view).await?, &page)).into_response())
 }
 

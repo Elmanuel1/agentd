@@ -1,0 +1,11 @@
+{
+  "name": "agentd-conformance-typescript",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.3.0"
+  }
+}

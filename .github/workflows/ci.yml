@@ -72,6 +72,77 @@ jobs:
             -locations=filesystem:/flyway/sql migrate
       - run: cargo test --workspace --locked --no-fail-fast
 
+  sdk:
+    # The official SDKs, with only the base URL changed, against the built binary.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: agentd
+          POSTGRES_PASSWORD: agentd
+          POSTGRES_DB: agentd
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U agentd"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+      localstack:
+        image: localstack/localstack:3.0
+        env:
+          SERVICES: s3
+        ports: ["4566:4566"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health"
+          --health-interval 2s --health-timeout 5s --health-retries 60
+    env:
+      DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
+      AGENTD_AWS_ENDPOINT: http://localhost:4566
+      AGENTD_S3_CREATE_BUCKET: "1"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      AGENTD_API_KEYS: sdk-conformance-key:org_sdk:wrkspc_sdk
+      AGENTD_ADDR: 127.0.0.1:8080
+      AGENTD_BASE_URL: http://127.0.0.1:8080
+      AGENTD_TEST_KEY: sdk-conformance-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Migrate the schema with Flyway
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
+            flyway/flyway:11 \
+            -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
+            -locations=filesystem:/flyway/sql migrate
+      - run: cargo build --locked -p api
+      - name: Start agentd
+        run: |
+          nohup ./target/debug/agentd > agentd.log 2>&1 &
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8080/ && exit 0; sleep 1; done
+          cat agentd.log; exit 1
+      - name: Python SDK (anthropic 2.3.0)
+        working-directory: conformance/python
+        run: |
+          pip install -r requirements.txt
+          pytest -q
+      - name: TypeScript SDK (@anthropic-ai/sdk 1.3.0)
+        working-directory: conformance/typescript
+        run: |
+          npm ci
+          npm test
+      - if: failure()
+        run: cat agentd.log
+
   image:
     runs-on: ubuntu-latest
     steps:

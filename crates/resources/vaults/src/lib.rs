@@ -19,13 +19,14 @@ pub mod types;
 
 use std::sync::Arc;
 
+use shared::beta::BetaGate;
 use shared::Module;
 
 pub use service::VaultsService;
 pub use store::VaultsStore;
 pub use types::{Credential, SecretString, Vault, VaultId};
 
-/// The vaults module: its routes.
+/// The vaults module: its routes, behind the Managed Agents beta.
 pub fn module(service: Arc<VaultsService>) -> Module {
-    Module::new(routes::router(), service)
+    Module::new(routes::router(), service).with_beta(BetaGate::managed(&["/v1/vaults"]))
 }

@@ -19,6 +19,7 @@ mod types;
 
 use std::sync::Arc;
 
+use shared::module::BodyLimit;
 use shared::Module;
 
 pub use bundle::{parse_bundle, Bundle};
@@ -29,7 +30,7 @@ pub use types::{
     SkillVersionResource, SkillVersionTag,
 };
 
-/// The skills module: its routes.
+/// The skills module: its routes, with the Skills API's 30 MB body cap.
 pub fn module(service: Arc<SkillsService>) -> Module {
-    Module::new(routes::router(), service)
+    Module::new(routes::router(), service).with_body_limit(BodyLimit { api: "Skills", max_mb: 30 })
 }
