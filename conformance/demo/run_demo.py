@@ -15,7 +15,7 @@ rubrics against agentd, with only the SDK's base URL changed:
    in a grader session of its own.
 
 usage: run_demo.py --out DIR [--model ID] [--data ~/tosspaper-eval-data]
-       [--max-iterations N] [--uploads 0,1,2]
+       [--max-iterations N] [--uploads 0,1,2] [--budget-usd 1.5]
 Environment: AGENTD_BASE_URL, AGENTD_API_KEY; OPENROUTER_API_KEY (optional)
 reads that key's spend before and after, as the earlier runs measured cost,
 so use a key nothing else spends on during the run.
@@ -113,11 +113,32 @@ def record(client, session_id: str, out: Path) -> threading.Thread:
     return t
 
 
+class Budget:
+    """Stops the run once the key has spent more than `usd` since `start`, as
+    the earlier runs' driver did, by interrupting the session."""
+
+    def __init__(self, usd: float, start: float | None):
+        self.usd, self.start, self.checked, self.spent = usd, start, 0.0, 0.0
+
+    def over(self) -> bool:
+        if self.start is None or time.time() - self.checked < 30:
+            return False
+        self.checked = time.time()
+        self.spent = (key_usage() or self.start) - self.start
+        return self.spent > self.usd
+
+
+BUDGET = Budget(float("inf"), None)
+
+
 def run_until_settled(client, session_id: str, outcome_id: str | None, idle_before: int, timeout: float):
     """Wait until the session is idle again, with the outcome (if any) decided."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(2)
+        if BUDGET.over():
+            client.beta.sessions.events.send(session_id, events=[{"type": "user.interrupt"}])
+            raise SystemExit(f"budget ${BUDGET.usd} reached: ${BUDGET.spent:.2f} spent; session interrupted")
         s = client.beta.sessions.retrieve(session_id)
         if s.status != "idle" or idles(client, session_id) <= idle_before:
             continue
@@ -177,6 +198,7 @@ def main() -> None:
     ap.add_argument("--max-iterations", type=int, default=5)
     ap.add_argument("--uploads", default="0,1,2")
     ap.add_argument("--timeout", type=float, default=3 * 3600)
+    ap.add_argument("--budget-usd", type=float, default=1.5, help="interrupt the run past this spend on OPENROUTER_API_KEY")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     client = anthropic.Anthropic(base_url=os.environ.get("AGENTD_BASE_URL", "http://127.0.0.1:8080"),
@@ -184,7 +206,9 @@ def main() -> None:
     ma = args.data / "managed-agents"
     plan = json.loads((args.data / "codex-sim" / "plan-2025-45.json").read_text())
     wanted = {int(u) for u in args.uploads.split(",")}
+    global BUDGET
     started, spend_before = time.time(), key_usage()
+    BUDGET = Budget(args.budget_usd, spend_before)
     log(args.out, "start", model=args.model, base_url=str(client.base_url), key_usage_before=spend_before)
 
     skills = upload_skills(client, ma)
