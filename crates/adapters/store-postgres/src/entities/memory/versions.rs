@@ -1,17 +1,18 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use diesel::sql_types::{BigInt, Nullable, Text, Timestamptz};
 use diesel::upsert::excluded;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use memory::store::{
-    MemoryRecord, MemoryRecordPersistence, MemoryVersionPersistence, StoreError, VersionRecord,
+    MemoryRecord, MemoryRecordPersistence, MemoryVersionPersistence, StoreError, VersionFilter, VersionRecord,
 };
 use memory::types::{MemoryId, MemoryStoreId, MemoryVersion, MemoryVersionId};
-use shared::WorkspaceId;
+use shared::{Pagination, WorkspaceId};
 
 use super::PgMemoryStore;
 use crate::schema::memory_versions;
-use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc};
+use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, DocRow};
 
 impl PgMemoryStore {
     pub(super) async fn chain_full(
@@ -99,24 +100,39 @@ impl MemoryVersionPersistence for PgMemoryStore {
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        memory_id: Option<&MemoryId>,
+        filter: &VersionFilter,
+        page: &Pagination,
     ) -> Result<Vec<VersionRecord>, StoreError> {
         self.require_store(ws, store).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let mut q = memory_versions::table
-            .filter(memory_versions::workspace_id.eq(ws.as_str()))
-            .filter(memory_versions::store_id.eq(store.as_str()))
-            .into_boxed();
-        if let Some(mid) = memory_id {
-            q = q.filter(memory_versions::memory_id.eq(mid.as_str().to_owned()));
-        }
-        let docs: Vec<serde_json::Value> = q
-            .order(memory_versions::seq.desc())
-            .select(memory_versions::doc)
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter().map(|d| Ok(VersionRecord { version: parse_doc(d)?, blob: None })).collect()
+        let op = filter.operation.map(|o| to_doc::<_, StoreError>(&o)).transpose()?;
+        let op = op.as_ref().and_then(serde_json::Value::as_str);
+        let rows: Vec<DocRow> = diesel::sql_query(
+            "SELECT doc FROM memory_versions WHERE workspace_id = $1 AND store_id = $2
+               AND ($3::text IS NULL OR memory_id = $3)
+               AND ($4::text IS NULL OR doc->'created_by'->>'api_key_id' = $4)
+               AND ($5::text IS NULL OR doc->'created_by'->>'session_id' = $5)
+               AND $6::text IS NULL
+               AND ($7::text IS NULL OR doc->>'operation' = $7)
+               AND ($8::timestamptz IS NULL OR created_at >= $8)
+               AND ($9::timestamptz IS NULL OR created_at <= $9)
+             ORDER BY seq DESC LIMIT $10 OFFSET $11",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(store.as_str())
+        .bind::<Nullable<Text>, _>(filter.memory_id.as_deref())
+        .bind::<Nullable<Text>, _>(filter.api_key_id.as_deref())
+        .bind::<Nullable<Text>, _>(filter.session_id.as_deref())
+        .bind::<Nullable<Text>, _>(filter.service_account_id.as_deref())
+        .bind::<Nullable<Text>, _>(op)
+        .bind::<Nullable<Timestamptz>, _>(filter.created.gte.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(filter.created.lte.map(|t| t.as_datetime()))
+        .bind::<BigInt, _>(page.fetch_limit())
+        .bind::<BigInt, _>(page.sql_offset())
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        rows.into_iter().map(|r| Ok(VersionRecord { version: parse_doc(r.doc)?, blob: None })).collect()
     }
 
     async fn get_version(
@@ -167,7 +183,7 @@ impl MemoryVersionPersistence for PgMemoryStore {
             record.head.content_size_bytes = size;
             record.head.path = path;
         }
-        self.upsert_head(ws, store, &record).await?;
+        self.write_head(ws, store, &record, false).await?;
         Ok(record)
     }
 }

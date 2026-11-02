@@ -1,4 +1,4 @@
-use shared::{ApiError, AuthContext};
+use shared::{ApiError, AuthContext, Pagination};
 
 use super::{map_store, parse_mem_id, parse_mem_pair, parse_store_id, MemoriesService, View};
 use crate::store::{VersionFilter, VersionRecord, VersionSelector};
@@ -12,12 +12,24 @@ impl MemoriesService {
         raw_store_id: &str,
         filter: &VersionFilter,
         view: View,
+        page: &Pagination,
     ) -> Result<Vec<MemoryVersion>, ApiError> {
         let sid = parse_store_id(raw_store_id)?;
-        let mid = filter.memory_id.as_deref().map(parse_mem_id).transpose()?;
-        let versions =
-            self.store.list_versions(&ctx.workspace, &sid, mid.as_ref()).await.map_err(map_store)?;
-        Ok(versions.iter().filter(|v| filter.keeps(&v.version)).map(|v| project_version(v, view)).collect())
+        if let Some(raw) = &filter.memory_id {
+            parse_mem_id(raw)?;
+        }
+        let mut versions =
+            self.store.list_versions(&ctx.workspace, &sid, filter, page).await.map_err(map_store)?;
+        if view == View::Full {
+            // The list read carries no content; a full page reads each
+            // version's content concurrently.
+            let reads = versions.iter_mut().take(page.limit).map(|v| async {
+                v.blob = self.store.get_version(&ctx.workspace, &sid, &v.version.id).await?.1.blob;
+                Ok::<_, crate::store::StoreError>(())
+            });
+            futures::future::try_join_all(reads).await.map_err(map_store)?;
+        }
+        Ok(versions.iter().map(|v| project_version(v, view)).collect())
     }
 
     /// `GET /v1/memory_stores/{sid}/memory_versions/{vid}` — full view.

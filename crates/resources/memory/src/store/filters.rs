@@ -19,22 +19,6 @@ pub struct VersionFilter {
     pub created: CreatedRange,
 }
 
-impl VersionFilter {
-    /// Whether `v` passes every filter.
-    pub fn keeps(&self, v: &crate::types::MemoryVersion) -> bool {
-        use shared::Actor;
-        let by_key =
-            |id: &String| matches!(&v.created_by, Actor::ApiActor { api_key_id } if api_key_id == id);
-        let by_session =
-            |id: &String| matches!(&v.created_by, Actor::SessionActor { session_id } if session_id == id);
-        self.api_key_id.as_ref().is_none_or(by_key)
-            && self.session_id.as_ref().is_none_or(by_session)
-            && self.service_account_id.is_none()
-            && self.operation.is_none_or(|op| op == v.operation)
-            && self.created.contains(v.created_at)
-    }
-}
-
 /// The memory-stores list's filters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StoreFilter {

@@ -16,6 +16,7 @@ impl MemoriesService {
         req: CreateStoreRequest,
     ) -> Result<MemoryStoreEntity, ApiError> {
         let name = required("name", req.name)?;
+        validate_string_len("name", &name, 1, 255)?;
         req.metadata.validate(MetadataPolicy::capped())?;
         let now = Timestamp::now();
         let s = MemoryStoreEntity {

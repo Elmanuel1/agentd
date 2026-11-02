@@ -354,3 +354,32 @@ async fn pg_sessions_shared_event_log() {
     store.delete(&ws, &session.id).await.unwrap();
     assert!(store.get(&ws, &session.id).await.is_err());
 }
+
+#[tokio::test]
+async fn pg_memory_overlapping_paths_written_at_once_admit_one() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memrace").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs))));
+    let ctx = ctx_ws(&uniq_ws("memrace"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    for round in 0..10 {
+        let (dir, file) = (format!("/r{round}"), format!("/r{round}/a.md"));
+        let writes = [dir, file].map(|path| {
+            let (svc, ctx, id) = (svc.clone(), ctx.clone(), ms.id.to_string());
+            tokio::spawn(async move {
+                let req = serde_json::from_value(json!({"path": path, "content": "x"})).unwrap();
+                svc.create_memory(&ctx, &id, req).await
+            })
+        });
+        let mut ok = 0;
+        for w in writes {
+            ok += usize::from(w.await.unwrap().is_ok());
+        }
+        assert_eq!(ok, 1, "round {round}: exactly one of a path and its child is admitted");
+    }
+}

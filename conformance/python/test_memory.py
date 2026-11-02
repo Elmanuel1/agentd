@@ -82,3 +82,13 @@ def test_the_managed_agents_beta_alone_also_opens_memory(client: anthropic.Anthr
     req = urllib.request.Request(f"{base_url}/v1/memory_stores/{s.id}", headers=headers)
     with urllib.request.urlopen(req) as res:
         assert res.status == 200 and json.load(res)["id"] == s.id
+
+
+def test_versions_full_view_carries_content_and_archived_stores_refuse_deletes(client: anthropic.Anthropic) -> None:
+    s = store(client)
+    m = client.beta.memory_stores.memories.create(s.id, path="/f.md", content="body")
+    full = client.beta.memory_stores.memory_versions.list(s.id, view="full")
+    assert [v.content for v in full.data] == ["body"]
+    client.beta.memory_stores.archive(s.id)
+    with pytest.raises(anthropic.ConflictError):
+        client.beta.memory_stores.memories.delete(m.id, memory_store_id=s.id)

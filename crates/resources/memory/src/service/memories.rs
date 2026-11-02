@@ -5,11 +5,20 @@ use shared::{ApiError, AuthContext, ErrorType, Timestamp};
 use super::{map_store, parse_mem_pair, parse_store_id, MemoriesService};
 use crate::store::{MemoryRecord, VersionRecord, VersionSelector};
 use crate::types::{
-    CreateMemoryRequest, Memory, MemoryId, MemoryTag, MemoryVersion, Precondition, UpdateMemoryRequest,
-    VersionOperation,
+    CreateMemoryRequest, Memory, MemoryId, MemoryStoreId, MemoryTag, MemoryVersion, Precondition,
+    UpdateMemoryRequest, VersionOperation,
 };
 
 impl MemoriesService {
+    /// An archived store is read-only.
+    async fn require_writable(&self, ctx: &AuthContext, id: &MemoryStoreId) -> Result<(), ApiError> {
+        let store = self.store.get_store(&ctx.workspace, id).await.map_err(map_store)?;
+        if store.archived_at.is_some() {
+            return Err(ApiError::conflict_invalid_request("cannot write to an archived memory store"));
+        }
+        Ok(())
+    }
+
     /// `POST /v1/memory_stores/{id}/memories` — 409 on occupied path.
     pub async fn create_memory(
         &self,
@@ -18,10 +27,7 @@ impl MemoriesService {
         req: CreateMemoryRequest,
     ) -> Result<Memory, ApiError> {
         let store_id = parse_store_id(raw_store_id)?;
-        let store = self.store.get_store(&ctx.workspace, &store_id).await.map_err(map_store)?;
-        if store.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request("cannot write to an archived memory store"));
-        }
+        self.require_writable(ctx, &store_id).await?;
         let path = required("path", req.path)?;
         validate_path(&path)?;
         let content = required("content", req.content)?;
@@ -69,10 +75,7 @@ impl MemoriesService {
         req: UpdateMemoryRequest,
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
-        let store = self.store.get_store(&ctx.workspace, &sid).await.map_err(map_store)?;
-        if store.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request("cannot write to an archived memory store"));
-        }
+        self.require_writable(ctx, &sid).await?;
         let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         let new_content = match req.content {
             Some(c) => {
@@ -130,6 +133,7 @@ impl MemoriesService {
         expected_content_sha256: Option<&str>,
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
+        self.require_writable(ctx, &sid).await?;
         let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         if let Some(expected) = expected_content_sha256 {
             validate_sha256_hex("expected_content_sha256", expected)?;

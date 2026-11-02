@@ -104,17 +104,12 @@ impl MemoriesService {
         Ok(project_head(&record, view))
     }
 
-    /// `GET /v1/memory_stores/{id}/memories` — directory-style browse.
-    ///
-    /// `path_prefix` scopes the subtree (default `/`); `order_by` is
-    /// `created_at` (newest first, default) or `path` (ascending); `depth`
-    /// (relative to the prefix) collapses deeper paths into `memory_prefix`
-    /// entries. Content is always omitted (basic view). Matches the live wire
-    /// shape `{data, prefixes: []}`.
-    /// One page of a store's memories below `path_prefix`. Depth `0` (the
-    /// default) lists every memory; depth `n` lists memories up to `n` levels
-    /// down and groups deeper ones into `memory_prefix` items (live: `1`
-    /// lists direct children). `view=full` includes content.
+    /// `GET /v1/memory_stores/{id}/memories`: one page of a store's memories
+    /// below `path_prefix` (default `/`), ordered by `created_at` (newest
+    /// first, default) or `path`. Depth `0` (the default) lists every memory;
+    /// depth `n` lists memories up to `n` levels down and groups deeper ones
+    /// into `memory_prefix` items (live: `1` lists direct children).
+    /// `view=full` includes content. Live wire shape `{data, prefixes: []}`.
     pub async fn list_memories(
         &self,
         ctx: &AuthContext,

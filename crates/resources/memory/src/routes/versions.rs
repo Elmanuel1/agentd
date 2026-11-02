@@ -57,7 +57,8 @@ async fn list_versions(
         operation,
         created: CreatedRange::from_query(&params)?,
     };
-    Ok(Json(Page::paginate(svc.list_versions(&ctx, &id, &filter, view).await?, &page)).into_response())
+    let versions = svc.list_versions(&ctx, &id, &filter, view, &page).await?;
+    Ok(Json(Page::from_fetched(versions, &page)).into_response())
 }
 
 async fn get_version(

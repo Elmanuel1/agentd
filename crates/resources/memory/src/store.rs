@@ -166,12 +166,14 @@ pub trait MemoryRecordPersistence: Send + Sync {
 /// Persistence port for memory versions.
 #[async_trait]
 pub trait MemoryVersionPersistence: Send + Sync {
-    /// All versions across the store, newest first, optionally filtered.
+    /// One page of the store's versions that pass `filter`, newest first,
+    /// without content.
     async fn list_versions(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        memory_id: Option<&MemoryId>,
+        filter: &VersionFilter,
+        page: &Pagination,
     ) -> Result<Vec<VersionRecord>, StoreError>;
     /// Fetch one version (searches all memories incl. deleted).
     async fn get_version(
