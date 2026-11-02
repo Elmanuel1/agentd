@@ -127,6 +127,10 @@ pub(super) fn map_store(e: StoreError, raw_id: &str, raw_version: &str) -> ApiEr
         StoreError::VersionNotFound => {
             ApiError::not_found(format!("Skill version not found: {raw_id} version {raw_version}"))
         }
+        // Live (cleanup/10): the wording of the only-version refusal.
+        StoreError::OnlyVersion => ApiError::invalid_request(
+            "cannot delete a Skill's only version. Delete the Skill, or create another version first",
+        ),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

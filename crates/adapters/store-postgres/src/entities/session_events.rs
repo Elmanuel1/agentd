@@ -5,7 +5,7 @@ use ::sessions::events::Event;
 use ::sessions::store::{EventFilter, Order, SessionEventLog, StoreError};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
-use diesel::sql_types::{Array, BigInt, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, BigInt, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
@@ -42,20 +42,24 @@ impl PgSessionEventLog {
 #[async_trait]
 impl SessionEventLog for PgSessionEventLog {
     async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // DB stamps the log time (authoritative ordering is `seq` bigserial).
-        diesel::insert_into(session_events::table)
-            .values((
-                session_events::workspace_id.eq(ws.as_str()),
-                session_events::session_id.eq(id.as_str()),
-                session_events::event_id.eq(event.id.as_str()),
-                session_events::created_at.eq(diesel::dsl::now),
-                session_events::doc.eq(to_doc(&event)?),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(diesel_be)?;
+        // One statement: the event lands only while its session exists, so a
+        // delete that removed the session first leaves no orphan behind.
+        let inserted = diesel::sql_query(
+            "INSERT INTO session_events (workspace_id, session_id, event_id, created_at, doc)
+             SELECT $1, $2, $3, now(), $4
+             WHERE EXISTS (SELECT 1 FROM sessions WHERE workspace_id = $1 AND session_id = $2)",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .bind::<Text, _>(event.id.as_str())
+        .bind::<Jsonb, _>(to_doc(&event)?)
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        if inserted == 0 {
+            return Err(StoreError::NotFound);
+        }
         Ok(())
     }
 
@@ -111,7 +115,7 @@ impl SessionEventLog for PgSessionEventLog {
                AND ($5::timestamptz IS NULL OR {processed} >= $5)
                AND ($6::timestamptz IS NULL OR {processed} < $6)
                AND ($7::timestamptz IS NULL OR {processed} <= $7)
-             ORDER BY seq {order}
+             ORDER BY {processed} {order} NULLS LAST, seq {order}
              LIMIT $8 OFFSET $9"
         ))
         .bind::<Text, _>(ws.as_str())

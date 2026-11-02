@@ -111,3 +111,17 @@ fn telemetry_is_off_and_logs_are_text_unless_configured() {
     let err = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_LOG_FORMAT", "xml")]).unwrap_err();
     assert_eq!(err.var, "AGENTD_LOG_FORMAT");
 }
+
+#[test]
+fn the_pool_is_sized_by_config_and_rejects_nonsense() {
+    let c = config(&[
+        ("AGENTD_API_KEYS", "k:o:w"),
+        ("AGENTD_DB_POOL_SIZE", "32"),
+        ("AGENTD_DB_POOL_WAIT_MS", "250"),
+    ])
+    .unwrap();
+    let StoreConfig::Postgres { pool, .. } = c.store;
+    assert_eq!((pool.max_size, pool.wait), (32, std::time::Duration::from_millis(250)));
+    let err = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_DB_POOL_SIZE", "0")]).unwrap_err();
+    assert_eq!(err.var, "AGENTD_DB_POOL_SIZE");
+}

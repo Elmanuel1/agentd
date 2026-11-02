@@ -33,7 +33,9 @@ def test_a_session_runs_in_its_container_until_archived(client: anthropic.Anthro
     info = container(s.id)
     assert info is not None and info["State"]["Running"]
     assert info["Config"]["Labels"]["agentd.target"] == s.id
-    assert info["HostConfig"]["NetworkMode"] == "bridge"
+    assert info["HostConfig"]["NetworkMode"] == "agentd-sandboxes"
+    assert info["Config"]["User"] == "65534:65534"
+    assert info["HostConfig"]["Memory"] == 2048 * 1024 * 1024 and info["HostConfig"]["CapDrop"] == ["ALL"]
     client.beta.sessions.archive(s.id)
     assert container(s.id) is None
 

@@ -72,14 +72,40 @@ pub trait PgObserver: Send + Sync {
     fn connect_failed(&self, error: &diesel::ConnectionError);
 }
 
+/// The pool's size, and how long a caller waits for a connection before the
+/// request fails instead of queueing without end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSettings {
+    /// Connections per replica.
+    pub max_size: usize,
+    /// The longest wait for a free connection.
+    pub wait: std::time::Duration,
+}
+
+impl Default for PoolSettings {
+    fn default() -> Self {
+        Self { max_size: 10, wait: std::time::Duration::from_secs(5) }
+    }
+}
+
 impl PgBackend {
-    /// Connect using `database_url` (or `DATABASE_URL`), pooled.
+    /// Connect using `database_url` (or `DATABASE_URL`), pooled with the
+    /// default [`PoolSettings`].
     pub async fn connect(database_url: &str) -> Result<Self, PgError> {
-        Self::pool(AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url))
+        Self::connect_with(database_url, PoolSettings::default()).await
     }
 
-    /// [`Self::connect`], with `observe` watching the pool.
-    pub async fn connect_observed(database_url: &str, observe: Arc<dyn PgObserver>) -> Result<Self, PgError> {
+    /// Connect using `database_url`, pooled as `settings` says.
+    pub async fn connect_with(database_url: &str, settings: PoolSettings) -> Result<Self, PgError> {
+        Self::pool(AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url), settings)
+    }
+
+    /// [`Self::connect_with`], with `observe` watching the pool.
+    pub async fn connect_observed(
+        database_url: &str,
+        settings: PoolSettings,
+        observe: Arc<dyn PgObserver>,
+    ) -> Result<Self, PgError> {
         let mut config = ManagerConfig::<AsyncPgConnection>::default();
         config.custom_setup = Box::new(move |url| {
             let observe = observe.clone();
@@ -91,12 +117,19 @@ impl PgBackend {
                 Ok(conn)
             })
         });
-        Self::pool(AsyncDieselConnectionManager::new_with_config(database_url, config))
+        Self::pool(AsyncDieselConnectionManager::new_with_config(database_url, config), settings)
     }
 
-    fn pool(manager: AsyncDieselConnectionManager<AsyncPgConnection>) -> Result<Self, PgError> {
-        let diesel =
-            DieselPool::builder(manager).max_size(10).build().map_err(|e| PgError::Connect(e.to_string()))?;
+    fn pool(
+        manager: AsyncDieselConnectionManager<AsyncPgConnection>,
+        settings: PoolSettings,
+    ) -> Result<Self, PgError> {
+        let diesel = DieselPool::builder(manager)
+            .max_size(settings.max_size)
+            .wait_timeout(Some(settings.wait))
+            .runtime(deadpool::Runtime::Tokio1)
+            .build()
+            .map_err(|e| PgError::Connect(e.to_string()))?;
         Ok(Self { diesel })
     }
 }

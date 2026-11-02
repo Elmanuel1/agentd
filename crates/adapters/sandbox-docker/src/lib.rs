@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
-use bollard::models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig};
+use bollard::models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig, NetworkCreateRequest};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
 };
@@ -15,17 +15,37 @@ use bollard::Docker;
 use futures::TryStreamExt;
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 
+/// What one sandbox may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SandboxLimits {
+    /// Memory cap in MiB.
+    pub memory_mib: i64,
+    /// CPU cap, in thousandths of a CPU.
+    pub millicpus: i64,
+}
+
+impl Default for SandboxLimits {
+    fn default() -> Self {
+        Self { memory_mib: 2048, millicpus: 2000 }
+    }
+}
+
+/// The network sandboxes with outbound access share: a bridge with
+/// container-to-container traffic off, so one session cannot reach another.
+pub const SANDBOX_NETWORK: &str = "agentd-sandboxes";
+
 /// One container per job, on a Docker daemon.
 #[derive(Debug, Clone)]
 pub struct DockerRuntime {
     docker: Docker,
     image: String,
+    limits: SandboxLimits,
 }
 
 impl DockerRuntime {
-    /// Run jobs from `image` on `docker`.
-    pub fn new(docker: Docker, image: impl Into<String>) -> Self {
-        Self { docker, image: image.into() }
+    /// Run jobs from `image` on `docker`, each within `limits`.
+    pub fn new(docker: Docker, image: impl Into<String>, limits: SandboxLimits) -> Self {
+        Self { docker, image: image.into(), limits }
     }
 
     /// The container a job runs in.
@@ -33,9 +53,37 @@ impl DockerRuntime {
         format!("agentd-{target_id}")
     }
 
-    /// Pull the image unless the daemon has it, so a launch never waits on
-    /// a registry. Run once at boot.
+    /// Create the sandbox network and pull the image unless the daemon has
+    /// them, so a launch never waits on a registry. Run once at boot.
     pub async fn prepare(&self) -> Result<(), RuntimeError> {
+        self.ensure_network().await?;
+        self.ensure_image().await
+    }
+
+    async fn ensure_network(&self) -> Result<(), RuntimeError> {
+        match self.docker.inspect_network(SANDBOX_NETWORK, None).await {
+            Ok(_) => return Ok(()),
+            Err(e) if not_found(&e) => {}
+            Err(e) => return Err(RuntimeError::Unavailable(e.to_string())),
+        }
+        let request = NetworkCreateRequest {
+            name: SANDBOX_NETWORK.into(),
+            driver: Some("bridge".into()),
+            options: Some(HashMap::from([(
+                "com.docker.network.bridge.enable_icc".to_owned(),
+                "false".to_owned(),
+            )])),
+            ..Default::default()
+        };
+        match self.docker.create_network(request).await {
+            Ok(_) => Ok(()),
+            // Another replica created it first.
+            Err(DockerError::DockerResponseServerError { status_code: 409, .. }) => Ok(()),
+            Err(e) => Err(RuntimeError::Unavailable(e.to_string())),
+        }
+    }
+
+    async fn ensure_image(&self) -> Result<(), RuntimeError> {
         match self.docker.inspect_image(&self.image).await {
             Ok(_) => return Ok(()),
             Err(e) if not_found(&e) => {}
@@ -54,12 +102,16 @@ impl DockerRuntime {
 /// The most processes one sandbox may run.
 const PIDS_LIMIT: i64 = 1024;
 
+/// Sandboxes run as `nobody`, not root.
+const SANDBOX_USER: &str = "65534:65534";
+
 /// `limited` networking gets no network: the allow-list proxy is a later
 /// step, and denying all egress is the safe reading of `limited` until then.
+/// Everything else goes on the sandbox network, never the default bridge.
 fn network_mode(environment: &serde_json::Value) -> &'static str {
     match environment.pointer("/networking/type").and_then(serde_json::Value::as_str) {
         Some("limited") => "none",
-        _ => "bridge",
+        _ => SANDBOX_NETWORK,
     }
 }
 
@@ -83,12 +135,15 @@ impl Runtime for DockerRuntime {
             cmd: Some(vec!["sleep".into(), "infinity".into()]),
             env: Some(env),
             labels: Some(labels),
+            user: Some(SANDBOX_USER.into()),
             host_config: Some(HostConfig {
                 network_mode: Some(network_mode(&job.environment).to_owned()),
                 init: Some(true),
                 cap_drop: Some(vec!["ALL".into()]),
                 security_opt: Some(vec!["no-new-privileges".into()]),
                 pids_limit: Some(PIDS_LIMIT),
+                memory: Some(self.limits.memory_mib * 1024 * 1024),
+                nano_cpus: Some(self.limits.millicpus * 1_000_000),
                 ..Default::default()
             }),
             ..Default::default()

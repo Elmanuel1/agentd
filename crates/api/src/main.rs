@@ -1,7 +1,9 @@
 //! agentd — the Managed-Agents-compatible control plane.
 //!
 //! Boot: read [`Config`] from the environment, connect the backends it
-//! selects, assemble the app, and serve. Replicas hold no state of their own.
+//! selects, assemble the app, and serve. Records and blobs live in Postgres and
+//! object storage; event streams and the local scheduler live in the process,
+//! so run one replica until a shared event bus and scheduler replace them.
 
 use std::process::ExitCode;
 

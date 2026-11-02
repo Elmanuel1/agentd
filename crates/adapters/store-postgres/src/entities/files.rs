@@ -94,19 +94,27 @@ impl FilesStore for PgFilesStore {
             .optional()
             .map_err(diesel_be)?;
         let doc: FileDoc = parse_doc(doc.ok_or(StoreError::NotFound)?)?;
-        let bytes = self.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)?;
-        Ok(StoredFile { meta: doc.meta, bytes, scope_id: doc.scope_id })
+        Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
+    }
+
+    async fn content(&self, ws: &WorkspaceId, id: &FileId) -> Result<Bytes, StoreError> {
+        self.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
         let existing = self.get(ws, id).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        diesel::delete(
-            files::table.filter(files::workspace_id.eq(ws.as_str())).filter(files::file_id.eq(id.as_str())),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
+        {
+            let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+            diesel::delete(
+                files::table
+                    .filter(files::workspace_id.eq(ws.as_str()))
+                    .filter(files::file_id.eq(id.as_str())),
+            )
+            .execute(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        }
+        // The pooled connection is back before the object-store round trip.
         self.blobs.delete(&Self::key(ws, id)).await.map_err(blob_be)?;
         Ok(existing)
     }
