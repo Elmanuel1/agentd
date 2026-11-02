@@ -22,7 +22,10 @@ region and account is tighter and loses nothing.
 
 - `agentd-secrets-policy.json`, on agentd's role:
   - `CreateSecret` under `PREFIX/` only with the `managed-by=agentd` tag, only
-    the three agentd tag keys, and only under `KMS_KEY_ARN`.
+    the three agentd tag keys, and only under `KMS_KEY_ARN`
+    (`secretsmanager:KmsKeyArn`, as in AWS's
+    [identity-based policy examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_iam-policies.html);
+    agentd always sends the key ARN).
   - `GetSecretValue`, `PutSecretValue`, `DescribeSecret`, `DeleteSecret` and
     `RestoreSecret` on `PREFIX/` secrets tagged `managed-by=agentd`.
   - No delete without a recovery window.
@@ -31,8 +34,13 @@ region and account is tighter and loses nothing.
     through Secrets Manager (`kms:ViaService`) and only for `PREFIX/` secrets
     (`kms:EncryptionContext:SecretARN`).
 - `kms-key-policy.json`, the key policy. The account administers the key but
-  no IAM policy can grant its use: only `AGENTD_ROLE_ARN` may use it, through
-  Secrets Manager, for `PREFIX/` secrets.
+  holds no use of it and cannot create grants on it, so no IAM policy or grant
+  can give a principal its use; only a change to this key policy can. Only
+  `AGENTD_ROLE_ARN` may use it, through Secrets Manager, for `PREFIX/`
+  secrets. Rotate its material with KMS automatic key rotation: the key stays
+  the same, so existing secrets keep decrypting. A different key id leaves
+  every existing secret under the old key, which these policies no longer
+  allow.
 - `sandbox-deny-policy.json`, on every sandbox and runner role, or as their
   permissions boundary: an explicit deny on `PREFIX/` secrets, on listing
   secrets, and on the key. Grant those roles nothing else for secrets.

@@ -48,17 +48,14 @@ impl SecretKey {
         })
     }
 
-    /// The workspace id.
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
 
-    /// The vault id.
     pub fn vault(&self) -> &str {
         &self.vault
     }
 
-    /// The credential id.
     pub fn credential(&self) -> &str {
         &self.credential
     }

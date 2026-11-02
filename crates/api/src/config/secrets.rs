@@ -38,17 +38,21 @@ impl SecretsConfig {
                     });
                 }
                 let prefix = get("AGENTD_SECRETS_PREFIX").unwrap_or_else(|| DEFAULT_PREFIX.into());
+                let recovery_window_days =
+                    number(get, "AGENTD_SECRETS_RECOVERY_DAYS", DEFAULT_RECOVERY_WINDOW_DAYS)?;
+                if !(7..=30).contains(&recovery_window_days) {
+                    return Err(ConfigError {
+                        var: "AGENTD_SECRETS_RECOVERY_DAYS",
+                        reason: format!("{recovery_window_days} is outside Secrets Manager's 7 to 30 days"),
+                    });
+                }
                 Ok(Self::Aws(AwsSecretsConfig {
                     prefix,
                     kms_key_id,
                     region: get("AGENTD_SECRETS_REGION"),
                     endpoint,
                     role_arn: get("AGENTD_SECRETS_ROLE_ARN"),
-                    recovery_window_days: number(
-                        get,
-                        "AGENTD_SECRETS_RECOVERY_DAYS",
-                        DEFAULT_RECOVERY_WINDOW_DAYS,
-                    )?,
+                    recovery_window_days,
                 }))
             }
             "blob" if dev => Ok(Self::Blob),

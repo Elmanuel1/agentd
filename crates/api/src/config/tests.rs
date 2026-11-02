@@ -167,8 +167,11 @@ fn aws_secret_options_come_from_config() {
             recovery_window_days: 30,
         })
     );
-    let err = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_SECRETS_RECOVERY_DAYS", "-1")]).unwrap_err();
-    assert_eq!(err.var, "AGENTD_SECRETS_RECOVERY_DAYS");
+    for days in ["-1", "0", "6", "31"] {
+        let err =
+            config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_SECRETS_RECOVERY_DAYS", days)]).unwrap_err();
+        assert_eq!(err.var, "AGENTD_SECRETS_RECOVERY_DAYS", "{days}");
+    }
 }
 
 #[test]
