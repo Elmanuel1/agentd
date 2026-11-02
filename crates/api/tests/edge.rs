@@ -4,9 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use test_support::StaticKeySource;
 
 use api::edge;
-use api::EnvKeySource;
 use axum::body::Body;
 use axum::extract::Extension;
 use axum::http::{Request, StatusCode};
@@ -35,7 +35,7 @@ async fn create(ApiJson(body): ApiJson<serde_json::Value>) -> Result<Response, R
 }
 
 fn app() -> Router {
-    let mut keys = EnvKeySource::default();
+    let mut keys = StaticKeySource::default();
     keys.register(KEY, "org_e", "wrkspc_e", "apikey_e");
     let routes = Router::new().route("/v1/things", get(echo).post(create));
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });

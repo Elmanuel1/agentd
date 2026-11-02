@@ -30,7 +30,8 @@ diesel = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 blobs-s3 = { workspace = true }
-secrets-blob = { workspace = true }
+secrets-aws = { workspace = true }
+aws-common = { workspace = true }
 sandbox-docker = { workspace = true }
 bollard = { workspace = true }
 serde = { workspace = true }
@@ -52,6 +53,7 @@ tracing-opentelemetry = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+test-support = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 http-body-util = { workspace = true }
 

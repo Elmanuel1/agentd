@@ -14,6 +14,7 @@
 
 pub mod egress;
 pub mod routes;
+pub mod sealed;
 pub mod service;
 pub mod store;
 pub mod types;

@@ -10,9 +10,6 @@ use shared::ports::keys::KeySource;
 use shared::{wire_response, ApiError, AuthContext, OrgId, WorkspaceId};
 use work::{WorkClaims, WorkScope, WorkTokens};
 
-/// Resolve the caller's key to its tenant. Live (auth/03, 04): no key is
-/// `x-api-key header is required`, an unknown one `invalid x-api-key`, both
-/// 401 `authentication_error`.
 /// What a request may authenticate with: an API key, or a sandbox
 /// worker's work token.
 #[derive(Clone)]
@@ -38,6 +35,10 @@ fn work_route(path: &str, claims: &WorkClaims) -> bool {
     head_ok && parts.next() == Some("work") && parts.next() == Some(claims.work.as_str())
 }
 
+/// Resolve the caller's key or work token to its tenant. Live (auth/03, 04): no key is
+/// `x-api-key header is required`, an unknown one `invalid x-api-key`, both
+/// 401 `authentication_error`. A key store that cannot be read is a 500, so a
+/// client retries instead of taking its key for revoked.
 pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next) -> Response {
     let Some(key) = api_key(req.headers()) else {
         return wire_response(&ApiError::authentication("x-api-key header is required"));
@@ -55,10 +56,11 @@ pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next
         req.extensions_mut().insert(WorkScope(claims));
         ctx
     } else {
-        let Some(ctx) = creds.keys.resolve(&key).await else {
-            return wire_response(&ApiError::authentication("invalid x-api-key"));
-        };
-        ctx
+        match creds.keys.resolve(&key).await {
+            Ok(Some(ctx)) => ctx,
+            Ok(None) => return wire_response(&ApiError::authentication("invalid x-api-key")),
+            Err(e) => return wire_response(&ApiError::internal(e.to_string())),
+        }
     };
     let tenant = [
         ("anthropic-organization-id", HeaderValue::from_str(ctx.org.as_str()).ok()),

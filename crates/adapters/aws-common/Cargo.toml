@@ -1,0 +1,13 @@
+[package]
+name = "aws-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
+
+[lints]
+workspace = true

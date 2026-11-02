@@ -13,7 +13,8 @@ use chrono::{DateTime, Utc};
 use opentelemetry::KeyValue;
 use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::fire::{FireError, FireHandler};
-use shared::ports::secrets::{SecretError, SecretStore};
+use shared::ports::keys::{KeyError, KeySource};
+use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 use shared::AuthContext;
 use tracing::field::Empty;
@@ -81,16 +82,24 @@ impl<T: BlobStore + ?Sized> BlobStore for Observed<T> {
 
 #[async_trait]
 impl<T: SecretStore + ?Sized> SecretStore for Observed<T> {
-    async fn put(&self, key: &str, secret: &str) -> Result<(), SecretError> {
+    async fn put(&self, key: &SecretKey, secret: &SecretString) -> Result<(), SecretError> {
         self.run("secrets", "put", self.inner.put(key, secret)).await
     }
 
-    async fn get(&self, key: &str) -> Result<String, SecretError> {
+    async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
         self.run("secrets", "get", self.inner.get(key)).await
     }
 
-    async fn delete(&self, key: &str) -> Result<(), SecretError> {
+    async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         self.run("secrets", "delete", self.inner.delete(key)).await
+    }
+}
+
+/// A request's key lookup, as `keys.resolve`.
+#[async_trait]
+impl<T: KeySource + ?Sized> KeySource for Observed<T> {
+    async fn resolve(&self, key: &str) -> Result<Option<AuthContext>, KeyError> {
+        self.run("keys", "resolve", self.inner.resolve(key)).await
     }
 }
 

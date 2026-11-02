@@ -1,19 +1,12 @@
 //! blobs-s3: the S3 implementation of [`BlobStore`].
 //!
 //! [`S3BlobStore`] targets any S3-compatible endpoint: real AWS S3, MinIO, or
-//! an emulator such as LocalStack. Credentials always come from the AWS
-//! default chain (env keys, profile, web identity, ECS task or EC2 instance
-//! role), optionally exchanged for an assumed role.
+//! an emulator such as LocalStack, with the credentials and region of
+//! [`aws_common::sdk_config`].
 
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
-use aws_config::environment::EnvironmentVariableRegionProvider;
-use aws_config::meta::region::RegionProviderChain;
-use aws_config::profile::ProfileFileRegionProvider;
-use aws_config::sts::AssumeRoleProvider;
-use aws_config::BehaviorVersion;
-use aws_sdk_s3::config::Region;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::primitives::ByteStream;
@@ -75,21 +68,7 @@ impl S3BlobStore {
     /// Build the client from `config`, and create the bucket when the config
     /// asks for it.
     pub async fn connect(config: &S3Config) -> Result<Self, BlobError> {
-        // The region chain skips IMDS so a boot off EC2 never waits on it;
-        // ECS and Lambda set AWS_REGION.
-        let region = RegionProviderChain::first_try(config.region.clone().map(Region::new))
-            .or_else(EnvironmentVariableRegionProvider::new())
-            .or_else(ProfileFileRegionProvider::new())
-            .or_else(Region::from_static("us-east-1"));
-        let mut shared = aws_config::defaults(BehaviorVersion::latest()).region(region).load().await;
-        if let Some(role_arn) = &config.role_arn {
-            let role =
-                AssumeRoleProvider::builder(role_arn).session_name("agentd").configure(&shared).build();
-            shared = shared
-                .into_builder()
-                .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(role.await))
-                .build();
-        }
+        let shared = aws_common::sdk_config(config.region.as_deref(), config.role_arn.as_deref()).await;
         // The endpoint applies to S3 only: STS keeps its own. Checksums are
         // sent only where S3 requires them: S3-compatible stores (LocalStack,
         // older MinIO) reject the default trailing checksum on empty bodies.

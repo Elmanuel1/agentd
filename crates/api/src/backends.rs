@@ -16,13 +16,13 @@ use sandbox_docker::DockerRuntime;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
 use scheduler_local::LocalScheduler;
-use secrets_blob::BlobSecretStore;
+use secrets_aws::{AwsApiKeys, AwsSecretStore};
 use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
 use shared::ports::lease::Leases;
-use shared::ports::secrets::SecretStore;
+use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
@@ -32,9 +32,8 @@ use store_postgres::{
 use vaults::VaultsStore;
 
 use crate::config::{
-    BlobsConfig, Config, EngineConfig, KeysConfig, RuntimeConfig, SchedulerConfig, SecretsConfig, StoreConfig,
+    BlobsConfig, Config, EngineConfig, KeysConfig, RuntimeConfig, SchedulerConfig, StoreConfig,
 };
-use crate::keys::EnvKeySource;
 
 /// How often the local scheduler checks for due fires (cron is minute-grained).
 const LOCAL_TICK: Duration = Duration::from_secs(10);
@@ -98,7 +97,8 @@ pub struct Backends {
     pub scheduler: Arc<dyn SchedulerPort>,
     /// Where the scheduler delivers fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
-    /// The sandbox runtime; `None` runs sessions without one.
+    /// The sandbox runtime. Configuration always gives one; `None` is for tests
+    /// that build their backends in code.
     pub runtime: Option<Arc<dyn Runtime>>,
     /// What the agent loop runs on; `None` stores client events without
     /// running the agent (no sandbox to run its tools in).
@@ -140,6 +140,9 @@ pub enum BootError {
     /// The blob store.
     #[error("blobs: {0}")]
     Blobs(#[from] BlobError),
+    /// The secret store, or its KMS key.
+    #[error("secrets: {0}")]
+    Secrets(#[from] SecretError),
     /// The sandbox runtime.
     #[error("sandbox: {0}")]
     Sandbox(String),
@@ -154,10 +157,14 @@ impl Backends {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
-        let secrets: Arc<dyn SecretStore> = match config.secrets {
-            SecretsConfig::Blob => Arc::new(BlobSecretStore::new(blobs.clone())),
+        let aws = AwsSecretStore::connect(&config.secrets).await?;
+        let keys: Arc<dyn KeySource> = match config.keys {
+            KeysConfig::Aws => {
+                let pepper = Arc::new(aws.api_key_pepper().await?);
+                Arc::new(Observed::new(Arc::new(AwsApiKeys::new(aws.clone(), pepper)), metrics.clone()))
+            }
         };
-        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(secrets, metrics.clone()));
+        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
         let stores = match &config.store {
             StoreConfig::Postgres { url, pool } => {
                 let observer = telemetry::db::observer(metrics.clone());
@@ -165,9 +172,6 @@ impl Backends {
                 telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
                 Stores::postgres(pg, blobs, secrets)
             }
-        };
-        let keys: Arc<dyn KeySource> = match &config.keys {
-            KeysConfig::Env(keys) => Arc::new(EnvKeySource::new(keys)),
         };
         let fires = Arc::new(FireRegistry::new());
         let scheduler: Arc<dyn SchedulerPort> = match config.scheduler {
@@ -178,7 +182,6 @@ impl Backends {
             }
         };
         let (runtime, agent): (Option<Arc<dyn Runtime>>, _) = match (&config.runtime, &config.store) {
-            (RuntimeConfig::None, _) => (None, None),
             (RuntimeConfig::Docker { image, limits, network }, StoreConfig::Postgres { url, .. }) => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;

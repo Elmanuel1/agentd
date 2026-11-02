@@ -7,7 +7,8 @@ extended with a versioned-memory + dreams layer.
 Point any Anthropic SDK at it:
 
 ```python
-client = anthropic.Anthropic(api_key="agentd-dev-key", base_url="http://localhost:8080")
+# a key from `agentd keys create`
+client = anthropic.Anthropic(api_key=os.environ["AGENTD_API_KEY"], base_url="http://localhost:8080")
 client.beta.agents.create(name="X", model="claude-sonnet-4-6")   # identical wire
 ```
 
@@ -50,10 +51,14 @@ resolving `latest` adopts the promotion — promote-don't-replace.
 ## Run
 
 ```sh
-docker compose -f docker/docker-compose.yml up   # full stack
-AGENTD_DEV_KEY=1 AGENTD_S3_CREATE_BUCKET=1 cargo run -p api   # against your own Postgres and S3
-cargo test --workspace                           # hermetic; AGENTD_PG_TESTS=1 adds the Postgres and S3 tests
+POSTGRES_PASSWORD=$(openssl rand -hex 16) docker compose -f docker/docker-compose.yml up   # full stack on LocalStack
+docker compose -f docker/docker-compose.yml logs keys   # the dev API key, made at startup and printed once
+cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, AGENTD_AWS_ENDPOINT the S3, Secrets Manager and KMS ones
 ```
+
+There is no development mode: the stack runs Secrets Manager and KMS on
+LocalStack exactly as production runs them on AWS, and API keys come from
+`agentd keys create`.
 
 Backends and settings: [docs/configuration.md](docs/configuration.md).
 

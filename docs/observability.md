@@ -35,12 +35,13 @@ Histograms use the OpenTelemetry HTTP buckets in seconds (5 ms to 10 s).
 (`grafana/otel-lgtm`), with the agentd dashboard and alert rules provisioned:
 
 ```bash
+export GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)
 docker compose -f docker/observability/compose.yaml up -d
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 ./target/debug/agentd
 docker/observability/verify.sh
 ```
 
-Grafana is at http://localhost:3000 (`admin` / `admin`), dashboard **agentd boundaries**: request rate, 5xx
+Grafana is at http://localhost:3000 (`admin` / `GRAFANA_ADMIN_PASSWORD`, which the stack requires; anonymous access is off), dashboard **agentd boundaries**: request rate, 5xx
 ratio, p95 and open streams; requests, latency and errors by route; statements, their p95 and failures; the
 connection pool; port operations by outcome; error and warning logs; failed traces.
 

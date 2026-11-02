@@ -11,8 +11,6 @@ pub const DEFAULT_SANDBOX_IMAGE: &str = "agentd-sandbox";
 /// `AGENTD_RUNTIME`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeConfig {
-    /// `none`: no sandbox; sessions run without one.
-    None,
     /// `docker`: one container per session from `image`
     /// (`AGENTD_SANDBOX_IMAGE`), on the daemon `DOCKER_HOST` names.
     Docker {
@@ -41,8 +39,7 @@ pub(super) fn sandbox_reach(get: &impl Fn(&str) -> Option<String>) -> String {
 
 impl RuntimeConfig {
     pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        Ok(match selector(get, "AGENTD_RUNTIME", "none").as_str() {
-            "none" => Self::None,
+        Ok(match selector(get, "AGENTD_RUNTIME", "docker").as_str() {
             "docker" => Self::Docker {
                 image: get("AGENTD_SANDBOX_IMAGE").unwrap_or_else(|| DEFAULT_SANDBOX_IMAGE.into()),
                 limits: SandboxLimits {

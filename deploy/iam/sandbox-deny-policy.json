@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "NoAgentdSecrets",
+      "Effect": "Deny",
+      "Action": "secretsmanager:*",
+      "Resource": "arn:aws:secretsmanager:*:*:secret:PREFIX/*"
+    },
+    {
+      "Sid": "NoSecretInventory",
+      "Effect": "Deny",
+      "Action": ["secretsmanager:ListSecrets", "secretsmanager:BatchGetSecretValue"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoUseOfTheSecretsKey",
+      "Effect": "Deny",
+      "Action": "kms:*",
+      "Resource": "KMS_KEY_ARN"
+    }
+  ]
+}

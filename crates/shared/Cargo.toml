@@ -20,6 +20,7 @@ base64 = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true }
+secrecy = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
