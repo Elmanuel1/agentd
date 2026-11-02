@@ -91,10 +91,11 @@ impl SessionsService {
     ) -> Result<T, ApiError> {
         let id = parse_id(raw_id)?;
         let mut session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let read = session.clone();
         guard_writable(&session)?;
         let out = f(&mut session)?;
         session.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, session).await.map_err(map_store)?;
+        self.store.replace(&ctx.workspace, &read, session).await.map_err(map_store)?;
         Ok(out)
     }
 }

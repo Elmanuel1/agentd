@@ -29,6 +29,8 @@ mod events;
 mod lifecycle;
 mod resources;
 
+pub use events::Subscription;
+
 /// Resolution + validation dependencies the sessions service needs from
 /// other entities — a port, so tests fake it and `api` wires it to
 /// the real services (keeps the crate graph acyclic).
@@ -78,13 +80,16 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
 }
 
+/// The live fan-out: one broadcast channel per session that has a listener.
+type Channels = Arc<Mutex<HashMap<SessionId, broadcast::Sender<Event>>>>;
+
 /// Sessions service.
 pub struct SessionsService {
     store: Arc<dyn SessionsStore>,
     events: Arc<dyn SessionEventLog>,
     deps: Arc<dyn SessionDeps>,
     /// Live SSE fan-out. Stream has NO replay — reconnect = list + dedupe.
-    channels: Mutex<HashMap<SessionId, broadcast::Sender<Event>>>,
+    channels: Channels,
     /// The models an `agent_with_overrides` may name.
     catalog: ModelCatalog,
 }
@@ -104,7 +109,7 @@ impl SessionsService {
         deps: Arc<dyn SessionDeps>,
         catalog: ModelCatalog,
     ) -> Self {
-        Self { store, events, deps, catalog, channels: Mutex::new(HashMap::new()) }
+        Self { store, events, deps, catalog, channels: Channels::default() }
     }
 }
 
@@ -122,6 +127,9 @@ fn parse_id(raw: &str) -> Result<SessionId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("session not found"),
+        StoreError::Conflict => {
+            ApiError::conflict_invalid_request("the session changed while this request ran; retry it")
+        }
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

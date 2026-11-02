@@ -120,22 +120,20 @@ impl AgentsStore for PgAgentsStore {
 
     async fn replace_latest(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let max: Option<i64> = agents::table
-            .filter(agents::workspace_id.eq(ws.as_str()))
-            .filter(agents::agent_id.eq(agent.id.as_str()))
-            .select(diesel::dsl::max(agents::version))
-            .first(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        let Some(maxv) = max else {
-            return Err(StoreError::NotFound);
-        };
         let doc = to_doc(&agent)?;
+        let version = i64::try_from(agent.version).map_err(|_| StoreError::NotFound)?;
+        // One statement: the row read as latest is updated only while no newer
+        // version exists, so an archive racing an update cannot stamp a
+        // version that is no longer the latest.
         let affected = diesel::update(
             agents::table
                 .filter(agents::workspace_id.eq(ws.as_str()))
                 .filter(agents::agent_id.eq(agent.id.as_str()))
-                .filter(agents::version.eq(maxv)),
+                .filter(agents::version.eq(version))
+                .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                    "NOT EXISTS (SELECT 1 FROM agents n WHERE n.workspace_id = agents.workspace_id \
+                     AND n.agent_id = agents.agent_id AND n.version > agents.version)",
+                )),
         )
         .set((
             agents::doc.eq(doc),
@@ -146,7 +144,11 @@ impl AgentsStore for PgAgentsStore {
         .await
         .map_err(diesel_be)?;
         if affected == 0 {
-            return Err(StoreError::NotFound);
+            // Gone, or a newer version landed after the caller read this one.
+            return match self.latest(ws, &agent.id).await {
+                Ok(_) => Err(StoreError::Conflict),
+                Err(e) => Err(e),
+            };
         }
         Ok(())
     }

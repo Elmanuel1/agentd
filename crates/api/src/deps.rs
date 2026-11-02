@@ -35,21 +35,17 @@ impl SessionDeps for RealSessionDeps {
         agent_id: &str,
         version: Option<u64>,
     ) -> Result<AgentSnapshot, ApiError> {
-        let agent = match version {
-            Some(v) => {
-                let versions = self.agents.versions(ctx, agent_id).await?;
-                versions
-                    .into_iter()
-                    .find(|a| a.version == v)
-                    .ok_or_else(|| ApiError::not_found("agent version not found"))?
-            }
-            None => self.agents.get(ctx, agent_id, None).await?,
-        };
-        if agent.archived_at.is_some() {
+        // Archive stamps the latest version, so it decides for every version.
+        let latest = self.agents.get(ctx, agent_id, None).await?;
+        if latest.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request(
                 "agent is archived; new sessions cannot reference it",
             ));
         }
+        let agent = match version {
+            Some(v) if v != latest.version => self.agents.get(ctx, agent_id, Some(v)).await?,
+            _ => latest,
+        };
         Ok(agent.snapshot())
     }
 
