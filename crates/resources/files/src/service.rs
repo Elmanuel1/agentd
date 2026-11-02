@@ -97,7 +97,9 @@ impl FilesService {
             e.extra.insert("details".into(), serde_json::json!({"error_code": "file_not_downloadable"}));
             return Err(e);
         }
-        Ok((file.meta, file.bytes))
+        let id = parse_id(raw_id)?;
+        let bytes = self.store.content(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))?;
+        Ok((file.meta, bytes))
     }
 
     /// `GET /v1/files`: one id-cursor page and whether more remain, newest

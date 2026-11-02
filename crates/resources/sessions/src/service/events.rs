@@ -61,24 +61,50 @@ impl SessionsService {
     }
 
     /// Subscribe to live events (`GET /v1/sessions/{id}/events/stream`).
-    pub async fn subscribe(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-    ) -> Result<broadcast::Receiver<Event>, ApiError> {
+    pub async fn subscribe(&self, ctx: &AuthContext, raw_id: &str) -> Result<Subscription, ApiError> {
         let id = parse_id(raw_id)?;
         // Existence check under the caller's workspace.
         self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        Ok(self.channel(&id).subscribe())
+        let rx =
+            self.channels.lock().entry(id.clone()).or_insert_with(|| broadcast::channel(1024).0).subscribe();
+        Ok(Subscription { rx, channels: self.channels.clone(), id })
     }
 
-    fn channel(&self, id: &SessionId) -> broadcast::Sender<Event> {
-        self.channels.lock().entry(id.clone()).or_insert_with(|| broadcast::channel(1024).0).clone()
-    }
-
+    /// Send `ev` to the session's listeners. A channel no one listens to is
+    /// dropped, so the map holds only sessions someone is streaming.
     pub(super) fn broadcast(&self, id: &SessionId, ev: &Event) {
-        // No receiver = no error; stream is fire-and-forget.
-        let _ = self.channel(id).send(ev.clone());
+        let mut channels = self.channels.lock();
+        if let Some(tx) = channels.get(id) {
+            if tx.send(ev.clone()).is_err() {
+                channels.remove(id);
+            }
+        }
+    }
+}
+
+/// One listener on a session's events; the session's channel goes when its
+/// last listener does.
+#[derive(Debug)]
+pub struct Subscription {
+    rx: broadcast::Receiver<Event>,
+    channels: super::Channels,
+    id: SessionId,
+}
+
+impl Subscription {
+    /// The next event; an error ends the stream (deleted, or fell behind).
+    pub async fn recv(&mut self) -> Result<Event, broadcast::error::RecvError> {
+        self.rx.recv().await
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        let mut channels = self.channels.lock();
+        // This receiver is still counted while it drops.
+        if channels.get(&self.id).is_some_and(|tx| tx.receiver_count() <= 1) {
+            channels.remove(&self.id);
+        }
     }
 }
 

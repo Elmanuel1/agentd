@@ -59,6 +59,7 @@ hex = "0.4"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["full"] }
+deadpool = { version = "0.12", default-features = false, features = ["managed", "rt_tokio_1"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 http = "1"
