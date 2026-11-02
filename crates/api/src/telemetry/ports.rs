@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use opentelemetry::KeyValue;
 use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::fire::{FireError, FireHandler};
+use shared::ports::keys::{KeyError, KeySource};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 use shared::AuthContext;
@@ -91,6 +92,14 @@ impl<T: SecretStore + ?Sized> SecretStore for Observed<T> {
 
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         self.run("secrets", "delete", self.inner.delete(key)).await
+    }
+}
+
+/// A request's key lookup, as `keys.resolve`.
+#[async_trait]
+impl<T: KeySource + ?Sized> KeySource for Observed<T> {
+    async fn resolve(&self, key: &str) -> Result<Option<AuthContext>, KeyError> {
+        self.run("keys", "resolve", self.inner.resolve(key)).await
     }
 }
 

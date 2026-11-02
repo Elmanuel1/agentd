@@ -14,8 +14,8 @@ use crate::{name, AwsSecretStore};
 impl AwsSecretStore {
     /// Whether `name` exists and is scheduled for deletion: Secrets Manager
     /// answers a call on such a secret with `InvalidRequestException`, which
-    /// other faults share.
-    pub(crate) async fn scheduled_for_deletion(&self, name: &str) -> Result<bool, SecretError> {
+    /// other faults share. Errors call the secret `shown`.
+    pub(crate) async fn scheduled_for_deletion(&self, name: &str, shown: &str) -> Result<bool, SecretError> {
         match self.client.describe_secret().secret_id(name).send().await {
             Ok(out) => Ok(out.deleted_date.is_some()),
             Err(e)
@@ -23,30 +23,55 @@ impl AwsSecretStore {
             {
                 Ok(false)
             }
-            Err(e) => Err(failure("secretsmanager:DescribeSecret", name, &e)),
+            Err(e) => Err(failure("secretsmanager:DescribeSecret", shown, &e)),
         }
     }
 
     /// The current value of the secret `name`; `NotFound` when it is missing
-    /// or scheduled for deletion.
-    pub(crate) async fn read(&self, name: &str) -> Result<SecretString, SecretError> {
+    /// or scheduled for deletion. Errors call the secret `shown`, so a name
+    /// that identifies something (an API key's digest) need not reach a log.
+    pub(crate) async fn read(&self, name: &str, shown: &str) -> Result<SecretString, SecretError> {
         let e = match self.client.get_secret_value().secret_id(name).send().await {
             Ok(out) => {
                 return out
                     .secret_string
                     .map(into_secret)
-                    .ok_or_else(|| SecretError::Backend(format!("{name} holds no string value")));
+                    .ok_or_else(|| SecretError::Backend(format!("{shown} holds no string value")));
             }
             Err(e) => e,
         };
         let service = e.as_service_error();
         if service.is_some_and(GetSecretValueError::is_resource_not_found_exception)
             || (service.is_some_and(GetSecretValueError::is_invalid_request_exception)
-                && self.scheduled_for_deletion(name).await?)
+                && self.scheduled_for_deletion(name, shown).await?)
         {
-            return Err(SecretError::NotFound(name.to_owned()));
+            return Err(SecretError::NotFound(shown.to_owned()));
         }
-        Err(failure("secretsmanager:GetSecretValue", name, &e))
+        Err(failure("secretsmanager:GetSecretValue", shown, &e))
+    }
+
+    /// Delete the secret `name` with the recovery window; a missing one is not
+    /// an error. Errors call it `shown`.
+    pub(crate) async fn delete_named(&self, name: &str, shown: &str) -> Result<(), SecretError> {
+        let deleted = self
+            .client
+            .delete_secret()
+            .secret_id(name)
+            .recovery_window_in_days(self.recovery_window_days)
+            .send()
+            .await;
+        let e = match deleted {
+            Ok(_) => return Ok(()),
+            Err(e) => e,
+        };
+        let service = e.as_service_error();
+        if service.is_some_and(DeleteSecretError::is_resource_not_found_exception)
+            || (service.is_some_and(DeleteSecretError::is_invalid_request_exception)
+                && self.scheduled_for_deletion(name, shown).await?)
+        {
+            return Ok(());
+        }
+        Err(failure("secretsmanager:DeleteSecret", shown, &e))
     }
 }
 
@@ -72,7 +97,7 @@ impl SecretStore for AwsSecretStore {
             Err(e) => e,
         };
         if e.as_service_error().is_some_and(CreateSecretError::is_invalid_request_exception)
-            && self.scheduled_for_deletion(&name).await?
+            && self.scheduled_for_deletion(&name, &name).await?
         {
             // Deleted inside its recovery window: restore it, then the new
             // value becomes its current version.
@@ -97,30 +122,13 @@ impl SecretStore for AwsSecretStore {
     }
 
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
-        self.read(&self.secret_name(key)).await
+        let name = self.secret_name(key);
+        self.read(&name, &name).await
     }
 
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         let name = self.secret_name(key);
-        let deleted = self
-            .client
-            .delete_secret()
-            .secret_id(&name)
-            .recovery_window_in_days(self.recovery_window_days)
-            .send()
-            .await;
-        let e = match deleted {
-            Ok(_) => return Ok(()),
-            Err(e) => e,
-        };
-        let service = e.as_service_error();
-        if service.is_some_and(DeleteSecretError::is_resource_not_found_exception)
-            || (service.is_some_and(DeleteSecretError::is_invalid_request_exception)
-                && self.scheduled_for_deletion(&name).await?)
-        {
-            return Ok(());
-        }
-        Err(failure("secretsmanager:DeleteSecret", &name, &e))
+        self.delete_named(&name, &name).await
     }
 }
 

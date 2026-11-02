@@ -3,10 +3,13 @@
 agentd keeps each vault credential in AWS Secrets Manager as
 `PREFIX/<workspace>/<vault>/<credential>`, encrypted under one
 customer-managed KMS key and tagged `workspace`, `vault` and
-`managed-by=agentd`. The API key pepper is `PREFIX/system/api_key_pepper`,
-under the same key and tagged `managed-by=agentd`, so the same policy covers
-it. Only agentd's role, and an operator running `agentd keys` as it, can read
-them. Sandboxes and runners cannot read them or use the key.
+`managed-by=agentd`. API keys are secrets too: each is
+`PREFIX/system/api_keys/<digest>`, holding only a peppered digest, the key id,
+org and workspace, and tagged with what `agentd keys list` shows. The pepper
+is `PREFIX/system/api_key_pepper`. All of them are under the same KMS key, so
+the same policy covers them. Only agentd's role, and an operator running
+`agentd keys` as it, can read them. Sandboxes and runners cannot read them or
+use the key.
 
 ## Placeholders
 
@@ -24,12 +27,15 @@ region and account is tighter and loses nothing.
 
 - `agentd-secrets-policy.json`, on agentd's role:
   - `CreateSecret` under `PREFIX/` only with the `managed-by=agentd` tag, only
-    the three agentd tag keys, and only under `KMS_KEY_ARN`
+    agentd's tag keys (`workspace`, `vault`, `managed-by`, and for API keys
+    `org`, `api-key-id`, `key-name`, `key-hint`), and only under `KMS_KEY_ARN`
     (`secretsmanager:KmsKeyArn`, as in AWS's
     [identity-based policy examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_iam-policies.html);
     agentd always sends the key ARN).
   - `GetSecretValue`, `PutSecretValue`, `DescribeSecret`, `DeleteSecret` and
     `RestoreSecret` on `PREFIX/` secrets tagged `managed-by=agentd`.
+  - `ListSecrets`, which takes no resource, for `agentd keys list` and
+    `revoke`. It returns names and tags, never a value.
   - No delete without a recovery window.
   - `kms:DescribeKey` on the key, for the check at boot.
   - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only

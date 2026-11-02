@@ -1,14 +1,13 @@
-//! `agentd keys create|list|revoke`: API keys, managed against the configured
-//! Postgres and Secrets Manager. A created key is printed once, alone on
+//! `agentd keys create|list|revoke`: API keys, managed in the configured
+//! Secrets Manager. A created key is printed once, alone on
 //! stdout, and is never stored; everything else goes to stderr.
 
 use std::process::ExitCode;
 
-use secrets_aws::AwsSecretStore;
+use secrets_aws::{ApiKeyRecord, AwsApiKeys, AwsSecretStore};
 use shared::ports::secrets::ExposeSecret;
-use store_postgres::{ApiKeyRecord, PgApiKeys, PgBackend};
 
-use crate::config::{Config, StoreConfig};
+use crate::config::Config;
 
 /// How to call it.
 pub const USAGE: &str = "usage: agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]
@@ -81,11 +80,9 @@ pub async fn keys(config: &Config, args: &[String]) -> ExitCode {
 }
 
 async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
-    let StoreConfig::Postgres { url, pool } = &config.store;
-    let backend = PgBackend::connect_with(url, *pool).await.map_err(|e| e.to_string())?;
     let secrets = AwsSecretStore::connect(&config.secrets).await.map_err(|e| e.to_string())?;
     let pepper = secrets.api_key_pepper().await.map_err(|e| e.to_string())?;
-    let keys = PgApiKeys::new(backend, std::sync::Arc::new(pepper));
+    let keys = AwsApiKeys::new(secrets, std::sync::Arc::new(pepper));
     match command {
         KeysCommand::Create { org, workspace, name } => {
             let (record, key) = keys.create(&org, &workspace, &name).await.map_err(|e| e.to_string())?;
@@ -109,9 +106,8 @@ async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
 
 /// `id org workspace status hint created name`, tab separated.
 fn line(r: &ApiKeyRecord) -> String {
-    let status = if r.revoked_at.is_some() { "revoked" } else { "active" };
-    let created = r.created_at.to_rfc3339();
-    [r.id.as_str(), &r.org, &r.workspace, status, &r.partial_key_hint, &created, &r.name].join("\t")
+    let status = if r.revoked { "revoked" } else { "active" };
+    [r.id.as_str(), &r.org, &r.workspace, status, &r.partial_key_hint, &r.created_at, &r.name].join("\t")
 }
 
 #[cfg(test)]

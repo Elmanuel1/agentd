@@ -14,12 +14,19 @@ aws-sdk-secretsmanager = { workspace = true }
 uuid = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+aws-smithy-types = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+serde_json = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
-aws-smithy-types = { workspace = true }
 
 [lints]
 workspace = true

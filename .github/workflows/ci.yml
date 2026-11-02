@@ -167,6 +167,14 @@ jobs:
           if grep -qE "sdk-token-|ts-token-" agentd.log; then echo "a credential reached the log"; exit 1; fi
           if grep -qF "$AGENTD_TEST_KEY" agentd.log; then echo "the API key reached the log"; exit 1; fi
           ./target/debug/agentd keys list | grep -q "wrkspc_sdk"
+      - name: A revoked key is refused on the next request
+        run: |
+          call() { curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/v1/agents \
+            -H "anthropic-version: 2023-06-01" -H "anthropic-beta: managed-agents-2026-04-01" -H "x-api-key: $AGENTD_TEST_KEY"; }
+          test "$(call)" = 200
+          id=$(./target/debug/agentd keys list | awk -F '\t' '$3 == "wrkspc_sdk" && $4 == "active" { print $1 }')
+          ./target/debug/agentd keys revoke "$id"
+          test "$(call)" = 401
       - if: failure()
         run: cat agentd.log
 

@@ -56,8 +56,6 @@ services:
         | xargs -r -n1 agentd keys revoke
         && agentd keys create --org org_dev --workspace wrkspc_01dev --name dev
     depends_on:
-      flyway:
-        condition: service_completed_successfully
       localstack:
         condition: service_healthy
 

@@ -21,7 +21,7 @@ impl AwsSecretStore {
     /// stops resolving.
     pub async fn api_key_pepper(&self) -> Result<KeyPepper, SecretError> {
         let name = format!("{}/{NAME}", self.prefix);
-        match self.read(&name).await {
+        match self.read(&name, &name).await {
             Ok(value) => return decode(&name, &value),
             Err(SecretError::NotFound(_)) => {}
             Err(e) => return Err(e),
@@ -44,11 +44,11 @@ impl AwsSecretStore {
             Ok(_) => decode(&name, &value),
             // Another replica created it first.
             Err(e) if e.as_service_error().is_some_and(CreateSecretError::is_resource_exists_exception) => {
-                decode(&name, &self.read(&name).await?)
+                decode(&name, &self.read(&name, &name).await?)
             }
             Err(e)
                 if e.as_service_error().is_some_and(CreateSecretError::is_invalid_request_exception)
-                    && self.scheduled_for_deletion(&name).await? =>
+                    && self.scheduled_for_deletion(&name, &name).await? =>
             {
                 Err(SecretError::Backend(format!(
                     "the API key pepper {name} is scheduled for deletion; restore it with RestoreSecret, \

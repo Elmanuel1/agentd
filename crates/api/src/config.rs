@@ -66,9 +66,9 @@ pub enum BlobsConfig {
 /// `AGENTD_KEYS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeysConfig {
-    /// `postgres`: the keys `agentd keys create` issued, stored as peppered
-    /// digests in the record store.
-    Postgres,
+    /// `aws`: the keys `agentd keys create` issued, one Secrets Manager secret
+    /// each, holding a peppered digest, never the key.
+    Aws,
 }
 
 /// `AGENTD_SCHEDULER`.
@@ -109,8 +109,8 @@ impl Config {
             other => return Err(unknown("AGENTD_BLOBS", other)),
         };
         let secrets = secrets::from_lookup(&get)?;
-        let keys = match selector(&get, "AGENTD_KEYS", "postgres").as_str() {
-            "postgres" => KeysConfig::Postgres,
+        let keys = match selector(&get, "AGENTD_KEYS", "aws").as_str() {
+            "aws" => KeysConfig::Aws,
             other => return Err(unknown("AGENTD_KEYS", other)),
         };
         let scheduler = match selector(&get, "AGENTD_SCHEDULER", "local").as_str() {

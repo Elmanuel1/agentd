@@ -16,7 +16,7 @@ use sandbox_docker::DockerRuntime;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
 use scheduler_local::LocalScheduler;
-use secrets_aws::AwsSecretStore;
+use secrets_aws::{AwsApiKeys, AwsSecretStore};
 use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
@@ -25,8 +25,8 @@ use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
-    PgAgentsStore, PgApiKeys, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore,
-    PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
+    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
+    PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
 };
 use vaults::VaultsStore;
 
@@ -134,17 +134,19 @@ impl Backends {
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
         let aws = AwsSecretStore::connect(&config.secrets).await?;
-        let pepper = Arc::new(aws.api_key_pepper().await?);
+        let keys: Arc<dyn KeySource> = match config.keys {
+            KeysConfig::Aws => {
+                let pepper = Arc::new(aws.api_key_pepper().await?);
+                Arc::new(Observed::new(Arc::new(AwsApiKeys::new(aws.clone(), pepper)), metrics.clone()))
+            }
+        };
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
-        let (stores, keys) = match &config.store {
+        let stores = match &config.store {
             StoreConfig::Postgres { url, pool } => {
                 let observer = telemetry::db::observer(metrics.clone());
                 let pg = PgBackend::connect_observed(url, *pool, observer).await?;
                 telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
-                let keys: Arc<dyn KeySource> = match config.keys {
-                    KeysConfig::Postgres => Arc::new(PgApiKeys::new(pg.clone(), pepper)),
-                };
-                (Stores::postgres(pg, blobs, secrets), keys)
+                Stores::postgres(pg, blobs, secrets)
             }
         };
         let fires = Arc::new(FireRegistry::new());

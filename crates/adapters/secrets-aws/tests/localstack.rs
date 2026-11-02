@@ -7,36 +7,16 @@ use aws_sdk_secretsmanager::types::Tag;
 use secrets_aws::{AwsSecretStore, AwsSecretsConfig, SecretError, SecretKey, SecretStore, SecretString};
 use shared::ports::secrets::ExposeSecret;
 
-fn endpoint() -> Option<String> {
-    std::env::var("AGENTD_AWS_ENDPOINT").ok()
-}
+mod common;
 
-fn id(prefix: &str) -> String {
-    format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
-}
+use common::{endpoint, id, kms_key, manager};
 
 fn key(workspace: &str) -> SecretKey {
     SecretKey::new(workspace, &id("vlt"), &id("cred")).unwrap()
 }
 
-async fn kms_key(endpoint: &str) -> String {
-    let shared = aws_common::sdk_config(None, None).await;
-    let conf = aws_sdk_kms::config::Builder::from(&shared).endpoint_url(endpoint).build();
-    let out = aws_sdk_kms::Client::from_conf(conf).create_key().send().await.unwrap();
-    out.key_metadata.unwrap().key_id
-}
-
 async fn store(endpoint: &str) -> AwsSecretStore {
-    let mut config = AwsSecretsConfig::new("agentd_test/it", kms_key(endpoint).await);
-    config.endpoint = Some(endpoint.to_owned());
-    AwsSecretStore::connect(&config).await.unwrap()
-}
-
-async fn manager(endpoint: &str) -> aws_sdk_secretsmanager::Client {
-    let shared = aws_common::sdk_config(None, None).await;
-    aws_sdk_secretsmanager::Client::from_conf(
-        aws_sdk_secretsmanager::config::Builder::from(&shared).endpoint_url(endpoint).build(),
-    )
+    common::store(endpoint, "agentd_test/it").await
 }
 
 fn secret(value: &str) -> SecretString {

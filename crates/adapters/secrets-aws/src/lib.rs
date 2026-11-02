@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod api_keys;
 mod failure;
 mod key;
 mod name;
@@ -20,6 +21,7 @@ mod store;
 
 use std::time::Duration;
 
+pub use api_keys::{ApiKeyRecord, AwsApiKeys};
 use aws_sdk_secretsmanager::config::timeout::TimeoutConfig;
 pub use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 

@@ -19,13 +19,13 @@ fn config(vars: &[(&str, &str)]) -> Result<Config, ConfigError> {
 }
 
 #[test]
-fn defaults_select_postgres_s3_aws_postgres_keys_local_docker() {
+fn defaults_select_postgres_s3_aws_aws_keys_local_docker() {
     let c = config(&[]).unwrap();
     let StoreConfig::Postgres { url, .. } = &c.store;
     assert_eq!(url, URL);
     assert_eq!(c.blobs, BlobsConfig::S3(S3Config::new("agentd-artifacts")));
     assert_eq!(c.secrets, AwsSecretsConfig::new("agentd", "alias/agentd"));
-    assert_eq!((c.keys, c.scheduler), (KeysConfig::Postgres, SchedulerConfig::Local));
+    assert_eq!((c.keys, c.scheduler), (KeysConfig::Aws, SchedulerConfig::Local));
     assert!(matches!(c.runtime, RuntimeConfig::Docker { ref image, .. } if image == DEFAULT_SANDBOX_IMAGE));
 }
 
