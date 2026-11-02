@@ -712,6 +712,7 @@ dependencies = [
  "bytes",
  "shared",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
