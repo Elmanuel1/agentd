@@ -11,7 +11,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use serde::Deserialize;
-use shared::{ApiJson, AuthContext, Page, Pagination, RouteError};
+use shared::error::DataEnvelope;
+use shared::{ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
 
 use crate::events::EventPayload;
 use crate::service::SessionsService;
@@ -25,6 +26,9 @@ pub struct SendEventsBody {
     #[serde(default)]
     pub events: Vec<EventPayload>,
 }
+
+/// Every list here reads `limit` and `page` only.
+const LIST: ListSpec = ListSpec::managed(&[]);
 
 /// Build the sessions router.
 pub fn router() -> Router {
@@ -50,7 +54,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::from_fetched(svc.list(&ctx, &page).await?, &page)).into_response())
 }
 
@@ -81,7 +85,7 @@ async fn list_threads(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     svc.get(&ctx, &id).await?;
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::paginate(Vec::<serde_json::Value>::new(), &page)).into_response())
 }
 
@@ -98,7 +102,8 @@ async fn delete(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.delete(&ctx, &id).await?).into_response())
+    let session = svc.delete(&ctx, &id).await?;
+    Ok(Json(Deleted::new(session.id.as_str(), "session_deleted")).into_response())
 }
 
 async fn list_events(
@@ -107,7 +112,7 @@ async fn list_events(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::paginate(svc.list_events(&ctx, &id).await?, &page)).into_response())
 }
 
@@ -117,7 +122,7 @@ async fn send_events(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<SendEventsBody>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(Page::of(svc.send_events(&ctx, &id, body.events).await?)).into_response())
+    Ok(Json(DataEnvelope { data: svc.send_events(&ctx, &id, body.events).await? }).into_response())
 }
 
 async fn stream_events(

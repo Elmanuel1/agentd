@@ -7,7 +7,7 @@ use axum::extract::{Extension, Multipart, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use shared::{reject_unknown_params, AuthContext, IdCursor, IdPage, RouteError};
+use shared::{multipart_error, reject_unknown_params, AuthContext, Deleted, IdCursor, IdPage, RouteError};
 
 use crate::FilesService;
 
@@ -28,15 +28,15 @@ async fn upload(
     let mut mime = None;
     let mut bytes = None;
     let mut scope_id = None;
-    while let Ok(Some(field)) = multipart.next_field().await {
+    while let Some(field) = multipart.next_field().await.map_err(|e| multipart_error(&e))? {
         match field.name() {
             Some("file") => {
                 filename = field.file_name().map(str::to_owned);
                 mime = field.content_type().map(str::to_owned);
-                bytes = field.bytes().await.ok();
+                bytes = Some(field.bytes().await.map_err(|e| multipart_error(&e))?);
             }
             Some("scope_id") => {
-                scope_id = field.text().await.ok();
+                scope_id = Some(field.text().await.map_err(|e| multipart_error(&e))?);
             }
             _ => {}
         }
@@ -82,5 +82,6 @@ async fn delete(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.delete(&ctx, &id).await?).into_response())
+    let file = svc.delete(&ctx, &id).await?;
+    Ok(Json(Deleted::new(file.id.as_str(), "file_deleted")).into_response())
 }

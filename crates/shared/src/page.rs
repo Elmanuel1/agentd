@@ -1,11 +1,11 @@
 //! List envelopes + cursor pagination.
 //!
-//! Live-probed (managed-agents-2026-04-01, 2026-07-05): list endpoints return
-//! `{"data":[…], "next_page":"page_…"}` where `next_page` is an opaque cursor
-//! present ONLY when more results exist (omitted otherwise). The next page is
-//! fetched with `?page=<cursor>&limit=N`; `limit` defaults to 20 and must be
-//! 1–100 (else 400). The cursor value is opaque to clients, so agentd mints its
-//! own `page_…` tokens.
+//! Live-probed: Managed Agents lists return `{"data":[…], "next_page":"page_…"}`,
+//! where `next_page` is an opaque cursor, omitted on the last page (the GA
+//! Files and Skills lists send `null` instead). The next page is fetched with
+//! `?page=<cursor>&limit=N`; `limit` defaults to 20, and each list's
+//! [`ListSpec`] sets its bounds and messages. The cursor value is opaque to
+//! clients, so agentd mints its own `page_…` tokens.
 
 use std::collections::HashMap;
 
@@ -16,15 +16,17 @@ use serde::Serialize;
 use crate::error::ApiError;
 
 mod id_cursor;
+mod spec;
 
 pub use id_cursor::{IdCursor, IdPage};
+pub use spec::{ListSpec, Messages, UnknownParams};
 
 /// Default page size when `limit` is omitted.
 pub const DEFAULT_LIMIT: usize = 20;
 /// Maximum allowed `limit`.
 pub const MAX_LIMIT: usize = 100;
 
-/// A paginated list response — `{data, next_page?}`.
+/// A paginated Managed Agents list response — `{data, next_page?}`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Page<T> {
     /// The items on this page.
@@ -35,13 +37,6 @@ pub struct Page<T> {
 }
 
 impl<T> Page<T> {
-    /// Bare `{"data":[…]}` (no pagination) — for non-list responses like the
-    /// echo of just-sent events.
-    #[must_use]
-    pub fn of(data: Vec<T>) -> Self {
-        Self { data, next_page: None }
-    }
-
     /// Slice `all` (a fully-ordered result set) to the requested page and set
     /// `next_page` when more remain.
     #[must_use]
@@ -103,14 +98,6 @@ impl Pagination {
         Ok(Self { limit, offset })
     }
 
-    /// A plain list endpoint's controls: reject any param other than
-    /// `limit`/`page`, then parse. Collapses the `reject_unknown_params(…) +
-    /// from_params(…)` pair repeated at every simple list route.
-    pub fn from_list_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
-        reject_unknown_params(params, &["limit", "page"])?;
-        Self::from_params(params)
-    }
-
     /// SQL `LIMIT` to fetch: `limit + 1`. The extra row (if present) signals
     /// "more remain" without a second count query. Capped at `i64`.
     #[must_use]
@@ -152,7 +139,7 @@ fn encode_cursor(offset: usize) -> String {
     format!("page_{}", URL_SAFE_NO_PAD.encode(offset.to_string()))
 }
 
-fn decode_cursor(cursor: &str) -> Option<usize> {
+pub(crate) fn decode_cursor(cursor: &str) -> Option<usize> {
     let b64 = cursor.strip_prefix("page_")?;
     let bytes = URL_SAFE_NO_PAD.decode(b64).ok()?;
     std::str::from_utf8(&bytes).ok()?.parse().ok()

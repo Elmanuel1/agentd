@@ -67,7 +67,15 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (Sta
         .uri(uri)
         .header("content-type", "application/json")
         .header("x-api-key", KEY)
-        .header("anthropic-beta", "managed-agents-2026-04-01")
+        .header("anthropic-version", "2023-06-01")
+        .header(
+            "anthropic-beta",
+            if uri.starts_with("/v1/memory_stores") {
+                "agent-memory-2026-07-22"
+            } else {
+                "managed-agents-2026-04-01"
+            },
+        )
         .body(match body {
             Some(s) => Body::from(s.to_owned()),
             None => Body::empty(),

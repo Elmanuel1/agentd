@@ -71,12 +71,16 @@ async fn call_raw(
     api_key: Option<&str>,
     beta: bool,
 ) -> (StatusCode, serde_json::Value) {
-    let mut b = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01");
     if let Some(k) = api_key {
         b = b.header("x-api-key", k);
     }
     if beta {
-        b = b.header("anthropic-beta", "managed-agents-2026-04-01");
+        b = b.header("anthropic-beta", beta_for(uri));
     }
     let req = b
         .body(match body {
@@ -89,6 +93,15 @@ async fn call_raw(
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, v)
+}
+
+/// The beta the official SDK sends for `uri`.
+fn beta_for(uri: &str) -> &'static str {
+    if uri.starts_with("/v1/memory_stores") {
+        "agent-memory-2026-07-22"
+    } else {
+        "managed-agents-2026-04-01"
+    }
 }
 
 /// Standard authenticated + beta call.

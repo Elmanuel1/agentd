@@ -27,6 +27,7 @@ pub mod types;
 
 use std::sync::Arc;
 
+use shared::beta::{BetaGate, AGENT_MEMORY};
 use shared::Module;
 
 pub use service::MemoriesService;
@@ -36,7 +37,11 @@ pub use store::{
 };
 pub use types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
 
-/// The memory module: its routes.
+/// The memory module: its routes, behind the agent-memory beta.
 pub fn module(service: Arc<MemoriesService>) -> Module {
-    Module::new(routes::router(), service)
+    Module::new(routes::router(), service).with_beta(BetaGate {
+        beta: AGENT_MEMORY,
+        prefixes: &["/v1/memory_stores"],
+        ga_fields: &["name", "description", "metadata"],
+    })
 }

@@ -137,6 +137,12 @@ impl ApiError {
         e
     }
 
+    /// 413 `request_too_large`.
+    #[must_use]
+    pub fn request_too_large(message: impl Into<String>) -> Self {
+        Self::of(ErrorType::RequestTooLarge, message)
+    }
+
     /// 429 `rate_limit_error`.
     #[must_use]
     pub fn rate_limited(message: impl Into<String>) -> Self {
@@ -154,7 +160,7 @@ impl ApiError {
     }
 
     /// Render the full wire envelope with a request id.
-    pub fn to_envelope(&self, request_id: &RequestId) -> Value {
+    pub fn to_envelope(&self, request_id: Option<&RequestId>) -> Value {
         let mut error = Map::new();
         error.insert("type".into(), Value::String(self.error_type.wire_name().into()));
         error.insert("message".into(), Value::String(self.message.clone()));
@@ -164,7 +170,10 @@ impl ApiError {
         let mut envelope = Map::new();
         envelope.insert("type".into(), Value::String("error".into()));
         envelope.insert("error".into(), Value::Object(error));
-        envelope.insert("request_id".into(), Value::String(request_id.as_str().into()));
+        envelope.insert(
+            "request_id".into(),
+            request_id.map_or(Value::Null, |r| Value::String(r.as_str().into())),
+        );
         Value::Object(envelope)
     }
 }
