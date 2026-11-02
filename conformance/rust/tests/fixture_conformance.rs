@@ -96,7 +96,16 @@ fn fixture(name: &str) -> serde_json::Value {
         "session.create" => include_str!("../../fixtures/session.create.json"),
         other => panic!("unknown fixture {other}"),
     };
-    serde_json::from_str(raw).unwrap()
+    let mut v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    // The July captures predate `execution_identity`, which the current API
+    // serves on every agent (SDK 1.3.0 types it as required).
+    let identity = serde_json::json!({"type": "service_account"});
+    match name {
+        "agent.create" => v["execution_identity"] = identity,
+        "session.create" => v["agent"]["execution_identity"] = identity,
+        _ => {}
+    }
+    v
 }
 
 fn assert_conformant(name: &str, expected: &serde_json::Value, actual: &serde_json::Value) {

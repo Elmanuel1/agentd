@@ -122,6 +122,13 @@ pub(crate) fn parse_doc<T: serde::de::DeserializeOwned, E: FromBackend>(
     serde_json::from_value(doc).map_err(|e| E::backend(shared::BackendError::new(e)))
 }
 
+/// One `doc` column read by a raw SQL query.
+#[derive(diesel::QueryableByName)]
+pub(crate) struct DocRow {
+    #[diesel(sql_type = diesel::sql_types::Jsonb)]
+    pub(crate) doc: serde_json::Value,
+}
+
 /// Serialize a wire type into a `doc` jsonb value.
 pub(crate) fn to_doc<T: serde::Serialize, E: FromBackend>(v: &T) -> Result<serde_json::Value, E> {
     serde_json::to_value(v).map_err(|e| E::backend(shared::BackendError::new(e)))

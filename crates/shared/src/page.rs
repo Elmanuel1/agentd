@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::error::ApiError;
 
+pub mod filters;
 mod id_cursor;
 mod spec;
 

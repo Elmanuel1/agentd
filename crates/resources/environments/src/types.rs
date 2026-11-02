@@ -13,6 +13,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use shared::{Id, Metadata, Resource, Scope, Timestamp};
 
+mod params;
+mod requests;
+
+pub use params::{ConfigParams, NetworkingParams, PackagesParams};
+pub use requests::{CreateEnvironmentRequest, ScopeParam, UpdateEnvironmentRequest};
+
 /// Marker for `env_…` ids.
 #[derive(Debug, Clone, Copy)]
 pub struct EnvironmentResource;
@@ -90,27 +96,27 @@ impl Default for Packages {
 }
 
 /// Container networking policy.
+/// Network policy. Live serves every `limited` field, defaults included.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Networking {
-    /// Full egress.
+    /// Full outbound access.
     #[default]
     Unrestricted,
-    /// Deny-by-default with opt-ins.
+    /// Only the listed hosts, plus package registries and MCP servers when allowed.
     Limited {
-        /// Allowed egress hosts.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        /// Hosts the container can reach.
+        #[serde(default)]
         allowed_hosts: Vec<String>,
-        /// Permit package managers.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        allow_package_managers: Option<bool>,
-        /// Permit configured MCP server endpoints.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        allow_mcp_servers: Option<bool>,
+        /// Public package registries are reachable.
+        #[serde(default)]
+        allow_package_managers: bool,
+        /// The agent's MCP servers are reachable.
+        #[serde(default)]
+        allow_mcp_servers: bool,
     },
 }
 
-/// Canonical environment config.
 // Boxing the `Cloud` variant would change the internally-tagged serde shape and
 // break wire conformance; the size asymmetry is harmless for a config object
 // that is never held in bulk.
@@ -137,6 +143,18 @@ pub enum EnvironmentConfig {
     SelfHosted {},
 }
 
+impl Default for EnvironmentConfig {
+    /// A cloud config with no packages and unrestricted networking.
+    fn default() -> Self {
+        Self::Cloud {
+            packages: Packages::default(),
+            networking: Networking::default(),
+            init_script: String::new(),
+            environment: BTreeMap::new(),
+        }
+    }
+}
+
 /// Full wire environment object (field order matches the live fixture).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
@@ -147,8 +165,9 @@ pub struct Environment {
     pub tag: EnvironmentTag,
     /// Name — **not unique** (live-verified).
     pub name: String,
-    /// Description — canonical default `""` (live-verified, not null).
-    pub description: String,
+    /// Description: `""` when a create leaves it out (live-verified), `null`
+    /// once an update clears it.
+    pub description: Option<String>,
     /// Created.
     pub created_at: Timestamp,
     /// Updated.
@@ -163,35 +182,6 @@ pub struct Environment {
     pub metadata: Metadata,
     /// Always `"organization"` — the only resource that carries scope.
     pub scope: Scope,
-}
-
-/// `POST /v1/environments` body (permissive; validated in the service).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateEnvironmentRequest {
-    /// Required.
-    pub name: Option<String>,
-    /// Optional (canonicalizes to `""`).
-    pub description: Option<String>,
-    /// Required.
-    pub config: Option<EnvironmentConfig>,
-    /// Optional.
-    #[serde(default)]
-    pub metadata: Metadata,
-}
-
-/// `POST /v1/environments/{id}` body.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateEnvironmentRequest {
-    /// Replace name.
-    pub name: Option<String>,
-    /// Replace description.
-    pub description: Option<String>,
-    /// Replace config (applies to **new** containers only).
-    pub config: Option<EnvironmentConfig>,
-    /// Replace metadata.
-    pub metadata: Option<Metadata>,
 }
 
 #[cfg(test)]

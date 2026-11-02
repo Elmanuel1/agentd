@@ -1,16 +1,32 @@
+//! Tools as stored and served: every config resolved against its toolset's
+//! defaults, as live returns them.
+
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// Tool permission policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionPolicy {
-    /// Execute automatically (default).
+    /// Execute automatically.
     AlwaysAllow,
     /// Pause for `user.tool_confirmation`.
     AlwaysAsk,
+    /// The server judges each call: allow when safe, deny when high-risk, ask
+    /// when it reaches no judgement.
+    Auto,
 }
 
-/// Defaults applied to all tools in a toolset.
+impl PermissionPolicy {
+    /// Whether a call under this policy waits for the user's confirmation.
+    /// agentd has no call judge, so `auto` reaches no judgement and asks.
+    #[must_use]
+    pub fn asks(self) -> bool {
+        !matches!(self, Self::AlwaysAllow)
+    }
+}
+
+/// Defaults applied to every tool in a toolset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolDefaultConfig {
     /// Whether tools are enabled by default.
@@ -19,24 +35,30 @@ pub struct ToolDefaultConfig {
     pub permission_policy: PermissionPolicy,
 }
 
-impl Default for ToolDefaultConfig {
-    fn default() -> Self {
-        // Live canonical expansion of a bare toolset entry.
-        Self { enabled: true, permission_policy: PermissionPolicy::AlwaysAllow }
-    }
+impl ToolDefaultConfig {
+    /// The agent toolset's default: enabled, `always_allow`.
+    pub const AGENT_TOOLSET: Self = Self { enabled: true, permission_policy: PermissionPolicy::AlwaysAllow };
+    /// An MCP toolset's default: enabled, `always_ask`.
+    pub const MCP_TOOLSET: Self = Self { enabled: true, permission_policy: PermissionPolicy::AlwaysAsk };
 }
 
-/// Per-tool override inside a toolset.
+/// One tool's resolved config inside a toolset. Agent-toolset configs carry
+/// `type` (the tool name) and their tool's options (`url_sources` and so on);
+/// MCP tool configs carry neither.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolConfig {
+    /// Whether the tool is enabled.
+    pub enabled: bool,
     /// Tool name (e.g. `bash`).
     pub name: String,
-    /// Enabled override.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    /// Permission override.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_policy: Option<PermissionPolicy>,
+    /// Permission policy.
+    pub permission_policy: PermissionPolicy,
+    /// The tool's `type` (agent toolset only).
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Tool-specific options.
+    #[serde(flatten)]
+    pub options: Map<String, Value>,
 }
 
 /// An entry in `agent.tools`.
@@ -46,41 +68,52 @@ pub enum Tool {
     /// The prebuilt toolset (bash/read/write/edit/glob/grep/web_*).
     #[serde(rename = "agent_toolset_20260401")]
     AgentToolset {
-        /// Per-tool overrides (canonical: present, possibly empty).
-        #[serde(default)]
+        /// Per-tool configs.
         configs: Vec<ToolConfig>,
-        /// Toolset defaults (canonical: always present).
-        #[serde(default)]
+        /// Toolset defaults.
         default_config: ToolDefaultConfig,
     },
     /// Tools exposed by a declared MCP server.
     #[serde(rename = "mcp_toolset")]
     McpToolset {
-        /// Which `mcp_servers` entry this grants.
-        mcp_server_name: String,
-        /// Per-tool overrides.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        /// Per-tool configs.
         configs: Vec<ToolConfig>,
         /// Defaults.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        default_config: Option<ToolDefaultConfig>,
+        default_config: ToolDefaultConfig,
+        /// Which `mcp_servers` entry this grants.
+        mcp_server_name: String,
     },
     /// A client-side custom tool.
     #[serde(rename = "custom")]
     Custom {
+        /// Description shown to the model.
+        description: String,
+        /// JSON schema of the input.
+        input_schema: Value,
         /// Tool name.
         name: String,
-        /// Description shown to the model.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        /// JSON schema of the input.
-        input_schema: serde_json::Value,
     },
 }
 
-/// A declared MCP server (no auth here — credentials live in vaults).
+impl Tool {
+    /// The permission policy for a call to agent-toolset tool `name`, when
+    /// this entry is the agent toolset.
+    pub fn toolset_policy(&self, name: &str) -> Option<PermissionPolicy> {
+        match self {
+            Self::AgentToolset { configs, default_config } => Some(
+                configs
+                    .iter()
+                    .find(|c| c.name == name)
+                    .map_or(default_config.permission_policy, |c| c.permission_policy),
+            ),
+            Self::McpToolset { .. } | Self::Custom { .. } => None,
+        }
+    }
+}
+
+/// A declared MCP server. It carries no auth: credentials live in vaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpServer {
     /// Streamable-HTTP MCP server by URL.
     Url {

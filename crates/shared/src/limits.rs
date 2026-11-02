@@ -17,7 +17,7 @@ pub mod values {
     /// `agent.system` max.
     pub const SYSTEM_MAX: usize = 100_000;
     /// `agent.tools` max entries.
-    pub const TOOLS_MAX: usize = 128;
+    pub const TOOLS_MAX: usize = 256;
     /// `agent.mcp_servers` max entries.
     pub const MCP_SERVERS_MAX: usize = 20;
     /// `agent.skills` max entries (docs; duplicate skill_id verified live).
