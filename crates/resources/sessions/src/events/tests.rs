@@ -8,9 +8,9 @@ fn status_idle_wire_shape_matches_documented_example() {
     let ev = Event {
         id: EventId::generate(),
         processed_at: Some(Timestamp::now()),
-        payload: EventPayload::SessionStatusIdle {
+        payload: EventPayload::Session(SessionEvent::StatusIdle {
             stop_reason: StopReason::RequiresAction { event_ids: vec![blocking.clone()] },
-        },
+        }),
     };
     let v = serde_json::to_value(&ev).unwrap();
     assert_eq!(v["type"], "session.status_idle");
@@ -22,7 +22,7 @@ fn status_idle_wire_shape_matches_documented_example() {
 #[test]
 fn model_request_end_wire_shape() {
     let start = EventId::generate();
-    let ev = Event::new(EventPayload::SpanModelRequestEnd {
+    let ev = Event::new(EventPayload::Span(SpanEvent::ModelRequestEnd {
         model_request_start_id: start.clone(),
         is_error: false,
         model_usage: ModelUsage {
@@ -31,7 +31,7 @@ fn model_request_end_wire_shape() {
             output_tokens: 727,
             cache_creation_input_tokens: 0,
         },
-    });
+    }));
     let v = serde_json::to_value(&ev).unwrap();
     assert_eq!(v["type"], "span.model_request_end");
     assert_eq!(v["model_usage"]["input_tokens"], 3571);
@@ -80,14 +80,44 @@ fn stop_reason_terminality_gates_the_drain_loop() {
 #[test]
 fn all_event_types_serialize_with_dot_names() {
     let cases: Vec<(EventPayload, &str)> = vec![
-        (EventPayload::UserInterrupt {}, "user.interrupt"),
-        (EventPayload::AgentThreadContextCompacted {}, "agent.thread_context_compacted"),
-        (EventPayload::SessionStatusRunning {}, "session.status_running"),
-        (EventPayload::SessionStatusTerminated {}, "session.status_terminated"),
-        (EventPayload::SpanModelRequestStart {}, "span.model_request_start"),
+        (EventPayload::User(UserEvent::Interrupt {}), "user.interrupt"),
+        (EventPayload::Agent(AgentEvent::ThreadContextCompacted {}), "agent.thread_context_compacted"),
+        (EventPayload::Session(SessionEvent::StatusRunning {}), "session.status_running"),
+        (EventPayload::Session(SessionEvent::StatusTerminated {}), "session.status_terminated"),
+        (EventPayload::Span(SpanEvent::ModelRequestStart {}), "span.model_request_start"),
     ];
     for (p, expected) in cases {
         let v = serde_json::to_value(Event::new(p)).unwrap();
         assert_eq!(v["type"], expected);
     }
+}
+
+#[test]
+fn a_category_keeps_serdes_own_messages() {
+    let err = serde_json::from_str::<EventPayload>(r#"{"type":"user.message"}"#).unwrap_err();
+    assert!(err.to_string().contains("missing field `content`"), "{err}");
+    let err = serde_json::from_str::<EventPayload>(r#"{"type":"user.bogus"}"#).unwrap_err();
+    assert!(err.to_string().contains("unknown variant `user.bogus`"), "{err}");
+    let err = serde_json::from_str::<EventPayload>(r#"{"type":"usr.message"}"#).unwrap_err();
+    assert!(err.to_string().contains("unknown variant `usr.message`"), "{err}");
+    let err = serde_json::from_str::<EventPayload>(r#"{"content":[]}"#).unwrap_err();
+    assert!(err.to_string().contains("missing field `type`"), "{err}");
+}
+
+#[test]
+fn every_category_round_trips_through_its_type_prefix() {
+    for raw in [
+        r#"{"type":"system.message","content":[{"type":"text","text":"x"}]}"#,
+        r#"{"type":"agent.thread_context_compacted"}"#,
+        r#"{"type":"session.status_running"}"#,
+        r#"{"type":"span.model_request_start"}"#,
+    ] {
+        let payload: EventPayload = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_value(&payload).unwrap(),
+            serde_json::from_str::<serde_json::Value>(raw).unwrap()
+        );
+    }
+    let system: EventPayload = serde_json::from_str(r#"{"type":"system.message","content":[]}"#).unwrap();
+    assert!(system.is_user_event());
 }

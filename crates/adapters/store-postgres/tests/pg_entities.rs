@@ -268,7 +268,7 @@ async fn pg_sessions_shared_event_log() {
     if !enabled() {
         return;
     }
-    use sessions::events::{Event, EventPayload};
+    use sessions::events::{Event, EventPayload, UserEvent};
     use sessions::store::SessionsStore;
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
@@ -279,8 +279,8 @@ async fn pg_sessions_shared_event_log() {
     store.insert(&ws, session.clone()).await.unwrap();
     assert_eq!(store.get(&ws, &session.id).await.unwrap().id, session.id);
 
-    let e1 = Event::new(EventPayload::UserInterrupt {});
-    let e2 = Event::new(EventPayload::UserInterrupt {});
+    let e1 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
+    let e2 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
     store.append_event(&ws, &session.id, e1.clone()).await.unwrap();
     store.append_event(&ws, &session.id, e2.clone()).await.unwrap();
 
