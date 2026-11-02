@@ -258,26 +258,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentd-store-aws"
-version = "0.1.0"
-dependencies = [
- "agentd-agents",
- "agentd-blobs",
- "agentd-core",
- "agentd-deployments",
- "agentd-files",
- "async-trait",
- "aws-config",
- "aws-sdk-dynamodb",
- "bytes",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "agentd-store-postgres"
 version = "0.1.0"
 dependencies = [
@@ -468,31 +448,6 @@ dependencies = [
  "pin-project-lite",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "aws-sdk-dynamodb"
-version = "1.116.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c937c55ae3030bec4431c0d9146e33d2b3e5f54bb47ed32597068200c56affc"
-dependencies = [
- "arc-swap",
- "aws-credential-types",
- "aws-runtime",
- "aws-smithy-async",
- "aws-smithy-http",
- "aws-smithy-json",
- "aws-smithy-observability",
- "aws-smithy-runtime",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
- "aws-types",
- "bytes",
- "fastrand",
- "http 0.2.12",
- "http 1.4.2",
- "regex-lite",
- "tracing",
 ]
 
 [[package]]

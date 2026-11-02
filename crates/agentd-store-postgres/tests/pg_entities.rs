@@ -2,7 +2,7 @@
 //! memory, sessions) against a live Postgres + object store.
 //!
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`; blob-backed tests also need
-//! `AGENTD_AWS_ENDPOINT` (MinIO/Floci) and skip otherwise. Run:
+//! `AGENTD_AWS_ENDPOINT` (an S3 emulator) and skip otherwise. Run:
 //! ```sh
 //! AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
 //!   AGENTD_AWS_ENDPOINT=http://localhost:4566 AWS_ACCESS_KEY_ID=test \

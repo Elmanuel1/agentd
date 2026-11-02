@@ -15,7 +15,6 @@ members = [
     "crates/agentd-engine",
     "crates/agentd-api",
     "crates/agentd-conformance",
-    "crates/agentd-store-aws",
     "crates/agentd-store-postgres",
     "crates/agentd-blobs",
 ]
@@ -41,7 +40,6 @@ agentd-dreams = { path = "crates/agentd-dreams" }
 agentd-scheduler = { path = "crates/agentd-scheduler" }
 agentd-engine = { path = "crates/agentd-engine" }
 agentd-api = { path = "crates/agentd-api" }
-agentd-store-aws = { path = "crates/agentd-store-aws" }
 agentd-store-postgres = { path = "crates/agentd-store-postgres" }
 agentd-blobs = { path = "crates/agentd-blobs" }
 
@@ -68,7 +66,6 @@ bytes = "1"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
-aws-sdk-dynamodb = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
 aws-smithy-runtime-api = "1"
 diesel = { version = "2.2", default-features = false, features = ["postgres_backend", "serde_json", "chrono"] }

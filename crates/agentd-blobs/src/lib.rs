@@ -2,11 +2,10 @@
 //!
 //! Bytes (file contents, session workspace snapshots, large memory content)
 //! **never** live in the record database — they belong in object storage.
-//! Both persistence backends (Postgres records + DynamoDB records) share this
-//! S3 blob store; only *metadata* differs by backend.
+//! The record store keeps only metadata and the blob key.
 //!
 //! [`S3BlobStore`] targets any S3-compatible endpoint: real AWS S3, MinIO,
-//! or the Floci/LocalStack emulators (via `AGENTD_AWS_ENDPOINT`).
+//! or an S3 emulator such as LocalStack (via `AGENTD_AWS_ENDPOINT`).
 
 #![forbid(unsafe_code)]
 

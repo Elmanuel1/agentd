@@ -77,13 +77,3 @@ ON` list), **deployments** (+ runs + claim), **files** (metadata in Postgres,
 bytes in object storage via the shared `agentd-blobs` `BlobStore` — never in
 the DB). Remaining entities reuse the same hybrid pattern — one module + a
 `V2__*.sql` (or extend `V1`) each.
-
-## Postgres vs DynamoDB (agentd-store-aws)
-
-Both are behind the same store traits — switch with `AGENTD_STORE`.
-
-| | Postgres (default) | DynamoDB + S3 |
-|---|---|---|
-| Dashboards (list/filter/sort/search/count) | native SQL | needs a separate search copy |
-| Ops | you run/scale the DB (or Aurora Serverless) | fully managed, auto-scales |
-| Best for | dashboard-first products (agentd) | extreme scale / write-heavy, simple lookups |
