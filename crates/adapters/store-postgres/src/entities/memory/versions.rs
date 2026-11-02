@@ -36,17 +36,22 @@ impl PgMemoryStore {
     }
 }
 
-/// Upsert a version's row; its content lives in the blob.
+/// A version's row doc: its content lives in the blob.
+pub(super) fn version_doc(v: &VersionRecord) -> Result<serde_json::Value, StoreError> {
+    let mut meta = v.version.clone();
+    meta.content = None;
+    to_doc(&meta)
+}
+
+/// Upsert a version's row.
 pub(super) async fn version_row(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     store: &MemoryStoreId,
     memory_id: &MemoryId,
     v: &VersionRecord,
+    doc: serde_json::Value,
 ) -> Result<(), diesel::result::Error> {
-    let mut meta = v.version.clone();
-    meta.content = None;
-    let doc = serde_json::to_value(&meta).map_err(|e| diesel::result::Error::SerializationError(e.into()))?;
     diesel::insert_into(memory_versions::table)
         .values((
             memory_versions::workspace_id.eq(ws.as_str()),
@@ -116,9 +121,10 @@ impl MemoryVersionPersistence for PgMemoryStore {
         memory_id: &MemoryId,
         version: &VersionRecord,
     ) -> Result<(), StoreError> {
+        let doc = version_doc(version)?;
         self.put_blob(ws, store, version).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        version_row(&mut conn, ws, store, memory_id, version).await.map_err(diesel_be)
+        version_row(&mut conn, ws, store, memory_id, version, doc).await.map_err(diesel_be)
     }
 
     async fn get_version(
@@ -173,7 +179,7 @@ impl MemoryVersionPersistence for PgMemoryStore {
             head.path = path;
         }
         let write =
-            HeadWrite { head: &head, deleted: false, versions: &[], check: false, expected: Some(&expected) };
+            HeadWrite { head: &head, deleted: false, versions: &[], check: true, expected: Some(&expected) };
         self.write_head(ws, store, &write).await?;
         Ok(MemoryRecord { head, deleted: false, chain: vec![target] })
     }

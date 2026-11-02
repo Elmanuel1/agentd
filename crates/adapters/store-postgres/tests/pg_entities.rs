@@ -422,3 +422,25 @@ async fn pg_memory_concurrent_updates_never_lose_a_version() {
     assert_eq!(head.memory_version_id, versions[0].id, "the head is the newest version");
     assert_eq!(head.content, versions[0].content);
 }
+
+#[tokio::test]
+async fn pg_memory_rollback_to_an_occupied_path_conflicts() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memroll").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs)));
+    let ctx = ctx_ws(&uniq_ws("memroll"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    let sid = ms.id.as_str();
+    let create = |path: &str| serde_json::from_value(json!({"path": path, "content": "x"})).unwrap();
+    let m1 = svc.create_memory(&ctx, sid, create("/a.md")).await.unwrap();
+    let rename = serde_json::from_value(json!({"path": "/b.md"})).unwrap();
+    svc.update_memory(&ctx, sid, m1.id.as_str(), rename).await.unwrap();
+    svc.create_memory(&ctx, sid, create("/a.md")).await.unwrap();
+    let err = svc.rollback(&ctx, sid, m1.id.as_str(), m1.memory_version_id.as_str()).await.unwrap_err();
+    assert_eq!(err.status, 409, "{err:?}");
+}

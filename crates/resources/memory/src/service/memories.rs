@@ -1,9 +1,9 @@
 use shared::hash::content_sha256;
 use shared::limits::{required, validate_bytes_max, validate_sha256_hex, values};
-use shared::{ApiError, AuthContext, ErrorType, Timestamp};
+use shared::{ApiError, AuthContext, Timestamp};
 
 use super::{map_store, parse_mem_pair, parse_store_id, MemoriesService};
-use crate::store::{MemoryRecord, VersionRecord, VersionSelector};
+use crate::store::{MemoryRecord, StoreError, VersionRecord, VersionSelector};
 use crate::types::{
     CreateMemoryRequest, Memory, MemoryId, MemoryStoreId, MemoryTag, MemoryVersion, Precondition,
     UpdateMemoryRequest, VersionOperation,
@@ -29,7 +29,7 @@ impl MemoriesService {
         let store_id = parse_store_id(raw_store_id)?;
         self.require_writable(ctx, &store_id).await?;
         let path = required("path", req.path)?;
-        validate_path(&path)?;
+        Memory::validate_path(&path)?;
         let content = required("content", req.content)?;
         validate_bytes_max("content", content.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
         let now = Timestamp::now();
@@ -76,29 +76,46 @@ impl MemoriesService {
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
         self.require_writable(ctx, &sid).await?;
-        let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
-        let new_content = match req.content {
-            Some(c) => {
-                validate_bytes_max("content", c.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
-                c
+        if let Some(c) = &req.content {
+            validate_bytes_max("content", c.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
+        }
+        if let Some(p) = &req.path {
+            Memory::validate_path(p)?;
+        }
+        for _ in 0..HEAD_ATTEMPTS {
+            if let Some(head) = self.try_update(ctx, &sid, &mid, &req).await? {
+                return Ok(head);
             }
+        }
+        Err(map_store(StoreError::HeadMoved))
+    }
+
+    /// One read-and-append; `None` when another writer moved the head first,
+    /// so the caller re-reads and applies the update to the new head (a
+    /// precondition is then checked against that head).
+    async fn try_update(
+        &self,
+        ctx: &AuthContext,
+        sid: &MemoryStoreId,
+        mid: &MemoryId,
+        req: &UpdateMemoryRequest,
+    ) -> Result<Option<Memory>, ApiError> {
+        let record = self.store.get_memory(&ctx.workspace, sid, mid).await.map_err(map_store)?;
+        let new_content = match &req.content {
+            Some(c) => c.clone(),
             None => record.resolve(&VersionSelector::Latest).and_then(|v| v.blob.clone()).unwrap_or_default(),
         };
-        let new_path = match req.path {
-            Some(p) => {
-                validate_path(&p)?;
-                p
-            }
-            None => record.head.path.clone(),
-        };
+        let new_path = req.path.clone().unwrap_or_else(|| record.head.path.clone());
         // Live: an update that changes nothing writes no version, and that
         // holds even when its precondition names other content.
         if content_sha256(new_content.as_bytes()) == record.head.content_sha256
             && new_path == record.head.path
         {
-            return Ok(record.head);
+            return Ok(Some(record.head));
         }
-        check_precondition(&record, req.precondition.as_ref())?;
+        if let Some(pre) = &req.precondition {
+            pre.check(&record.head)?;
+        }
         let now = Timestamp::now();
         let version = MemoryVersion::record(
             ctx.actor(),
@@ -116,11 +133,9 @@ impl MemoriesService {
         head.path = new_path;
         head.updated_at = now;
         let version = VersionRecord { version, blob: Some(new_content) };
-        self.store
-            .append_version(&ctx.workspace, &sid, &head, false, &expected, &version)
-            .await
-            .map_err(map_store)?;
-        Ok(head)
+        let appended =
+            self.store.append_version(&ctx.workspace, sid, &head, false, &expected, &version).await;
+        moved_or(appended, head)
     }
 
     /// `DELETE /v1/memory_stores/{sid}/memories/{mid}` — journals a
@@ -134,58 +149,49 @@ impl MemoriesService {
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
         self.require_writable(ctx, &sid).await?;
-        let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
-        if let Some(expected) = expected_content_sha256 {
-            validate_sha256_hex("expected_content_sha256", expected)?;
-            if record.head.content_sha256 != expected {
-                return Err(precondition_failed());
+        let pre = expected_content_sha256
+            .map(|sha| {
+                validate_sha256_hex("expected_content_sha256", sha)?;
+                Ok::<_, ApiError>(Precondition::ContentSha256 { content_sha256: sha.to_owned() })
+            })
+            .transpose()?;
+        for _ in 0..HEAD_ATTEMPTS {
+            let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
+            if let Some(pre) = &pre {
+                pre.check(&record.head)?;
+            }
+            let now = Timestamp::now();
+            let path = record.head.path.clone();
+            let version = MemoryVersion::record(
+                ctx.actor(),
+                mid.clone(),
+                sid.clone(),
+                VersionOperation::Deleted,
+                path,
+                None,
+                now,
+            );
+            let mut head = record.head;
+            head.updated_at = now;
+            let expected = head.memory_version_id.clone();
+            let version = VersionRecord { version, blob: None };
+            let appended =
+                self.store.append_version(&ctx.workspace, &sid, &head, true, &expected, &version).await;
+            if let Some(head) = moved_or(appended, head)? {
+                return Ok(head);
             }
         }
-        let now = Timestamp::now();
-        let path = record.head.path.clone();
-        let version = MemoryVersion::record(
-            ctx.actor(),
-            mid.clone(),
-            sid.clone(),
-            VersionOperation::Deleted,
-            path,
-            None,
-            now,
-        );
-        let mut head = record.head;
-        head.updated_at = now;
-        let expected = head.memory_version_id.clone();
-        let version = VersionRecord { version, blob: None };
-        self.store
-            .append_version(&ctx.workspace, &sid, &head, true, &expected, &version)
-            .await
-            .map_err(map_store)?;
-        Ok(head)
+        Err(map_store(StoreError::HeadMoved))
     }
 }
 
-fn check_precondition(record: &MemoryRecord, pre: Option<&Precondition>) -> Result<(), ApiError> {
-    if let Some(Precondition::ContentSha256 { content_sha256 }) = pre {
-        validate_sha256_hex("precondition.content_sha256", content_sha256)?;
-        if &record.head.content_sha256 != content_sha256 {
-            return Err(precondition_failed());
-        }
-    }
-    Ok(())
-}
+/// Reads before a write that keeps losing the head to other writers.
+const HEAD_ATTEMPTS: usize = 3;
 
-fn precondition_failed() -> ApiError {
-    ApiError {
-        status: 409,
-        error_type: ErrorType::MemoryPreconditionFailed,
-        message: "precondition failed: content_sha256 does not match the current content".into(),
-        extra: serde_json::Map::new(),
+fn moved_or(appended: Result<(), StoreError>, head: Memory) -> Result<Option<Memory>, ApiError> {
+    match appended {
+        Ok(()) => Ok(Some(head)),
+        Err(StoreError::HeadMoved) => Ok(None),
+        Err(e) => Err(map_store(e)),
     }
-}
-
-fn validate_path(path: &str) -> Result<(), ApiError> {
-    if !path.starts_with('/') || path.len() < 2 {
-        return Err(ApiError::invalid_request("path: must be an absolute path like \"/notes.md\""));
-    }
-    Ok(())
 }
