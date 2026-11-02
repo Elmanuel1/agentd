@@ -201,7 +201,7 @@ jobs:
       localstack:
         image: localstack/localstack:3.0
         env:
-          SERVICES: s3
+          SERVICES: s3,secretsmanager,kms
         ports: ["4566:4566"]
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
@@ -213,10 +213,9 @@ jobs:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
-      AGENTD_API_KEYS: sdk-conformance-key:org_sdk:wrkspc_sdk
+      AGENTD_SECRETS_ENDPOINT: http://localhost:4566
       AGENTD_ADDR: 127.0.0.1:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
-      AGENTD_TEST_KEY: sdk-conformance-key
       AGENTD_RUNTIME: docker
       AGENTD_SANDBOX_IMAGE: agentd-sandbox
       AGENTD_MOCK_MODEL: conformance/demo/mock-model.json
@@ -239,6 +238,15 @@ jobs:
             -locations=filesystem:/flyway/sql migrate
       - run: docker build -t agentd-sandbox docker/sandbox
       - run: cargo build --locked -p api
+      - name: Create the secrets KMS key on LocalStack
+        run: |
+          key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
+          echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
+      - name: Create the demo's API key with the CLI
+        run: |
+          key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name demo)
+          echo "::add-mask::$key"
+          echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
