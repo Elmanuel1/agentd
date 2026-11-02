@@ -5,8 +5,8 @@ use blobs_s3::{S3BlobStore, S3Config};
 use bytes::Bytes;
 use shared::ports::blobs::BlobStore;
 
-/// Outside us-east-1 the create carries the region as its location
-/// constraint; without it S3 refuses the create.
+/// A configured location constraint goes with the create; LocalStack, like
+/// AWS S3, refuses an eu-west-1 create without it.
 #[tokio::test]
 async fn a_bucket_is_created_outside_us_east_1() {
     let Ok(endpoint) = std::env::var("AGENTD_AWS_ENDPOINT") else {
@@ -18,6 +18,7 @@ async fn a_bucket_is_created_outside_us_east_1() {
         path_style: true,
         create_bucket: true,
         region: Some("eu-west-1".into()),
+        location_constraint: Some("eu-west-1".into()),
         ..S3Config::new(bucket)
     };
     let store = S3BlobStore::connect(&config).await.unwrap();
