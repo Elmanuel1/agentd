@@ -62,7 +62,7 @@ impl AppState {
             vaults::module(Arc::new(VaultsService::new(stores.vaults))),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
             files::module(Arc::new(FilesService::new(stores.files))),
-            skills::module(Arc::new(SkillsService::new(stores.skills))),
+            skills::module(Arc::new(SkillsService::new(stores.skills, stores.skill_versions))),
             sessions::module(sessions),
             deployments::module(deployments),
         ];

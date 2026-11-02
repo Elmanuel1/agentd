@@ -1,5 +1,6 @@
-//! `SkillsStore` on Postgres via Diesel — skill + version metadata rows; the
-//! uploaded zip bundle goes to object storage, keyed by `(skill_id, version)`.
+//! `SkillsStore` on Postgres via Diesel: skill rows, created with their first
+//! version; the uploaded zip bundle goes to object storage, keyed by
+//! `(skill_id, version)`.
 
 use std::sync::Arc;
 
@@ -34,14 +35,14 @@ impl PgSkillsStore {
         Self { backend, blobs }
     }
 
-    fn key(ws: &WorkspaceId, id: &SkillId, version: &str) -> String {
+    pub(crate) fn key(ws: &WorkspaceId, id: &SkillId, version: &str) -> String {
         format!("skills/{}/{}/{version}", ws.as_str(), id.as_str())
     }
 }
 
 // The `version` column is bigint; the wire `version` is that integer as a
 // string. `doc` keeps the string form for a byte-exact echo.
-fn version_col(version: &str) -> i64 {
+pub(crate) fn version_col(version: &str) -> i64 {
     version.parse().unwrap_or(0)
 }
 
@@ -126,56 +127,6 @@ impl SkillsStore for PgSkillsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(parse_doc).collect()
-    }
-
-    async fn versions(
-        &self,
-        ws: &WorkspaceId,
-        id: &SkillId,
-        page: &Pagination,
-    ) -> Result<Vec<SkillVersion>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = skill_versions::table
-            .filter(skill_versions::workspace_id.eq(ws.as_str()))
-            .filter(skill_versions::skill_id.eq(id.as_str()))
-            .order(skill_versions::version.desc())
-            .select(skill_versions::doc)
-            .limit(page.fetch_limit())
-            .offset(page.sql_offset())
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter().map(parse_doc).collect()
-    }
-
-    async fn delete_version(
-        &self,
-        ws: &WorkspaceId,
-        id: &SkillId,
-        version: &str,
-    ) -> Result<bool, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let affected = diesel::delete(
-            skill_versions::table
-                .filter(skill_versions::workspace_id.eq(ws.as_str()))
-                .filter(skill_versions::skill_id.eq(id.as_str()))
-                .filter(skill_versions::version.eq(version_col(version))),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::VersionNotFound);
-        }
-        self.blobs.delete(&Self::key(ws, id, version)).await.map_err(blob_be)?;
-        let remaining: i64 = skill_versions::table
-            .filter(skill_versions::workspace_id.eq(ws.as_str()))
-            .filter(skill_versions::skill_id.eq(id.as_str()))
-            .count()
-            .get_result(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        Ok(remaining > 0)
     }
 
     async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError> {

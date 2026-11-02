@@ -7,11 +7,12 @@ use crate::{
     parse_bundle, Skill, SkillId, SkillResource, SkillSource, SkillTag, SkillVersion, SkillVersionId,
     SkillVersionTag,
 };
-use crate::{SkillsStore, StoreError};
+use crate::{SkillVersionsStore, SkillsStore, StoreError};
 
 /// Skills service.
 pub struct SkillsService {
     store: Arc<dyn SkillsStore>,
+    versions: Arc<dyn SkillVersionsStore>,
 }
 
 impl std::fmt::Debug for SkillsService {
@@ -22,8 +23,8 @@ impl std::fmt::Debug for SkillsService {
 
 impl SkillsService {
     /// Build with a store.
-    pub fn new(store: Arc<dyn SkillsStore>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<dyn SkillsStore>, versions: Arc<dyn SkillVersionsStore>) -> Self {
+        Self { store, versions }
     }
 
     /// `POST /v1/skills` — create a custom skill from a zip bundle. An explicit
@@ -80,7 +81,7 @@ impl SkillsService {
         page: &Pagination,
     ) -> Result<Vec<SkillVersion>, ApiError> {
         let id = shared::parse_id::<SkillResource>(raw_id)?;
-        self.store.versions(&ctx.workspace, &id, page).await.map_err(map_store)
+        self.versions.versions(&ctx.workspace, &id, page).await.map_err(map_store)
     }
 
     /// `DELETE /v1/skills/{id}` — remove the skill and all its versions.
@@ -98,7 +99,7 @@ impl SkillsService {
         version: &str,
     ) -> Result<(), ApiError> {
         let id = shared::parse_id::<SkillResource>(raw_id)?;
-        let any_left = self.store.delete_version(&ctx.workspace, &id, version).await.map_err(map_store)?;
+        let any_left = self.versions.delete_version(&ctx.workspace, &id, version).await.map_err(map_store)?;
         if !any_left {
             self.store.delete_skill(&ctx.workspace, &id).await.map_err(map_store)?;
         }
