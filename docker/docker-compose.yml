@@ -2,8 +2,8 @@
 #
 # DEFAULT persistence: PostgreSQL (Flyway-migrated) — chosen because the
 # product is dashboard-first (list / filter / sort / search / count are plain
-# SQL). agentd stays stateless across replicas (all state in Postgres);
-# multi-replica exactly-once is a native INSERT … ON CONFLICT DO NOTHING.
+# SQL). Records live in Postgres and blobs in object storage; event streams
+# and the local scheduler are per process, so run one replica.
 
 services:
   # ── migrations: Flyway 11 applies the schema, then exits ──────────────
@@ -45,7 +45,7 @@ services:
       s3:
         condition: service_healthy
     deploy:
-      replicas: ${AGENTD_REPLICAS:-1}   # ON CONFLICT keeps N replicas exactly-once
+      replicas: ${AGENTD_REPLICAS:-1}   # one: event streams and timers are per process
 
   postgres:
     image: postgres:16-alpine   # Flyway 11 supports PG 9.5–latest; 16 is the safe LTS-grade pick

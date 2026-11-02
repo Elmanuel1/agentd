@@ -137,8 +137,9 @@ impl Backends {
         };
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(secrets, metrics.clone()));
         let stores = match &config.store {
-            StoreConfig::Postgres { url } => {
-                let pg = PgBackend::connect_observed(url, telemetry::db::observer(metrics.clone())).await?;
+            StoreConfig::Postgres { url, pool } => {
+                let observer = telemetry::db::observer(metrics.clone());
+                let pg = PgBackend::connect_observed(url, *pool, observer).await?;
                 telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
                 Stores::postgres(pg, blobs, secrets)
             }
@@ -156,10 +157,10 @@ impl Backends {
         };
         let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
             RuntimeConfig::None => None,
-            RuntimeConfig::Docker { image } => {
+            RuntimeConfig::Docker { image, limits } => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let runtime = DockerRuntime::new(docker, image.clone());
+                let runtime = DockerRuntime::new(docker, image.clone(), *limits);
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
                 Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
             }

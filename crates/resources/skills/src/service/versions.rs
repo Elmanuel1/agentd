@@ -1,7 +1,7 @@
 //! Skill versions: create, list, retrieve, download and delete.
 
 use bytes::Bytes;
-use shared::{ApiError, AuthContext, Pagination, Timestamp};
+use shared::{ApiError, AuthContext, Pagination};
 
 use super::{map_store, new_version, SkillsService};
 use crate::bundle::UploadFile;
@@ -15,28 +15,29 @@ impl SkillsService {
         raw_id: &str,
         files: Vec<UploadFile>,
     ) -> Result<SkillVersion, ApiError> {
-        let mut skill = self.get(ctx, raw_id).await?;
+        let skill = self.get(ctx, raw_id).await?;
         let (version, archive) = new_version(skill.id.clone(), files)?;
         self.versions
             .add(&ctx.workspace, version.clone(), archive)
             .await
             .map_err(|e| map_store(e, raw_id, ""))?;
-        skill.latest_version = version.version.clone();
-        skill.latest_version_id = Some(version.id.clone());
-        skill.updated_at = version.created_at;
-        self.store.replace(&ctx.workspace, skill).await.map_err(|e| map_store(e, raw_id, ""))?;
         Ok(version)
     }
 
-    /// `GET /v1/skills/{id}/versions`, newest first.
+    /// `GET /v1/skills/{id}/versions`: newest first, or oldest first for the
+    /// beta (live skills/21, skills/23).
     pub async fn versions(
         &self,
         ctx: &AuthContext,
         raw_id: &str,
         page: &Pagination,
+        oldest_first: bool,
     ) -> Result<Vec<SkillVersion>, ApiError> {
         let skill = self.get(ctx, raw_id).await?;
-        self.versions.versions(&ctx.workspace, &skill.id, page).await.map_err(|e| map_store(e, raw_id, ""))
+        self.versions
+            .versions(&ctx.workspace, &skill.id, page, oldest_first)
+            .await
+            .map_err(|e| map_store(e, raw_id, ""))
     }
 
     /// `GET /v1/skills/{id}/versions/{version}` (`latest`, an id or a number).
@@ -73,7 +74,7 @@ impl SkillsService {
 
     /// `DELETE /v1/skills/{id}/versions/{version}`. The only version cannot be
     /// deleted (delete the skill instead); deleting the latest moves the
-    /// skill's latest to the newest one left.
+    /// skill's latest to the newest one left, in the store's transaction.
     pub async fn delete_version(
         &self,
         ctx: &AuthContext,
@@ -81,30 +82,16 @@ impl SkillsService {
         raw_version: &str,
     ) -> Result<SkillVersionId, ApiError> {
         let which = VersionRef::parse(raw_version)?;
-        let mut skill = self.get(ctx, raw_id).await?;
+        let skill = self.get(ctx, raw_id).await?;
         let version = self
             .versions
             .get(&ctx.workspace, &skill.id, &which)
             .await
             .map_err(|e| map_store(e, raw_id, raw_version))?;
-        let ws = &ctx.workspace;
-        if self.versions.count(ws, &skill.id).await.map_err(|e| map_store(e, raw_id, raw_version))? <= 1 {
-            return Err(ApiError::invalid_request(
-                "Cannot delete the only version of a skill. Delete the skill instead.",
-            ));
-        }
-        self.versions.delete_version(ws, &version).await.map_err(|e| map_store(e, raw_id, raw_version))?;
-        if skill.latest_version_id.as_ref() == Some(&version.id) {
-            let latest = self
-                .versions
-                .get(ws, &skill.id, &VersionRef::Latest)
-                .await
-                .map_err(|e| map_store(e, raw_id, ""))?;
-            skill.latest_version = latest.version;
-            skill.latest_version_id = Some(latest.id);
-            skill.updated_at = Timestamp::now();
-            self.store.replace(ws, skill).await.map_err(|e| map_store(e, raw_id, ""))?;
-        }
+        self.versions
+            .delete_version(&ctx.workspace, &version)
+            .await
+            .map_err(|e| map_store(e, raw_id, raw_version))?;
         Ok(version.id)
     }
 }

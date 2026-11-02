@@ -116,7 +116,9 @@ impl PgMemoryStore {
     }
 }
 
-/// The memory's stored path, locking its row, while its head is `expected`.
+/// The memory's stored path, locking its row, while it is live and its head
+/// is `expected`: a write that read the head before a delete finds nothing,
+/// so it cannot bring the memory back.
 async fn locked_path(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
@@ -129,6 +131,7 @@ async fn locked_path(
         .filter(memories::store_id.eq(store.as_str()))
         .filter(memories::memory_id.eq(id.as_str()))
         .filter(memories::head_version_id.eq(expected.as_str()))
+        .filter(memories::deleted.eq(false))
         .select(memories::path)
         .for_update()
         .first(c)

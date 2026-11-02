@@ -8,8 +8,8 @@ use super::*;
 #[test]
 fn limited_networking_gets_no_network() {
     assert_eq!(network_mode(&json!({"networking": {"type": "limited"}})), "none");
-    assert_eq!(network_mode(&json!({"networking": {"type": "unrestricted"}})), "bridge");
-    assert_eq!(network_mode(&serde_json::Value::Null), "bridge");
+    assert_eq!(network_mode(&json!({"networking": {"type": "unrestricted"}})), SANDBOX_NETWORK);
+    assert_eq!(network_mode(&serde_json::Value::Null), SANDBOX_NETWORK);
 }
 
 #[test]
@@ -24,7 +24,7 @@ async fn a_container_comes_and_goes() {
         return;
     }
     let docker = Docker::connect_with_local_defaults().unwrap();
-    let runtime = DockerRuntime::new(docker, "alpine:3.20");
+    let runtime = DockerRuntime::new(docker, "alpine:3.20", SandboxLimits::default());
     runtime.prepare().await.unwrap();
     let target = format!("test-{}", std::process::id());
     let job = JobSpec {

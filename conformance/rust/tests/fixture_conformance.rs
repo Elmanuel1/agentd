@@ -38,7 +38,7 @@ async fn app() -> Option<Router> {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let backend = PgBackend::connect(&url).await.unwrap();
-    let stamp = Timestamp::now().as_datetime().timestamp_micros();
+    let stamp = unique_stamp();
     let blobs: Arc<dyn BlobStore> = Arc::new(
         S3BlobStore::connect(&S3Config {
             endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
@@ -297,4 +297,12 @@ async fn empty_list_shape_matches_live() {
     let (st, v) = call(&app, "GET", "/v1/agents", None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(v, serde_json::json!({"data":[]}));
+}
+
+/// A stamp no other app in this test binary shares: tests run in parallel, and
+/// two apps built in the same microsecond would share a workspace.
+fn unique_stamp() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}x{n}", Timestamp::now().as_datetime().timestamp_micros())
 }
