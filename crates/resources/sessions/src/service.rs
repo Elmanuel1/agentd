@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use shared::limits::ModelCatalog;
 use shared::{ApiError, AuthContext, Usage, WorkspaceId};
 use tokio::sync::broadcast;
 
@@ -84,6 +85,8 @@ pub struct SessionsService {
     deps: Arc<dyn SessionDeps>,
     /// Live SSE fan-out. Stream has NO replay — reconnect = list + dedupe.
     channels: Mutex<HashMap<SessionId, broadcast::Sender<Event>>>,
+    /// The models an `agent_with_overrides` may name.
+    catalog: ModelCatalog,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -93,13 +96,15 @@ impl std::fmt::Debug for SessionsService {
 }
 
 impl SessionsService {
-    /// Build with the session rows, their event log and the dependency port.
+    /// Build with the session rows, their event log, the dependency port and
+    /// the model catalog.
     pub fn new(
         store: Arc<dyn SessionsStore>,
         events: Arc<dyn SessionEventLog>,
         deps: Arc<dyn SessionDeps>,
+        catalog: ModelCatalog,
     ) -> Self {
-        Self { store, events, deps, channels: Mutex::new(HashMap::new()) }
+        Self { store, events, deps, catalog, channels: Mutex::new(HashMap::new()) }
     }
 }
 

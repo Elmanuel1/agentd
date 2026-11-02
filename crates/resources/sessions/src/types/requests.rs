@@ -1,7 +1,7 @@
 use agents::types::{McpServer, ModelInput, SkillParams, ToolParams};
 use agents::AgentSnapshot;
 use serde::Deserialize;
-use shared::limits::{validate_array_max, values};
+use shared::limits::{validate_array_max, validate_model_supported, values, ModelCatalog};
 use shared::{ApiError, Metadata, MetadataPatch, Patch};
 
 use super::{Budget, SessionResourceInput};
@@ -152,7 +152,11 @@ fn resolve_tools(tools: Vec<ToolParams>) -> Result<Vec<agents::types::Tool>, Api
 impl AgentOverrides {
     /// `snapshot` with this reference's overrides applied. A plain `agent`
     /// reference carries none.
-    pub fn apply(self, mut snapshot: AgentSnapshot) -> Result<AgentSnapshot, ApiError> {
+    pub fn apply(
+        self,
+        mut snapshot: AgentSnapshot,
+        catalog: &ModelCatalog,
+    ) -> Result<AgentSnapshot, ApiError> {
         if self.tag == AgentRefTag::Agent {
             let sent = [
                 ("model", self.model.is_some()),
@@ -169,6 +173,7 @@ impl AgentOverrides {
         let c = &mut snapshot.config;
         if let Some(model) = self.model {
             c.model = model.canonicalize();
+            validate_model_supported(&c.model.id, catalog)?;
         }
         c.system = self.system.apply_to_option(c.system.take());
         if let Some(tools) = self.tools {

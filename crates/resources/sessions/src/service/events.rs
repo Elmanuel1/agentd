@@ -21,22 +21,7 @@ impl SessionsService {
         if session.status == SessionStatus::Terminated {
             return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
         }
-        // Validate each payload with the live field-path error convention.
-        for (i, p) in payloads.iter().enumerate() {
-            if let EventPayload::User(UserEvent::DefineOutcome { max_iterations: Some(n), .. }) = p {
-                validate_range_u32(
-                    &format!("events.{i}.user_define_outcome.max_iterations"),
-                    *n,
-                    values::OUTCOME_MAX_ITERATIONS_MIN,
-                    values::OUTCOME_MAX_ITERATIONS_MAX,
-                )?;
-            }
-            if !p.is_user_event() {
-                return Err(ApiError::invalid_request(format!(
-                    "events.{i}: only user.* and system.message events can be sent"
-                )));
-            }
-        }
+        validate_sendable("events", &payloads)?;
         let mut out = Vec::with_capacity(payloads.len());
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.
@@ -95,4 +80,25 @@ impl SessionsService {
         // No receiver = no error; stream is fire-and-forget.
         let _ = self.channel(id).send(ev.clone());
     }
+}
+
+/// Each payload a client may send, with the live field-path error convention
+/// (`events.0.user_define_outcome.max_iterations`).
+pub(super) fn validate_sendable(field: &str, payloads: &[EventPayload]) -> Result<(), ApiError> {
+    for (i, p) in payloads.iter().enumerate() {
+        if let EventPayload::User(UserEvent::DefineOutcome { max_iterations: Some(n), .. }) = p {
+            validate_range_u32(
+                &format!("{field}.{i}.user_define_outcome.max_iterations"),
+                *n,
+                values::OUTCOME_MAX_ITERATIONS_MIN,
+                values::OUTCOME_MAX_ITERATIONS_MAX,
+            )?;
+        }
+        if !p.is_user_event() {
+            return Err(ApiError::invalid_request(format!(
+                "{field}.{i}: only user.* and system.message events can be sent"
+            )));
+        }
+    }
+    Ok(())
 }

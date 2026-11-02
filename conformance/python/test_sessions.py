@@ -120,3 +120,14 @@ def test_an_unknown_thread_is_not_found(client, setup) -> None:
     assert list(client.beta.sessions.threads.list(session.id)) == []
     with pytest.raises(anthropic.NotFoundError):
         client.beta.sessions.threads.retrieve("sthr_011CZZZZZZZZZZZZZZZZZZZZ", session_id=session.id)
+
+
+def test_invalid_initial_events_create_no_session(client, setup) -> None:
+    agent, env = setup
+    with pytest.raises(anthropic.BadRequestError):
+        client.beta.sessions.create(agent=agent.id, environment_id=env.id, initial_events=[
+            {"type": "user.define_outcome", "description": "d", "rubric": {"type": "text", "content": "r"}, "max_iterations": 99},
+        ])
+    assert list(client.beta.sessions.list(agent_id=agent.id)) == []
+    with pytest.raises(anthropic.BadRequestError):
+        client.beta.sessions.create(agent={"type": "agent_with_overrides", "id": agent.id, "model": "not-a-model"}, environment_id=env.id)

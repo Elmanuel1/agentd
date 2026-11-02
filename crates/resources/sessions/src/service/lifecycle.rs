@@ -2,6 +2,7 @@ use shared::limits::required;
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
+use super::events::validate_sendable;
 use super::{guard_writable, map_store, parse_id, SessionsService};
 use crate::events::{Event, EventPayload, SessionEvent, UserEvent};
 use crate::store::SessionFilter;
@@ -27,9 +28,11 @@ impl SessionsService {
                 "initial_events.{i}: only user.message and user.define_outcome events are allowed"
             )));
         }
+        let initial: Vec<EventPayload> = req.initial_events.into_iter().map(EventPayload::User).collect();
+        validate_sendable("initial_events", &initial)?;
         let mut agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
         if let AgentRefInput::Tagged(overrides) = agent_ref {
-            agent = overrides.apply(agent)?;
+            agent = overrides.apply(agent, &self.catalog)?;
         }
         self.deps.check_environment(ctx, &environment_id).await?;
         let now = Timestamp::now();
@@ -53,9 +56,8 @@ impl SessionsService {
             deployment_id: req.deployment_id,
         };
         self.store.insert(&ctx.workspace, session.clone()).await.map_err(map_store)?;
-        if !req.initial_events.is_empty() {
-            let events = req.initial_events.into_iter().map(EventPayload::User).collect();
-            self.send_events(ctx, session.id.as_str(), events).await?;
+        if !initial.is_empty() {
+            self.send_events(ctx, session.id.as_str(), initial).await?;
         }
         Ok(session)
     }
@@ -127,7 +129,7 @@ impl SessionsService {
         Ok(s)
     }
 
-    /// `DELETE /v1/sessions/{id}` — removes the session and its events. Open
+    /// `DELETE /v1/sessions/{id}`: removes the session and its events. Open
     /// streams get `session.deleted` as their last event.
     pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
