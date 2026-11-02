@@ -14,7 +14,7 @@ use files::store::FilesStore;
 use memory::MemoryPersistence;
 use scheduler_local::LocalScheduler;
 use secrets_blob::BlobSecretStore;
-use sessions::SessionsStore;
+use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
@@ -23,7 +23,7 @@ use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, SchedulerPort
 use skills::SkillsStore;
 use store_postgres::{
     PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
-    PgSessionsStore, PgSkillsStore, PgVaultsStore,
+    PgSessionEventLog, PgSessionsStore, PgSkillsStore, PgVaultsStore,
 };
 use vaults::VaultsStore;
 
@@ -52,6 +52,8 @@ pub struct Stores {
     pub skills: Arc<dyn SkillsStore>,
     /// Sessions.
     pub sessions: Arc<dyn SessionsStore>,
+    /// Session event logs.
+    pub session_events: Arc<dyn SessionEventLog>,
     /// Deployments.
     pub deployments: Arc<dyn DeploymentsStore>,
 }
@@ -73,6 +75,7 @@ impl Stores {
             files: Arc::new(PgFilesStore::new(backend.clone(), blobs.clone())),
             skills: Arc::new(PgSkillsStore::new(backend.clone(), blobs)),
             sessions: Arc::new(PgSessionsStore::new(backend.clone())),
+            session_events: Arc::new(PgSessionEventLog::new(backend.clone())),
             deployments: Arc::new(PgDeploymentsStore::new(backend)),
         }
     }

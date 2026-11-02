@@ -1,4 +1,5 @@
-//! Session persistence: session rows + the append-only event log.
+//! Session persistence: session rows ([`SessionsStore`]) and the append-only
+//! event log ([`SessionEventLog`]).
 
 use async_trait::async_trait;
 use shared::{Pagination, WorkspaceId};
@@ -26,14 +27,23 @@ pub trait SessionsStore: Send + Sync {
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// Replace a session.
     async fn replace(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
-    /// Delete a session and its event log.
+    /// Delete a session row.
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// All sessions, insertion order.
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Session>, StoreError>;
-    /// Append an event to the log.
+}
+
+/// A session's append-only event log. It has its own lifecycle: the engine
+/// appends to it while the session row is unchanged, and the events list and
+/// stream read it on its own.
+#[async_trait]
+pub trait SessionEventLog: Send + Sync {
+    /// Append an event to the log of an existing session.
     async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
     /// Replace an event in place (processed_at stamping).
     async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
     /// Full event history, append order.
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
+    /// Delete the whole log.
+    async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError>;
 }

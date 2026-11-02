@@ -18,7 +18,7 @@ use shared::{ApiError, AuthContext, Usage, WorkspaceId};
 use tokio::sync::broadcast;
 
 use crate::events::{Event, EventPayload, StopReason};
-use crate::store::{SessionsStore, StoreError};
+use crate::store::{SessionEventLog, SessionsStore, StoreError};
 use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus};
 
 use agents::AgentSnapshot;
@@ -78,6 +78,7 @@ pub trait EngineContract: Send + Sync {
 /// Sessions service.
 pub struct SessionsService {
     store: Arc<dyn SessionsStore>,
+    events: Arc<dyn SessionEventLog>,
     deps: Arc<dyn SessionDeps>,
     /// Live SSE fan-out. Stream has NO replay — reconnect = list + dedupe.
     channels: Mutex<HashMap<SessionId, broadcast::Sender<Event>>>,
@@ -90,9 +91,13 @@ impl std::fmt::Debug for SessionsService {
 }
 
 impl SessionsService {
-    /// Build with a store and dependency port.
-    pub fn new(store: Arc<dyn SessionsStore>, deps: Arc<dyn SessionDeps>) -> Self {
-        Self { store, deps, channels: Mutex::new(HashMap::new()) }
+    /// Build with the session rows, their event log and the dependency port.
+    pub fn new(
+        store: Arc<dyn SessionsStore>,
+        events: Arc<dyn SessionEventLog>,
+        deps: Arc<dyn SessionDeps>,
+    ) -> Self {
+        Self { store, events, deps, channels: Mutex::new(HashMap::new()) }
     }
 }
 
