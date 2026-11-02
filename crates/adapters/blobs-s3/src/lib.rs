@@ -37,6 +37,10 @@ pub struct S3Config {
     pub role_arn: Option<String>,
     /// Create the bucket at connect when it does not exist.
     pub create_bucket: bool,
+    /// The location constraint a created bucket gets. `None` is the region on
+    /// AWS S3 (none in us-east-1) and none on a custom endpoint, whose
+    /// locations are named their own way or refused.
+    pub location_constraint: Option<String>,
 }
 
 impl S3Config {
@@ -49,6 +53,7 @@ impl S3Config {
             path_style: false,
             role_arn: None,
             create_bucket: false,
+            location_constraint: None,
         }
     }
 }
@@ -97,23 +102,25 @@ impl S3BlobStore {
         let conf = conf.build();
         let store = Self { client: aws_sdk_s3::Client::from_conf(conf), bucket: config.bucket.clone() };
         if config.create_bucket {
-            store.ensure_bucket().await?;
+            let location = config.location_constraint.clone().or_else(|| {
+                // AWS S3 refuses a create outside us-east-1 without the region.
+                let region = store.client.config().region()?.as_ref().to_owned();
+                (config.endpoint.is_none() && region != "us-east-1").then_some(region)
+            });
+            store.ensure_bucket(location).await?;
         }
         Ok(store)
     }
 
-    async fn ensure_bucket(&self) -> Result<(), BlobError> {
+    async fn ensure_bucket(&self, location: Option<String>) -> Result<(), BlobError> {
         match self.client.head_bucket().bucket(&self.bucket).send().await {
             Ok(_) => Ok(()),
             Err(SdkError::ServiceError(se))
                 if matches!(se.err(), HeadBucketError::NotFound(_)) || se.raw().status().as_u16() == 404 =>
             {
-                // Outside us-east-1, S3 refuses a create without the
-                // region as its location constraint.
-                let region = self.client.config().region().map(|r| r.as_ref().to_owned());
-                let location = region.filter(|r| r != "us-east-1").map(|r| {
+                let location = location.map(|l| {
                     CreateBucketConfiguration::builder()
-                        .location_constraint(BucketLocationConstraint::from(r.as_str()))
+                        .location_constraint(BucketLocationConstraint::from(l.as_str()))
                         .build()
                 });
                 self.client
