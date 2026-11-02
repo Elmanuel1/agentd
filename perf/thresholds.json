@@ -1,0 +1,47 @@
+{
+  "http_req_failed": [
+    "rate<0.01"
+  ],
+  "checks": [
+    "rate>0.99"
+  ],
+  "stream_events_delivered": [
+    "count>0"
+  ],
+  "stream_duration": [
+    "p(95)<10000"
+  ],
+  "http_req_duration{endpoint:agents.create}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:agents.list}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:sessions.create}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:sessions.list}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:sessions.delete}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:events.send}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:files.upload}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:files.metadata}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:files.list}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:skills.list}": [
+    "p(95)<5000"
+  ],
+  "http_req_duration{endpoint:skills.download}": [
+    "p(95)<5000"
+  ]
+}

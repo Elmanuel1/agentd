@@ -1,0 +1,36 @@
+# The load-test stack: docker/docker-compose.yml (agentd, Postgres, S3 on
+# LocalStack, Flyway) plus k6, with no host ports published. perf/run.sh is the one
+# command; paths here are relative to docker/, the project directory.
+services:
+  agentd:
+    ports: !reset []
+    environment:
+      AGENTD_API_KEYS: perf-key:org_perf:wrkspc_perf
+      AGENTD_RUNTIME: none
+      # perf/run.sh --observe sends telemetry to docker/observability.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_METRIC_EXPORT_INTERVAL: "5000"
+      RUST_LOG: warn
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  postgres:
+    ports: !reset []
+  s3:
+    ports: !reset []
+  k6:
+    image: grafana/k6:1.3.0
+    profiles: [run]
+    depends_on:
+      agentd:
+        condition: service_started
+    environment:
+      BASE_URL: http://agentd:8080
+      API_KEY: perf-key
+      RATE: ${RATE:-20}
+      STREAMS: ${STREAMS:-50}
+      DURATION: ${DURATION:-2m}
+    volumes:
+      - ../perf:/perf:ro
+      - ../perf/results:/results
+    entrypoint: ["k6"]
+    command: ["run", "--quiet", "--summary-export", "/results/summary.json", "/perf/agentd.js"]
