@@ -29,6 +29,7 @@ services:
       RATE: ${RATE:-20}
       STREAMS: ${STREAMS:-50}
       DURATION: ${DURATION:-2m}
+      THRESHOLDS: ${THRESHOLDS:-thresholds.json}
     volumes:
       - ../perf:/perf:ro
       - ../perf/results:/results

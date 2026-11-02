@@ -26,7 +26,7 @@ export const options = {
     streams: { executor: 'constant-vus', exec: 'streams', vus: STREAMS, duration: DURATION },
     files: { executor: 'constant-arrival-rate', exec: 'files', rate: Math.max(1, Math.round(RATE / 4)), timeUnit: '1s', duration: DURATION, preAllocatedVUs: 10, maxVUs: 100 },
   },
-  thresholds: JSON.parse(open('./thresholds.json')),
+  thresholds: JSON.parse(open(`./${__ENV.THRESHOLDS || 'thresholds.json'}`)),
   summaryTrendStats: ['avg', 'p(50)', 'p(95)', 'p(99)', 'max'],
 };
 
@@ -81,7 +81,9 @@ export function events(s) {
 // (agentd then ends the stream with session.deleted), and check every event
 // arrived, in order, on the stream.
 export async function streams(s) {
-  const session = json('POST', '/v1/sessions', { agent: s.agent, environment_id: s.env }, MANAGED, 'sessions.create').json();
+  const created = json('POST', '/v1/sessions', { agent: s.agent, environment_id: s.env }, MANAGED, 'sessions.create');
+  if (!ok(created, 'sessions.create')) return;
+  const session = created.json();
   const started = Date.now();
   const stream = http.asyncRequest('GET', `${BASE_URL}/v1/sessions/${session.id}/events/stream`, null, {
     headers: headers(MANAGED, { accept: 'text/event-stream' }),

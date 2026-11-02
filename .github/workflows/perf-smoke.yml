@@ -23,6 +23,8 @@ jobs:
           RATE: ${{ inputs.rate }}
           STREAMS: ${{ inputs.streams }}
           DURATION: ${{ inputs.duration }}
+          # Latency bounds come from a laptop baseline; a runner checks failures only.
+          THRESHOLDS: thresholds.smoke.json
         run: perf/run.sh
       - name: Keep the summary
         if: always()

@@ -30,6 +30,9 @@ first), and `perf/run.sh --down` removes the stack.
 events, and each endpoint's p95 at most 3 x its baseline p95 (25 ms floor). A stream lasts about 2.8 s by design
 (5 events 500 ms apart, then the delete), so its p95 bound is 3.5 s.
 
+The manual `perf-smoke` workflow runs with `perf/thresholds.smoke.json`, which keeps only the failure-rate
+bounds: the latency bounds come from a laptop and a shared runner is not that laptop.
+
 ## Baseline
 
 Docker Desktop on Apple silicon (5 CPUs, 10 GB for the VM), defaults (20 crud/s, 40 events/s, 50 streams, 5 file

@@ -5,6 +5,7 @@
 #   RATE=50 perf/run.sh         heavier load
 #   perf/run.sh --observe       also export telemetry to docker/observability (start it first)
 #   perf/run.sh --down          stop and remove the stack and its volumes
+#   THRESHOLDS=thresholds.smoke.json perf/run.sh   only the failure-rate thresholds
 set -eu
 cd "$(dirname "$0")/.."
 compose() { docker compose -p agentd-perf --project-directory docker -f docker/docker-compose.yml -f perf/compose.yaml "$@"; }
@@ -13,5 +14,7 @@ case "${1:-}" in
   --observe) export OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317 ;;
 esac
 mkdir -p perf/results
+# Each run starts from empty volumes, so runs are comparable.
+compose --profile run down -v >/dev/null 2>&1 || true
 compose up -d --build agentd
 compose --profile run run --rm k6
