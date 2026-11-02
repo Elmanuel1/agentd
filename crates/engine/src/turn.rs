@@ -381,11 +381,5 @@ enum ToolDisposition {
 }
 
 fn blocks_to_text(blocks: &[ContentBlock]) -> String {
-    blocks
-        .iter()
-        .map(|b| match b {
-            ContentBlock::Text { text } => text.as_str(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    blocks.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("\n")
 }

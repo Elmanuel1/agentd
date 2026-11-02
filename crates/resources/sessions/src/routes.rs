@@ -1,44 +1,46 @@
-//! Axum routes for `/v1/sessions` + events + SSE stream.
+//! Axum routes for `/v1/sessions`; events and the stream, resources and
+//! threads each have a file under `routes/`.
 
-use std::collections::HashMap;
-use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path, Query};
-use axum::response::sse::{Event as SseEvent, Sse};
+use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures::stream::Stream;
-use serde::Deserialize;
-use shared::error::DataEnvelope;
-use shared::{ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
+use shared::page::filters::{bool_param, CreatedRange};
+use shared::{ApiError, ApiJson, AuthContext, Deleted, ListQuery, ListSpec, Page, RouteError};
 
-use crate::events::EventPayload;
 use crate::service::SessionsService;
-use crate::types::{CreateSessionRequest, UpdateSessionRequest};
+use crate::store::{Order, SessionFilter};
+use crate::types::{CreateSessionRequest, SessionStatus, UpdateSessionRequest};
 
-/// `POST …/events` body: `{"events":[…]}`.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SendEventsBody {
-    /// The events to enqueue.
-    #[serde(default)]
-    pub events: Vec<EventPayload>,
-}
+mod events;
+mod resources;
+mod threads;
 
-/// Every list here reads `limit` and `page` only.
-const LIST: ListSpec = ListSpec::managed(&[]);
+/// The sessions list.
+const LIST: ListSpec = ListSpec::managed(&[
+    "agent_id",
+    "agent_version",
+    "created_at[gt]",
+    "created_at[gte]",
+    "created_at[lt]",
+    "created_at[lte]",
+    "deployment_id",
+    "include_archived",
+    "memory_store_id",
+    "order",
+    "statuses",
+    "statuses[]",
+]);
 
 /// Build the sessions router.
 pub fn router() -> Router {
-    Router::new()
+    let sessions = Router::new()
         .route("/v1/sessions", post(create).get(list))
         .route("/v1/sessions/{id}", get(get_one).post(update).delete(delete))
-        .route("/v1/sessions/{id}/archive", post(archive))
-        .route("/v1/sessions/{id}/events", get(list_events).post(send_events))
-        .route("/v1/sessions/{id}/events/stream", get(stream_events))
-        .route("/v1/sessions/{id}/threads", get(list_threads))
+        .route("/v1/sessions/{id}/archive", post(archive));
+    sessions.merge(events::router()).merge(resources::router()).merge(threads::router())
 }
 
 async fn create(
@@ -52,10 +54,46 @@ async fn create(
 async fn list(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
-    Query(params): Query<HashMap<String, String>>,
+    query: ListQuery,
 ) -> Result<Response, RouteError> {
+    let params = query.map();
     let page = LIST.parse(&params)?;
-    Ok(Json(Page::from_fetched(svc.list(&ctx, &page).await?, &page)).into_response())
+    let filter = SessionFilter {
+        agent_id: params.get("agent_id").cloned(),
+        agent_version: params
+            .get("agent_version")
+            .map(|v| {
+                v.parse::<u64>()
+                    .map_err(|_| ApiError::invalid_request("agent_version: Input should be a valid integer"))
+            })
+            .transpose()?,
+        created: CreatedRange::from_query(&params)?,
+        deployment_id: params.get("deployment_id").cloned(),
+        include_archived: bool_param(&params, "include_archived")?,
+        memory_store_id: params.get("memory_store_id").cloned(),
+        order: order(params.get("order").map(String::as_str), Order::Desc)?,
+        statuses: query.all("statuses").into_iter().map(status).collect::<Result<_, _>>()?,
+    };
+    let sessions = svc.list(&ctx, &filter, &page).await?;
+    Ok(Json(Page::from_fetched(sessions, &page).with_prev_page(&page)).into_response())
+}
+
+/// `asc` or `desc`; `default` when left out.
+pub(crate) fn order(raw: Option<&str>, default: Order) -> Result<Order, ApiError> {
+    match raw {
+        None => Ok(default),
+        Some("asc") => Ok(Order::Asc),
+        Some("desc") => Ok(Order::Desc),
+        Some(_) => Err(ApiError::invalid_request("order: Input should be 'asc' or 'desc'")),
+    }
+}
+
+fn status(raw: &str) -> Result<SessionStatus, ApiError> {
+    serde_json::from_value(serde_json::Value::String(raw.to_owned())).map_err(|_| {
+        ApiError::invalid_request(
+            "statuses: Input should be 'rescheduling', 'running', 'idle' or 'terminated'",
+        )
+    })
 }
 
 async fn get_one(
@@ -75,20 +113,6 @@ async fn update(
     Ok(Json(svc.update(&ctx, &id, body).await?).into_response())
 }
 
-/// `GET /v1/sessions/{id}/threads` — multi-agent sub-threads. agentd runs
-/// single-agent sessions, so this is always `{data:[]}` (matching the live
-/// shape for non-multiagent sessions); 404s if the session is unknown.
-async fn list_threads(
-    Extension(svc): Extension<Arc<SessionsService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Response, RouteError> {
-    svc.get(&ctx, &id).await?;
-    let page = LIST.parse(&params)?;
-    Ok(Json(Page::paginate(Vec::<serde_json::Value>::new(), &page)).into_response())
-}
-
 async fn archive(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
@@ -104,48 +128,4 @@ async fn delete(
 ) -> Result<Response, RouteError> {
     let session = svc.delete(&ctx, &id).await?;
     Ok(Json(Deleted::new(session.id.as_str(), "session_deleted")).into_response())
-}
-
-async fn list_events(
-    Extension(svc): Extension<Arc<SessionsService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Response, RouteError> {
-    let page = LIST.parse(&params)?;
-    Ok(Json(Page::paginate(svc.list_events(&ctx, &id).await?, &page)).into_response())
-}
-
-async fn send_events(
-    Extension(svc): Extension<Arc<SessionsService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<String>,
-    ApiJson(body): ApiJson<SendEventsBody>,
-) -> Result<Response, RouteError> {
-    Ok(Json(DataEnvelope { data: svc.send_events(&ctx, &id, body.events).await? }).into_response())
-}
-
-async fn stream_events(
-    Extension(svc): Extension<Arc<SessionsService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<String>,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
-    use futures::StreamExt;
-    let rx = svc.subscribe(&ctx, &id).await?;
-    // Live opens the stream with a `: connected` comment frame before events.
-    let connected = futures::stream::once(async { Ok(SseEvent::default().comment("connected")) });
-    let events = futures::stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => match serde_json::to_string(&ev) {
-                    Ok(data) => return Some((Ok(SseEvent::default().data(data)), rx)),
-                    Err(_) => continue,
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    });
-    let stream = connected.chain(events);
-    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
