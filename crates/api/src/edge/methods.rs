@@ -6,11 +6,15 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use shared::{wire_response, ApiError};
 
-/// Live (files/16): a method the path does not serve is 405 with an envelope.
+/// Live (files/16, files/17, skills/46): a method the path does not serve is
+/// 405 with an envelope and `allow: GET`, even on a route that also serves
+/// DELETE (axum's own `Allow` would list every method, HEAD included).
 pub async fn not_allowed() -> Response {
     let mut e = ApiError::invalid_request("Method Not Allowed");
     e.status = 405;
-    wire_response(&e)
+    let mut response = wire_response(&e);
+    response.headers_mut().insert("allow", HeaderValue::from_static("GET"));
+    response
 }
 
 /// Live (files/15): HEAD is not served, even on a GET route: 405, `allow: GET`,

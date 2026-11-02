@@ -14,6 +14,9 @@ pub enum StoreError {
     /// No such session.
     #[error("session not found")]
     NotFound,
+    /// The session changed after the caller read it.
+    #[error("session changed")]
+    Conflict,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
@@ -74,8 +77,9 @@ pub trait SessionsStore: Send + Sync {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
     /// Fetch a session.
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
-    /// Replace a session.
-    async fn replace(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
+    /// Write `s` only while the stored session is still `read`; a session
+    /// another writer changed first is [`StoreError::Conflict`].
+    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError>;
     /// Delete a session row.
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// One page of the sessions `filter` keeps, in its order.
