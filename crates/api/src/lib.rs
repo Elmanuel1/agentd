@@ -9,16 +9,15 @@
 
 pub mod assets;
 pub mod backends;
+pub mod cli;
 pub mod config;
 pub mod deps;
 pub mod edge;
-pub mod keys;
 pub mod state;
 pub mod telemetry;
 
 pub use backends::{Backends, Stores};
 pub use config::Config;
-pub use keys::EnvKeySource;
 pub use state::AppState;
 
 use std::sync::Arc;

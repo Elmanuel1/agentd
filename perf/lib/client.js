@@ -3,7 +3,8 @@
 import http from 'k6/http';
 
 export const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
-const API_KEY = __ENV.API_KEY || 'perf-key';
+const API_KEY = __ENV.API_KEY;
+if (!API_KEY) throw new Error('API_KEY is required: perf/run.sh makes one with agentd keys create');
 
 export const MANAGED = 'managed-agents-2026-04-01';
 export const MEMORY = 'agent-memory-2026-07-22';

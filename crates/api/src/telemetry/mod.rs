@@ -119,9 +119,13 @@ pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
             .flatten_event(true)
             .with_current_span(true)
             .with_filter(log_filter())
+            .with_filter(filter_fn(|m| !aws_wire_detail(m)))
             .boxed()
     } else {
-        tracing_subscriber::fmt::layer().with_filter(log_filter()).boxed()
+        tracing_subscriber::fmt::layer()
+            .with_filter(log_filter())
+            .with_filter(filter_fn(|m| !aws_wire_detail(m)))
+            .boxed()
     };
     let mut telemetry = Telemetry::default();
     let otel = if otlp {
@@ -146,7 +150,7 @@ pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
             .with_filter(filter_fn(|m| !exporter_internal(m)));
         let records = OpenTelemetryTracingBridge::new(&logger)
             .with_filter(log_filter())
-            .with_filter(filter_fn(|m| !exporter_internal(m)));
+            .with_filter(filter_fn(|m| !exporter_internal(m) && !aws_wire_detail(m)));
         let layer = spans.and_then(records);
         telemetry = Telemetry { tracer: Some(tracer), meter: Some(meter), logger: Some(logger) };
         Some(layer)
@@ -163,6 +167,13 @@ fn exporter_internal(m: &tracing::Metadata<'_>) -> bool {
     ["opentelemetry", "tonic", "h2", "hyper", "tower"].iter().any(|t| m.target().starts_with(t))
 }
 
+/// The AWS SDK's `debug` and `trace` events, which print whole requests and
+/// responses (a `PutSecretValue` body is the secret). No log takes them,
+/// whatever `RUST_LOG` says.
+pub(crate) fn aws_wire_detail(m: &tracing::Metadata<'_>) -> bool {
+    m.target().starts_with("aws_") && *m.level() > tracing::Level::INFO
+}
+
 /// `ok` or `error`, the attribute every boundary records.
 pub(crate) fn outcome<T, E>(r: &Result<T, E>) -> &'static str {
     if r.is_ok() {
@@ -172,5 +183,7 @@ pub(crate) fn outcome<T, E>(r: &Result<T, E>) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod redaction_tests;
 #[cfg(test)]
 mod tests;

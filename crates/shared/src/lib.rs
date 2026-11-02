@@ -13,6 +13,7 @@
 
 pub mod actor;
 pub mod beta;
+pub mod charset;
 pub mod content;
 pub mod deleted;
 pub mod error;
