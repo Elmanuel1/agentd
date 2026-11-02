@@ -7,13 +7,14 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use shared::page::filters::bool_param;
 use shared::{ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
 
 use crate::service::EnvironmentsService;
 use crate::types::{CreateEnvironmentRequest, UpdateEnvironmentRequest};
 
-/// Every list here reads `limit` and `page` only.
-const LIST: ListSpec = ListSpec::managed(&[]);
+/// The environments list.
+const LIST: ListSpec = ListSpec::managed(&["include_archived"]);
 
 /// Build the `/v1/environments` router.
 pub fn router() -> Router {
@@ -37,7 +38,8 @@ async fn list(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let page = LIST.parse(&params)?;
-    Ok(Json(Page::from_fetched(svc.list(&ctx, &page).await?, &page)).into_response())
+    let include_archived = bool_param(&params, "include_archived")?;
+    Ok(Json(Page::from_fetched(svc.list(&ctx, include_archived, &page).await?, &page)).into_response())
 }
 
 async fn get_one(

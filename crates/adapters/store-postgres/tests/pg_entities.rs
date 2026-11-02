@@ -95,7 +95,7 @@ async fn pg_environments_service_roundtrip() {
     assert_eq!(env.name, "prod");
     assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap().id, env.id);
     assert_eq!(
-        svc.list(&ctx, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+        svc.list(&ctx, false, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
             .await
             .unwrap()
             .len(),

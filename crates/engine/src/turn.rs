@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use agents::types::{PermissionPolicy, Tool};
+use agents::types::Tool;
 use agents::AgentSnapshot;
 use sessions::events::{ConfirmationResult, EventId, EventPayload, StopReason};
 use sessions::types::{SessionId, SessionStatus};
@@ -153,8 +153,8 @@ impl TurnRunner {
             let response = self
                 .model
                 .complete(ModelRequest {
-                    model: self.agent.model.id.clone(),
-                    system: self.agent.system.clone(),
+                    model: self.agent.config.model.id.clone(),
+                    system: self.agent.config.system.clone(),
                     messages: self.history.clone(),
                     tools: self.model_tools(),
                 })
@@ -375,33 +375,21 @@ impl TurnRunner {
     /// Custom tools are matched FIRST across all entries — a custom tool
     /// name must never fall through to the toolset default policy.
     fn policy_for(&self, name: &str) -> ToolDisposition {
-        if self.agent.tools.iter().any(|t| matches!(t, Tool::Custom { name: n, .. } if n == name)) {
+        let tools = &self.agent.config.tools;
+        if tools.iter().any(|t| matches!(t, Tool::Custom { name: n, .. } if n == name)) {
             return ToolDisposition::Custom;
         }
-        for tool in &self.agent.tools {
-            if let Tool::AgentToolset { configs, default_config } = tool {
-                if let Some(cfg) = configs.iter().find(|c| c.name == name) {
-                    if let Some(policy) = &cfg.permission_policy {
-                        return match policy {
-                            PermissionPolicy::AlwaysAllow => ToolDisposition::Allow,
-                            PermissionPolicy::AlwaysAsk => ToolDisposition::Ask,
-                        };
-                    }
-                }
-                return match default_config.permission_policy {
-                    PermissionPolicy::AlwaysAllow => ToolDisposition::Allow,
-                    PermissionPolicy::AlwaysAsk => ToolDisposition::Ask,
-                };
-            }
-        }
         // No toolset declared → default allow (executor rejects unknowns).
-        ToolDisposition::Allow
+        match tools.iter().find_map(|t| t.toolset_policy(name)) {
+            Some(policy) if policy.asks() => ToolDisposition::Ask,
+            _ => ToolDisposition::Allow,
+        }
     }
 
     /// The tool list surfaced to the model.
     fn model_tools(&self) -> Vec<ModelTool> {
         let mut out = Vec::new();
-        for tool in &self.agent.tools {
+        for tool in &self.agent.config.tools {
             match tool {
                 Tool::AgentToolset { .. } => {
                     for name in ["read", "write", "edit", "glob", "grep"] {
@@ -414,7 +402,7 @@ impl TurnRunner {
                 }
                 Tool::Custom { name, description, input_schema } => out.push(ModelTool {
                     name: name.clone(),
-                    description: description.clone().unwrap_or_default(),
+                    description: description.clone(),
                     input_schema: input_schema.clone(),
                 }),
                 Tool::McpToolset { .. } => {

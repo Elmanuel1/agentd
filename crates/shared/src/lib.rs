@@ -23,6 +23,7 @@ pub mod limits;
 pub mod metadata;
 pub mod module;
 pub mod page;
+pub mod patch;
 pub mod ports;
 pub mod schedule;
 pub mod scope;
@@ -44,6 +45,7 @@ pub use module::Module;
 pub use page::{
     reject_unknown_params, IdCursor, IdPage, ListSpec, Messages, Page, Pagination, UnknownParams,
 };
+pub use patch::{MetadataPatch, Patch};
 pub use scope::Scope;
 pub use tenancy::{AuthContext, OrgId, WorkspaceId};
 pub use time::Timestamp;

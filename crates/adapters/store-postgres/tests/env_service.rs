@@ -88,10 +88,14 @@ async fn duplicate_names_allowed_like_live_api() {
     assert_ne!(a.id, b.id);
     assert_eq!(a.name, b.name);
     assert_eq!(
-        s.list(&ctx(&org), &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
-            .await
-            .unwrap()
-            .len(),
+        s.list(
+            &ctx(&org),
+            false,
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap()
+        )
+        .await
+        .unwrap()
+        .len(),
         2
     );
 }
@@ -109,7 +113,7 @@ async fn org_scoped_visible_across_workspaces() {
 }
 
 #[tokio::test]
-async fn missing_fields_use_required_error() {
+async fn name_is_required_and_config_defaults_to_cloud() {
     if !enabled() {
         return;
     }
@@ -117,11 +121,12 @@ async fn missing_fields_use_required_error() {
     let org = uniq_org();
     let e = s.create(&ctx(&org), CreateEnvironmentRequest::default()).await.unwrap_err();
     assert_eq!(e.message, "name: Field required");
-    let e = s
+    let env = s
         .create(&ctx(&org), CreateEnvironmentRequest { name: Some("x".into()), ..Default::default() })
         .await
-        .unwrap_err();
-    assert_eq!(e.message, "config: Field required");
+        .unwrap();
+    assert_eq!(env.config, environments::EnvironmentConfig::default());
+    assert_eq!(env.description.as_deref(), Some(""));
 }
 
 #[tokio::test]
@@ -177,14 +182,14 @@ async fn update_replaces_config_and_bumps_updated_at() {
             e.id.as_str(),
             UpdateEnvironmentRequest {
                 config: serde_json::from_str(r#"{"type":"self_hosted"}"#).ok(),
-                description: Some("now self hosted".into()),
+                description: shared::Patch::Set("now self hosted".into()),
                 ..Default::default()
             },
         )
         .await
         .unwrap();
     assert!(matches!(updated.config, environments::EnvironmentConfig::SelfHosted {}));
-    assert_eq!(updated.description, "now self hosted");
+    assert_eq!(updated.description.as_deref(), Some("now self hosted"));
 }
 
 // ── HTTP route tests (router built over the Pg-backed service) ───────────────
