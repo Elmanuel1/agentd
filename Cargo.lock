@@ -60,6 +60,7 @@ version = "0.1.0"
 dependencies = [
  "agents",
  "async-trait",
+ "aws-common",
  "axum",
  "blobs-s3",
  "bollard",
@@ -83,13 +84,13 @@ dependencies = [
  "sandbox-docker",
  "scheduler-local",
  "secrets-aws",
- "secrets-blob",
  "serde",
  "serde_json",
  "sessions",
  "shared",
  "skills",
  "store-postgres",
+ "test-support",
  "thiserror",
  "tokio",
  "tower",
@@ -298,7 +299,7 @@ dependencies = [
  "lru",
  "percent-encoding",
  "regex-lite",
- "sha2 0.11.0",
+ "sha2",
  "tracing",
  "url",
 ]
@@ -422,7 +423,7 @@ dependencies = [
  "http 0.2.12",
  "http 1.4.2",
  "percent-encoding",
- "sha2 0.11.0",
+ "sha2",
  "time",
  "tracing",
 ]
@@ -455,7 +456,7 @@ dependencies = [
  "md-5",
  "pin-project-lite",
  "sha1 0.11.0",
- "sha2 0.11.0",
+ "sha2",
  "tracing",
 ]
 
@@ -938,11 +939,11 @@ dependencies = [
  "blobs-s3",
  "http 1.4.2",
  "http-body-util",
- "secrets-blob",
  "serde",
  "serde_json",
  "shared",
  "store-postgres",
+ "test-support",
  "tokio",
  "tower",
 ]
@@ -2410,7 +2411,7 @@ dependencies = [
  "md-5",
  "memchr",
  "rand 0.10.2",
- "sha2 0.11.0",
+ "sha2",
  "stringprep",
 ]
 
@@ -2925,20 +2926,12 @@ dependencies = [
  "aws-sdk-secretsmanager",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "hex",
+ "rand 0.8.6",
  "shared",
  "tokio",
  "uuid",
  "zeroize",
-]
-
-[[package]]
-name = "secrets-blob"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "shared",
- "tokio",
 ]
 
 [[package]]
@@ -3091,17 +3084,6 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
-]
-
-[[package]]
-name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
@@ -3136,7 +3118,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "sha2 0.10.9",
+ "sha2",
  "thiserror",
  "tokio",
 ]
@@ -3245,6 +3227,7 @@ dependencies = [
  "agents",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "blobs-s3",
  "bytes",
  "chrono",
@@ -3256,20 +3239,25 @@ dependencies = [
  "environments",
  "files",
  "futures",
+ "hmac",
  "http 1.4.2",
  "http-body-util",
  "memory",
- "secrets-blob",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "sessions",
+ "sha2",
  "shared",
  "skills",
+ "test-support",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
+ "uuid",
  "vaults",
+ "zeroize",
 ]
 
 [[package]]
@@ -3348,6 +3336,15 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "test-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "parking_lot",
+ "shared",
 ]
 
 [[package]]

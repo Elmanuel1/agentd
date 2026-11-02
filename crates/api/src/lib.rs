@@ -8,16 +8,15 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod backends;
+pub mod cli;
 pub mod config;
 pub mod deps;
 pub mod edge;
-pub mod keys;
 pub mod state;
 pub mod telemetry;
 
 pub use backends::{Backends, Stores};
 pub use config::Config;
-pub use keys::EnvKeySource;
 pub use state::AppState;
 
 use std::sync::Arc;

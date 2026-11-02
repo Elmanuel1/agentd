@@ -102,17 +102,12 @@ jobs:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
-      AGENTD_API_KEYS: sdk-conformance-key:org_sdk:wrkspc_sdk
-      # Credentials go to Secrets Manager on LocalStack, the production path;
-      # the dev flag only allows its plain http endpoint.
-      AGENTD_SECRETS: aws
+      # Credentials go to Secrets Manager and KMS on LocalStack, as in production.
       AGENTD_SECRETS_ENDPOINT: http://localhost:4566
-      AGENTD_DEV_SECRETS: "1"
-      # Every log line, so the last check shows no token reaches one.
+      # Every log line, so the last check shows no secret or key reaches one.
       RUST_LOG: trace
       AGENTD_ADDR: 127.0.0.1:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
-      AGENTD_TEST_KEY: sdk-conformance-key
       # Each session gets its container on the runner's Docker daemon.
       AGENTD_RUNTIME: docker
       AGENTD_TEST_DOCKER: "1"
@@ -140,6 +135,11 @@ jobs:
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
           echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
+      - name: Create the SDK API key with the CLI
+        run: |
+          key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)
+          echo "::add-mask::$key"
+          echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
@@ -155,7 +155,7 @@ jobs:
         run: |
           npm ci
           npm test
-      - name: Credentials are in Secrets Manager under the key, and nowhere else
+      - name: Credentials are in Secrets Manager under the key, and no secret or key is logged
         run: |
           secrets=$(aws --endpoint-url http://localhost:4566 secretsmanager list-secrets --include-planned-deletion \
             --filters Key=name,Values=agentd/wrkspc_sdk/ --output json)
@@ -164,7 +164,9 @@ jobs:
               .KmsKeyId == $key and .DeletedDate != null
               and ([.Tags[] | select(.Key == "managed-by" and .Value == "agentd")] | length == 1))'
           test -z "$(aws --endpoint-url http://localhost:4566 s3 ls s3://agentd-artifacts/secrets/ --recursive)"
-          ! grep -E "sdk-token-|ts-token-" agentd.log
+          if grep -qE "sdk-token-|ts-token-" agentd.log; then echo "a credential reached the log"; exit 1; fi
+          if grep -qF "$AGENTD_TEST_KEY" agentd.log; then echo "the API key reached the log"; exit 1; fi
+          ./target/debug/agentd keys list | grep -q "wrkspc_sdk"
       - if: failure()
         run: cat agentd.log
 

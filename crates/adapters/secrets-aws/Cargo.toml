@@ -12,6 +12,8 @@ aws-common = { workspace = true }
 aws-sdk-kms = { workspace = true }
 aws-sdk-secretsmanager = { workspace = true }
 uuid = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]

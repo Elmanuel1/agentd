@@ -26,6 +26,28 @@ impl AwsSecretStore {
             Err(e) => Err(failure("secretsmanager:DescribeSecret", name, &e)),
         }
     }
+
+    /// The current value of the secret `name`; `NotFound` when it is missing
+    /// or scheduled for deletion.
+    pub(crate) async fn read(&self, name: &str) -> Result<SecretString, SecretError> {
+        let e = match self.client.get_secret_value().secret_id(name).send().await {
+            Ok(out) => {
+                return out
+                    .secret_string
+                    .map(into_secret)
+                    .ok_or_else(|| SecretError::Backend(format!("{name} holds no string value")));
+            }
+            Err(e) => e,
+        };
+        let service = e.as_service_error();
+        if service.is_some_and(GetSecretValueError::is_resource_not_found_exception)
+            || (service.is_some_and(GetSecretValueError::is_invalid_request_exception)
+                && self.scheduled_for_deletion(name).await?)
+        {
+            return Err(SecretError::NotFound(name.to_owned()));
+        }
+        Err(failure("secretsmanager:GetSecretValue", name, &e))
+    }
 }
 
 #[async_trait]
@@ -75,24 +97,7 @@ impl SecretStore for AwsSecretStore {
     }
 
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
-        let name = self.secret_name(key);
-        let e = match self.client.get_secret_value().secret_id(&name).send().await {
-            Ok(out) => {
-                return out
-                    .secret_string
-                    .map(into_secret)
-                    .ok_or_else(|| SecretError::Backend(format!("{name} holds no string value")))
-            }
-            Err(e) => e,
-        };
-        let service = e.as_service_error();
-        if service.is_some_and(GetSecretValueError::is_resource_not_found_exception)
-            || (service.is_some_and(GetSecretValueError::is_invalid_request_exception)
-                && self.scheduled_for_deletion(&name).await?)
-        {
-            return Err(SecretError::NotFound(name));
-        }
-        Err(failure("secretsmanager:GetSecretValue", &name, &e))
+        self.read(&self.secret_name(key)).await
     }
 
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
@@ -122,7 +127,7 @@ impl SecretStore for AwsSecretStore {
 /// The SDK's string can have spare capacity, and turning it into a
 /// [`SecretString`] would then reallocate and free the original unzeroed: copy
 /// it once at its exact size and zero the original.
-fn into_secret(mut value: String) -> SecretString {
+pub(crate) fn into_secret(mut value: String) -> SecretString {
     let secret = SecretString::from(value.as_str());
     value.zeroize();
     secret

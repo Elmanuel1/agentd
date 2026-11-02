@@ -17,7 +17,7 @@ members = [
     "conformance/rust",
     "crates/adapters/store-postgres",
     "crates/adapters/blobs-s3",
-    "crates/adapters/secrets-blob",
+    "crates/test-support",
     "crates/adapters/secrets-aws",
     "crates/adapters/aws-common",
     "crates/adapters/sandbox-docker",
@@ -46,7 +46,7 @@ engine = { path = "crates/engine" }
 api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }
-secrets-blob = { path = "crates/adapters/secrets-blob" }
+test-support = { path = "crates/test-support" }
 secrets-aws = { path = "crates/adapters/secrets-aws" }
 aws-common = { path = "crates/adapters/aws-common" }
 sandbox-docker = { path = "crates/adapters/sandbox-docker" }
@@ -60,7 +60,8 @@ chrono-tz = "0.10"
 thiserror = "2"
 async-trait = "0.1"
 rand = "0.8"
-sha2 = "0.10"
+sha2 = "0.11"
+hmac = "0.13"
 hex = "0.4"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }

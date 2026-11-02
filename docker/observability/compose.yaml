@@ -1,16 +1,26 @@
 # Grafana, the OpenTelemetry collector, Prometheus, Tempo and Loki in one
 # container, with the agentd dashboard and alert rules provisioned. Point
 # agentd at it with OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317.
+#
+#   GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16) docker compose -f docker/observability/compose.yaml up -d
+#
+# The image turns on anonymous Grafana access as Admin unless told otherwise;
+# here it is off and the admin password is required. Grafana, Prometheus, Tempo
+# and Loki answer on 127.0.0.1 only. The OTLP ports take telemetry from
+# containers too (perf/run.sh --observe), and accept writes only.
 services:
   lgtm:
     image: grafana/otel-lgtm:0.36.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
     ports:
-      - "3000:3000"   # Grafana (admin / admin)
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "9090:9090"   # Prometheus
-      - "3200:3200"   # Tempo
-      - "3100:3100"   # Loki
+      - "127.0.0.1:3000:3000"   # Grafana (admin / GRAFANA_ADMIN_PASSWORD)
+      - "4317:4317"             # OTLP gRPC
+      - "4318:4318"             # OTLP HTTP
+      - "127.0.0.1:9090:9090"   # Prometheus
+      - "127.0.0.1:3200:3200"   # Tempo
+      - "127.0.0.1:3100:3100"   # Loki
     volumes:
       - ./grafana/agentd-dashboard.json:/otel-lgtm/agentd/agentd-dashboard.json:ro
       - ./grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/agentd.yaml:ro

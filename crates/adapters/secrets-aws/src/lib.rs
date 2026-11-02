@@ -15,6 +15,7 @@
 mod failure;
 mod key;
 mod name;
+mod pepper;
 mod store;
 
 use std::time::Duration;

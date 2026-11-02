@@ -1,10 +1,12 @@
 # Vault credential storage: IAM
 
-With `AGENTD_SECRETS=aws`, agentd keeps each vault credential in AWS Secrets
-Manager as `PREFIX/<workspace>/<vault>/<credential>`, encrypted under one
+agentd keeps each vault credential in AWS Secrets Manager as
+`PREFIX/<workspace>/<vault>/<credential>`, encrypted under one
 customer-managed KMS key and tagged `workspace`, `vault` and
-`managed-by=agentd`. Only agentd's role can read them. Sandboxes and runners
-cannot read them or use the key.
+`managed-by=agentd`. The API key pepper is `PREFIX/system/api_key_pepper`,
+under the same key and tagged `managed-by=agentd`, so the same policy covers
+it. Only agentd's role, and an operator running `agentd keys` as it, can read
+them. Sandboxes and runners cannot read them or use the key.
 
 ## Placeholders
 

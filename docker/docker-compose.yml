@@ -1,9 +1,33 @@
-# agentd stack.
+# agentd stack for development: agentd, Postgres (migrated by Flyway), and
+# LocalStack for S3, Secrets Manager and KMS. Vault credentials are encrypted
+# under a KMS key on the emulator exactly as in production; there is no weaker
+# mode. Event streams and the local scheduler are per process, so run one
+# replica. Every published port is bound to 127.0.0.1.
 #
-# DEFAULT persistence: PostgreSQL (Flyway-migrated) — chosen because the
-# product is dashboard-first (list / filter / sort / search / count are plain
-# SQL). Records live in Postgres and blobs in object storage; event streams
-# and the local scheduler are per process, so run one replica.
+#   POSTGRES_PASSWORD=$(openssl rand -hex 16) docker compose -f docker/docker-compose.yml up
+#   docker compose -f docker/docker-compose.yml logs keys   # the dev API key, printed once
+
+x-agentd: &agentd
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: agentd:dev
+  environment: &agentd-env
+    AGENTD_ADDR: 0.0.0.0:8080
+    DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/agentd
+    # Blobs, secrets and the KMS key on the emulator; drop both endpoints for AWS.
+    AGENTD_AWS_ENDPOINT: http://localstack:4566
+    AGENTD_S3_CREATE_BUCKET: "1"
+    AGENTD_SECRETS_ENDPOINT: http://localstack:4566
+    AGENTD_SECRETS_KMS_KEY_ID: alias/agentd-secrets
+    # Only the emulator accepts these.
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    AWS_DEFAULT_REGION: us-east-1
+    # Each session's sandbox runs on the host's Docker daemon, reached through
+    # a proxy that allows only the calls the sandbox runtime makes.
+    DOCKER_HOST: tcp://docker:2375
+    RUST_LOG: info
 
 services:
   # ── migrations: Flyway 11 applies the schema, then exits ──────────────
@@ -11,7 +35,7 @@ services:
     image: flyway/flyway:11-alpine
     command: >
       -url=jdbc:postgresql://postgres:5432/agentd
-      -user=agentd -password=${POSTGRES_PASSWORD:-agentd}
+      -user=agentd -password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       -locations=filesystem:/flyway/sql -connectRetries=20 migrate
     volumes:
       - ../crates/adapters/store-postgres/migrations:/flyway/sql:ro
@@ -19,35 +43,29 @@ services:
       postgres:
         condition: service_healthy
 
+  # ── one dev API key, made through the CLI at startup ───────────────────
+  keys:
+    <<: *agentd
+    command: ["keys", "create", "--org", "org_dev", "--workspace", "wrkspc_01dev", "--name", "dev"]
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+
   agentd:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
+    <<: *agentd
     ports:
-      - "8080:8080"
-    environment:
-      AGENTD_ADDR: 0.0.0.0:8080
-      AGENTD_API_KEYS: ${AGENTD_API_KEYS:-agentd-dev-key:org_dev:wrkspc_01dev}
-      # Records → Postgres; file BYTES → object storage (LocalStack S3 locally, real S3 in prod).
-      AGENTD_STORE: ${AGENTD_STORE:-postgres}
-      DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:-agentd}@postgres:5432/agentd
-      AGENTD_AWS_ENDPOINT: http://s3:4566        # blobs; drop this for real S3
-      AGENTD_S3_CREATE_BUCKET: "1"
-      # Credentials as plain objects in the blob store: development only.
-      # Production uses AGENTD_SECRETS=aws (docs/configuration.md).
-      AGENTD_SECRETS: blob
-      AGENTD_DEV_SECRETS: "1"
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_DEFAULT_REGION: us-east-1
-      RUST_LOG: info
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
       flyway:
         condition: service_completed_successfully   # schema ready before boot
-      s3:
+      localstack:
         condition: service_healthy
+      docker:
+        condition: service_started
     deploy:
       replicas: ${AGENTD_REPLICAS:-1}   # one: event streams and timers are per process
 
@@ -56,31 +74,46 @@ services:
     environment:
       POSTGRES_DB: agentd
       POSTGRES_USER: agentd
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agentd"]
       interval: 3s
       timeout: 3s
       retries: 20
 
-  # Object storage for file BYTES (never in the DB): LocalStack's S3 locally
-  # (MinIO no longer publishes public images); drop AGENTD_AWS_ENDPOINT to
-  # use AWS S3 directly.
-  s3:
+  # S3, Secrets Manager and KMS. Healthy once the init hook has made the KMS
+  # key (docker/localstack/ready.d).
+  localstack:
     image: localstack/localstack:3.0
     environment:
-      SERVICES: s3
+      SERVICES: s3,secretsmanager,kms
+    volumes:
+      - ./localstack/ready.d:/etc/localstack/init/ready.d:ro
     ports:
-      - "4566:4566"
+      - "127.0.0.1:4566:4566"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health"]
+      test: ["CMD-SHELL", "awslocal kms describe-key --key-id alias/agentd-secrets >/dev/null"]
       interval: 2s
-      timeout: 5s
-      retries: 60
+      timeout: 10s
+      retries: 90
+
+  # The sandbox runtime's Docker API: networks, images and containers only.
+  # agentd never holds the raw socket, which is root on the host.
+  docker:
+    image: tecnativa/docker-socket-proxy:v0.4.1
+    environment:
+      POST: 1
+      CONTAINERS: 1
+      NETWORKS: 1
+      IMAGES: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
 
 volumes:
   pg_data:

@@ -17,7 +17,6 @@ use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
 use scheduler_local::LocalScheduler;
 use secrets_aws::AwsSecretStore;
-use secrets_blob::BlobSecretStore;
 use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
@@ -26,15 +25,12 @@ use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
-    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
-    PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
+    PgAgentsStore, PgApiKeys, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore,
+    PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
 };
 use vaults::VaultsStore;
 
-use crate::config::{
-    BlobsConfig, Config, KeysConfig, RuntimeConfig, SchedulerConfig, SecretsConfig, StoreConfig,
-};
-use crate::keys::EnvKeySource;
+use crate::config::{BlobsConfig, Config, KeysConfig, RuntimeConfig, SchedulerConfig, StoreConfig};
 
 /// How often the local scheduler checks for due fires (cron is minute-grained).
 const LOCAL_TICK: Duration = Duration::from_secs(10);
@@ -98,7 +94,8 @@ pub struct Backends {
     pub scheduler: Arc<dyn SchedulerPort>,
     /// Where the scheduler delivers fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
-    /// The sandbox runtime; `None` runs sessions without one.
+    /// The sandbox runtime. Configuration always gives one; `None` is for tests
+    /// that build their backends in code.
     pub runtime: Option<Arc<dyn Runtime>>,
     /// The instruments every boundary records into.
     pub metrics: Arc<Metrics>,
@@ -136,21 +133,19 @@ impl Backends {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
-        let secrets: Arc<dyn SecretStore> = match &config.secrets {
-            SecretsConfig::Aws(aws) => Arc::new(AwsSecretStore::connect(aws).await?),
-            SecretsConfig::Blob => Arc::new(BlobSecretStore::new(blobs.clone())),
-        };
-        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(secrets, metrics.clone()));
-        let stores = match &config.store {
+        let aws = AwsSecretStore::connect(&config.secrets).await?;
+        let pepper = Arc::new(aws.api_key_pepper().await?);
+        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
+        let (stores, keys) = match &config.store {
             StoreConfig::Postgres { url, pool } => {
                 let observer = telemetry::db::observer(metrics.clone());
                 let pg = PgBackend::connect_observed(url, *pool, observer).await?;
                 telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
-                Stores::postgres(pg, blobs, secrets)
+                let keys: Arc<dyn KeySource> = match config.keys {
+                    KeysConfig::Postgres => Arc::new(PgApiKeys::new(pg.clone(), pepper)),
+                };
+                (Stores::postgres(pg, blobs, secrets), keys)
             }
-        };
-        let keys: Arc<dyn KeySource> = match &config.keys {
-            KeysConfig::Env(keys) => Arc::new(EnvKeySource::new(keys)),
         };
         let fires = Arc::new(FireRegistry::new());
         let scheduler: Arc<dyn SchedulerPort> = match config.scheduler {
@@ -161,7 +156,6 @@ impl Backends {
             }
         };
         let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
-            RuntimeConfig::None => None,
             RuntimeConfig::Docker { image, limits } => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
