@@ -1,15 +1,16 @@
 //! `SessionsStore` on Postgres via Diesel: the session rows.
 
-use ::sessions::store::{SessionsStore, StoreError};
+use ::sessions::store::{Order, SessionFilter, SessionsStore, StoreError};
 use ::sessions::types::{Session, SessionId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::sessions;
-use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
 /// Postgres-backed sessions store (Diesel).
 #[derive(Debug, Clone)]
@@ -98,17 +99,52 @@ impl SessionsStore for PgSessionsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Session>, StoreError> {
+    async fn list(
+        &self,
+        ws: &WorkspaceId,
+        filter: &SessionFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Session>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = sessions::table
-            .filter(sessions::workspace_id.eq(ws.as_str()))
-            .order(sessions::created_at.asc())
-            .select(sessions::doc)
-            .limit(page.fetch_limit())
-            .offset(page.sql_offset())
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter().map(parse_doc).collect()
+        let c = &filter.created;
+        let statuses: Vec<String> = filter.statuses.iter().map(enum_str).collect();
+        let memory = filter
+            .memory_store_id
+            .as_ref()
+            .map(|id| serde_json::json!([{"type": "memory_store", "memory_store_id": id}]));
+        let order = if filter.order == Order::Asc { "ASC" } else { "DESC" };
+        let rows: Vec<DocRow> = diesel::sql_query(format!(
+            "SELECT doc FROM sessions
+             WHERE workspace_id = $1
+               AND ($2 OR doc->>'archived_at' IS NULL)
+               AND (cardinality($3::text[]) = 0 OR status = ANY($3))
+               AND ($4::text IS NULL OR doc->'agent'->>'id' = $4)
+               AND ($5::bigint IS NULL OR (doc->'agent'->>'version')::bigint = $5)
+               AND ($6::text IS NULL OR doc->>'deployment_id' = $6)
+               AND ($7::jsonb IS NULL OR doc->'resources' @> $7)
+               AND ($8::timestamptz IS NULL OR created_at > $8)
+               AND ($9::timestamptz IS NULL OR created_at >= $9)
+               AND ($10::timestamptz IS NULL OR created_at < $10)
+               AND ($11::timestamptz IS NULL OR created_at <= $11)
+             ORDER BY created_at {order}, session_id {order}
+             LIMIT $12 OFFSET $13"
+        ))
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Bool, _>(filter.include_archived)
+        .bind::<Array<Text>, _>(statuses)
+        .bind::<Nullable<Text>, _>(filter.agent_id.as_deref())
+        .bind::<Nullable<BigInt>, _>(filter.agent_version.map(|v| v as i64))
+        .bind::<Nullable<Text>, _>(filter.deployment_id.as_deref())
+        .bind::<Nullable<Jsonb>, _>(memory)
+        .bind::<Nullable<Timestamptz>, _>(c.gt.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(c.gte.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(c.lt.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(c.lte.map(|t| t.as_datetime()))
+        .bind::<BigInt, _>(page.fetch_limit())
+        .bind::<BigInt, _>(page.sql_offset())
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        rows.into_iter().map(|r| parse_doc(r.doc)).collect()
     }
 }

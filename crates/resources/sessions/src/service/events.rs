@@ -1,11 +1,11 @@
-use async_trait::async_trait;
 use shared::limits::{validate_range_u32, values};
-use shared::{ApiError, AuthContext, Timestamp, Usage, WorkspaceId};
+use shared::{ApiError, AuthContext, Pagination};
 use tokio::sync::broadcast;
 
-use super::{guard_writable, map_store, parse_id, EngineContract, SessionsService};
-use crate::events::{Event, EventPayload, SessionEvent, StopReason, UserEvent};
-use crate::types::{OutcomeEvaluation, OutcomeId, SessionId, SessionStatus};
+use super::{guard_writable, map_store, parse_id, SessionsService};
+use crate::events::{Event, EventPayload, UserEvent};
+use crate::store::EventFilter;
+use crate::types::{OutcomeId, SessionId, SessionStatus};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
@@ -62,11 +62,17 @@ impl SessionsService {
         Ok(out)
     }
 
-    /// `GET /v1/sessions/{id}/events` — full history (reconnect/dedupe
-    /// source; the SSE stream has no replay).
-    pub async fn list_events(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vec<Event>, ApiError> {
+    /// `GET /v1/sessions/{id}/events`: one page of the history (the
+    /// reconnect and dedupe source; the SSE stream has no replay).
+    pub async fn list_events(
+        &self,
+        ctx: &AuthContext,
+        raw_id: &str,
+        filter: &EventFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Event>, ApiError> {
         let id = parse_id(raw_id)?;
-        self.events.events(&ctx.workspace, &id).await.map_err(map_store)
+        self.events.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store)
     }
 
     /// Subscribe to live events (`GET /v1/sessions/{id}/events/stream`).
@@ -85,93 +91,8 @@ impl SessionsService {
         self.channels.lock().entry(id.clone()).or_insert_with(|| broadcast::channel(1024).0).clone()
     }
 
-    fn broadcast(&self, id: &SessionId, ev: &Event) {
+    pub(super) fn broadcast(&self, id: &SessionId, ev: &Event) {
         // No receiver = no error; stream is fire-and-forget.
         let _ = self.channel(id).send(ev.clone());
-    }
-}
-
-/// The engine contract is implemented by the same service (single source of
-/// truth for the event log + broadcast), consumed by `engine`.
-#[async_trait]
-impl EngineContract for SessionsService {
-    async fn emit(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-        payload: EventPayload,
-    ) -> Result<Event, ApiError> {
-        let mut ev = Event::new(payload);
-        // Agent-side events are processed by construction.
-        ev.processed_at = Some(Timestamp::now());
-        self.events.append_event(ws, session, ev.clone()).await.map_err(map_store)?;
-        self.broadcast(session, &ev);
-        Ok(ev)
-    }
-
-    async fn set_status(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-        status: SessionStatus,
-        stop_reason: Option<StopReason>,
-    ) -> Result<(), ApiError> {
-        let mut s = self.store.get(ws, session).await.map_err(map_store)?;
-        // Terminated is absorbing.
-        if s.status == SessionStatus::Terminated {
-            return Err(ApiError::conflict_invalid_request("session is terminated"));
-        }
-        s.status = status;
-        s.updated_at = Timestamp::now();
-        self.store.replace(ws, s).await.map_err(map_store)?;
-        let payload = match status {
-            SessionStatus::Idle => EventPayload::Session(SessionEvent::StatusIdle {
-                stop_reason: stop_reason.unwrap_or(StopReason::EndTurn {}),
-            }),
-            SessionStatus::Running => EventPayload::Session(SessionEvent::StatusRunning {}),
-            SessionStatus::Rescheduling => EventPayload::Session(SessionEvent::StatusRescheduled {}),
-            SessionStatus::Terminated => EventPayload::Session(SessionEvent::StatusTerminated {}),
-        };
-        self.emit(ws, session, payload).await?;
-        Ok(())
-    }
-
-    async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError> {
-        let events = self.events.events(ws, session).await.map_err(map_store)?;
-        let mut drained = Vec::new();
-        for mut ev in events {
-            if ev.payload.is_user_event() && ev.processed_at.is_none() {
-                ev.processed_at = Some(Timestamp::now());
-                self.events.replace_event(ws, session, ev.clone()).await.map_err(map_store)?;
-                // The processed form is re-broadcast (documented: client
-                // events appear twice — queued then processed).
-                self.broadcast(session, &ev);
-                drained.push(ev);
-            }
-        }
-        Ok(drained)
-    }
-
-    async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError> {
-        let mut s = self.store.get(ws, session).await.map_err(map_store)?;
-        s.usage.add(usage);
-        s.updated_at = Timestamp::now();
-        self.store.replace(ws, s).await.map_err(map_store)
-    }
-
-    async fn record_outcome(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-        eval: OutcomeEvaluation,
-    ) -> Result<(), ApiError> {
-        let mut s = self.store.get(ws, session).await.map_err(map_store)?;
-        // Replace the entry for this outcome or append.
-        match s.outcome_evaluations.iter_mut().find(|e| e.outcome_id == eval.outcome_id) {
-            Some(slot) => *slot = eval,
-            None => s.outcome_evaluations.push(eval),
-        }
-        s.updated_at = Timestamp::now();
-        self.store.replace(ws, s).await.map_err(map_store)
     }
 }

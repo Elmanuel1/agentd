@@ -29,4 +29,7 @@ pub enum SessionEvent {
         /// Error detail.
         error: serde_json::Value,
     },
+    /// The session was deleted; the last event on its stream.
+    #[serde(rename = "session.deleted")]
+    Deleted {},
 }

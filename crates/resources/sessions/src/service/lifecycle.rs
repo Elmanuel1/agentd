@@ -1,33 +1,48 @@
 use shared::limits::required;
+use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
 use super::{guard_writable, map_store, parse_id, SessionsService};
+use crate::events::{Event, EventPayload, SessionEvent, UserEvent};
+use crate::store::SessionFilter;
 use crate::types::{
-    CreateSessionRequest, Session, SessionId, SessionResource, SessionResourceId, SessionResourceInput,
-    SessionStatus, SessionTag, Stats, UpdateSessionRequest,
+    AgentRefInput, CreateSessionRequest, Session, SessionId, SessionStatus, SessionTag, Stats,
+    UpdateSessionRequest,
 };
 
 impl SessionsService {
-    /// `POST /v1/sessions`.
+    /// `POST /v1/sessions`. `initial_events` are queued as the first input.
     pub async fn create(&self, ctx: &AuthContext, req: CreateSessionRequest) -> Result<Session, ApiError> {
         let agent_ref = required("agent", req.agent)?;
         let environment_id = required("environment_id", req.environment_id)?;
         // Sessions do NOT cap metadata entries (live divergence) but key and
         // value length rules still apply.
-        req.metadata.validate(shared::metadata::MetadataPolicy::unlimited_entries())?;
-        let agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
+        req.metadata.validate(MetadataPolicy::unlimited_entries())?;
+        if let Some(i) = req
+            .initial_events
+            .iter()
+            .position(|e| !matches!(e, UserEvent::Message { .. } | UserEvent::DefineOutcome { .. }))
+        {
+            return Err(ApiError::invalid_request(format!(
+                "initial_events.{i}: only user.message and user.define_outcome events are allowed"
+            )));
+        }
+        let mut agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
+        if let AgentRefInput::Tagged(overrides) = agent_ref {
+            agent = overrides.apply(agent)?;
+        }
         self.deps.check_environment(ctx, &environment_id).await?;
-        let resources = req.resources.into_iter().map(assign_resource_id).collect::<Vec<_>>();
         let now = Timestamp::now();
         let session = Session {
             agent,
             archived_at: None,
+            budget: req.budget,
             created_at: now,
             environment_id,
             id: SessionId::generate(),
             metadata: req.metadata,
             outcome_evaluations: vec![],
-            resources,
+            resources: req.resources.into_iter().map(|r| r.into_resource(now)).collect(),
             stats: Stats::default(),
             status: SessionStatus::Idle,
             title: req.title,
@@ -35,8 +50,13 @@ impl SessionsService {
             updated_at: now,
             usage: Usage::default(),
             vault_ids: req.vault_ids,
+            deployment_id: req.deployment_id,
         };
         self.store.insert(&ctx.workspace, session.clone()).await.map_err(map_store)?;
+        if !req.initial_events.is_empty() {
+            let events = req.initial_events.into_iter().map(EventPayload::User).collect();
+            self.send_events(ctx, session.id.as_str(), events).await?;
+        }
         Ok(session)
     }
 
@@ -47,11 +67,17 @@ impl SessionsService {
     }
 
     /// `GET /v1/sessions`.
-    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Session>, ApiError> {
-        self.store.list(&ctx.workspace, page).await.map_err(map_store)
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        filter: &SessionFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Session>, ApiError> {
+        self.store.list(&ctx.workspace, filter, page).await.map_err(map_store)
     }
 
-    /// `POST /v1/sessions/{id}` — title/metadata only here.
+    /// `POST /v1/sessions/{id}`. A field left out keeps its value; the agent's
+    /// tools and MCP servers change only while the session is not running.
     pub async fn update(
         &self,
         ctx: &AuthContext,
@@ -61,13 +87,21 @@ impl SessionsService {
         let id = parse_id(raw_id)?;
         let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         guard_writable(&s)?;
-        if let Some(t) = req.title {
-            s.title = Some(t);
+        if req.vault_ids.is_some() {
+            return Err(ApiError::invalid_request("vault_ids: updating vault_ids is not yet supported"));
         }
-        if let Some(m) = req.metadata {
-            m.validate(shared::metadata::MetadataPolicy::unlimited_entries())?;
-            s.metadata = m;
+        s.title = req.title.apply_to_option(s.title);
+        s.metadata = s.metadata.merged(req.metadata);
+        s.metadata.validate(MetadataPolicy::unlimited_entries())?;
+        if let Some(agent) = req.agent {
+            if s.status == SessionStatus::Running {
+                return Err(ApiError::conflict_invalid_request(
+                    "cannot update the agent of a running session",
+                ));
+            }
+            s.agent = agent.apply(s.agent)?;
         }
+        s.budget = req.budget.apply_to_option(s.budget);
         s.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, s.clone()).await.map_err(map_store)?;
         Ok(s)
@@ -93,33 +127,22 @@ impl SessionsService {
         Ok(s)
     }
 
-    /// `DELETE /v1/sessions/{id}` — removes session, events, checkpoints.
+    /// `DELETE /v1/sessions/{id}` — removes the session and its events. Open
+    /// streams get `session.deleted` as their last event.
     pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         if s.status == SessionStatus::Running {
             return Err(ApiError::conflict_invalid_request("cannot delete a running session"));
         }
-        self.channels.lock().remove(&id);
         // Log rows first so a crash never orphans events.
         self.events.delete_events(&ctx.workspace, &id).await.map_err(map_store)?;
-        self.store.delete(&ctx.workspace, &id).await.map_err(map_store)
-    }
-}
-
-fn assign_resource_id(input: SessionResourceInput) -> SessionResource {
-    let id = Some(SessionResourceId::generate());
-    match input {
-        SessionResourceInput::File { file_id, mount_path } => SessionResource::File {
-            id,
-            file_id,
-            mount_path: mount_path.unwrap_or_else(|| "/workspace/file".into()),
-        },
-        SessionResourceInput::GithubRepository { url, mount_path, checkout, .. } => {
-            SessionResource::GithubRepository { id, url, mount_path, checkout }
+        let deleted = self.store.delete(&ctx.workspace, &id).await.map_err(map_store)?;
+        let mut last = Event::new(SessionEvent::Deleted {}.into());
+        last.processed_at = Some(Timestamp::now());
+        if let Some(tx) = self.channels.lock().remove(&id) {
+            let _ = tx.send(last);
         }
-        SessionResourceInput::MemoryStore { memory_store_id, access, instructions } => {
-            SessionResource::MemoryStore { id, memory_store_id, access, instructions }
-        }
+        Ok(deleted)
     }
 }

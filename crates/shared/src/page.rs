@@ -17,9 +17,11 @@ use crate::error::ApiError;
 
 pub mod filters;
 mod id_cursor;
+mod query;
 mod spec;
 
 pub use id_cursor::{IdCursor, IdPage};
+pub use query::ListQuery;
 pub use spec::{ListSpec, Messages, UnknownParams};
 
 /// Default page size when `limit` is omitted.
@@ -35,6 +37,10 @@ pub struct Page<T> {
     /// Opaque cursor for the next page; omitted when there are no more results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page: Option<String>,
+    /// Cursor for the previous page (bidirectional lists only); omitted on
+    /// the first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_page: Option<String>,
 }
 
 impl<T> Page<T> {
@@ -47,7 +53,7 @@ impl<T> Page<T> {
         let end = start.saturating_add(page.limit).min(total);
         let data: Vec<T> = all.into_iter().skip(start).take(page.limit).collect();
         let next_page = (end < total).then(|| encode_cursor(end));
-        Self { data, next_page }
+        Self { data, next_page, prev_page: None }
     }
 
     /// Build a page from rows the store fetched DB-side with
@@ -60,7 +66,14 @@ impl<T> Page<T> {
         let has_more = rows.len() > page.limit;
         rows.truncate(page.limit);
         let next_page = has_more.then(|| encode_cursor(page.offset + page.limit));
-        Self { data: rows, next_page }
+        Self { data: rows, next_page, prev_page: None }
+    }
+
+    /// Add the cursor back to the previous page, for a bidirectional list.
+    #[must_use]
+    pub fn with_prev_page(mut self, page: &Pagination) -> Self {
+        self.prev_page = (page.offset > 0).then(|| encode_cursor(page.offset.saturating_sub(page.limit)));
+        self
     }
 }
 

@@ -43,7 +43,7 @@ pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;
 pub use module::Module;
 pub use page::{
-    reject_unknown_params, IdCursor, IdPage, ListSpec, Messages, Page, Pagination, UnknownParams,
+    reject_unknown_params, IdCursor, IdPage, ListQuery, ListSpec, Messages, Page, Pagination, UnknownParams,
 };
 pub use patch::{MetadataPatch, Patch};
 pub use scope::Scope;

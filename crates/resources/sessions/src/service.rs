@@ -23,8 +23,10 @@ use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus};
 
 use agents::AgentSnapshot;
 
+mod engine;
 mod events;
 mod lifecycle;
+mod resources;
 
 /// Resolution + validation dependencies the sessions service needs from
 /// other entities — a port, so tests fake it and `api` wires it to
