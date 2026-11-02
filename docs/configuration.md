@@ -17,7 +17,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
 | API keys | `AGENTD_KEYS` | `aws`: the keys `agentd keys create` issued, in Secrets Manager (see [API keys](#api-keys)) |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
-| Sandbox runtime | `AGENTD_RUNTIME` | `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Every sandbox sits on the internal `agentd-sandboxes` network, which has no route out and container-to-container traffic off: its only way out is agentd's egress proxy, which applies the environment's networking. agentd reaches that network by joining it when `AGENTD_SANDBOX_JOIN` names agentd's own container, else through the `agentd-gateway` container, which relays only agentd's API and proxy ports to the host. The sandbox's first process is `agentd-worker`, which runs each command as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
+| Sandbox runtime | `AGENTD_RUNTIME` | `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Each sandbox sits on an internal network of its own, `agentd-net-<session id>` on a /28 of 10.213.0.0/16, with no route out: only agentd and the egress service share it, so its only way out is the egress proxy and no other sandbox is reachable. agentd and the egress service join each one when `AGENTD_SANDBOX_JOIN` names their containers; otherwise the `agentd-gateway` container joins it and relays only agentd's API port and the egress proxy's port to the host. The sandbox's first process is `agentd-worker`, which runs each command as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
 
 ## Settings
 
@@ -55,28 +55,62 @@ connection.
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | Output tokens per model call |
 | `AGENTD_BRAVE_API_KEY` | unset | Brave Search key for `web_search` |
 | `AGENTD_MAX_ACTIVE_SESSIONS` | `64` | Session loops one replica runs at once, each holding a lease connection |
-| `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or AGENTD_SANDBOX_JOIN>:<AGENTD_ADDR port>` | agentd's API as a sandbox's worker reaches it |
-| `AGENTD_SANDBOX_JOIN` | unset | agentd's own container, which joins the sandbox network in place of the gateway |
+| `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>` | agentd's API as a sandbox's worker reaches it |
+| `AGENTD_SANDBOX_JOIN` | unset | agentd's container and the egress service's, comma-separated, which join each sandbox's network in place of the gateway |
 | `AGENTD_WORK_TOKEN_KEY` | random per process | Hex key that signs work tokens and egress proxy passwords; set it when more than one replica runs |
-| `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | Where the egress proxy listens |
-| `AGENTD_SANDBOX_EGRESS_HOST` | `<agentd-gateway or AGENTD_SANDBOX_JOIN>:<AGENTD_EGRESS_ADDR port>` | The egress proxy as a sandbox reaches it |
-| `AGENTD_EGRESS_INTERNAL_HOSTS` | unset | Hosts sandboxes may reach at internal addresses, comma-separated |
+| `AGENTD_EGRESS_ADMIN_URL` | unset | The egress service's admin interface; unset, sandboxes reach nothing beyond agentd |
+| `AGENTD_EGRESS_ADMIN_TOKEN` | unset | The token that interface takes; set with the URL |
+| `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | The egress proxy's address; its port is the one the gateway relays |
+| `AGENTD_SANDBOX_EGRESS_HOST` | `<agentd-gateway or the second AGENTD_SANDBOX_JOIN container>:<AGENTD_EGRESS_ADDR port>` | The egress proxy as a sandbox reaches it |
 
 ### Credentials and egress
 
 Each `environment_variable` credential in the session's vaults is set in the
 sandbox under its own name, with a per-session placeholder
 (`agentd-ph-...`) as its value; the system prompt lists each name, its
-description and its hosts. Sandbox traffic leaves through the egress proxy,
-which the sandbox reaches through `HTTP_PROXY` and `HTTPS_PROXY` and trusts
-through a per-session CA. For a host the credential allows, the proxy puts
-the real value in place of the placeholder in the request headers. A
-placeholder sent to any other host, or from a credential that names no host,
-is refused, as is a host outside `limited` networking. A real value in a
-response, headers or body, is masked back to its placeholder. Each
-substitution is logged with the session, credential, host, method and path,
-never the value. The proxy reads a session's values again at most 30 seconds
-after it last read them, so a rotated secret takes effect without a restart.
+description and its hosts. agentd reads no credential value for this: it
+registers the session with the egress service (its proxy password digest,
+its environment's hosts, and each credential's name, placeholder and vault)
+and the service answers with the session's CA, which agentd writes into the
+sandbox on every run.
+
+Sandbox traffic leaves through the egress proxy, which the sandbox reaches
+through `HTTP_PROXY` and `HTTPS_PROXY` and trusts through the session CA,
+whose key never leaves the service. When a request carries a credential's
+placeholder, the service reads the credential's current (`AWSCURRENT`) value
+from Secrets Manager for that request only; a value changed in Secrets
+Manager applies to the next request, and a read that fails refuses the
+request (fail closed). For a host the credential allows, the value replaces
+the placeholder in the request headers. A placeholder sent to any other
+host, or from a credential that names no host, is refused, as is a host
+outside `limited` networking. The value is held in locked memory, which
+never reaches swap, and zeroed as soon as the request is sent; the response
+is masked against a fingerprint of it (its length, a rolling hash and a
+SHA-256 digest), so a value echoed in the response's headers or body comes
+back as its placeholder. Each substitution is logged with the session,
+credential, host, method and path, never the value.
+
+### Egress service
+
+`agentd-egress` (`docker/egress/Dockerfile`) is the egress proxy as a service
+of its own, apart from agentd and from every sandbox. It runs as a non-root
+user, on a read-only root filesystem, from a distroless image with no shell.
+At startup it turns core dumps off (`RLIMIT_CORE` 0) and, on Linux, makes
+itself non-dumpable (`PR_SET_DUMPABLE` 0), so its memory cannot be dumped or
+read by another process. It serves no metrics or debug endpoint, and logs no
+request header. Its role may only call `secretsmanager:GetSecretValue` on
+credential secrets (`deploy/iam/egress-secrets-policy.json`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | The proxy, for sandboxes |
+| `AGENTD_EGRESS_ADMIN_ADDR` | `127.0.0.1:8891` | The admin interface, for agentd only: bind it to an address on a network only agentd shares |
+| `AGENTD_EGRESS_ADMIN_TOKEN` | required | The bearer token the admin interface takes, at least 32 characters |
+| `AGENTD_EGRESS_INTERNAL_HOSTS` | unset | Hosts sandboxes may reach at internal addresses, comma-separated |
+| `AGENTD_SECRETS_PREFIX`, `AGENTD_SECRETS_REGION`, `AGENTD_SECRETS_ENDPOINT`, `AGENTD_SECRETS_ROLE_ARN` | as for agentd | Where the credentials are |
+
+The service keeps its registrations in memory. After a restart, a session's
+next run registers it again and writes the new CA into its sandbox.
 
 ## S3 credentials
 
@@ -166,6 +200,11 @@ There is no switch that weakens any of these; each is the only behaviour.
   to the internet: API keys travel in request headers.
 - There is no CORS layer, so browsers cannot call agentd across origins, and
   there is no debug or admin endpoint. Every route needs an API key.
+- Credential values reach a sandbox's requests only through the egress
+  service, which reads each one when a request needs it and zeroes it once
+  the request is sent; agentd never reads them for egress. Only agentd can
+  reach the service's admin interface: it takes a token, and listens on a
+  network only the two share.
 - The dev and observability stacks require their passwords, publish their
   ports on `127.0.0.1` (OTLP ingest aside), and run Grafana without
   anonymous access.

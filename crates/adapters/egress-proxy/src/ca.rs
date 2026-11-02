@@ -15,7 +15,7 @@ use rustls::ServerConfig;
 pub struct CaPem {
     /// The certificate, which the sandbox trusts.
     pub cert: String,
-    /// The private key, which never leaves agentd.
+    /// The private key, which never leaves the proxy.
     pub key: String,
 }
 

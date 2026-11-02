@@ -1,46 +1,26 @@
-//! The egress proxy's view of agentd: which session a proxy password is,
-//! where that session may go, its credentials (values read from its vaults,
-//! the sandbox only ever seeing a stable per-session placeholder), and the
-//! CA its sandbox trusts. Engine-facing, the same rules give the sandbox its
-//! environment.
+//! agentd's side of the egress service: each session's credentials as the
+//! sandbox and the agent may know them (names, placeholders and hosts, never
+//! a value), registered with the service, which answers with the CA the
+//! sandbox trusts. agentd reads no credential value for egress.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use egress_proxy::{CaPem, Credential, EgressPolicy, SessionCa, SessionEgress};
+use egress_proxy::{BindingSpec, Registered, Registration};
 use environments::EnvironmentsService;
-use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sessions::SessionsService;
+use sha2::{Digest, Sha256};
 use shared::hash::Signer;
-use shared::{ApiError, AuthContext, OrgId, WorkspaceId};
-use vaults::egress::VaultSecrets;
+use shared::{ApiError, AuthContext};
+use vaults::egress::VaultCredentials;
 
 /// Every proxy password starts with this.
 const PASSWORD: &str = "agentd-px-";
-/// How long a session's rules are reused before its vaults are read again
-/// (a rotated secret takes effect within this; placeholders do not change).
-const FRESH: Duration = Duration::from_secs(30);
-/// What `allow_package_managers` opens under `limited` networking.
-pub const PACKAGE_HOSTS: [&str; 9] = [
-    "pypi.org",
-    "files.pythonhosted.org",
-    "registry.npmjs.org",
-    "deb.debian.org",
-    "security.debian.org",
-    "dl-cdn.alpinelinux.org",
-    "crates.io",
-    "index.crates.io",
-    "static.crates.io",
-];
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    session: String,
-    ws: String,
-    org: String,
+#[derive(Serialize)]
+struct Claims<'a> {
+    session: &'a str,
+    ws: &'a str,
 }
 
 /// A credential as the agent may know it: name, purpose and hosts.
@@ -50,55 +30,84 @@ pub struct Disclosed {
     pub name: String,
     /// What it is for.
     pub description: String,
-    /// Where it may be sent (`None`: anywhere).
+    /// Where it may be sent (`None`: nowhere).
     pub hosts: Option<Vec<String>>,
 }
 
-/// Egress rules from sessions, environments and vaults.
+/// A session's egress, as its sandbox is set up with it.
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    /// The proxy password.
+    pub password: String,
+    /// Each credential's variable, set to its placeholder.
+    pub env: BTreeMap<String, String>,
+    /// The credentials as the agent may know them.
+    pub disclosed: Vec<Disclosed>,
+    /// The session CA's certificate, PEM.
+    pub ca_cert: String,
+}
+
+/// The egress service's admin interface.
+#[derive(Clone)]
+pub struct EgressAdmin {
+    http: reqwest::Client,
+    url: String,
+    token: String,
+}
+
+impl std::fmt::Debug for EgressAdmin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EgressAdmin").field("url", &self.url).finish_non_exhaustive()
+    }
+}
+
+impl EgressAdmin {
+    /// The admin interface at `url`, called with `token`.
+    pub fn new(url: &str, token: &str) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+        Self { http, url: url.trim_end_matches('/').to_owned(), token: token.to_owned() }
+    }
+
+    fn session_url(&self, session: &str) -> String {
+        format!("{}/v1/sessions/{session}", self.url)
+    }
+}
+
+/// Registers sessions with the egress service.
 pub struct SessionEgressPolicy {
     signer: Signer,
     sessions: Arc<SessionsService>,
     environments: Arc<EnvironmentsService>,
-    vaults: VaultSecrets,
-    internal_hosts: Vec<String>,
-    cas: Mutex<HashMap<String, (CaPem, Arc<SessionCa>)>>,
-    cache: Mutex<HashMap<String, (Instant, Arc<SessionEgress>)>>,
+    vaults: VaultCredentials,
+    admin: EgressAdmin,
 }
 
 impl std::fmt::Debug for SessionEgressPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionEgressPolicy").finish_non_exhaustive()
+        f.debug_struct("SessionEgressPolicy").field("admin", &self.admin).finish_non_exhaustive()
     }
 }
 
 impl SessionEgressPolicy {
-    /// Rules signed under `signer`, over the services they read.
+    /// Passwords and placeholders signed under `signer`, from the services
+    /// they read, registered through `admin`.
     pub fn new(
         signer: Signer,
         sessions: Arc<SessionsService>,
         environments: Arc<EnvironmentsService>,
-        vaults: VaultSecrets,
-        internal_hosts: Vec<String>,
+        vaults: VaultCredentials,
+        admin: EgressAdmin,
     ) -> Self {
-        Self {
-            signer: signer.derive("egress"),
-            sessions,
-            environments,
-            vaults,
-            internal_hosts,
-            cas: Mutex::new(HashMap::new()),
-            cache: Mutex::new(HashMap::new()),
-        }
+        Self { signer: signer.derive("egress"), sessions, environments, vaults, admin }
     }
 
-    /// The proxy password of `session`.
+    /// The proxy password of `session`: stable, so a registration again
+    /// leaves the sandbox's settings valid.
     pub fn password(&self, ctx: &AuthContext, session: &str) -> String {
-        let claims = Claims {
-            session: session.to_owned(),
-            ws: ctx.workspace.as_str().to_owned(),
-            org: ctx.org.as_str().to_owned(),
-        };
-        self.signer.sign(PASSWORD, &claims)
+        self.signer.sign(PASSWORD, &Claims { session, ws: ctx.workspace.as_str() })
     }
 
     /// The stand-in the sandbox sees for credential `id` of `session`.
@@ -107,104 +116,64 @@ impl SessionEgressPolicy {
         format!("agentd-ph-{}", mac.get(..32).unwrap_or(&mac))
     }
 
-    /// The CA `session`'s sandbox trusts, made on first use.
-    pub fn ca(&self, session: &str) -> Result<(CaPem, Arc<SessionCa>), ApiError> {
-        if let Some(found) = self.cas.lock().get(session) {
-            return Ok(found.clone());
-        }
-        let pem = CaPem::generate(session).map_err(|e| ApiError::internal(e.to_string()))?;
-        let ca = Arc::new(SessionCa::from_pem(&pem).map_err(|e| ApiError::internal(e.to_string()))?);
-        self.cas.lock().insert(session.to_owned(), (pem.clone(), ca.clone()));
-        Ok((pem, ca))
-    }
-
-    /// Drop what is kept for `session` (its sandbox is gone).
-    pub fn forget(&self, session: &str) {
-        self.cas.lock().remove(session);
-        self.cache.lock().remove(session);
-    }
-
-    /// The session's rules, read fresh.
-    pub async fn rules(&self, ctx: &AuthContext, session: &str) -> Result<SessionEgress, ApiError> {
+    /// Register `session` with the egress service as it stands now: its
+    /// environment's hosts and its vaults' credentials.
+    pub async fn prepare(&self, ctx: &AuthContext, session: &str) -> Result<Prepared, ApiError> {
         let s = self.sessions.get(ctx, session).await?;
         let env = self.environments.get(ctx, &s.environment_id).await?;
         let config = serde_json::to_value(&env.config).unwrap_or_default();
-        let allowed_hosts = (config.pointer("/networking/type").and_then(serde_json::Value::as_str)
-            == Some("limited"))
-        .then(|| {
-            let mut hosts: Vec<String> = config
-                .pointer("/networking/allowed_hosts")
-                .and_then(serde_json::Value::as_array)
+        let credentials = self.vaults.environment_credentials(&ctx.workspace, &s.vault_ids).await?;
+        let password = self.password(ctx, session);
+        let registration = Registration {
+            password_sha256: hex::encode(Sha256::digest(password.as_bytes())),
+            allowed_hosts: environments::networking::allowed_hosts(&config),
+            credentials: credentials
+                .iter()
+                .map(|c| BindingSpec {
+                    id: c.credential_id.clone(),
+                    name: c.name.clone(),
+                    placeholder: self.placeholder(session, &c.credential_id),
+                    workspace: ctx.workspace.as_str().to_owned(),
+                    vault: c.vault_id.clone(),
+                })
+                .collect(),
+        };
+        let sent = self
+            .admin
+            .http
+            .put(self.admin.session_url(session))
+            .bearer_auth(&self.admin.token)
+            .json(&registration)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status);
+        let registered: Registered = match sent {
+            Ok(r) => r.json().await.map_err(|e| ApiError::internal(format!("egress service: {e}")))?,
+            Err(e) => return Err(ApiError::internal(format!("egress service: {e}"))),
+        };
+        Ok(Prepared {
+            password,
+            env: credentials
+                .iter()
+                .map(|c| (c.name.clone(), self.placeholder(session, &c.credential_id)))
+                .collect(),
+            disclosed: credentials
                 .into_iter()
-                .flatten()
-                .filter_map(|h| h.as_str().map(str::to_owned))
-                .collect();
-            if config.pointer("/networking/allow_package_managers").and_then(serde_json::Value::as_bool)
-                == Some(true)
-            {
-                hosts.extend(PACKAGE_HOSTS.iter().map(|h| (*h).to_owned()));
-            }
-            hosts
-        });
-        let secrets = self.vaults.environment_secrets(&ctx.workspace, &s.vault_ids).await?;
-        let credentials = secrets
-            .into_iter()
-            .map(|e| Credential {
-                placeholder: self.placeholder(session, &e.credential_id),
-                id: e.credential_id,
-                name: e.name,
-                value: e.value.expose().to_owned(),
-                hosts: e.hosts,
-                header: e.header,
-            })
-            .collect();
-        let (_, ca) = self.ca(session)?;
-        Ok(SessionEgress {
-            session: session.to_owned(),
-            allowed_hosts,
-            credentials,
-            ca,
-            internal_hosts: self.internal_hosts.clone(),
+                .map(|c| Disclosed { name: c.name, description: c.description, hosts: c.hosts })
+                .collect(),
+            ca_cert: registered.ca_cert,
         })
     }
 
-    /// What the sandbox of `session` is told: each credential's variable set
-    /// to its placeholder, and the credentials as the agent may know them.
-    pub async fn disclose(
-        &self,
-        ctx: &AuthContext,
-        session: &str,
-    ) -> Result<(BTreeMap<String, String>, Vec<Disclosed>), ApiError> {
-        let s = self.sessions.get(ctx, session).await?;
-        let secrets = self.vaults.environment_secrets(&ctx.workspace, &s.vault_ids).await?;
-        let env =
-            secrets.iter().map(|e| (e.name.clone(), self.placeholder(session, &e.credential_id))).collect();
-        let disclosed = secrets
-            .into_iter()
-            .map(|e| Disclosed { name: e.name, description: e.description, hosts: e.hosts })
-            .collect();
-        Ok((env, disclosed))
-    }
-}
-
-#[async_trait]
-impl EgressPolicy for SessionEgressPolicy {
-    async fn session(&self, password: &str) -> Option<Arc<SessionEgress>> {
-        let claims: Claims = self.signer.verify(PASSWORD, password)?;
-        if let Some((at, rules)) = self.cache.lock().get(&claims.session) {
-            if at.elapsed() < FRESH {
-                return Some(rules.clone());
+    /// Tell the egress service `session`'s sandbox is gone.
+    pub fn forget(&self, session: &str) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else { return };
+        let req = self.admin.http.delete(self.admin.session_url(session)).bearer_auth(&self.admin.token);
+        let session = session.to_owned();
+        rt.spawn(async move {
+            if let Err(e) = req.send().await.and_then(reqwest::Response::error_for_status) {
+                tracing::warn!(%session, error = %e, "the egress service did not drop the session");
             }
-        }
-        let ctx = AuthContext {
-            org: OrgId::new(claims.org),
-            workspace: WorkspaceId::new(claims.ws),
-            api_key_id: "agentd-egress".into(),
-        };
-        let rules = Arc::new(self.rules(&ctx, &claims.session).await.ok()?);
-        let mut cache = self.cache.lock();
-        cache.retain(|_, (at, _)| at.elapsed() < FRESH);
-        cache.insert(claims.session, (Instant::now(), rules.clone()));
-        Some(rules)
+        });
     }
 }

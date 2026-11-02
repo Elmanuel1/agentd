@@ -111,8 +111,6 @@ pub struct Backends {
 
 /// The agent loop's backends.
 pub struct AgentBackends {
-    /// Where the egress proxy listens.
-    pub egress: Option<tokio::net::TcpListener>,
     /// One loop per session across replicas.
     pub leases: Arc<dyn Leases>,
     /// Providers and limits.
@@ -188,15 +186,7 @@ impl Backends {
                 let runtime = Arc::new(DockerRuntime::new(docker, image.clone(), *limits, network.clone()));
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
                 let leases = PgLeases::connect(url, config.engine.max_active_sessions).await?;
-                let egress =
-                    tokio::net::TcpListener::bind(&config.engine.egress_addr).await.map_err(|e| {
-                        BootError::Sandbox(format!("egress proxy on {}: {e}", config.engine.egress_addr))
-                    })?;
-                let agent = AgentBackends {
-                    egress: Some(egress),
-                    leases: Arc::new(leases),
-                    config: config.engine.clone(),
-                };
+                let agent = AgentBackends { leases: Arc::new(leases), config: config.engine.clone() };
                 (Some(Arc::new(Observed::new(runtime as Arc<dyn Runtime>, metrics.clone()))), Some(agent))
             }
         };

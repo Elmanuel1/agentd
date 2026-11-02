@@ -22,8 +22,8 @@ pub struct RealSessionAssets {
     pub skills: Arc<SkillsService>,
     /// Environment configs.
     pub environments: Arc<EnvironmentsService>,
-    /// Egress rules: placeholders, proxy passwords, session CAs.
-    pub egress: Arc<SessionEgressPolicy>,
+    /// Registers sessions with the egress service; `None` when there is none.
+    pub egress: Option<Arc<SessionEgressPolicy>>,
     /// The proxy as a sandbox reaches it (`host:port`).
     pub egress_host: String,
 }
@@ -61,9 +61,11 @@ impl SessionAssets for RealSessionAssets {
     }
 
     async fn egress(&self, ctx: &AuthContext, session: &str) -> Result<SandboxEgress, ApiError> {
-        let (mut env, disclosed) = self.egress.disclose(ctx, session).await?;
-        let (pem, _) = self.egress.ca(session)?;
-        let proxy = format!("http://session:{}@{}", self.egress.password(ctx, session), self.egress_host);
+        // With no egress service, the sandbox reaches nothing beyond agentd.
+        let Some(policy) = &self.egress else { return Ok(SandboxEgress::default()) };
+        let prepared = policy.prepare(ctx, session).await?;
+        let mut env = prepared.env;
+        let proxy = format!("http://{session}:{}@{}", prepared.password, self.egress_host);
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"] {
             env.insert(name.to_owned(), proxy.clone());
         }
@@ -73,8 +75,8 @@ impl SessionAssets for RealSessionAssets {
             env.insert(name.to_owned(), CA_BUNDLE.to_owned());
         }
         env.insert("NODE_EXTRA_CA_CERTS".into(), CA_PATH.to_owned());
-        let credentials = disclosed.into_iter().map(|d| (d.name, d.description, d.hosts)).collect();
-        Ok(SandboxEgress { env, ca_pem: Some(pem.cert), credentials })
+        let credentials = prepared.disclosed.into_iter().map(|d| (d.name, d.description, d.hosts)).collect();
+        Ok(SandboxEgress { env, ca_pem: Some(prepared.ca_cert), credentials })
     }
 
     async fn save_output(

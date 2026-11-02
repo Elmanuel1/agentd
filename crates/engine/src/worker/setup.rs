@@ -110,9 +110,6 @@ impl SessionRun {
                 put.push(SandboxFile { path: upload_path(file_id, mount_path), bytes, mode: 0o444 });
             }
         }
-        if let Some(pem) = &self.egress.ca_pem {
-            put.push(SandboxFile { path: CA_PATH.into(), bytes: pem.as_bytes().to_vec(), mode: 0o644 });
-        }
         self.engine.sandbox.make_dir(target, WORKDIR, Owner::Agent).await.map_err(err)?;
         self.engine.sandbox.make_dir(target, OUTPUTS, Owner::Agent).await.map_err(err)?;
         put.push(SandboxFile { path: marker, bytes: Vec::new(), mode: 0o600 });
@@ -121,12 +118,13 @@ impl SessionRun {
         Ok(skills)
     }
 
-    /// Write the CA bundle the egress environment points at: the system CAs
-    /// and the session CA (in `/tmp`, which a restarted sandbox may lose).
+    /// Write the session CA and the bundle the egress environment points at:
+    /// the system CAs and the session CA (in `/tmp`, which a restarted sandbox
+    /// may lose). Every run, as a restarted egress service has a new CA.
     async fn trust_ca(&self, target: &str) -> Result<(), ApiError> {
-        if self.egress.ca_pem.is_none() {
-            return Ok(());
-        }
+        let Some(pem) = &self.egress.ca_pem else { return Ok(()) };
+        let ca = SandboxFile { path: CA_PATH.into(), bytes: pem.as_bytes().to_vec(), mode: 0o644 };
+        self.engine.sandbox.put_files(target, vec![ca]).await.map_err(err)?;
         let script = format!(
             "mkdir -p /tmp/agentd && cat /etc/ssl/certs/ca-certificates.crt {CA_PATH} > {CA_BUNDLE} 2>/dev/null || cp {CA_PATH} {CA_BUNDLE}"
         );

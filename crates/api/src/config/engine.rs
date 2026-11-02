@@ -29,15 +29,13 @@ pub struct EngineConfig {
     /// `AGENTD_WORK_TOKEN_KEY` (hex): signs work tokens and egress proxy
     /// passwords; random per process when unset, which suits one replica.
     pub work_token_key: Option<Vec<u8>>,
-    /// `AGENTD_EGRESS_ADDR` (default `0.0.0.0:8890`): where the egress proxy
-    /// listens.
-    pub egress_addr: String,
-    /// `AGENTD_SANDBOX_EGRESS_HOST`: the proxy as a sandbox reaches it
-    /// (default `<agentd-gateway or AGENTD_SANDBOX_JOIN>:<AGENTD_EGRESS_ADDR port>`).
+    /// `AGENTD_EGRESS_ADMIN_URL` and `AGENTD_EGRESS_ADMIN_TOKEN`: the egress
+    /// service's admin interface and the token it takes. Unset, sandboxes
+    /// reach nothing beyond agentd.
+    pub egress_admin: Option<(String, String)>,
+    /// `AGENTD_SANDBOX_EGRESS_HOST`: the egress proxy as a sandbox reaches it
+    /// (default `<agentd-gateway or the second AGENTD_SANDBOX_JOIN container>:<AGENTD_EGRESS_ADDR port>`).
     pub sandbox_egress_host: String,
-    /// `AGENTD_EGRESS_INTERNAL_HOSTS`: hosts sandboxes may reach at internal
-    /// addresses (comma-separated); none by default.
-    pub egress_internal_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -49,6 +47,8 @@ impl std::fmt::Debug for EngineConfig {
             .field("web_search", &self.search_key.is_some())
             .field("max_active_sessions", &self.max_active_sessions)
             .field("sandbox_api_url", &self.sandbox_api_url)
+            .field("egress_admin_url", &self.egress_admin.as_ref().map(|(url, _)| url))
+            .field("sandbox_egress_host", &self.sandbox_egress_host)
             .finish_non_exhaustive()
     }
 }
@@ -73,17 +73,21 @@ impl EngineConfig {
             search_key: key("AGENTD_BRAVE_API_KEY"),
             max_active_sessions: number(get, "AGENTD_MAX_ACTIVE_SESSIONS", 64)?,
             sandbox_api_url: get("AGENTD_SANDBOX_API_URL").unwrap_or_else(|| {
-                format!("http://{}:{}", sandbox_reach(get), port(get("AGENTD_ADDR"), 8080))
+                format!("http://{}:{}", sandbox_reach(get, 0), port(get("AGENTD_ADDR"), 8080))
             }),
-            egress_addr: get("AGENTD_EGRESS_ADDR").unwrap_or_else(|| "0.0.0.0:8890".into()),
+            egress_admin: match (key("AGENTD_EGRESS_ADMIN_URL"), key("AGENTD_EGRESS_ADMIN_TOKEN")) {
+                (Some(url), Some(token)) => Some((url, token)),
+                (None, None) => None,
+                _ => {
+                    return Err(ConfigError {
+                        var: "AGENTD_EGRESS_ADMIN_URL",
+                        reason: "set with AGENTD_EGRESS_ADMIN_TOKEN, or neither".into(),
+                    })
+                }
+            },
             sandbox_egress_host: get("AGENTD_SANDBOX_EGRESS_HOST").unwrap_or_else(|| {
-                let addr = get("AGENTD_EGRESS_ADDR").unwrap_or_default();
-                format!(
-                    "host.docker.internal:{}",
-                    addr.rsplit(':').next().filter(|p| !p.is_empty()).unwrap_or("8890")
-                )
+                format!("{}:{}", sandbox_reach(get, 1), port(get("AGENTD_EGRESS_ADDR"), 8890))
             }),
-            egress_internal_hosts: list(get("AGENTD_EGRESS_INTERNAL_HOSTS")),
             work_token_key: match key("AGENTD_WORK_TOKEN_KEY") {
                 Some(hex) => Some(decode_hex(&hex).ok_or_else(|| ConfigError {
                     var: "AGENTD_WORK_TOKEN_KEY",

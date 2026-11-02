@@ -17,12 +17,14 @@ mod failure;
 mod key;
 mod name;
 mod pepper;
+mod reader;
 mod store;
 
 use std::time::Duration;
 
 pub use api_keys::{ApiKeyRecord, AwsApiKeys};
 use aws_sdk_secretsmanager::config::timeout::TimeoutConfig;
+pub use reader::AwsSecretReader;
 pub use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 
 /// The prefix every secret name starts with unless configured otherwise.

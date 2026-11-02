@@ -42,13 +42,20 @@ async fn a_container_comes_and_goes() {
     let handle = runtime.launch(job).await.unwrap();
     assert_eq!(Some(&handle), runtime.handle_for(&target).as_ref());
     assert_eq!(runtime.status(&handle).await.unwrap(), TaskState::Running);
-    let network = runtime.docker.inspect_network(SANDBOX_NETWORK, None).await.unwrap();
+    // The sandbox's own internal network, shared with the gateway only.
+    let net = network_name(&target);
+    let network = runtime.docker.inspect_network(&net, None).await.unwrap();
     assert_eq!(network.internal, Some(true));
+    let members: Vec<String> =
+        network.containers.unwrap_or_default().into_values().filter_map(|c| c.name).collect();
+    assert_eq!(members.len(), 2, "{members:?}");
+    assert!(members.contains(&GATEWAY.to_owned()));
     let container =
         runtime.docker.inspect_container(&DockerRuntime::container_name(&target), None).await.unwrap();
     let mode = container.host_config.and_then(|h| h.network_mode);
-    assert_eq!(mode.as_deref(), Some(SANDBOX_NETWORK));
+    assert_eq!(mode.as_deref(), Some(net.as_str()));
     runtime.stop(&handle).await.unwrap();
     assert!(matches!(runtime.status(&handle).await, Err(RuntimeError::Unknown(_))));
     assert!(matches!(runtime.stop(&handle).await, Err(RuntimeError::Unknown(_))));
+    assert!(runtime.docker.inspect_network(&network_name(&target), None).await.is_err(), "the network stays");
 }

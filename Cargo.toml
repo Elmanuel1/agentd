@@ -13,6 +13,7 @@ members = [
     "crates/resources/work",
     "crates/sandbox-protocol",
     "crates/sandbox-worker",
+    "crates/egress",
     "crates/resources/dreams",
     "crates/adapters/scheduler-local",
     "crates/engine",

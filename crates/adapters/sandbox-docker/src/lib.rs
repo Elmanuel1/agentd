@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 mod network;
 
-pub use network::{SandboxNetwork, GATEWAY};
+pub use network::{network_name, SandboxNetwork, GATEWAY};
 
 use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
@@ -34,23 +34,19 @@ impl Default for SandboxLimits {
     }
 }
 
-/// The network sandboxes with outbound access share: a bridge with
-/// container-to-container traffic off, so one session cannot reach another.
-pub const SANDBOX_NETWORK: &str = "agentd-sandboxes";
-
 /// One container per job, on a Docker daemon.
 #[derive(Debug, Clone)]
 pub struct DockerRuntime {
     docker: Docker,
     image: String,
     limits: SandboxLimits,
-    /// How agentd is on the sandbox network.
+    /// How agentd and the egress service are on each sandbox's network.
     network: SandboxNetwork,
 }
 
 impl DockerRuntime {
-    /// Run jobs from `image` on `docker`, each within `limits`, on the
-    /// sandbox network agentd joins as `network` says.
+    /// Run jobs from `image` on `docker`, each within `limits`, on a network
+    /// of its own that agentd and the egress service join as `network` says.
     pub fn new(
         docker: Docker,
         image: impl Into<String>,
@@ -65,11 +61,11 @@ impl DockerRuntime {
         format!("agentd-{target_id}")
     }
 
-    /// Create the sandbox network and pull the image unless the daemon has
-    /// them, so a launch never waits on a registry. Run once at boot.
+    /// Pull the image unless the daemon has it, so a launch never waits on a
+    /// registry, and start the gateway when there is one. Run once at boot.
     pub async fn prepare(&self) -> Result<(), RuntimeError> {
-        self.ensure_network().await?;
-        self.ensure_image().await
+        self.ensure_image().await?;
+        self.members().await.map(|_| ())
     }
 
     async fn ensure_image(&self) -> Result<(), RuntimeError> {
@@ -107,6 +103,7 @@ fn not_found(e: &DockerError) -> bool {
 impl Runtime for DockerRuntime {
     async fn launch(&self, job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
         let name = Self::container_name(&job.target_id);
+        let network = self.open_network(&job.target_id).await?;
         let mut env: Vec<String> = job.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         env.push(format!("AGENTD_TARGET_ID={}", job.target_id));
         let labels = HashMap::from([
@@ -121,7 +118,7 @@ impl Runtime for DockerRuntime {
             labels: Some(labels),
             user: Some(WORKER_USER.into()),
             host_config: Some(HostConfig {
-                network_mode: Some(SANDBOX_NETWORK.to_owned()),
+                network_mode: Some(network),
                 init: Some(true),
                 cap_drop: Some(vec!["ALL".into()]),
                 cap_add: Some(WORKER_CAPS.iter().map(|c| (*c).to_owned()).collect()),
@@ -170,11 +167,15 @@ impl Runtime for DockerRuntime {
 
     async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
         let options = RemoveContainerOptionsBuilder::default().force(true).build();
-        match self.docker.remove_container(&handle.id, Some(options)).await {
+        let removed = match self.docker.remove_container(&handle.id, Some(options)).await {
             Ok(()) => Ok(()),
             Err(e) if not_found(&e) => Err(RuntimeError::Unknown(handle.id.clone())),
-            Err(e) => Err(RuntimeError::Unavailable(e.to_string())),
+            Err(e) => return Err(RuntimeError::Unavailable(e.to_string())),
+        };
+        if let Some(target) = handle.id.strip_prefix("agentd-") {
+            self.close_network(target).await;
         }
+        removed
     }
 }
 

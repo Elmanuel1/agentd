@@ -12,13 +12,17 @@ cd "$(dirname "$0")/.."
 # PERF_PROJECT names the Compose project (default agentd-perf), so two stacks can coexist.
 compose() { docker compose -p "${PERF_PROJECT:-agentd-perf}" --project-directory docker -f docker/docker-compose.yml -f perf/compose.yaml "$@"; }
 case "${1:-}" in
-  --down) POSTGRES_PASSWORD=unset API_KEY=unset compose --profile run down -v; exit 0 ;;
+  --down) POSTGRES_PASSWORD=unset API_KEY=unset AGENTD_EGRESS_ADMIN_TOKEN=unset compose --profile run down -v; exit 0 ;;
   --observe) export OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317 ;;
 esac
 mkdir -p perf/results
 POSTGRES_PASSWORD=$(openssl rand -hex 16)
 API_KEY=unset
-export POSTGRES_PASSWORD API_KEY
+AGENTD_EGRESS_ADMIN_TOKEN=$(openssl rand -hex 32)
+# Its own container names and control subnet, so it runs beside the dev stack.
+AGENTD_CONTAINER=agentd-perf
+AGENTD_CONTROL_NET=172.31.251
+export POSTGRES_PASSWORD API_KEY AGENTD_EGRESS_ADMIN_TOKEN AGENTD_CONTAINER AGENTD_CONTROL_NET
 # Each run starts from empty volumes, so runs are comparable.
 compose --profile run down -v >/dev/null 2>&1 || true
 compose up -d --build --wait agentd

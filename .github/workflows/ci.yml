@@ -117,6 +117,11 @@ jobs:
       AGENTD_MOCK_MODEL: conformance/fixtures/mock-model.json
       AGENTD_TEST_DOCKER: "1"
       AGENTD_TEST_RUNTIME: "1"
+      # The egress service, its proxy reached by sandboxes through the gateway
+      # and its admin interface by agentd on loopback.
+      AGENTD_EGRESS_ADDR: 0.0.0.0:8890
+      AGENTD_EGRESS_ADMIN_ADDR: 127.0.0.1:8891
+      AGENTD_EGRESS_ADMIN_URL: http://127.0.0.1:8891
       # The egress test's echo server runs on the runner as echo.agentd.test,
       # an internal address the proxy otherwise refuses.
       AGENTD_EGRESS_INTERNAL_HOSTS: echo.agentd.test
@@ -141,7 +146,7 @@ jobs:
             -locations=filesystem:/flyway/sql migrate
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
       - run: echo "127.0.0.1 echo.agentd.test" | sudo tee -a /etc/hosts
-      - run: cargo build --locked -p api
+      - run: cargo build --locked -p api -p egress
       - name: Create the secrets KMS key on LocalStack
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
@@ -151,6 +156,14 @@ jobs:
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)
           echo "::add-mask::$key"
           echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
+      - name: Start agentd-egress
+        run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
+          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
+          cat egress.log; exit 1
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
@@ -175,7 +188,8 @@ jobs:
               .KmsKeyId == $key and .DeletedDate != null
               and ([.Tags[] | select(.Key == "managed-by" and .Value == "agentd")] | length == 1))'
           test -z "$(aws --endpoint-url http://localhost:4566 s3 ls s3://agentd-artifacts/secrets/ --recursive)"
-          if grep -qE "sdk-token-|ts-token-" agentd.log; then echo "a credential reached the log"; exit 1; fi
+          if grep -qE "sdk-token-|ts-token-|s3cret-" agentd.log egress.log; then echo "a credential reached a log"; exit 1; fi
+          grep -q "secret injected" egress.log
           if grep -qF "$AGENTD_TEST_KEY" agentd.log; then echo "the API key reached the log"; exit 1; fi
           ./target/debug/agentd keys list | grep -q "wrkspc_sdk"
       - name: A revoked key is refused on the next request
@@ -187,7 +201,7 @@ jobs:
           ./target/debug/agentd keys revoke "$id"
           test "$(call)" = 401
       - if: failure()
-        run: cat agentd.log
+        run: cat agentd.log egress.log
 
   demo:
     # The extraction demo replayed through the Python SDK, every model call
@@ -225,6 +239,9 @@ jobs:
       AGENTD_RUNTIME: docker
       AGENTD_SANDBOX_IMAGE: agentd-sandbox
       AGENTD_MOCK_MODEL: conformance/demo/mock-model.json
+      AGENTD_EGRESS_ADDR: 0.0.0.0:8890
+      AGENTD_EGRESS_ADMIN_ADDR: 127.0.0.1:8891
+      AGENTD_EGRESS_ADMIN_URL: http://127.0.0.1:8891
       AGENTD_TEST_DEMO: "1"
     steps:
       - uses: actions/checkout@v4
@@ -243,7 +260,7 @@ jobs:
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql migrate
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
-      - run: cargo build --locked -p api
+      - run: cargo build --locked -p api -p egress
       - name: Create the secrets KMS key on LocalStack
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
@@ -253,6 +270,14 @@ jobs:
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name demo)
           echo "::add-mask::$key"
           echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
+      - name: Start agentd-egress
+        run: |
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
+          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
+          cat egress.log; exit 1
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
@@ -263,7 +288,7 @@ jobs:
           pip install -r conformance/demo/requirements.txt
           pytest -q conformance/demo
       - if: failure()
-        run: cat agentd.log
+        run: cat agentd.log egress.log
 
   image:
     runs-on: ubuntu-latest
@@ -287,3 +312,21 @@ jobs:
           out=$(docker run --rm -e AGENTD_STORE=none agentd:ci 2>&1 || true)
           echo "$out"
           echo "$out" | grep -q "invalid configuration: AGENTD_STORE"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/egress/Dockerfile
+          push: false
+          load: true
+          tags: agentd-egress:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The egress image runs its binary as non-root on a read-only root
+      # filesystem, and has no shell to run anything else.
+      - name: The egress image
+        run: |
+          out=$(docker run --rm --read-only agentd-egress:ci 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "AGENTD_EGRESS_ADMIN_TOKEN: required"
+          test "$(docker inspect -f '{{.Config.User}}' agentd-egress:ci)" = "nonroot:nonroot"
+          if docker run --rm --entrypoint /bin/sh agentd-egress:ci -c true 2>/dev/null; then echo "the image has a shell"; exit 1; fi

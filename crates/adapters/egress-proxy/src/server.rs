@@ -1,5 +1,5 @@
-//! Accepting sandbox connections: the proxy password names the session; a
-//! `CONNECT` is answered, then decrypted with a certificate from the
+//! Accepting sandbox connections: the proxy user names the session and the
+//! password proves it; a `CONNECT` is answered, then decrypted with a certificate from the
 //! session's CA, so each request inside can be handled like a plain one.
 
 use std::convert::Infallible;
@@ -17,18 +17,19 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 use crate::forward::{forward, reply};
+use crate::inject::Refusal;
 use crate::policy::{EgressPolicy, SessionEgress};
-use crate::rules::Refusal;
+use crate::secret::SecretSource;
 
-/// The proxy password from `Proxy-Authorization: Basic …`.
-fn password<B>(req: &Request<B>) -> Option<String> {
+/// The proxy user and password from `Proxy-Authorization: Basic …`.
+fn credentials<B>(req: &Request<B>) -> Option<(String, String)> {
     let raw = req.headers().get(http::header::PROXY_AUTHORIZATION)?.to_str().ok()?;
     let (scheme, value) = raw.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("basic") {
         return None;
     }
     let decoded = String::from_utf8(STANDARD.decode(value.trim()).ok()?).ok()?;
-    decoded.split_once(':').map(|(_, p)| p.to_owned())
+    decoded.split_once(':').map(|(u, p)| (u.to_owned(), p.to_owned()))
 }
 
 /// `host` and `port` of an authority, `default` when it names no port.
@@ -41,15 +42,16 @@ fn split_authority(authority: &str, default: u16) -> Option<(String, u16)> {
     (!host.is_empty()).then_some((host, port))
 }
 
-/// Serve the proxy on `listener` until the task is dropped.
-pub async fn serve(listener: TcpListener, policy: Arc<dyn EgressPolicy>) {
+/// Serve the proxy on `listener`, reading values from `source`, until the
+/// task is dropped.
+pub async fn serve(listener: TcpListener, policy: Arc<dyn EgressPolicy>, source: Arc<dyn SecretSource>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else { continue };
-        let policy = policy.clone();
+        let (policy, source) = (policy.clone(), source.clone());
         tokio::spawn(async move {
             let service = service_fn(move |req| {
-                let policy = policy.clone();
-                async move { Ok::<_, Infallible>(handle(req, policy).await) }
+                let (policy, source) = (policy.clone(), source.clone());
+                async move { Ok::<_, Infallible>(handle(req, policy, source).await) }
             });
             let _ =
                 http1::Builder::new().serve_connection(TokioIo::new(stream), service).with_upgrades().await;
@@ -57,9 +59,13 @@ pub async fn serve(listener: TcpListener, policy: Arc<dyn EgressPolicy>) {
     }
 }
 
-async fn handle(req: Request<Incoming>, policy: Arc<dyn EgressPolicy>) -> Response<Full<Bytes>> {
-    let session = match password(&req) {
-        Some(p) => policy.session(&p).await,
+async fn handle(
+    req: Request<Incoming>,
+    policy: Arc<dyn EgressPolicy>,
+    source: Arc<dyn SecretSource>,
+) -> Response<Full<Bytes>> {
+    let session = match credentials(&req) {
+        Some((user, password)) => policy.session(&user, &password).await,
         None => None,
     };
     let Some(session) = session else {
@@ -77,7 +83,7 @@ async fn handle(req: Request<Incoming>, policy: Arc<dyn EgressPolicy>) -> Respon
         if !session.may_reach(&host) {
             return blocked(&session, &host);
         }
-        tokio::spawn(tunnel(req, session, host, port));
+        tokio::spawn(tunnel(req, session, source, host, port));
         return Response::new(Full::new(Bytes::new()));
     }
     let Some((host, port)) = req.uri().authority().and_then(|a| split_authority(a.as_str(), 80)) else {
@@ -86,7 +92,7 @@ async fn handle(req: Request<Incoming>, policy: Arc<dyn EgressPolicy>) -> Respon
     if !session.may_reach(&host) {
         return blocked(&session, &host);
     }
-    forward(&session, "http", &host, port, req).await
+    forward(&session, source.as_ref(), ("http", &host, port), req).await
 }
 
 fn blocked(session: &SessionEgress, host: &str) -> Response<Full<Bytes>> {
@@ -95,7 +101,13 @@ fn blocked(session: &SessionEgress, host: &str) -> Response<Full<Bytes>> {
 }
 
 /// The decrypted side of a `CONNECT`.
-async fn tunnel(req: Request<Incoming>, session: Arc<SessionEgress>, host: String, port: u16) {
+async fn tunnel(
+    req: Request<Incoming>,
+    session: Arc<SessionEgress>,
+    source: Arc<dyn SecretSource>,
+    host: String,
+    port: u16,
+) {
     let config = match session.ca.server_config(&host) {
         Ok(c) => c,
         Err(e) => {
@@ -107,8 +119,8 @@ async fn tunnel(req: Request<Incoming>, session: Arc<SessionEgress>, host: Strin
         return;
     };
     let service = service_fn(move |inner: Request<Incoming>| {
-        let (session, host) = (session.clone(), host.clone());
-        async move { Ok::<_, Infallible>(forward(&session, "https", &host, port, inner).await) }
+        let (session, source, host) = (session.clone(), source.clone(), host.clone());
+        async move { Ok::<_, Infallible>(forward(&session, source.as_ref(), ("https", &host, port), inner).await) }
     });
     let _ = http1::Builder::new().serve_connection(TokioIo::new(tls), service).await;
 }
@@ -126,10 +138,10 @@ mod tests {
     }
 
     #[test]
-    fn the_password_comes_from_basic_proxy_auth() {
-        let auth = format!("Basic {}", STANDARD.encode("session:agentd-px-abc"));
+    fn the_session_and_password_come_from_basic_proxy_auth() {
+        let auth = format!("Basic {}", STANDARD.encode("sesn_1:agentd-px-abc"));
         let req = Request::builder().header("proxy-authorization", auth).body(()).unwrap();
-        assert_eq!(password(&req).as_deref(), Some("agentd-px-abc"));
-        assert_eq!(password(&Request::new(())), None);
+        assert_eq!(credentials(&req), Some(("sesn_1".into(), "agentd-px-abc".into())));
+        assert_eq!(credentials(&Request::new(())), None);
     }
 }

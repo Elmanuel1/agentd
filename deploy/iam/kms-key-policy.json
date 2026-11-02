@@ -42,6 +42,19 @@
           "kms:EncryptionContext:SecretARN": "arn:aws:secretsmanager:*:ACCOUNT_ID:secret:PREFIX/*"
         }
       }
+    },
+    {
+      "Sid": "EgressDecryptsCredentialsOnlyThroughSecretsManager",
+      "Effect": "Allow",
+      "Principal": { "AWS": "EGRESS_ROLE_ARN" },
+      "Action": "kms:Decrypt",
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "kms:ViaService": "secretsmanager.*.amazonaws.com",
+          "kms:EncryptionContext:SecretARN": "arn:aws:secretsmanager:*:ACCOUNT_ID:secret:PREFIX/*"
+        }
+      }
     }
   ]
 }

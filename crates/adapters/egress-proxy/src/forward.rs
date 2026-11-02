@@ -1,6 +1,6 @@
 //! One request from the sandbox, after the proxy can read it: refuse it, or
-//! put the session's secrets into its headers, send it on, and take them
-//! out of the response again. Every substitution is logged without values.
+//! put the session's secrets into its headers, send it on, zero them, and
+//! mask them in the response. Every substitution is logged without values.
 
 use std::time::Duration;
 
@@ -10,9 +10,11 @@ use http::{HeaderMap, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 
+use crate::inject::{inject, Refusal};
+use crate::mask::mask;
 use crate::net::public_addrs;
 use crate::policy::SessionEgress;
-use crate::rules::{inject, redact, Refusal};
+use crate::secret::SecretSource;
 
 /// Most bytes of a request or response body the proxy handles.
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -46,12 +48,11 @@ fn strip_hop(headers: &mut HeaderMap) {
 /// Forward `req` for `session` to `scheme://host:port`.
 pub async fn forward(
     session: &SessionEgress,
-    scheme: &str,
-    host: &str,
-    port: u16,
+    source: &dyn SecretSource,
+    (scheme, host, port): (&str, &str, u16),
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    match forward_inner(session, scheme, host, port, req).await {
+    match forward_inner(session, source, (scheme, host, port), req).await {
         Ok(r) => r,
         Err(r) => r,
     }
@@ -59,9 +60,8 @@ pub async fn forward(
 
 async fn forward_inner(
     session: &SessionEgress,
-    scheme: &str,
-    host: &str,
-    port: u16,
+    source: &dyn SecretSource,
+    (scheme, host, port): (&str, &str, u16),
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Response<Full<Bytes>>> {
     let (mut parts, body) = req.into_parts();
@@ -71,29 +71,7 @@ async fn forward_inner(
         .await
         .map_err(|_| reply(StatusCode::PAYLOAD_TOO_LARGE, "request body too large"))?
         .to_bytes();
-    // A placeholder anywhere in the URL or body, bound for a host its
-    // credential does not allow, is refused like one in a header.
-    for c in &session.credentials {
-        let leaks = path.contains(&c.placeholder)
-            || body.windows(c.placeholder.len()).any(|w| w == c.placeholder.as_bytes());
-        if leaks && !c.allows(host) {
-            return Err(refused(
-                session,
-                host,
-                &parts.method,
-                &path,
-                &Refusal::PlaceholderToWrongHost { name: c.name.clone() },
-            ));
-        }
-    }
     strip_hop(&mut parts.headers);
-    // Values go into headers only: a value put into a body could be stored
-    // by the allowed host where the agent can read it back.
-    let used = inject(&mut parts.headers, &session.credentials, host)
-        .map_err(|why| refused(session, host, &parts.method, &path, &why))?;
-    for id in &used {
-        tracing::info!(target: "agentd::egress", session = %session.session, credential = %id, host, method = %parts.method, path, "secret injected");
-    }
     // Plain bytes back, so a secret the server echoes can be found and masked.
     parts.headers.insert(header::ACCEPT_ENCODING, http::HeaderValue::from_static("identity"));
     let addrs = if crate::rules::any_matches(&session.internal_hosts, host) {
@@ -111,27 +89,30 @@ async fn forward_inner(
         .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| reply(StatusCode::BAD_GATEWAY, &format!("egress: {e}")))?;
-    let url = format!("{scheme}://{host}:{port}{path}");
-    let method =
-        reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-    let mut headers = reqwest::header::HeaderMap::new();
-    for (k, v) in &parts.headers {
-        if let (Ok(k), Ok(v)) = (
-            reqwest::header::HeaderName::from_bytes(k.as_ref()),
-            reqwest::header::HeaderValue::from_bytes(v.as_bytes()),
-        ) {
-            headers.append(k, v);
-        }
+    // Last before sending, so no early return leaves a value in a buffer.
+    let injection = inject(&mut parts.headers, &path, &body, &session.bindings, source, host)
+        .await
+        .map_err(|why| refused(session, host, &parts.method, &path, &why))?;
+    for id in &injection.used {
+        tracing::info!(target: "agentd::egress", session = %session.session, credential = %id, host, method = %parts.method, path, "secret injected");
     }
-    headers.remove(reqwest::header::HOST);
+    let url = format!("{scheme}://{host}:{port}{path}");
+    let method = parts.method.clone();
+    // reqwest shares http's types: the injected values go out as they are,
+    // with no copy the proxy could not zero.
+    let mut headers = std::mem::take(&mut parts.headers);
+    headers.remove(header::HOST);
     let upstream = client.request(method, url).headers(headers).body(body).send().await;
+    let (held, prints) = (injection.held, injection.prints);
+    // The request is sent and the client holds no copy of it: zero the values.
+    drop(held);
     let upstream = upstream.map_err(|e| reply(StatusCode::BAD_GATEWAY, &format!("egress: {e}")))?;
     let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut out_headers = HeaderMap::new();
     let mut masked_in_headers = Vec::new();
     for (k, v) in upstream.headers() {
         // A secret echoed in a header is masked as one in the body is.
-        let (value, found) = redact(v.as_bytes(), &session.credentials);
+        let (value, found) = mask(v.as_bytes(), &prints);
         masked_in_headers.extend(found);
         if let (Ok(k), Ok(v)) = (HeaderName::from_bytes(k.as_ref()), http::HeaderValue::from_bytes(&value)) {
             out_headers.append(k, v);
@@ -139,7 +120,7 @@ async fn forward_inner(
     }
     let bytes =
         upstream.bytes().await.map_err(|e| reply(StatusCode::BAD_GATEWAY, &format!("egress: {e}")))?;
-    let (bytes, mut masked) = redact(&bytes, &session.credentials);
+    let (bytes, mut masked) = mask(&bytes, &prints);
     masked.extend(masked_in_headers);
     for id in &masked {
         tracing::warn!(target: "agentd::egress", session = %session.session, credential = %id, host, method = %parts.method, path, "secret masked in a response");
@@ -159,10 +140,20 @@ fn refused(
     path: &str,
     why: &Refusal,
 ) -> Response<Full<Bytes>> {
-    let text = match why {
-        Refusal::HostNotAllowed => format!("egress: {host} is not allowed for this session"),
-        Refusal::PlaceholderToWrongHost { name } => format!("egress: {name} may not be sent to {host}"),
+    let (status, text) = match why {
+        Refusal::HostNotAllowed => {
+            (StatusCode::FORBIDDEN, format!("egress: {host} is not allowed for this session"))
+        }
+        Refusal::PlaceholderToWrongHost { name } => {
+            (StatusCode::FORBIDDEN, format!("egress: {name} may not be sent to {host}"))
+        }
+        Refusal::CredentialGone { name } => {
+            (StatusCode::FORBIDDEN, format!("egress: {name} no longer exists"))
+        }
+        Refusal::Unavailable { name } => {
+            (StatusCode::BAD_GATEWAY, format!("egress: {name} cannot be read now; the request was not sent"))
+        }
     };
     tracing::warn!(target: "agentd::egress", session = %session.session, host, method = %method, path, reason = %text, "request refused");
-    reply(StatusCode::FORBIDDEN, &text)
+    reply(status, &text)
 }

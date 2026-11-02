@@ -74,6 +74,7 @@ dependencies = [
  "environments",
  "files",
  "futures",
+ "hex",
  "http 1.4.2",
  "http-body-util",
  "memory",
@@ -83,12 +84,14 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "rand 0.8.6",
+ "reqwest 0.12.28",
  "sandbox-docker",
  "scheduler-local",
  "secrets-aws",
  "serde",
  "serde_json",
  "sessions",
+ "sha2",
  "shared",
  "skills",
  "store-postgres",
@@ -794,6 +797,12 @@ dependencies = [
 
 [[package]]
 name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
@@ -1201,7 +1210,7 @@ version = "2.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "229850a212cd9b84d4f0290ad9d294afc0ae70fccaa8949dbe8b43ffafa1e20c"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "byteorder",
  "chrono",
  "diesel_derives",
@@ -1315,25 +1324,58 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "egress"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "aws-common",
+ "aws-sdk-kms",
+ "axum",
+ "egress-proxy",
+ "hex",
+ "reqwest 0.12.28",
+ "rustix",
+ "secrecy",
+ "secrets-aws",
+ "sha2",
+ "shared",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vaults",
+]
+
+[[package]]
 name = "egress-proxy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bytes",
+ "hex",
  "http 1.4.2",
  "http-body-util",
  "hyper",
  "hyper-util",
  "parking_lot",
  "rcgen",
+ "region",
  "reqwest 0.12.28",
  "rustls",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shared",
  "thiserror 2.0.18",
  "time",
  "tokio",
  "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -1357,6 +1399,7 @@ version = "0.1.0"
 dependencies = [
  "agents",
  "async-trait",
+ "environments",
  "glob",
  "hex",
  "parking_lot",
@@ -2113,6 +2156,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "mach2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2279,7 +2331,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -2804,7 +2856,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -2829,6 +2881,18 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "region"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6b6ebd13bc009aef9cd476c1310d49ac354d36e240cf1bd753290f3dc7199a7"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+ "mach2",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "reqwest"
@@ -2943,7 +3007,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -3018,6 +3082,7 @@ dependencies = [
  "async-trait",
  "bollard",
  "futures",
+ "rand 0.8.6",
  "serde_json",
  "shared",
  "tokio",
@@ -3122,7 +3187,7 @@ version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "core-foundation",
  "core-foundation-sys",
  "libc",
@@ -3780,7 +3845,7 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "bitflags",
+ "bitflags 2.13.0",
  "bytes",
  "futures-util",
  "http 1.4.2",

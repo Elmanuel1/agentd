@@ -73,19 +73,6 @@ impl SessionRun {
     }
 }
 
-/// The hosts a `limited` environment allows; `None` when unrestricted.
-fn allowed_hosts(environment: &serde_json::Value) -> Option<Vec<String>> {
-    let net = environment.get("networking")?;
-    (crate::json::at(net, "/type").as_str() == Some("limited")).then(|| {
-        crate::json::at(net, "/allowed_hosts")
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|h| h.as_str().map(str::to_owned))
-            .collect()
-    })
-}
-
 impl Engine {
     /// Run `session` until it is idle again. Call only under its lease.
     pub async fn run_session(
@@ -100,7 +87,11 @@ impl Engine {
             return Ok(());
         }
         let environment = self.assets.environment(ctx, &session.environment_id).await?;
-        let web = WebTools::new(self.http.clone(), allowed_hosts(&environment), self.search_key.clone());
+        let web = WebTools::new(
+            self.http.clone(),
+            environments::networking::allowed_hosts(&environment),
+            self.search_key.clone(),
+        );
         let egress = self.assets.egress(ctx, id.as_str()).await?;
         let run = SessionRun {
             engine: self.clone(),

@@ -19,9 +19,10 @@ pub enum RuntimeConfig {
         /// `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) and
         /// `AGENTD_SANDBOX_MILLICPUS` (default 2000) per sandbox.
         limits: SandboxLimits,
-        /// `AGENTD_SANDBOX_JOIN`: agentd's own container, which joins the
-        /// sandboxes' internal network; unset, a gateway relays agentd's API
-        /// and proxy ports from the host.
+        /// `AGENTD_SANDBOX_JOIN`: the containers that join the sandboxes'
+        /// internal network, agentd's then the egress service's,
+        /// comma-separated; unset, a gateway relays agentd's API port and the
+        /// egress proxy's port from the host.
         network: SandboxNetwork,
     },
 }
@@ -31,10 +32,23 @@ pub(super) fn port(addr: Option<String>, default: u16) -> u16 {
     addr.and_then(|a| a.rsplit(':').next().and_then(|p| p.parse().ok())).unwrap_or(default)
 }
 
-/// Where a sandbox reaches agentd: its container when it joins the
-/// sandboxes' network, otherwise the gateway.
-pub(super) fn sandbox_reach(get: &impl Fn(&str) -> Option<String>) -> String {
-    get("AGENTD_SANDBOX_JOIN").filter(|c| !c.is_empty()).unwrap_or_else(|| GATEWAY.to_owned())
+/// The containers `AGENTD_SANDBOX_JOIN` names.
+fn joined(get: &impl Fn(&str) -> Option<String>) -> Vec<String> {
+    get("AGENTD_SANDBOX_JOIN")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Where a sandbox reaches the `index`th joined container (0: agentd, 1: the
+/// egress service, which is agentd's when only one is named), or the
+/// gateway.
+pub(super) fn sandbox_reach(get: &impl Fn(&str) -> Option<String>, index: usize) -> String {
+    let joined = joined(get);
+    joined.get(index).or(joined.first()).cloned().unwrap_or_else(|| GATEWAY.to_owned())
 }
 
 impl RuntimeConfig {
@@ -46,9 +60,9 @@ impl RuntimeConfig {
                     memory_mib: number(get, "AGENTD_SANDBOX_MEMORY_MIB", 2048)?,
                     millicpus: number(get, "AGENTD_SANDBOX_MILLICPUS", 2000)?,
                 },
-                network: match get("AGENTD_SANDBOX_JOIN").filter(|c| !c.is_empty()) {
-                    Some(container) => SandboxNetwork::Joined { container },
-                    None => {
+                network: match joined(get) {
+                    containers if !containers.is_empty() => SandboxNetwork::Joined { containers },
+                    _ => {
                         let (api, egress) =
                             (port(get("AGENTD_ADDR"), 8080), port(get("AGENTD_EGRESS_ADDR"), 8890));
                         let relay = |p: u16| (p, format!("host.docker.internal:{p}"));

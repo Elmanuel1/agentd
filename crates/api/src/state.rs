@@ -19,13 +19,13 @@ use vaults::VaultsService;
 use crate::assets::RealSessionAssets;
 use crate::backends::{AgentBackends, Backends};
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
-use crate::egress::SessionEgressPolicy;
+use crate::egress::{EgressAdmin, SessionEgressPolicy};
 use crate::sandbox_work::WorkIssuer;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
 use engine::{Dispatcher, Engine, ModelRouter};
 use shared::hash::Signer;
-use vaults::egress::VaultSecrets;
+use vaults::egress::VaultCredentials;
 use work::{RemoteSandbox, WorkService, WorkTokens};
 
 /// The assembled app: the key source and every resource's module.
@@ -77,17 +77,18 @@ impl AppState {
         });
         let files = Arc::new(FilesService::new(stores.files));
         let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
-        if let Some(mut agent) = agent {
-            let policy = Arc::new(SessionEgressPolicy::new(
-                Signer::new(key),
-                sessions.clone(),
-                environments.clone(),
-                VaultSecrets::new(stores.vaults.clone()),
-                agent.config.egress_internal_hosts.clone(),
-            ));
-            let _ = egress_slot.set(policy.clone());
-            if let Some(listener) = agent.egress.take() {
-                tokio::spawn(egress_proxy::serve(listener, policy.clone()));
+        if let Some(agent) = agent {
+            let policy = agent.config.egress_admin.as_ref().map(|(url, token)| {
+                Arc::new(SessionEgressPolicy::new(
+                    Signer::new(key),
+                    sessions.clone(),
+                    environments.clone(),
+                    VaultCredentials::new(stores.vaults.clone()),
+                    EgressAdmin::new(url, token),
+                ))
+            });
+            if let Some(policy) = &policy {
+                let _ = egress_slot.set(policy.clone());
             }
             let assets = RealSessionAssets {
                 files: files.clone(),

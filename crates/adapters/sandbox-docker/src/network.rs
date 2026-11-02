@@ -1,38 +1,44 @@
-//! The network sandboxes run on. Their worker must reach agentd; nothing
-//! else should be reachable except through agentd's egress proxy.
+//! The network each sandbox runs on. Its worker must reach agentd; nothing
+//! else should be reachable except through the egress proxy.
 //!
-//! Sandboxes always sit on an `internal` network with container-to-container
-//! traffic off: no route out, so every request goes through the egress
-//! proxy, and the host and the cloud metadata address are out of reach.
-//! agentd is on that network in one of two ways ([`SandboxNetwork`]):
+//! Each sandbox has an `internal` network of its own: no route out, so every
+//! request goes through the egress proxy, and the host and the cloud metadata
+//! address are out of reach. Only agentd and the egress service share it, so
+//! no other session's sandbox can be reached. They are on it in one of two
+//! ways ([`SandboxNetwork`]):
 //!
-//! - `Joined`: agentd runs in a container, which joins the network.
-//! - `Gateway`: agentd runs on the host (development, CI). A gateway
-//!   container, on the network and on the default bridge, relays only
-//!   agentd's API and proxy ports to the host.
+//! - `Joined`: agentd and the egress service run in containers, which join
+//!   each sandbox's network.
+//! - `Gateway`: they run on the host (development, CI). A gateway
+//!   container, on the default bridge and on each sandbox's network, relays
+//!   only agentd's API port and the egress proxy's port to the host.
 
 use std::collections::HashMap;
 
 use bollard::errors::Error as DockerError;
 use bollard::models::{
-    ContainerCreateBody, HostConfig, NetworkConnectRequest, NetworkCreateRequest, RestartPolicy,
-    RestartPolicyNameEnum,
+    ContainerCreateBody, HostConfig, Ipam, IpamConfig, NetworkConnectRequest, NetworkCreateRequest,
+    NetworkDisconnectRequest, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::CreateContainerOptionsBuilder;
 use shared::ports::RuntimeError;
 
-use super::{not_found, DockerRuntime, SANDBOX_NETWORK};
+use super::{not_found, DockerRuntime};
 
 /// The gateway container's name; sandboxes reach agentd through it.
 pub const GATEWAY: &str = "agentd-gateway";
 
-/// How agentd is on the sandbox network.
+/// How many subnets a new network tries before giving up: each is a random
+/// /28 of 10.213.0.0/16, and one in use is skipped.
+const SUBNET_TRIES: usize = 16;
+
+/// How agentd and the egress service are on each sandbox's network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SandboxNetwork {
-    /// agentd's own container joins it.
+    /// agentd's container and the egress service's join it.
     Joined {
-        /// agentd's container.
-        container: String,
+        /// The containers.
+        containers: Vec<String>,
     },
     /// A gateway relays these `(port, host:port)` pairs to agentd.
     Gateway {
@@ -41,26 +47,52 @@ pub enum SandboxNetwork {
     },
 }
 
+/// The network of the sandbox `target_id` runs in.
+pub fn network_name(target_id: &str) -> String {
+    format!("agentd-net-{target_id}")
+}
+
 impl DockerRuntime {
-    /// Create the sandbox network unless it exists, and attach agentd to it
-    /// when isolating.
-    pub(super) async fn ensure_network(&self) -> Result<(), RuntimeError> {
-        match self.docker.inspect_network(SANDBOX_NETWORK, None).await {
+    /// The containers that join every sandbox's network, the gateway started
+    /// when it is one of them.
+    pub(super) async fn members(&self) -> Result<Vec<String>, RuntimeError> {
+        match &self.network {
+            SandboxNetwork::Joined { containers } => Ok(containers.clone()),
+            SandboxNetwork::Gateway { relays } => Ok(vec![self.ensure_gateway(relays).await?]),
+        }
+    }
+
+    /// Create `target_id`'s network unless it exists, with agentd and the
+    /// egress service on it; its name.
+    pub(super) async fn open_network(&self, target_id: &str) -> Result<String, RuntimeError> {
+        let name = network_name(target_id);
+        match self.docker.inspect_network(&name, None).await {
             Ok(_) => {}
-            Err(e) if not_found(&e) => self.create_network().await?,
+            Err(e) if not_found(&e) => self.create_network(&name).await?,
             Err(e) => return Err(RuntimeError::Unavailable(e.to_string())),
         }
-        let member = match &self.network {
-            SandboxNetwork::Joined { container } => container.clone(),
-            SandboxNetwork::Gateway { relays } => self.ensure_gateway(relays).await?,
-        };
-        let connect = NetworkConnectRequest { container: member.clone(), ..Default::default() };
-        match self.docker.connect_network(SANDBOX_NETWORK, connect).await {
-            Ok(()) => Ok(()),
-            // Already a member (a restart, or another replica's container).
-            Err(DockerError::DockerResponseServerError { status_code: 403 | 409, .. }) => Ok(()),
-            Err(e) => Err(RuntimeError::Unavailable(format!("attach {member} to {SANDBOX_NETWORK}: {e}"))),
+        for member in self.members().await? {
+            let connect = NetworkConnectRequest { container: member.clone(), ..Default::default() };
+            match self.docker.connect_network(&name, connect).await {
+                // Already a member: a relaunch.
+                Ok(()) | Err(DockerError::DockerResponseServerError { status_code: 403 | 409, .. }) => {}
+                Err(e) => return Err(RuntimeError::Launch(format!("attach {member} to {name}: {e}"))),
+            }
         }
+        Ok(name)
+    }
+
+    /// Take everyone off `target_id`'s network and remove it. Best effort: a
+    /// network left behind holds no container and is reused by a relaunch.
+    pub(super) async fn close_network(&self, target_id: &str) {
+        let name = network_name(target_id);
+        if let Ok(members) = self.members().await {
+            for container in members {
+                let leave = NetworkDisconnectRequest { container, force: Some(true) };
+                let _ = self.docker.disconnect_network(&name, leave).await;
+            }
+        }
+        let _ = self.docker.remove_network(&name).await;
     }
 
     /// Start the gateway unless it runs; its name.
@@ -97,22 +129,35 @@ impl DockerRuntime {
         }
     }
 
-    async fn create_network(&self) -> Result<(), RuntimeError> {
-        let request = NetworkCreateRequest {
-            name: SANDBOX_NETWORK.into(),
-            driver: Some("bridge".into()),
-            internal: Some(true),
-            options: Some(HashMap::from([(
-                "com.docker.network.bridge.enable_icc".to_owned(),
-                "false".to_owned(),
-            )])),
-            ..Default::default()
-        };
-        match self.docker.create_network(request).await {
-            Ok(_) => Ok(()),
-            // Another replica created it first.
-            Err(DockerError::DockerResponseServerError { status_code: 409, .. }) => Ok(()),
-            Err(e) => Err(RuntimeError::Unavailable(e.to_string())),
+    /// An internal network on a free /28. Container-to-container traffic is
+    /// on: the sandbox must reach agentd and the egress service, and it is the
+    /// only sandbox there.
+    async fn create_network(&self, name: &str) -> Result<(), RuntimeError> {
+        let mut last = String::new();
+        for _ in 0..SUBNET_TRIES {
+            let (third, fourth) = (rand::random::<u8>(), rand::random::<u8>() & 0xf0);
+            let subnet = format!("10.213.{third}.{fourth}/28");
+            let request = NetworkCreateRequest {
+                name: name.to_owned(),
+                driver: Some("bridge".into()),
+                internal: Some(true),
+                ipam: Some(Ipam {
+                    config: Some(vec![IpamConfig { subnet: Some(subnet), ..Default::default() }]),
+                    ..Default::default()
+                }),
+                labels: Some(HashMap::from([("agentd.sandbox-network".to_owned(), "true".to_owned())])),
+                ..Default::default()
+            };
+            match self.docker.create_network(request).await {
+                // Created, or made by an earlier attempt at this launch.
+                Ok(_) | Err(DockerError::DockerResponseServerError { status_code: 409, .. }) => return Ok(()),
+                // The subnet overlaps one in use: try another.
+                Err(DockerError::DockerResponseServerError { status_code: 400 | 403, message }) => {
+                    last = message
+                }
+                Err(e) => return Err(RuntimeError::Launch(e.to_string())),
+            }
         }
+        Err(RuntimeError::Launch(format!("no free subnet for {name}: {last}")))
     }
 }

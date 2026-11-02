@@ -10,6 +10,7 @@ description = "agentd's Docker sandbox runtime: one container per session."
 shared = { workspace = true }
 async-trait = { workspace = true }
 bollard = { workspace = true }
+rand = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 

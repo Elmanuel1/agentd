@@ -7,7 +7,16 @@ publish = false
 description = "agentd's egress proxy: sandbox traffic leaves through it; it swaps credential placeholders for secrets and blocks what the session may not reach."
 
 [dependencies]
+shared = { workspace = true }
 async-trait = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+region = "3"
 bytes = { workspace = true }
 http = { workspace = true }
 parking_lot = { workspace = true }
@@ -25,7 +34,8 @@ time = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

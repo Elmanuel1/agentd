@@ -1,12 +1,12 @@
-//! What the proxy asks agentd about a session: where it may go, which
-//! credentials it holds, and the CA its sandbox trusts.
+//! What the proxy knows about a session: where it may go, which credentials
+//! it holds (never their values), and the CA its sandbox trusts.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
 use crate::ca::SessionCa;
-use crate::rules::Credential;
+use crate::rules::Binding;
 
 /// One session's egress rules.
 #[derive(Debug)]
@@ -15,8 +15,8 @@ pub struct SessionEgress {
     pub session: String,
     /// Hosts a `limited` environment allows (`None`: unrestricted).
     pub allowed_hosts: Option<Vec<String>>,
-    /// The credentials it may use.
-    pub credentials: Vec<Credential>,
+    /// The credentials it holds.
+    pub bindings: Vec<Binding>,
     /// The CA its sandbox trusts.
     pub ca: Arc<SessionCa>,
     /// Hosts the operator allows at internal addresses
@@ -34,10 +34,10 @@ impl SessionEgress {
     }
 }
 
-/// agentd's side of the proxy.
+/// The sessions the proxy serves.
 #[async_trait]
 pub trait EgressPolicy: Send + Sync {
-    /// The session a proxy password belongs to, or `None` for a password
-    /// agentd did not issue.
-    async fn session(&self, password: &str) -> Option<Arc<SessionEgress>>;
+    /// `session`'s rules when `password` is its proxy password; `None`
+    /// otherwise.
+    async fn session(&self, session: &str, password: &str) -> Option<Arc<SessionEgress>>;
 }
