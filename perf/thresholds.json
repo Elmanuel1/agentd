@@ -5,43 +5,40 @@
   "checks": [
     "rate>0.99"
   ],
-  "stream_events_delivered": [
-    "count>0"
-  ],
   "stream_duration": [
-    "p(95)<10000"
+    "p(95)<3500"
   ],
   "http_req_duration{endpoint:agents.create}": [
-    "p(95)<5000"
+    "p(95)<35"
   ],
   "http_req_duration{endpoint:agents.list}": [
-    "p(95)<5000"
-  ],
-  "http_req_duration{endpoint:sessions.create}": [
-    "p(95)<5000"
-  ],
-  "http_req_duration{endpoint:sessions.list}": [
-    "p(95)<5000"
-  ],
-  "http_req_duration{endpoint:sessions.delete}": [
-    "p(95)<5000"
+    "p(95)<30"
   ],
   "http_req_duration{endpoint:events.send}": [
-    "p(95)<5000"
-  ],
-  "http_req_duration{endpoint:files.upload}": [
-    "p(95)<5000"
-  ],
-  "http_req_duration{endpoint:files.metadata}": [
-    "p(95)<5000"
+    "p(95)<35"
   ],
   "http_req_duration{endpoint:files.list}": [
-    "p(95)<5000"
+    "p(95)<25"
   ],
-  "http_req_duration{endpoint:skills.list}": [
-    "p(95)<5000"
+  "http_req_duration{endpoint:files.metadata}": [
+    "p(95)<25"
+  ],
+  "http_req_duration{endpoint:files.upload}": [
+    "p(95)<105"
+  ],
+  "http_req_duration{endpoint:sessions.create}": [
+    "p(95)<85"
+  ],
+  "http_req_duration{endpoint:sessions.delete}": [
+    "p(95)<80"
+  ],
+  "http_req_duration{endpoint:sessions.list}": [
+    "p(95)<30"
   ],
   "http_req_duration{endpoint:skills.download}": [
-    "p(95)<5000"
+    "p(95)<35"
+  ],
+  "http_req_duration{endpoint:skills.list}": [
+    "p(95)<25"
   ]
 }

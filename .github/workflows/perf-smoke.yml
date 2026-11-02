@@ -1,0 +1,35 @@
+# A short k6 run against agentd in Docker, on demand. Not a required check.
+name: perf-smoke
+on:
+  workflow_dispatch:
+    inputs:
+      rate:
+        description: crud requests per second
+        default: "10"
+      streams:
+        description: concurrent event streams
+        default: "10"
+      duration:
+        description: k6 duration
+        default: "30s"
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the suite
+        env:
+          RATE: ${{ inputs.rate }}
+          STREAMS: ${{ inputs.streams }}
+          DURATION: ${{ inputs.duration }}
+        run: perf/run.sh
+      - name: Keep the summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-summary
+          path: perf/results/summary.json
+      - name: Stop the stack
+        if: always()
+        run: perf/run.sh --down
