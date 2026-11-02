@@ -188,7 +188,8 @@ async fn pg_files_roundtrip() {
         .await
         .unwrap();
     let got = store.get(&ws, &id).await.unwrap();
-    assert_eq!(&got.bytes[..], b"a,b\n1,2\n");
+    assert!(got.bytes.is_empty(), "metadata reads leave the blob alone");
+    assert_eq!(&store.content(&ws, &id).await.unwrap()[..], b"a,b\n1,2\n");
     let scoped = store
         .list(
             &ws,
