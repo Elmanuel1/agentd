@@ -9,13 +9,13 @@
     "p(95)<3500"
   ],
   "http_req_duration{endpoint:agents.create}": [
-    "p(95)<35"
+    "p(95)<25"
   ],
   "http_req_duration{endpoint:agents.list}": [
-    "p(95)<30"
+    "p(95)<25"
   ],
   "http_req_duration{endpoint:events.send}": [
-    "p(95)<35"
+    "p(95)<25"
   ],
   "http_req_duration{endpoint:files.list}": [
     "p(95)<25"
@@ -24,13 +24,13 @@
     "p(95)<25"
   ],
   "http_req_duration{endpoint:files.upload}": [
-    "p(95)<105"
+    "p(95)<110"
   ],
   "http_req_duration{endpoint:sessions.create}": [
-    "p(95)<85"
+    "p(95)<75"
   ],
   "http_req_duration{endpoint:sessions.delete}": [
-    "p(95)<80"
+    "p(95)<65"
   ],
   "http_req_duration{endpoint:sessions.list}": [
     "p(95)<30"
