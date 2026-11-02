@@ -49,12 +49,33 @@ async fn main() -> ExitCode {
         }
     };
     tracing::info!(addr = %config.addr, "agentd listening");
-    if let Err(e) = axum::serve(listener, app).with_graceful_shutdown(shutdown()).await {
-        tracing::error!(error = %e, "server error");
-        return ExitCode::FAILURE;
+    let stopping = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signal = stopping.clone();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown().await;
+        signal.notify_one();
+    });
+    // An open event stream never ends on its own, so draining is capped;
+    // past it the streams are dropped and the telemetry still flushes.
+    let drained = async {
+        stopping.notified().await;
+        tokio::time::sleep(DRAIN).await;
+        tracing::warn!(seconds = DRAIN.as_secs(), "drain timed out; closing open streams");
+    };
+    tokio::select! {
+        served = server => {
+            if let Err(e) = served {
+                tracing::error!(error = %e, "server error");
+                return ExitCode::FAILURE;
+            }
+        }
+        () = drained => {}
     }
     ExitCode::SUCCESS
 }
+
+/// How long in-flight requests get to finish after a shutdown signal.
+const DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// SIGTERM or Ctrl-C: stop accepting, finish in-flight requests, then return
 /// so the telemetry guard flushes the last spans, logs and metrics.
