@@ -17,14 +17,14 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod entities;
+mod pool;
 pub mod schema;
 
-use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
-use std::sync::Arc;
+pub use pool::{PgObserver, PoolSettings};
 
-use diesel::connection::Instrumentation;
-use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig};
-use diesel_async::{AsyncConnection, AsyncPgConnection};
+use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
+
+use diesel_async::AsyncPgConnection;
 
 /// The diesel-async connection pool type (tokio-postgres under the hood).
 pub type DieselPgPool = DieselPool<AsyncPgConnection>;
@@ -61,77 +61,6 @@ pub enum PgError {
     /// Could not connect.
     #[error("connect: {0}")]
     Connect(String),
-}
-
-/// Watches the pool: every statement a connection runs, and every
-/// connection that cannot be opened (no statement runs then).
-pub trait PgObserver: Send + Sync {
-    /// The observer of one new connection's statements.
-    fn statements(&self) -> Box<dyn Instrumentation>;
-    /// A pooled connection could not be opened.
-    fn connect_failed(&self, error: &diesel::ConnectionError);
-}
-
-/// The pool's size, and how long a caller waits for a connection before the
-/// request fails instead of queueing without end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PoolSettings {
-    /// Connections per replica.
-    pub max_size: usize,
-    /// The longest wait for a free connection.
-    pub wait: std::time::Duration,
-}
-
-impl Default for PoolSettings {
-    fn default() -> Self {
-        Self { max_size: 10, wait: std::time::Duration::from_secs(5) }
-    }
-}
-
-impl PgBackend {
-    /// Connect using `database_url` (or `DATABASE_URL`), pooled with the
-    /// default [`PoolSettings`].
-    pub async fn connect(database_url: &str) -> Result<Self, PgError> {
-        Self::connect_with(database_url, PoolSettings::default()).await
-    }
-
-    /// Connect using `database_url`, pooled as `settings` says.
-    pub async fn connect_with(database_url: &str, settings: PoolSettings) -> Result<Self, PgError> {
-        Self::pool(AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url), settings)
-    }
-
-    /// [`Self::connect_with`], with `observe` watching the pool.
-    pub async fn connect_observed(
-        database_url: &str,
-        settings: PoolSettings,
-        observe: Arc<dyn PgObserver>,
-    ) -> Result<Self, PgError> {
-        let mut config = ManagerConfig::<AsyncPgConnection>::default();
-        config.custom_setup = Box::new(move |url| {
-            let observe = observe.clone();
-            let url = url.to_owned();
-            Box::pin(async move {
-                let mut conn =
-                    AsyncPgConnection::establish(&url).await.inspect_err(|e| observe.connect_failed(e))?;
-                conn.set_instrumentation(observe.statements());
-                Ok(conn)
-            })
-        });
-        Self::pool(AsyncDieselConnectionManager::new_with_config(database_url, config), settings)
-    }
-
-    fn pool(
-        manager: AsyncDieselConnectionManager<AsyncPgConnection>,
-        settings: PoolSettings,
-    ) -> Result<Self, PgError> {
-        let diesel = DieselPool::builder(manager)
-            .max_size(settings.max_size)
-            .wait_timeout(Some(settings.wait))
-            .runtime(deadpool::Runtime::Tokio1)
-            .build()
-            .map_err(|e| PgError::Connect(e.to_string()))?;
-        Ok(Self { diesel })
-    }
 }
 
 /// Map a Diesel query error to a store `Backend` variant, preserving it as the
