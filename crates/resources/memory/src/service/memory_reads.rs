@@ -1,4 +1,4 @@
-use shared::{ApiError, AuthContext};
+use shared::{ApiError, AuthContext, Page, Pagination};
 
 use super::{map_store, parse_mem_pair, parse_store_id, MemoriesService, View};
 use crate::store::{MemoryRecord, VersionSelector};
@@ -76,6 +76,19 @@ fn collapse_depth(
     items
 }
 
+/// What a memories list asks for, besides the page.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryListQuery<'a> {
+    /// Only memories below this prefix.
+    pub path_prefix: Option<&'a str>,
+    /// `created_at` (default) or `path`.
+    pub order_by: Option<&'a str>,
+    /// `0` lists every memory; `n` groups those deeper than `n` levels.
+    pub depth: u32,
+    /// Whether items include content.
+    pub view: View,
+}
+
 impl MemoriesService {
     /// `GET /v1/memory_stores/{sid}/memories/{mid}` — retrieve defaults to
     /// full view (content included).
@@ -98,14 +111,18 @@ impl MemoriesService {
     /// (relative to the prefix) collapses deeper paths into `memory_prefix`
     /// entries. Content is always omitted (basic view). Matches the live wire
     /// shape `{data, prefixes: []}`.
+    /// One page of a store's memories below `path_prefix`. Depth `0` (the
+    /// default) lists every memory; depth `n` lists memories up to `n` levels
+    /// down and groups deeper ones into `memory_prefix` items (live: `1`
+    /// lists direct children). `view=full` includes content.
     pub async fn list_memories(
         &self,
         ctx: &AuthContext,
         raw_store_id: &str,
-        path_prefix: Option<&str>,
-        order_by: Option<&str>,
-        depth: Option<u32>,
+        query: &MemoryListQuery<'_>,
+        page: &Pagination,
     ) -> Result<MemoryListPage, ApiError> {
+        let MemoryListQuery { path_prefix, order_by, depth, view } = *query;
         let sid = parse_store_id(raw_store_id)?;
         let order = MemoryOrder::parse(order_by)?;
         let prefix = normalize_prefix(path_prefix);
@@ -118,11 +135,25 @@ impl MemoriesService {
             MemoryOrder::CreatedAt => memories.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
         }
 
-        let data = match depth {
-            None => memories.into_iter().map(|m| MemoryListItem::Memory(Box::new(m))).collect(),
-            Some(d) => collapse_depth(memories, &prefix, d, order),
+        let items = match depth {
+            0 => memories.into_iter().map(|m| MemoryListItem::Memory(Box::new(m))).collect(),
+            d => collapse_depth(memories, &prefix, d, order),
         };
-        Ok(MemoryListPage { data, prefixes: Vec::new() })
+        let mut page = Page::paginate(items, page);
+        if view == View::Full {
+            // The list read carries heads only; a full page (at most 20) reads
+            // each head's content concurrently.
+            let reads = page.data.iter_mut().filter_map(|item| match item {
+                MemoryListItem::Memory(m) => Some(async {
+                    let (_, v) = self.store.get_version(&ctx.workspace, &sid, &m.memory_version_id).await?;
+                    m.content = v.blob;
+                    Ok::<_, crate::store::StoreError>(())
+                }),
+                MemoryListItem::Prefix(_) => None,
+            });
+            futures::future::try_join_all(reads).await.map_err(map_store)?;
+        }
+        Ok(MemoryListPage { data: page.data, prefixes: Vec::new(), next_page: page.next_page })
     }
 
     /// Resolve a live memory by its path, with full content — used by the

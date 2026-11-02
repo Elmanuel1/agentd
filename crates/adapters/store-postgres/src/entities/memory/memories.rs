@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use diesel::sql_types::Text;
 use diesel::upsert::excluded;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, TextExpressionMethods};
 use diesel_async::RunQueryDsl;
@@ -8,9 +9,38 @@ use shared::WorkspaceId;
 
 use super::PgMemoryStore;
 use crate::schema::memories;
-use crate::{diesel_be, parse_doc, pool_be, to_doc};
+use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow};
 
 impl PgMemoryStore {
+    /// Live: a path conflicts with another live memory at the same path, or
+    /// one that is its ancestor or descendant (`/notes` and `/notes/a.md`).
+    async fn check_path(
+        &self,
+        ws: &WorkspaceId,
+        store: &MemoryStoreId,
+        record: &MemoryRecord,
+    ) -> Result<(), StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let rows: Vec<DocRow> = diesel::sql_query(
+            "SELECT doc FROM memories WHERE workspace_id = $1 AND store_id = $2 AND NOT deleted AND memory_id <> $3
+               AND (path = $4 OR starts_with($4, path || '/') OR starts_with(path, $4 || '/')) LIMIT 1",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(store.as_str())
+        .bind::<Text, _>(record.head.id.as_str())
+        .bind::<Text, _>(&record.head.path)
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        match rows.into_iter().next() {
+            None => Ok(()),
+            Some(row) => {
+                let other: Memory = parse_doc(row.doc)?;
+                Err(StoreError::PathConflict { path: other.path, memory_id: other.id })
+            }
+        }
+    }
+
     pub(super) async fn upsert_head(
         &self,
         ws: &WorkspaceId,
@@ -53,9 +83,7 @@ impl MemoryRecordPersistence for PgMemoryStore {
         record: MemoryRecord,
     ) -> Result<(), StoreError> {
         self.require_store(ws, store).await?;
-        if let Some(occupied) = self.find_by_path(ws, store, &record.head.path).await? {
-            return Err(StoreError::PathConflict { path: record.head.path.clone(), memory_id: occupied });
-        }
+        self.check_path(ws, store, &record).await?;
         self.upsert_head(ws, store, &record).await?;
         for v in &record.chain {
             self.upsert_version(ws, store, &record.head.id, v).await?;
@@ -110,14 +138,7 @@ impl MemoryRecordPersistence for PgMemoryStore {
             return Err(StoreError::MemoryNotFound);
         }
         if !record.deleted {
-            if let Some(other) = self.find_by_path(ws, store, &record.head.path).await? {
-                if other != record.head.id {
-                    return Err(StoreError::PathConflict {
-                        path: record.head.path.clone(),
-                        memory_id: other,
-                    });
-                }
-            }
+            self.check_path(ws, store, &record).await?;
         }
         self.upsert_head(ws, store, &record).await?;
         for v in &record.chain {

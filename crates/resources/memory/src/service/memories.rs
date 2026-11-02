@@ -5,8 +5,8 @@ use shared::{ApiError, AuthContext, ErrorType, Timestamp};
 use super::{map_store, parse_mem_pair, parse_store_id, MemoriesService};
 use crate::store::{MemoryRecord, VersionRecord, VersionSelector};
 use crate::types::{
-    CreateMemoryRequest, Memory, MemoryId, MemoryTag, MemoryVersion, MemoryVersionId, MemoryVersionTag,
-    Precondition, UpdateMemoryRequest, VersionOperation,
+    CreateMemoryRequest, Memory, MemoryId, MemoryTag, MemoryVersion, Precondition, UpdateMemoryRequest,
+    VersionOperation,
 };
 
 impl MemoriesService {
@@ -28,33 +28,26 @@ impl MemoriesService {
         validate_bytes_max("content", content.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
         let now = Timestamp::now();
         let mem_id = MemoryId::generate();
-        let ver_id = MemoryVersionId::generate();
-        let sha = content_sha256(content.as_bytes());
+        let version = MemoryVersion::record(
+            ctx.actor(),
+            mem_id.clone(),
+            store_id.clone(),
+            VersionOperation::Created,
+            path.clone(),
+            Some(&content),
+            now,
+        );
         let head = Memory {
             content: None, // live: create response does NOT echo content
-            content_sha256: sha.clone(),
+            content_sha256: version.content_sha256.clone().unwrap_or_default(),
             content_size_bytes: content.len() as u64,
             created_at: now,
-            id: mem_id.clone(),
+            id: mem_id,
             memory_store_id: store_id.clone(),
-            memory_version_id: ver_id.clone(),
-            path: path.clone(),
+            memory_version_id: version.id.clone(),
+            path,
             tag: MemoryTag::Memory,
             updated_at: now,
-        };
-        let version = MemoryVersion {
-            content: None,
-            content_sha256: Some(sha),
-            content_size_bytes: Some(content.len() as u64),
-            created_at: now,
-            created_by: ctx.actor(),
-            id: ver_id,
-            memory_id: mem_id,
-            memory_store_id: store_id.clone(),
-            operation: VersionOperation::Created,
-            path: Some(path),
-            redacted_by: None,
-            tag: MemoryVersionTag::MemoryVersion,
         };
         let record = MemoryRecord {
             head: head.clone(),
@@ -76,8 +69,11 @@ impl MemoriesService {
         req: UpdateMemoryRequest,
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
+        let store = self.store.get_store(&ctx.workspace, &sid).await.map_err(map_store)?;
+        if store.archived_at.is_some() {
+            return Err(ApiError::conflict_invalid_request("cannot write to an archived memory store"));
+        }
         let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
-        check_precondition(&record, req.precondition.as_ref())?;
         let new_content = match req.content {
             Some(c) => {
                 validate_bytes_max("content", c.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
@@ -92,23 +88,25 @@ impl MemoriesService {
             }
             None => record.head.path.clone(),
         };
+        // Live: an update that changes nothing writes no version, and that
+        // holds even when its precondition names other content.
+        if content_sha256(new_content.as_bytes()) == record.head.content_sha256
+            && new_path == record.head.path
+        {
+            return Ok(record.head);
+        }
+        check_precondition(&record, req.precondition.as_ref())?;
         let now = Timestamp::now();
-        let ver_id = MemoryVersionId::generate();
-        let sha = content_sha256(new_content.as_bytes());
-        let version = MemoryVersion {
-            content: None,
-            content_sha256: Some(sha.clone()),
-            content_size_bytes: Some(new_content.len() as u64),
-            created_at: now,
-            created_by: ctx.actor(),
-            id: ver_id.clone(),
-            memory_id: mid.clone(),
-            memory_store_id: sid.clone(),
-            operation: VersionOperation::Modified,
-            path: Some(new_path.clone()),
-            redacted_by: None,
-            tag: MemoryVersionTag::MemoryVersion,
-        };
+        let version = MemoryVersion::record(
+            ctx.actor(),
+            mid.clone(),
+            sid.clone(),
+            VersionOperation::Modified,
+            new_path.clone(),
+            Some(&new_content),
+            now,
+        );
+        let (ver_id, sha) = (version.id.clone(), version.content_sha256.clone().unwrap_or_default());
         record.chain.push(VersionRecord { version, blob: Some(new_content) });
         // Advance the `latest` ref.
         record.head.memory_version_id = ver_id;
@@ -140,23 +138,17 @@ impl MemoriesService {
             }
         }
         let now = Timestamp::now();
-        record.chain.push(VersionRecord {
-            version: MemoryVersion {
-                content: None,
-                content_sha256: None,
-                content_size_bytes: None,
-                created_at: now,
-                created_by: ctx.actor(),
-                id: MemoryVersionId::generate(),
-                memory_id: mid.clone(),
-                memory_store_id: sid.clone(),
-                operation: VersionOperation::Deleted,
-                path: Some(record.head.path.clone()),
-                redacted_by: None,
-                tag: MemoryVersionTag::MemoryVersion,
-            },
-            blob: None,
-        });
+        let path = record.head.path.clone();
+        let version = MemoryVersion::record(
+            ctx.actor(),
+            mid.clone(),
+            sid.clone(),
+            VersionOperation::Deleted,
+            path,
+            None,
+            now,
+        );
+        record.chain.push(VersionRecord { version, blob: None });
         record.deleted = true;
         record.head.updated_at = now;
         let head = record.head.clone();

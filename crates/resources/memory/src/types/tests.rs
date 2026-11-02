@@ -22,8 +22,10 @@ fn store_fixture_roundtrip() {
 #[test]
 fn version_fixture_roundtrip() {
     let wrapper: serde_json::Value = serde_json::from_str(VERSIONS_FIXTURE).unwrap();
-    let first = wrapper["data"][0].clone();
+    let mut first = wrapper["data"][0].clone();
     let v: MemoryVersion = serde_json::from_value(first.clone()).unwrap();
+    // The July capture predates `redacted_at` (SDK 1.3.0 types it as required).
+    first["redacted_at"] = serde_json::Value::Null;
     assert_eq!(serde_json::to_value(&v).unwrap(), first);
     assert_eq!(v.operation, VersionOperation::Created);
     assert!(matches!(v.created_by, Actor::ApiActor { .. }));

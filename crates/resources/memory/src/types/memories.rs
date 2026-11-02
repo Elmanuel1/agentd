@@ -78,6 +78,9 @@ pub struct MemoryListPage {
     pub data: Vec<MemoryListItem>,
     /// Always `[]` in the current API (collapsed dirs live in `data`).
     pub prefixes: Vec<MemoryPrefix>,
+    /// The next page's cursor; omitted on the last page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page: Option<String>,
 }
 
 /// Optimistic-concurrency precondition on update/delete.

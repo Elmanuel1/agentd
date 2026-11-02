@@ -13,6 +13,10 @@
 use async_trait::async_trait;
 use shared::{Pagination, WorkspaceId};
 
+mod filters;
+
+pub use filters::{StoreFilter, VersionFilter};
+
 use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
 
 /// How a reader resolves a memory to a concrete version.
@@ -114,6 +118,7 @@ pub trait MemoryStorePersistence: Send + Sync {
     async fn list_stores(
         &self,
         ws: &WorkspaceId,
+        filter: &StoreFilter,
         page: &Pagination,
     ) -> Result<Vec<MemoryStoreEntity>, StoreError>;
 }

@@ -36,7 +36,7 @@ pub async fn betas(State(gates): State<Arc<[BetaGate]>>, mut req: Request, next:
     };
     let gate = gates.iter().find(|g| g.covers(req.uri().path())).copied();
     let bodied = matches!(req.method().as_str(), "POST" | "PUT" | "PATCH");
-    let ungated = gate.filter(|g| bodied && !betas.has(g.beta));
+    let ungated = gate.filter(|g| bodied && !g.opened_by(&betas));
     req.extensions_mut().insert(betas);
     match ungated {
         Some(gate) => ga_schema(gate, req, next).await,
