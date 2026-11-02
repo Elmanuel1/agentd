@@ -8,7 +8,7 @@ use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig, RecyclingMethod};
 use diesel_async::{AsyncConnection, AsyncPgConnection};
 
-use crate::{PgBackend, PgError};
+use crate::{DieselPgPool, PgBackend, PgError};
 
 /// Watches the pool: every statement a connection runs, and every
 /// connection that cannot be opened (no statement runs then).
@@ -72,7 +72,7 @@ impl PgBackend {
         manager: AsyncDieselConnectionManager<AsyncPgConnection>,
         settings: PoolSettings,
     ) -> Result<Self, PgError> {
-        let diesel = DieselPool::builder(manager)
+        let inner = DieselPool::builder(manager)
             .max_size(settings.max_size)
             .wait_timeout(Some(settings.wait))
             // Opening or recycling a connection counts against the same bound,
@@ -82,7 +82,7 @@ impl PgBackend {
             .runtime(deadpool::Runtime::Tokio1)
             .build()
             .map_err(|e| PgError::Connect(e.to_string()))?;
-        Ok(Self { diesel })
+        Ok(Self { diesel: DieselPgPool::new(inner, settings.wait) })
     }
 }
 

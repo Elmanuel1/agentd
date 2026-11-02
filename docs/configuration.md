@@ -31,6 +31,7 @@ stops the boot with an error naming the variable.
 | `AGENTD_S3_PATH_STYLE` | `1` with a custom endpoint, else `0` | Path-style bucket addressing |
 | `AGENTD_S3_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
 | `AGENTD_S3_CREATE_BUCKET` | `0` | Create the bucket at boot when it is missing |
+| `AGENTD_S3_LOCATION_CONSTRAINT` | the region on AWS S3 (none in `us-east-1`); none with a custom endpoint | The location constraint a created bucket gets, for an S3-compatible store that names locations its own way |
 | `AGENTD_API_KEYS` | unset | `key:org:workspace[,key:org:workspace…]` |
 | `AGENTD_DEV_KEY` | `0` | `1` also registers `agentd-dev-key` for `org_dev`/`wrkspc_01dev` |
 | `RUST_LOG` | `info` | Log level |

@@ -16,18 +16,14 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+mod checkout;
 pub mod entities;
 mod pool;
 pub mod schema;
 
+pub use checkout::{DieselPgPool, PooledConnection};
 pub use pool::{PgObserver, PoolSettings};
 
-use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
-
-use diesel_async::AsyncPgConnection;
-
-/// The diesel-async connection pool type (tokio-postgres under the hood).
-pub type DieselPgPool = DieselPool<AsyncPgConnection>;
 
 pub use entities::agents::PgAgentsStore;
 pub use entities::deployments::PgDeploymentsStore;

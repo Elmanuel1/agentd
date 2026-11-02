@@ -71,6 +71,7 @@ fn s3_options_come_from_config() {
         ("AGENTD_AWS_ENDPOINT", "http://localhost:4566"),
         ("AGENTD_S3_ROLE_ARN", "arn:aws:iam::123456789012:role/agentd"),
         ("AGENTD_S3_CREATE_BUCKET", "true"),
+        ("AGENTD_S3_LOCATION_CONSTRAINT", "eu-west-1-standard"),
     ])
     .unwrap();
     assert_eq!(
@@ -82,6 +83,7 @@ fn s3_options_come_from_config() {
             path_style: true,
             role_arn: Some("arn:aws:iam::123456789012:role/agentd".into()),
             create_bucket: true,
+            location_constraint: Some("eu-west-1-standard".into()),
         })
     );
     let c = config(&[
