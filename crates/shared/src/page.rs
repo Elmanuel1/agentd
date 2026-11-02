@@ -26,7 +26,7 @@ pub const DEFAULT_LIMIT: usize = 20;
 /// Maximum allowed `limit`.
 pub const MAX_LIMIT: usize = 100;
 
-/// A paginated Managed Agents list response — `{data, next_page?}`.
+/// A paginated Managed Agents list response: `{data, next_page?}`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Page<T> {
     /// The items on this page.

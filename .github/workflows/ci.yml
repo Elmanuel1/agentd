@@ -127,7 +127,7 @@ jobs:
       - run: cargo build --locked -p api
       - name: Start agentd
         run: |
-          ./target/debug/agentd > agentd.log 2>&1 &
+          nohup ./target/debug/agentd > agentd.log 2>&1 &
           for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8080/ && exit 0; sleep 1; done
           cat agentd.log; exit 1
       - name: Python SDK (anthropic 2.3.0)

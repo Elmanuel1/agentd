@@ -6,8 +6,8 @@
 //! 3. [`contract`]: `anthropic-version` is required, every `anthropic-beta`
 //!    name must be known, and a resource's beta-gated routes read a request
 //!    without their beta against the GA schema,
-//! 4. [`methods`]: HEAD and unserved methods are 405s with the live body, an
-//!    unknown path is the live 404,
+//! 4. [`methods`]: HEAD and unserved methods are 405s with the live body; an
+//!    unknown path is the live 404 (`request_id: null`, live auth/08),
 //! 5. [`limits`]: each module's body cap, a 413 above it.
 //!
 //! Routing comes first, as live: an unknown path is a 404 before any auth.
@@ -33,6 +33,6 @@ pub fn wrap(routes: Router, keys: Arc<dyn KeySource>, gates: Arc<[BetaGate]>) ->
         .route_layer(from_fn(contract::version))
         .route_layer(from_fn(methods::reject_head))
         .route_layer(from_fn_with_state(keys, auth::auth))
-        .fallback(methods::unknown_route)
+        .fallback(|| async { shared::unknown_route_response() })
         .layer(from_fn(request_id::request_id))
 }

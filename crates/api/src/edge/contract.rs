@@ -7,7 +7,8 @@ use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use shared::beta::{ApiVersion, BetaGate, BetaSet};
-use shared::{wire_response, ApiError};
+use shared::module::BodyLimit;
+use shared::{request_too_large_response, wire_response, ApiError};
 
 /// Live (auth/05): a request without `anthropic-version` is a 400.
 pub async fn version(mut req: Request, next: Next) -> Response {
@@ -43,13 +44,17 @@ pub async fn betas(State(gates): State<Arc<[BetaGate]>>, mut req: Request, next:
     }
 }
 
+/// Beta-gated routes are Managed Agents and memory routes, whose body cap is
+/// 32 MB; the GA-schema check reads no more than that.
+const GATED: BodyLimit = BodyLimit { api: "Managed Agents", max_mb: 32 };
+
 /// Without its beta, a gated route's body is read against the GA schema:
 /// the first field the GA schema does not know is the live 400
 /// `Failed to parse request body: unknown field "model"`.
 async fn ga_schema(gate: BetaGate, req: Request, next: Next) -> Response {
     let (parts, body) = req.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
-        return wire_response(&ApiError::invalid_request("Failed to parse request body"));
+    let Ok(bytes) = axum::body::to_bytes(body, GATED.bytes()).await else {
+        return request_too_large_response(GATED.api, GATED.max_mb);
     };
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&bytes) {
         if let Some(unknown) = map.keys().find(|k| !gate.ga_fields.contains(&k.as_str())) {

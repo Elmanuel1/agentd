@@ -4,7 +4,7 @@ use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use shared::{unknown_route_response, wire_response, ApiError};
+use shared::{wire_response, ApiError};
 
 /// Live (files/16): a method the path does not serve is 405 with an envelope.
 pub async fn not_allowed() -> Response {
@@ -24,9 +24,4 @@ pub async fn reject_head(req: Request, next: Next) -> Response {
     response.headers_mut().insert("allow", HeaderValue::from_static("GET"));
     response.headers_mut().insert("x-should-retry", HeaderValue::from_static("false"));
     response
-}
-
-/// Live (auth/08): an unknown path is 404 `Not found`, `request_id: null`.
-pub async fn unknown_route() -> Response {
-    unknown_route_response()
 }
