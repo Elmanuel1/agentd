@@ -10,6 +10,7 @@ use files::FilesService;
 use memory::MemoriesService;
 use sessions::SessionsService;
 use shared::limits::ModelCatalog;
+use shared::ports::fire::FireError;
 use shared::ports::keys::KeySource;
 use shared::Module;
 use skills::SkillsService;
@@ -34,8 +35,9 @@ impl std::fmt::Debug for AppState {
 
 impl AppState {
     /// Build every service over `backends`, assemble the modules, and register
-    /// their fire handlers with the scheduler's registry.
-    pub fn build(backends: Backends) -> Self {
+    /// their fire handlers with the scheduler's registry. Two modules claiming
+    /// one fire kind is an error.
+    pub fn build(backends: Backends) -> Result<Self, FireError> {
         let Backends { stores, keys, scheduler, fires, runtime: _ } = backends;
         let agents = Arc::new(AgentsService::new(stores.agents, ModelCatalog::default_catalog()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
@@ -63,8 +65,8 @@ impl AppState {
             deployments::module(deployments),
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
-            fires.register(handler.clone());
+            fires.register(handler.clone())?;
         }
-        Self { keys, modules }
+        Ok(Self { keys, modules })
     }
 }

@@ -36,7 +36,7 @@ impl FireHandler for RecordingSink {
 
 fn scheduler(sink: Arc<RecordingSink>) -> LocalScheduler {
     let fires = Arc::new(FireRegistry::new());
-    fires.register(sink);
+    fires.register(sink).unwrap();
     LocalScheduler::new(fires)
 }
 
@@ -105,7 +105,7 @@ async fn transport_failure_drops_tick_no_retry() {
     assert!(sink.fires.lock().is_empty(), "fire dropped");
     sink.fail.store(false, std::sync::atomic::Ordering::SeqCst);
     // Immediately re-ticking the same instant does NOT re-fire (dropped
-    // means dropped — the schedule already advanced).
+    // means dropped: the schedule already advanced).
     sched.tick(utc("2026-01-01T00:05:30Z")).await;
     assert!(sink.fires.lock().is_empty());
     // The NEXT occurrence fires normally.

@@ -1,4 +1,4 @@
-//! blobs-s3 — the S3 implementation of [`BlobStore`].
+//! blobs-s3: the S3 implementation of [`BlobStore`].
 //!
 //! [`S3BlobStore`] targets any S3-compatible endpoint: real AWS S3, MinIO, or
 //! an emulator such as LocalStack. Credentials always come from the AWS
@@ -8,6 +8,9 @@
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
+use aws_config::environment::EnvironmentVariableRegionProvider;
+use aws_config::meta::region::RegionProviderChain;
+use aws_config::profile::ProfileFileRegionProvider;
 use aws_config::sts::AssumeRoleProvider;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::config::Region;
@@ -22,7 +25,8 @@ pub use shared::ports::blobs::{BlobError, BlobStore};
 pub struct S3Config {
     /// The bucket every blob lives in.
     pub bucket: String,
-    /// The region; `None` takes it from the default chain, else `us-east-1`.
+    /// The region; `None` takes `AWS_REGION`, `AWS_DEFAULT_REGION` or the
+    /// profile's, else `us-east-1`.
     pub region: Option<String>,
     /// A custom endpoint (MinIO, LocalStack); `None` is AWS S3.
     pub endpoint: Option<String>,
@@ -65,17 +69,13 @@ impl S3BlobStore {
     /// Build the client from `config`, and create the bucket when the config
     /// asks for it.
     pub async fn connect(config: &S3Config) -> Result<Self, BlobError> {
-        let mut loader = aws_config::defaults(BehaviorVersion::latest());
-        if let Some(region) = &config.region {
-            loader = loader.region(Region::new(region.clone()));
-        }
-        if let Some(endpoint) = &config.endpoint {
-            loader = loader.endpoint_url(endpoint);
-        }
-        let mut shared = loader.load().await;
-        if shared.region().is_none() {
-            shared = shared.into_builder().region(Region::from_static("us-east-1")).build();
-        }
+        // The region chain skips IMDS so a boot off EC2 never waits on it;
+        // ECS and Lambda set AWS_REGION.
+        let region = RegionProviderChain::first_try(config.region.clone().map(Region::new))
+            .or_else(EnvironmentVariableRegionProvider::new())
+            .or_else(ProfileFileRegionProvider::new())
+            .or_else(Region::from_static("us-east-1"));
+        let mut shared = aws_config::defaults(BehaviorVersion::latest()).region(region).load().await;
         if let Some(role_arn) = &config.role_arn {
             let role =
                 AssumeRoleProvider::builder(role_arn).session_name("agentd").configure(&shared).build();
@@ -84,7 +84,12 @@ impl S3BlobStore {
                 .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(role.await))
                 .build();
         }
-        let conf = aws_sdk_s3::config::Builder::from(&shared).force_path_style(config.path_style).build();
+        // The endpoint applies to S3 only: STS keeps its own.
+        let mut conf = aws_sdk_s3::config::Builder::from(&shared).force_path_style(config.path_style);
+        if let Some(endpoint) = &config.endpoint {
+            conf = conf.endpoint_url(endpoint);
+        }
+        let conf = conf.build();
         let store = Self { client: aws_sdk_s3::Client::from_conf(conf), bucket: config.bucket.clone() };
         if config.create_bucket {
             store.ensure_bucket().await?;

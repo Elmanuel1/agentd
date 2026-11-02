@@ -49,7 +49,7 @@ async fn app() -> Option<Router> {
         fires: Arc::new(FireRegistry::new()),
         runtime: Arc::new(FakeRuntime::new()),
     };
-    Some(build_router(AppState::build(backends)))
+    Some(build_router(AppState::build(backends).unwrap()))
 }
 
 /// A test bucket on the emulator at `AGENTD_AWS_ENDPOINT`, created on connect.

@@ -24,7 +24,13 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let app = build_router(AppState::build(backends));
+    let app = match AppState::build(backends) {
+        Ok(state) => build_router(state),
+        Err(e) => {
+            tracing::error!(error = %e, "module assembly failed");
+            return ExitCode::FAILURE;
+        }
+    };
     let listener = match tokio::net::TcpListener::bind(&config.addr).await {
         Ok(l) => l,
         Err(e) => {

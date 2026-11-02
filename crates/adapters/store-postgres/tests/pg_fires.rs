@@ -79,7 +79,7 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     ));
     let fires = FireRegistry::new();
     for handler in deployments::module(svc.clone()).fire_handlers {
-        fires.register(handler);
+        fires.register(handler).unwrap();
     }
     let ctx = tenant("fire");
     let req = serde_json::from_value(json!({
@@ -150,7 +150,7 @@ async fn dream_fire_runs_under_the_schedules_tenant_and_a_missing_dream_is_an_er
     ));
     let fires = FireRegistry::new();
     for handler in dreams::module(svc.clone()).fire_handlers {
-        fires.register(handler);
+        fires.register(handler).unwrap();
     }
     let ctx = tenant("dream");
     let store = memories

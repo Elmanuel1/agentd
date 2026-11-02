@@ -1,4 +1,4 @@
-//! secrets-blob — a [`SecretStore`] over a [`BlobStore`]: each secret is one
+//! secrets-blob: a [`SecretStore`] over a [`BlobStore`]: each secret is one
 //! object, stored as written. A stand-in for a secret manager in development;
 //! the material is not encrypted.
 

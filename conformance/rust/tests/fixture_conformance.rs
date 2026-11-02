@@ -58,7 +58,7 @@ async fn app() -> Option<Router> {
         fires: Arc::new(FireRegistry::new()),
         runtime: Arc::new(FakeRuntime::new()),
     };
-    Some(build_router(AppState::build(backends)))
+    Some(build_router(AppState::build(backends).unwrap()))
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, serde_json::Value) {

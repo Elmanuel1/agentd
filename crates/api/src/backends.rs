@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agents::AgentsStore;
+use async_trait::async_trait;
 use blobs_s3::{BlobError, S3BlobStore};
 use deployments::DeploymentsStore;
 use environments::EnvironmentsStore;
@@ -18,7 +19,7 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
 use shared::ports::secrets::SecretStore;
-use shared::ports::{FakeRuntime, Runtime, SchedulerPort};
+use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, SchedulerPort, TaskState};
 use skills::SkillsStore;
 use store_postgres::{
     PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
@@ -133,8 +134,27 @@ impl Backends {
             }
         };
         let runtime: Arc<dyn Runtime> = match config.runtime {
-            RuntimeConfig::None => Arc::new(FakeRuntime::new()),
+            RuntimeConfig::None => Arc::new(NoRuntime),
         };
         Ok(Self { stores, keys, scheduler, fires, runtime })
+    }
+}
+
+/// The `none` runtime: there is no sandbox, so nothing can be launched.
+#[derive(Debug, Clone, Copy)]
+pub struct NoRuntime;
+
+#[async_trait]
+impl Runtime for NoRuntime {
+    async fn launch(&self, _job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
+        Err(RuntimeError::Unavailable("no sandbox runtime is configured (AGENTD_RUNTIME=none)".into()))
+    }
+
+    async fn status(&self, handle: &RuntimeHandle) -> Result<TaskState, RuntimeError> {
+        Err(RuntimeError::Unknown(handle.id.clone()))
+    }
+
+    async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Unknown(handle.id.clone()))
     }
 }

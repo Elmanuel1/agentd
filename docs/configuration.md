@@ -14,7 +14,7 @@ stops the boot with an error naming the variable.
 | Secret store | `AGENTD_SECRETS` | `blob`: secrets as objects in the blob store, not encrypted |
 | API keys | `AGENTD_KEYS` | `env`: the keys in `AGENTD_API_KEYS` |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
-| Sandbox runtime | `AGENTD_RUNTIME` | `none`: no sandbox |
+| Sandbox runtime | `AGENTD_RUNTIME` | `none`: no sandbox, a launch fails |
 
 ## Settings
 
@@ -23,7 +23,7 @@ stops the boot with an error naming the variable.
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_URL` | `postgres://agentd:agentd@localhost:5432/agentd` | Postgres connection |
 | `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |
-| `AGENTD_S3_REGION` | the AWS default chain, else `us-east-1` | Bucket region |
+| `AGENTD_S3_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Bucket region |
 | `AGENTD_AWS_ENDPOINT` | unset (AWS S3) | Custom S3 endpoint (MinIO, LocalStack) |
 | `AGENTD_S3_PATH_STYLE` | `1` with a custom endpoint, else `0` | Path-style bucket addressing |
 | `AGENTD_S3_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
@@ -38,8 +38,8 @@ At least one API key is required: with neither `AGENTD_API_KEYS` nor
 ## S3 credentials
 
 S3 credentials always come from the AWS default chain: `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`, a profile, web identity, the ECS task role or the EC2
-instance role. This holds with or without `AGENTD_AWS_ENDPOINT`. With
+`AWS_SECRET_ACCESS_KEY`, a profile (including SSO and `credential_process`),
+web identity, the ECS task role or the EC2 instance role. This holds with or without `AGENTD_AWS_ENDPOINT`. With
 `AGENTD_S3_ROLE_ARN`, those credentials assume the role and S3 is called as it.
 
 ## Scheduled work

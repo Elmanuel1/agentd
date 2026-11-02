@@ -17,6 +17,9 @@ pub enum FireError {
     /// No handler is registered for the target's kind.
     #[error("no fire handler for kind `{0}`")]
     NoHandler(String),
+    /// A second handler was registered for a kind.
+    #[error("fire handler for kind `{0}` registered twice")]
+    DuplicateKind(String),
     /// The handler failed.
     #[error("fire failed: {0}")]
     Failed(String),
@@ -56,9 +59,14 @@ impl FireRegistry {
         Self::default()
     }
 
-    /// Register `handler` for its kind, replacing any earlier one.
-    pub fn register(&self, handler: Arc<dyn FireHandler>) {
-        self.handlers.write().unwrap_or_else(PoisonError::into_inner).insert(handler.kind(), handler);
+    /// Register `handler` for its kind; each kind has one handler.
+    pub fn register(&self, handler: Arc<dyn FireHandler>) -> Result<(), FireError> {
+        let mut handlers = self.handlers.write().unwrap_or_else(PoisonError::into_inner);
+        if handlers.contains_key(handler.kind()) {
+            return Err(FireError::DuplicateKind(handler.kind().to_owned()));
+        }
+        handlers.insert(handler.kind(), handler);
+        Ok(())
     }
 
     /// Deliver one tick of `spec` to the handler of its target's kind.
@@ -134,7 +142,7 @@ mod tests {
     async fn fire_runs_the_kinds_handler_under_the_schedules_tenant() {
         let registry = FireRegistry::new();
         let handler = Arc::new(Recording::default());
-        registry.register(handler.clone());
+        registry.register(handler.clone()).unwrap();
         let at = Utc::now();
         registry.fire(&spec("deployment"), at).await.unwrap();
         let fires = handler.fires.lock().unwrap();
@@ -148,9 +156,17 @@ mod tests {
     #[tokio::test]
     async fn fire_of_a_kind_with_no_handler_is_an_error() {
         let registry = FireRegistry::new();
-        registry.register(Arc::new(Recording::default()));
+        registry.register(Arc::new(Recording::default())).unwrap();
         let err = registry.fire(&spec("dream"), Utc::now()).await.unwrap_err();
         assert!(matches!(err, FireError::NoHandler(kind) if kind == "dream"));
+    }
+
+    #[test]
+    fn a_kind_registers_one_handler() {
+        let registry = FireRegistry::new();
+        registry.register(Arc::new(Recording::default())).unwrap();
+        let err = registry.register(Arc::new(Recording::default())).unwrap_err();
+        assert!(matches!(err, FireError::DuplicateKind(kind) if kind == "deployment"));
     }
 
     #[test]

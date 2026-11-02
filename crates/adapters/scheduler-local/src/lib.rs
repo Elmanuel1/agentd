@@ -13,7 +13,7 @@
 //! [`LocalScheduler`] is the complete in-process implementation with an
 //! injectable clock (`tick(now)`) so firing is deterministic under test.
 //! A Temporal backend implements the same port by registering one generic
-//! TickWorkflow whose single activity delivers the fire — the port
+//! TickWorkflow whose single activity delivers the fire; the port
 //! guarantees make it a drop-in.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
