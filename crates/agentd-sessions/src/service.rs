@@ -23,8 +23,7 @@ use crate::events::{Event, EventPayload, StopReason};
 use crate::store::{SessionsStore, StoreError};
 use crate::types::{
     CreateSessionRequest, OutcomeEvaluation, OutcomeId, Session, SessionId, SessionResource,
-    SessionResourceId, SessionResourceInput, SessionStatus, SessionTag, Stats,
-    UpdateSessionRequest,
+    SessionResourceId, SessionResourceInput, SessionStatus, SessionTag, Stats, UpdateSessionRequest,
 };
 
 use agentd_agents::AgentSnapshot;
@@ -66,18 +65,9 @@ pub trait EngineContract: Send + Sync {
         stop_reason: Option<StopReason>,
     ) -> Result<(), ApiError>;
     /// Pull queued (unprocessed) user events, stamping them processed.
-    async fn drain_user_events(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-    ) -> Result<Vec<Event>, ApiError>;
+    async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError>;
     /// Accumulate usage onto the session.
-    async fn add_usage(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-        usage: &Usage,
-    ) -> Result<(), ApiError>;
+    async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError>;
     /// Record an outcome evaluation onto the session object.
     async fn record_outcome(
         &self,
@@ -104,35 +94,19 @@ impl std::fmt::Debug for SessionsService {
 impl SessionsService {
     /// Build with a store and dependency port.
     pub fn new(store: Arc<dyn SessionsStore>, deps: Arc<dyn SessionDeps>) -> Self {
-        Self {
-            store,
-            deps,
-            channels: Mutex::new(HashMap::new()),
-        }
+        Self { store, deps, channels: Mutex::new(HashMap::new()) }
     }
 
     /// `POST /v1/sessions`.
-    pub async fn create(
-        &self,
-        ctx: &AuthContext,
-        req: CreateSessionRequest,
-    ) -> Result<Session, ApiError> {
+    pub async fn create(&self, ctx: &AuthContext, req: CreateSessionRequest) -> Result<Session, ApiError> {
         let agent_ref = required("agent", req.agent)?;
         let environment_id = required("environment_id", req.environment_id)?;
         // Sessions do NOT cap metadata entries (live divergence) but key and
         // value length rules still apply.
-        req.metadata
-            .validate(agentd_core::metadata::MetadataPolicy::unlimited_entries())?;
-        let agent = self
-            .deps
-            .resolve_agent(ctx, agent_ref.id(), agent_ref.version())
-            .await?;
+        req.metadata.validate(agentd_core::metadata::MetadataPolicy::unlimited_entries())?;
+        let agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
         self.deps.check_environment(ctx, &environment_id).await?;
-        let resources = req
-            .resources
-            .into_iter()
-            .map(assign_resource_id)
-            .collect::<Vec<_>>();
+        let resources = req.resources.into_iter().map(assign_resource_id).collect::<Vec<_>>();
         let now = Timestamp::now();
         let session = Session {
             agent,
@@ -151,10 +125,7 @@ impl SessionsService {
             usage: Usage::default(),
             vault_ids: req.vault_ids,
         };
-        self.store
-            .insert(&ctx.workspace, session.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert(&ctx.workspace, session.clone()).await.map_err(map_store)?;
         Ok(session)
     }
 
@@ -165,11 +136,7 @@ impl SessionsService {
     }
 
     /// `GET /v1/sessions`.
-    pub async fn list(
-        &self,
-        ctx: &AuthContext,
-        page: &Pagination,
-    ) -> Result<Vec<Session>, ApiError> {
+    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Session>, ApiError> {
         self.store.list(&ctx.workspace, page).await.map_err(map_store)
     }
 
@@ -191,10 +158,7 @@ impl SessionsService {
             s.metadata = m;
         }
         s.updated_at = Timestamp::now();
-        self.store
-            .replace(&ctx.workspace, s.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.replace(&ctx.workspace, s.clone()).await.map_err(map_store)?;
         Ok(s)
     }
 
@@ -204,17 +168,12 @@ impl SessionsService {
         let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         if s.status == SessionStatus::Running {
             // Documented race: cannot archive while running.
-            return Err(ApiError::conflict_invalid_request(
-                "cannot archive a running session",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot archive a running session"));
         }
         if s.archived_at.is_none() {
             s.archived_at = Some(Timestamp::now());
             s.updated_at = Timestamp::now();
-            self.store
-                .replace(&ctx.workspace, s.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace(&ctx.workspace, s.clone()).await.map_err(map_store)?;
             // Drop the broadcast sender — an archived session takes no new
             // events, so keeping its channel would leak the entry (and its
             // ring buffer) for the process lifetime.
@@ -228,15 +187,10 @@ impl SessionsService {
         let id = parse_id(raw_id)?;
         let s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         if s.status == SessionStatus::Running {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot delete a running session",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot delete a running session"));
         }
         self.channels.lock().remove(&id);
-        self.store
-            .delete(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.delete(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     // ── events ────────────────────────────────────────────────────────────
@@ -252,17 +206,11 @@ impl SessionsService {
         let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         guard_writable(&session)?;
         if session.status == SessionStatus::Terminated {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot send events to a terminated session",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
         }
         // Validate each payload with the live field-path error convention.
         for (i, p) in payloads.iter().enumerate() {
-            if let EventPayload::UserDefineOutcome {
-                max_iterations: Some(n),
-                ..
-            } = p
-            {
+            if let EventPayload::UserDefineOutcome { max_iterations: Some(n), .. } = p {
                 validate_range_u32(
                     &format!("events.{i}.user_define_outcome.max_iterations"),
                     *n,
@@ -280,24 +228,18 @@ impl SessionsService {
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.
             let p = match p {
-                EventPayload::UserDefineOutcome {
-                    description,
-                    rubric,
-                    max_iterations,
-                    outcome_id: _,
-                } => EventPayload::UserDefineOutcome {
-                    description,
-                    rubric,
-                    max_iterations,
-                    outcome_id: Some(OutcomeId::generate()),
-                },
+                EventPayload::UserDefineOutcome { description, rubric, max_iterations, outcome_id: _ } => {
+                    EventPayload::UserDefineOutcome {
+                        description,
+                        rubric,
+                        max_iterations,
+                        outcome_id: Some(OutcomeId::generate()),
+                    }
+                }
                 other => other,
             };
             let ev = Event::new(p);
-            self.store
-                .append_event(&ctx.workspace, &id, ev.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.append_event(&ctx.workspace, &id, ev.clone()).await.map_err(map_store)?;
             self.broadcast(&id, &ev);
             out.push(ev);
         }
@@ -324,11 +266,7 @@ impl SessionsService {
     }
 
     fn channel(&self, id: &SessionId) -> broadcast::Sender<Event> {
-        self.channels
-            .lock()
-            .entry(id.clone())
-            .or_insert_with(|| broadcast::channel(1024).0)
-            .clone()
+        self.channels.lock().entry(id.clone()).or_insert_with(|| broadcast::channel(1024).0).clone()
     }
 
     fn broadcast(&self, id: &SessionId, ev: &Event) {
@@ -350,10 +288,7 @@ impl EngineContract for SessionsService {
         let mut ev = Event::new(payload);
         // Agent-side events are processed by construction.
         ev.processed_at = Some(Timestamp::now());
-        self.store
-            .append_event(ws, session, ev.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.append_event(ws, session, ev.clone()).await.map_err(map_store)?;
         self.broadcast(session, &ev);
         Ok(ev)
     }
@@ -368,17 +303,15 @@ impl EngineContract for SessionsService {
         let mut s = self.store.get(ws, session).await.map_err(map_store)?;
         // Terminated is absorbing.
         if s.status == SessionStatus::Terminated {
-            return Err(ApiError::conflict_invalid_request(
-                "session is terminated",
-            ));
+            return Err(ApiError::conflict_invalid_request("session is terminated"));
         }
         s.status = status;
         s.updated_at = Timestamp::now();
         self.store.replace(ws, s).await.map_err(map_store)?;
         let payload = match status {
-            SessionStatus::Idle => EventPayload::SessionStatusIdle {
-                stop_reason: stop_reason.unwrap_or(StopReason::EndTurn {}),
-            },
+            SessionStatus::Idle => {
+                EventPayload::SessionStatusIdle { stop_reason: stop_reason.unwrap_or(StopReason::EndTurn {}) }
+            }
             SessionStatus::Running => EventPayload::SessionStatusRunning {},
             SessionStatus::Rescheduling => EventPayload::SessionStatusRescheduled {},
             SessionStatus::Terminated => EventPayload::SessionStatusTerminated {},
@@ -387,20 +320,13 @@ impl EngineContract for SessionsService {
         Ok(())
     }
 
-    async fn drain_user_events(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-    ) -> Result<Vec<Event>, ApiError> {
+    async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError> {
         let events = self.store.events(ws, session).await.map_err(map_store)?;
         let mut drained = Vec::new();
         for mut ev in events {
             if ev.payload.is_user_event() && ev.processed_at.is_none() {
                 ev.processed_at = Some(Timestamp::now());
-                self.store
-                    .replace_event(ws, session, ev.clone())
-                    .await
-                    .map_err(map_store)?;
+                self.store.replace_event(ws, session, ev.clone()).await.map_err(map_store)?;
                 // The processed form is re-broadcast (documented: client
                 // events appear twice — queued then processed).
                 self.broadcast(session, &ev);
@@ -410,12 +336,7 @@ impl EngineContract for SessionsService {
         Ok(drained)
     }
 
-    async fn add_usage(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-        usage: &Usage,
-    ) -> Result<(), ApiError> {
+    async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError> {
         let mut s = self.store.get(ws, session).await.map_err(map_store)?;
         s.usage.add(usage);
         s.updated_at = Timestamp::now();
@@ -430,11 +351,7 @@ impl EngineContract for SessionsService {
     ) -> Result<(), ApiError> {
         let mut s = self.store.get(ws, session).await.map_err(map_store)?;
         // Replace the entry for this outcome or append.
-        match s
-            .outcome_evaluations
-            .iter_mut()
-            .find(|e| e.outcome_id == eval.outcome_id)
-        {
+        match s.outcome_evaluations.iter_mut().find(|e| e.outcome_id == eval.outcome_id) {
             Some(slot) => *slot = eval,
             None => s.outcome_evaluations.push(eval),
         }
@@ -446,43 +363,23 @@ impl EngineContract for SessionsService {
 fn assign_resource_id(input: SessionResourceInput) -> SessionResource {
     let id = Some(SessionResourceId::generate());
     match input {
-        SessionResourceInput::File {
-            file_id,
-            mount_path,
-        } => SessionResource::File {
+        SessionResourceInput::File { file_id, mount_path } => SessionResource::File {
             id,
             file_id,
             mount_path: mount_path.unwrap_or_else(|| "/workspace/file".into()),
         },
-        SessionResourceInput::GithubRepository {
-            url,
-            mount_path,
-            checkout,
-            ..
-        } => SessionResource::GithubRepository {
-            id,
-            url,
-            mount_path,
-            checkout,
-        },
-        SessionResourceInput::MemoryStore {
-            memory_store_id,
-            access,
-            instructions,
-        } => SessionResource::MemoryStore {
-            id,
-            memory_store_id,
-            access,
-            instructions,
-        },
+        SessionResourceInput::GithubRepository { url, mount_path, checkout, .. } => {
+            SessionResource::GithubRepository { id, url, mount_path, checkout }
+        }
+        SessionResourceInput::MemoryStore { memory_store_id, access, instructions } => {
+            SessionResource::MemoryStore { id, memory_store_id, access, instructions }
+        }
     }
 }
 
 fn guard_writable(s: &Session) -> Result<(), ApiError> {
     if s.archived_at.is_some() {
-        return Err(ApiError::conflict_invalid_request(
-            "session is archived and read-only",
-        ));
+        return Err(ApiError::conflict_invalid_request("session is archived and read-only"));
     }
     Ok(())
 }

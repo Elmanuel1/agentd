@@ -46,8 +46,7 @@ fn gen_body() -> String {
 }
 
 fn body_is_valid(body: &str) -> bool {
-    (BODY_MIN..=BODY_MAX).contains(&body.len())
-        && body.bytes().all(|b| b.is_ascii_alphanumeric())
+    (BODY_MIN..=BODY_MAX).contains(&body.len()) && body.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 /// Error returned when a raw string does not parse as a valid `Id<T>`.
@@ -73,10 +72,7 @@ pub struct Id<T: Resource> {
 impl<T: Resource> Id<T> {
     /// Generate a fresh canonical ID (`{prefix}_01{22 base62}`).
     pub fn generate() -> Self {
-        Self {
-            value: format!("{}_{}", T::PREFIX, gen_body()),
-            _marker: PhantomData,
-        }
+        Self { value: format!("{}_{}", T::PREFIX, gen_body()), _marker: PhantomData }
     }
 
     /// Parse and validate a raw wire string.
@@ -89,10 +85,7 @@ impl<T: Resource> Id<T> {
         if !body_is_valid(rest) {
             return Err(InvalidId { label: T::LABEL });
         }
-        Ok(Self {
-            value: raw.to_owned(),
-            _marker: PhantomData,
-        })
+        Ok(Self { value: raw.to_owned(), _marker: PhantomData })
     }
 
     /// The full wire string (e.g. `agent_01XdReZgC7eHpg9b9Nvrwdcm`).
@@ -105,10 +98,7 @@ impl<T: Resource> Id<T> {
 // the phantom parameter carries no data.
 impl<T: Resource> Clone for Id<T> {
     fn clone(&self) -> Self {
-        Self {
-            value: self.value.clone(),
-            _marker: PhantomData,
-        }
+        Self { value: self.value.clone(), _marker: PhantomData }
     }
 }
 impl<T: Resource> PartialEq for Id<T> {
@@ -209,10 +199,7 @@ mod tests {
     #[test]
     fn parse_accepts_live_captured_ids() {
         // Real IDs captured from the live API.
-        for raw in [
-            "agent_01XdReZgC7eHpg9b9Nvrwdcm",
-            "agent_01SW8QNzJHFPdZf76tukfWPu",
-        ] {
+        for raw in ["agent_01XdReZgC7eHpg9b9Nvrwdcm", "agent_01SW8QNzJHFPdZf76tukfWPu"] {
             assert!(Id::<AgentRes>::parse(raw).is_ok(), "{raw}");
         }
     }

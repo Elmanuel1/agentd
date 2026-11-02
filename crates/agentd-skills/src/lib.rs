@@ -8,10 +8,7 @@
 //! in object storage; only metadata lives in the DB. Agents reference skills by
 //! id via the `skills[]` field (see `agentd-agents::SkillRef`).
 
-#![cfg_attr(
-    test,
-    allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod routes;
 
@@ -133,11 +130,7 @@ impl<T> SkillListPage<T> {
     #[must_use]
     pub fn from_fetched(rows: Vec<T>, page: &Pagination) -> Self {
         let inner = Page::from_fetched(rows, page);
-        Self {
-            data: inner.data,
-            has_more: inner.next_page.is_some(),
-            next_page: inner.next_page,
-        }
+        Self { data: inner.data, has_more: inner.next_page.is_some(), next_page: inner.next_page }
     }
 }
 
@@ -201,11 +194,7 @@ pub fn parse_bundle(zip_bytes: &[u8]) -> Result<Bundle, ApiError> {
     let directory = top.ok_or_else(layout_err)?;
     let body = skill_md_body.ok_or_else(layout_err)?;
     let (name, description) = parse_frontmatter(&body);
-    Ok(Bundle {
-        name: if name.is_empty() { directory.clone() } else { name },
-        directory,
-        description,
-    })
+    Ok(Bundle { name: if name.is_empty() { directory.clone() } else { name }, directory, description })
 }
 
 /// Read `name`/`description` from a `---`-delimited YAML frontmatter block.
@@ -253,12 +242,8 @@ pub trait SkillsStore: Send + Sync {
         page: &Pagination,
     ) -> Result<Vec<SkillVersion>, StoreError>;
     /// Delete one version; returns whether the skill has any versions left.
-    async fn delete_version(
-        &self,
-        ws: &WorkspaceId,
-        id: &SkillId,
-        version: &str,
-    ) -> Result<bool, StoreError>;
+    async fn delete_version(&self, ws: &WorkspaceId, id: &SkillId, version: &str)
+        -> Result<bool, StoreError>;
     /// Delete the skill and all its versions/bundles.
     async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError>;
 }
@@ -311,10 +296,7 @@ impl SkillsService {
             description: bundle.description,
             created_at: now,
         };
-        self.store
-            .create(&ctx.workspace, skill.clone(), version, zip_bytes)
-            .await
-            .map_err(map_store)?;
+        self.store.create(&ctx.workspace, skill.clone(), version, zip_bytes).await.map_err(map_store)?;
         Ok(skill)
     }
 
@@ -326,10 +308,7 @@ impl SkillsService {
 
     /// `GET /v1/skills`.
     pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Skill>, ApiError> {
-        self.store
-            .list(&ctx.workspace, page)
-            .await
-            .map_err(map_store)
+        self.store.list(&ctx.workspace, page).await.map_err(map_store)
     }
 
     /// `GET /v1/skills/{id}/versions`.
@@ -340,19 +319,13 @@ impl SkillsService {
         page: &Pagination,
     ) -> Result<Vec<SkillVersion>, ApiError> {
         let id = agentd_core::parse_id::<SkillResource>(raw_id)?;
-        self.store
-            .versions(&ctx.workspace, &id, page)
-            .await
-            .map_err(map_store)
+        self.store.versions(&ctx.workspace, &id, page).await.map_err(map_store)
     }
 
     /// `DELETE /v1/skills/{id}` — remove the skill and all its versions.
     pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<(), ApiError> {
         let id = agentd_core::parse_id::<SkillResource>(raw_id)?;
-        self.store
-            .delete_skill(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.delete_skill(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     /// `DELETE /v1/skills/{id}/versions/{version}` — deleting the last version
@@ -364,16 +337,9 @@ impl SkillsService {
         version: &str,
     ) -> Result<(), ApiError> {
         let id = agentd_core::parse_id::<SkillResource>(raw_id)?;
-        let any_left = self
-            .store
-            .delete_version(&ctx.workspace, &id, version)
-            .await
-            .map_err(map_store)?;
+        let any_left = self.store.delete_version(&ctx.workspace, &id, version).await.map_err(map_store)?;
         if !any_left {
-            self.store
-                .delete_skill(&ctx.workspace, &id)
-                .await
-                .map_err(map_store)?;
+            self.store.delete_skill(&ctx.workspace, &id).await.map_err(map_store)?;
         }
         Ok(())
     }

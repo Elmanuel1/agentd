@@ -41,11 +41,7 @@ fn ws(n: &str) -> WorkspaceId {
 }
 
 fn ctx() -> AuthContext {
-    AuthContext {
-        org: OrgId::new("org_t"),
-        workspace: ws("wrkspc_01aws"),
-        api_key_id: "apikey_01aws".into(),
-    }
+    AuthContext { org: OrgId::new("org_t"), workspace: ws("wrkspc_01aws"), api_key_id: "apikey_01aws".into() }
 }
 
 fn agent(version: u64, id: agentd_agents::types::AgentId) -> Agent {
@@ -56,10 +52,7 @@ fn agent(version: u64, id: agentd_agents::types::AgentId) -> Agent {
         id,
         mcp_servers: vec![],
         metadata: Metadata::new(),
-        model: ModelSpec {
-            id: "claude-sonnet-4-6".into(),
-            speed: ModelSpeed::Standard,
-        },
+        model: ModelSpec { id: "claude-sonnet-4-6".into(), speed: ModelSpeed::Standard },
         multiagent: None,
         name: "aws-agent".into(),
         skills: vec![],
@@ -85,10 +78,7 @@ async fn dynamo_agents_versioned_roundtrip() {
     store.insert(&ctx().workspace, agent(1, id.clone())).await.unwrap();
     assert_eq!(store.latest(&ctx().workspace, &id).await.unwrap().version, 1);
 
-    store
-        .append_version(&ctx().workspace, agent(2, id.clone()))
-        .await
-        .unwrap();
+    store.append_version(&ctx().workspace, agent(2, id.clone())).await.unwrap();
     assert_eq!(store.latest(&ctx().workspace, &id).await.unwrap().version, 2);
     assert_eq!(store.version(&ctx().workspace, &id, 1).await.unwrap().version, 1);
 
@@ -98,7 +88,13 @@ async fn dynamo_agents_versioned_roundtrip() {
     // list returns latest of each; a second agent added.
     let id2 = agentd_agents::types::AgentId::generate();
     store.insert(&ctx().workspace, agent(1, id2.clone())).await.unwrap();
-    let listed = store.list(&ctx().workspace, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap();
+    let listed = store
+        .list(
+            &ctx().workspace,
+            &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(listed.len(), 2);
     assert!(listed.iter().any(|a| a.id == id && a.version == 2));
 
@@ -121,14 +117,8 @@ async fn agents_service_over_dynamo() {
     .unwrap();
     let a = svc.create(&ctx(), req).await.unwrap();
     assert_eq!(a.version, 1);
-    let updated = svc
-        .update(
-            &ctx(),
-            a.id.as_str(),
-            serde_json::from_str(r#"{"system":"v2"}"#).unwrap(),
-        )
-        .await
-        .unwrap();
+    let updated =
+        svc.update(&ctx(), a.id.as_str(), serde_json::from_str(r#"{"system":"v2"}"#).unwrap()).await.unwrap();
     assert_eq!(updated.version, 2);
     // fetched back from Dynamo
     assert_eq!(svc.get(&ctx(), a.id.as_str(), None).await.unwrap().version, 2);
@@ -143,11 +133,7 @@ async fn dynamo_claim_fire_is_exactly_once_across_concurrent_callers() {
     if !enabled() {
         return;
     }
-    let store = Arc::new(
-        DynamoDeploymentsStore::new(backend("claim").await)
-            .await
-            .unwrap(),
-    );
+    let store = Arc::new(DynamoDeploymentsStore::new(backend("claim").await).await.unwrap());
     let did = agentd_deployments::types::DeploymentId::generate();
     let scheduled = "2026-07-10T00:00:00.000000Z";
 
@@ -158,9 +144,7 @@ async fn dynamo_claim_fire_is_exactly_once_across_concurrent_callers() {
         let s = store.clone();
         let w = ctx().workspace.clone();
         let d = did.clone();
-        handles.push(tokio::spawn(async move {
-            s.claim_fire(&w, &d, scheduled).await.unwrap()
-        }));
+        handles.push(tokio::spawn(async move { s.claim_fire(&w, &d, scheduled).await.unwrap() }));
     }
     let mut wins = 0;
     for h in handles {
@@ -171,10 +155,7 @@ async fn dynamo_claim_fire_is_exactly_once_across_concurrent_callers() {
     assert_eq!(wins, 1, "exactly one replica claimed the tick");
 
     // A different scheduled_at is a fresh claim.
-    assert!(store
-        .claim_fire(&ctx().workspace, &did, "2026-07-17T00:00:00.000000Z")
-        .await
-        .unwrap());
+    assert!(store.claim_fire(&ctx().workspace, &did, "2026-07-17T00:00:00.000000Z").await.unwrap());
 }
 
 // ── Files: DynamoDB metadata + S3 bytes ──────────────────────────────────
@@ -213,9 +194,25 @@ async fn dynamo_s3_files_roundtrip() {
     assert_eq!(got.meta.filename, "data.csv");
 
     // scope filter over DynamoDB
-    let scoped = store.list(&ctx().workspace, Some("sesn_01A"), &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().0;
+    let scoped = store
+        .list(
+            &ctx().workspace,
+            Some("sesn_01A"),
+            &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap()
+        .0;
     assert_eq!(scoped.len(), 1);
-    let other = store.list(&ctx().workspace, Some("sesn_01Z"), &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().0;
+    let other = store
+        .list(
+            &ctx().workspace,
+            Some("sesn_01Z"),
+            &agentd_core::IdCursor::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap()
+        .0;
     assert!(other.is_empty());
 
     store.delete(&ctx().workspace, &id).await.unwrap();

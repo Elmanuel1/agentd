@@ -48,22 +48,13 @@ pub mod values {
 }
 
 /// `name: maximum string length is 256` / `name: minimum string length is 1`
-pub fn validate_string_len(
-    field: &str,
-    value: &str,
-    min: usize,
-    max: usize,
-) -> Result<(), ApiError> {
+pub fn validate_string_len(field: &str, value: &str, min: usize, max: usize) -> Result<(), ApiError> {
     let n = value.chars().count();
     if n < min {
-        return Err(ApiError::invalid_request(format!(
-            "{field}: minimum string length is {min}"
-        )));
+        return Err(ApiError::invalid_request(format!("{field}: minimum string length is {min}")));
     }
     if n > max {
-        return Err(ApiError::invalid_request(format!(
-            "{field}: maximum string length is {max}"
-        )));
+        return Err(ApiError::invalid_request(format!("{field}: maximum string length is {max}")));
     }
     Ok(())
 }
@@ -81,20 +72,13 @@ pub fn validate_array_max(field: &str, len: usize, max: usize) -> Result<(), Api
 /// `content: value length must be at most 102400 bytes`
 pub fn validate_bytes_max(field: &str, len: usize, max: usize) -> Result<(), ApiError> {
     if len > max {
-        return Err(ApiError::invalid_request(format!(
-            "{field}: value length must be at most {max} bytes"
-        )));
+        return Err(ApiError::invalid_request(format!("{field}: value length must be at most {max} bytes")));
     }
     Ok(())
 }
 
 /// `…: value must be greater than or equal to 1 and less than or equal to 20`
-pub fn validate_range_u32(
-    field_path: &str,
-    value: u32,
-    min: u32,
-    max: u32,
-) -> Result<(), ApiError> {
+pub fn validate_range_u32(field_path: &str, value: u32, min: u32, max: u32) -> Result<(), ApiError> {
     if value < min || value > max {
         return Err(ApiError::invalid_request(format!(
             "{field_path}: value must be greater than or equal to {min} and less than or equal to {max}"
@@ -109,16 +93,11 @@ pub fn required<T>(field: &str, value: Option<T>) -> Result<T, ApiError> {
 }
 
 /// `` `model.id`: model "gpt-4": model is not supported ``
-pub fn validate_model_supported<'a>(
-    model_id: &'a str,
-    catalog: &ModelCatalog,
-) -> Result<&'a str, ApiError> {
+pub fn validate_model_supported<'a>(model_id: &'a str, catalog: &ModelCatalog) -> Result<&'a str, ApiError> {
     if catalog.supports(model_id) {
         Ok(model_id)
     } else {
-        Err(ApiError::invalid_request(format!(
-            "`model.id`: model \"{model_id}\": model is not supported"
-        )))
+        Err(ApiError::invalid_request(format!("`model.id`: model \"{model_id}\": model is not supported")))
     }
 }
 
@@ -129,18 +108,16 @@ pub fn validate_model_supported<'a>(
 /// `(and 1 more validation errors)` suffix (verified with `"deadbeef"`).
 pub fn validate_sha256_hex(field_path: &str, value: &str) -> Result<(), ApiError> {
     let len_ok = value.len() == values::SHA256_HEX_LEN;
-    let hex_ok = value
-        .bytes()
-        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let hex_ok = value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
     match (len_ok, hex_ok) {
         (true, true) => Ok(()),
         (false, _) => Err(ApiError::invalid_request(format!(
             "{field_path}: value length must be {} characters (and 1 more validation errors)",
             values::SHA256_HEX_LEN
         ))),
-        (true, false) => Err(ApiError::invalid_request(format!(
-            "{field_path}: value does not match the required pattern"
-        ))),
+        (true, false) => {
+            Err(ApiError::invalid_request(format!("{field_path}: value does not match the required pattern")))
+        }
     }
 }
 
@@ -154,9 +131,7 @@ impl ModelCatalog {
     /// Build from an explicit list.
     #[must_use]
     pub fn new(models: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            models: models.into_iter().map(Into::into).collect(),
-        }
+        Self { models: models.into_iter().map(Into::into).collect() }
     }
 
     /// Default catalog mirroring currently-served Anthropic model aliases.
@@ -196,10 +171,7 @@ mod tests {
             msg(validate_string_len("name", &"a".repeat(257), 1, 256)),
             "name: maximum string length is 256"
         );
-        assert_eq!(
-            msg(validate_string_len("name", "", 1, 256)),
-            "name: minimum string length is 1"
-        );
+        assert_eq!(msg(validate_string_len("name", "", 1, 256)), "name: minimum string length is 1");
         assert_eq!(
             msg(validate_string_len("description", &"d".repeat(2049), 0, 2048)),
             "description: maximum string length is 2048"
@@ -259,10 +231,7 @@ mod tests {
     fn model_catalog_exact_live_string() {
         let cat = ModelCatalog::default_catalog();
         let e = validate_model_supported("gpt-4", &cat).unwrap_err();
-        assert_eq!(
-            e.message,
-            "`model.id`: model \"gpt-4\": model is not supported"
-        );
+        assert_eq!(e.message, "`model.id`: model \"gpt-4\": model is not supported");
         assert!(validate_model_supported("claude-sonnet-4-6", &cat).is_ok());
     }
 

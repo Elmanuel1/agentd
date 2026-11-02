@@ -53,20 +53,9 @@ fn be(e: AwsError) -> StoreError {
 impl FilesStore for DynamoFilesStore {
     async fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> Result<(), StoreError> {
         // Bytes → S3, metadata → DynamoDB.
-        self.aws
-            .blobs
-            .put(&Self::key(ws, &f.meta.id), f.bytes.clone())
-            .await
-            .map_err(blob_be)?;
-        let doc = FileDoc {
-            meta: f.meta.clone(),
-            scope_id: f.scope_id.clone(),
-        };
-        self.aws
-            .dynamo
-            .put(&self.table(), ws.as_str(), f.meta.id.as_str(), &doc)
-            .await
-            .map_err(be)
+        self.aws.blobs.put(&Self::key(ws, &f.meta.id), f.bytes.clone()).await.map_err(blob_be)?;
+        let doc = FileDoc { meta: f.meta.clone(), scope_id: f.scope_id.clone() };
+        self.aws.dynamo.put(&self.table(), ws.as_str(), f.meta.id.as_str(), &doc).await.map_err(be)
     }
 
     async fn get(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
@@ -77,31 +66,14 @@ impl FilesStore for DynamoFilesStore {
             .await
             .map_err(be)?
             .ok_or(StoreError::NotFound)?;
-        let bytes = self
-            .aws
-            .blobs
-            .get(&Self::key(ws, id))
-            .await
-            .map_err(blob_be)?;
-        Ok(StoredFile {
-            meta: doc.meta,
-            bytes,
-            scope_id: doc.scope_id,
-        })
+        let bytes = self.aws.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)?;
+        Ok(StoredFile { meta: doc.meta, bytes, scope_id: doc.scope_id })
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
         let existing = self.get(ws, id).await?;
-        self.aws
-            .dynamo
-            .delete::<FileDoc>(&self.table(), ws.as_str(), id.as_str())
-            .await
-            .map_err(be)?;
-        self.aws
-            .blobs
-            .delete(&Self::key(ws, id))
-            .await
-            .map_err(blob_be)?;
+        self.aws.dynamo.delete::<FileDoc>(&self.table(), ws.as_str(), id.as_str()).await.map_err(be)?;
+        self.aws.blobs.delete(&Self::key(ws, id)).await.map_err(blob_be)?;
         Ok(existing)
     }
 
@@ -111,19 +83,14 @@ impl FilesStore for DynamoFilesStore {
         scope_id: Option<&str>,
         cursor: &IdCursor,
     ) -> Result<(Vec<StoredFile>, bool), StoreError> {
-        let docs: Vec<FileDoc> =
-            self.aws.dynamo.query(&self.table(), ws.as_str(), None).await.map_err(be)?;
+        let docs: Vec<FileDoc> = self.aws.dynamo.query(&self.table(), ws.as_str(), None).await.map_err(be)?;
         // List is metadata-only in practice (the service maps to `.meta`), so
         // we skip the per-file S3 fetch and return empty bytes. DynamoDB returns
         // the whole partition, so the id-cursor is applied in memory here.
         let all: Vec<StoredFile> = docs
             .into_iter()
             .filter(|d| scope_id.is_none_or(|s| d.scope_id.as_deref() == Some(s)))
-            .map(|d| StoredFile {
-                meta: d.meta,
-                bytes: Bytes::new(),
-                scope_id: d.scope_id,
-            })
+            .map(|d| StoredFile { meta: d.meta, bytes: Bytes::new(), scope_id: d.scope_id })
             .collect();
         Ok(cursor.window(all, |f| f.meta.id.as_str()))
     }

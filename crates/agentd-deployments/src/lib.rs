@@ -11,15 +11,7 @@
 //!   are recorded as error runs and return success to the scheduler,
 //! - a missed tick is dropped (no backfill).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod routes;
 pub mod service;

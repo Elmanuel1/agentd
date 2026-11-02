@@ -12,15 +12,7 @@
 //!    `Failed to parse request body: unknown field "…"` 400,
 //! 3. **fallback** — unknown routes get the 404 envelope, never a bare body.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod deps;
 pub mod middleware;
@@ -45,10 +37,7 @@ pub fn build_router(state: AppState) -> Router {
     entity_routes
         .fallback(middleware::not_found)
         .layer(axum::middleware::from_fn(middleware::beta_gate))
-        .layer(axum::middleware::from_fn_with_state(
-            state.keys.clone(),
-            middleware::auth,
-        ))
+        .layer(axum::middleware::from_fn_with_state(state.keys.clone(), middleware::auth))
         .layer(axum::Extension(state.agents.clone()))
         .layer(axum::Extension(state.environments.clone()))
         .layer(axum::Extension(state.vaults.clone()))

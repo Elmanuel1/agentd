@@ -224,20 +224,14 @@ impl FakeRuntime {
 
     /// Test hook: inspect launched jobs.
     pub fn launched(&self) -> Vec<JobSpec> {
-        self.inner
-            .lock()
-            .map(|s| s.tasks.values().map(|(j, _)| j.clone()).collect())
-            .unwrap_or_default()
+        self.inner.lock().map(|s| s.tasks.values().map(|(j, _)| j.clone()).collect()).unwrap_or_default()
     }
 }
 
 #[async_trait]
 impl Runtime for FakeRuntime {
     async fn launch(&self, job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
-        let mut s = self
-            .inner
-            .lock()
-            .map_err(|e| RuntimeError::Unavailable(e.to_string()))?;
+        let mut s = self.inner.lock().map_err(|e| RuntimeError::Unavailable(e.to_string()))?;
         s.counter += 1;
         let id = format!("fake-task-{}", s.counter);
         s.tasks.insert(id.clone(), (job, TaskState::Running));
@@ -245,10 +239,7 @@ impl Runtime for FakeRuntime {
     }
 
     async fn status(&self, handle: &RuntimeHandle) -> Result<TaskState, RuntimeError> {
-        let s = self
-            .inner
-            .lock()
-            .map_err(|e| RuntimeError::Unavailable(e.to_string()))?;
+        let s = self.inner.lock().map_err(|e| RuntimeError::Unavailable(e.to_string()))?;
         s.tasks
             .get(&handle.id)
             .map(|(_, st)| st.clone())
@@ -256,10 +247,7 @@ impl Runtime for FakeRuntime {
     }
 
     async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
-        let mut s = self
-            .inner
-            .lock()
-            .map_err(|e| RuntimeError::Unavailable(e.to_string()))?;
+        let mut s = self.inner.lock().map_err(|e| RuntimeError::Unavailable(e.to_string()))?;
         match s.tasks.get_mut(&handle.id) {
             Some(entry) => {
                 entry.1 = TaskState::Exited(0);
@@ -285,10 +273,7 @@ impl FakeScheduler {
 
     /// Test hook: all registered specs.
     pub fn registered(&self) -> Vec<ScheduleSpec> {
-        self.inner
-            .lock()
-            .map(|m| m.values().map(|(s, _)| s.clone()).collect())
-            .unwrap_or_default()
+        self.inner.lock().map(|m| m.values().map(|(s, _)| s.clone()).collect()).unwrap_or_default()
     }
 }
 
@@ -303,21 +288,9 @@ impl SchedulerPort for FakeScheduler {
         }
         .compile()
         .map_err(|e| SchedulerError::InvalidSpec(e.to_string()))?;
-        let mut m = self
-            .inner
-            .lock()
-            .map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
+        let mut m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
         let key = spec.target.key();
-        m.insert(
-            key,
-            (
-                spec,
-                ScheduleState {
-                    paused: false,
-                    last_fire: None,
-                },
-            ),
-        );
+        m.insert(key, (spec, ScheduleState { paused: false, last_fire: None }));
         Ok(())
     }
 
@@ -330,23 +303,13 @@ impl SchedulerPort for FakeScheduler {
     }
 
     async fn delete(&self, target: &FireTarget) -> Result<(), SchedulerError> {
-        let mut m = self
-            .inner
-            .lock()
-            .map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
-        m.remove(&target.key())
-            .map(|_| ())
-            .ok_or_else(|| SchedulerError::Unknown(target.key()))
+        let mut m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
+        m.remove(&target.key()).map(|_| ()).ok_or_else(|| SchedulerError::Unknown(target.key()))
     }
 
     async fn describe(&self, target: &FireTarget) -> Result<ScheduleState, SchedulerError> {
-        let m = self
-            .inner
-            .lock()
-            .map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
-        m.get(&target.key())
-            .map(|(_, st)| st.clone())
-            .ok_or_else(|| SchedulerError::Unknown(target.key()))
+        let m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
+        m.get(&target.key()).map(|(_, st)| st.clone()).ok_or_else(|| SchedulerError::Unknown(target.key()))
     }
 }
 
@@ -356,10 +319,7 @@ impl FakeScheduler {
         target: &FireTarget,
         f: impl FnOnce(&mut ScheduleState),
     ) -> Result<(), SchedulerError> {
-        let mut m = self
-            .inner
-            .lock()
-            .map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
+        let mut m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
         match m.get_mut(&target.key()) {
             Some((_, st)) => {
                 f(st);
@@ -406,26 +366,18 @@ mod tests {
     async fn fake_runtime_unknown_handle() {
         let rt = FakeRuntime::new();
         let bogus = RuntimeHandle { id: "nope".into() };
-        assert!(matches!(
-            rt.status(&bogus).await,
-            Err(RuntimeError::Unknown(_))
-        ));
+        assert!(matches!(rt.status(&bogus).await, Err(RuntimeError::Unknown(_))));
     }
 
     #[tokio::test]
     async fn fake_scheduler_lifecycle() {
         let s = FakeScheduler::new();
-        let target = FireTarget::Deployment {
-            id: "depl_01x".into(),
-        };
+        let target = FireTarget::Deployment { id: "depl_01x".into() };
         s.upsert(ScheduleSpec {
             cron: "0 0 * * *".into(),
             timezone: "UTC".into(),
             target: target.clone(),
-            tenant: TenantRef {
-                org_id: "org_t".into(),
-                workspace_id: "wrkspc_01t".into(),
-            },
+            tenant: TenantRef { org_id: "org_t".into(), workspace_id: "wrkspc_01t".into() },
         })
         .await
         .unwrap();
@@ -435,10 +387,7 @@ mod tests {
         s.unpause(&target).await.unwrap();
         assert!(!s.describe(&target).await.unwrap().paused);
         s.delete(&target).await.unwrap();
-        assert!(matches!(
-            s.describe(&target).await,
-            Err(SchedulerError::Unknown(_))
-        ));
+        assert!(matches!(s.describe(&target).await, Err(SchedulerError::Unknown(_))));
     }
 
     #[tokio::test]
@@ -449,10 +398,7 @@ mod tests {
                 cron: "99 * * * *".into(),
                 timezone: "UTC".into(),
                 target: FireTarget::Dream { id: "d1".into() },
-                tenant: TenantRef {
-                    org_id: "org_t".into(),
-                    workspace_id: "wrkspc_01t".into(),
-                },
+                tenant: TenantRef { org_id: "org_t".into(), workspace_id: "wrkspc_01t".into() },
             })
             .await;
         assert!(matches!(bad, Err(SchedulerError::InvalidSpec(_))));
@@ -460,10 +406,7 @@ mod tests {
 
     #[test]
     fn fire_target_keys_are_stable() {
-        assert_eq!(
-            FireTarget::Deployment { id: "depl_1".into() }.key(),
-            "deployment/depl_1"
-        );
+        assert_eq!(FireTarget::Deployment { id: "depl_1".into() }.key(), "deployment/depl_1");
         assert_eq!(FireTarget::Dream { id: "d1".into() }.key(), "dream/d1");
     }
 }

@@ -16,9 +16,7 @@ use std::sync::Arc;
 
 use agentd_blobs::{BlobStore, S3BlobStore};
 use agentd_core::{AuthContext, OrgId, Timestamp, WorkspaceId};
-use agentd_store_postgres::{
-    PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgVaultsStore,
-};
+use agentd_store_postgres::{PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgVaultsStore};
 use serde_json::json;
 
 fn enabled() -> bool {
@@ -85,7 +83,13 @@ async fn pg_environments_service_roundtrip() {
         .unwrap();
     assert_eq!(env.name, "prod");
     assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap().id, env.id);
-    assert_eq!(svc.list(&ctx, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap()).await.unwrap().len(), 1);
+    assert_eq!(
+        svc.list(&ctx, &agentd_core::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     // org isolation
     assert!(svc.get(&ctx_org("other"), env.id.as_str()).await.is_err());
     svc.delete(&ctx, env.id.as_str()).await.unwrap();
@@ -107,10 +111,8 @@ async fn pg_vaults_secret_sealed_to_object_store() {
     let store = Arc::new(PgVaultsStore::new(backend().await, secrets));
     let svc = VaultsService::new(store.clone());
     let ctx = ctx_ws(&uniq_ws("vaults"));
-    let vault = svc
-        .create_vault(&ctx, serde_json::from_value(json!({"display_name": "v"})).unwrap())
-        .await
-        .unwrap();
+    let vault =
+        svc.create_vault(&ctx, serde_json::from_value(json!({"display_name": "v"})).unwrap()).await.unwrap();
     let cred = svc
         .create_credential(
             &ctx,
@@ -131,10 +133,7 @@ async fn pg_vaults_secret_sealed_to_object_store() {
     assert_eq!(wire["auth"]["injection_location"], json!({"body": true, "header": true}));
     assert_eq!(wire["auth"]["networking"]["type"], "unrestricted");
     // The secret is never in the DB — it round-trips through the secret store.
-    let stored = store
-        .get_credential(&ctx.workspace, &vault.id, &cred.id)
-        .await
-        .unwrap();
+    let stored = store.get_credential(&ctx.workspace, &vault.id, &cred.id).await.unwrap();
     match stored.auth {
         Some(CredentialAuthInput::EnvironmentVariable { secret_value, .. }) => {
             assert_eq!(secret_value.expose(), "s3cr3t");
@@ -170,10 +169,7 @@ async fn pg_memory_list_directory_browse_matches_live() {
 
     // depth=1, order_by=path → leaf /a.md + collapsed /notes/ and /rules/,
     // exactly as the live API returns (probed 2026-07-05).
-    let page = svc
-        .list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(1))
-        .await
-        .unwrap();
+    let page = svc.list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(1)).await.unwrap();
     let v = serde_json::to_value(&page).unwrap();
     let shapes: Vec<(&str, &str)> = v["data"]
         .as_array()
@@ -181,22 +177,12 @@ async fn pg_memory_list_directory_browse_matches_live() {
         .iter()
         .map(|d| (d["path"].as_str().unwrap(), d["type"].as_str().unwrap()))
         .collect();
-    assert_eq!(
-        shapes,
-        vec![
-            ("/a.md", "memory"),
-            ("/notes/", "memory_prefix"),
-            ("/rules/", "memory_prefix")
-        ]
-    );
+    assert_eq!(shapes, vec![("/a.md", "memory"), ("/notes/", "memory_prefix"), ("/rules/", "memory_prefix")]);
     assert!(v["prefixes"].as_array().unwrap().is_empty(), "prefixes is []");
     assert!(v["data"][0].get("content").is_none(), "list omits content");
 
     // depth=2 expands one more level, collapsing /notes/sub/.
-    let page2 = svc
-        .list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(2))
-        .await
-        .unwrap();
+    let page2 = svc.list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(2)).await.unwrap();
     let v2 = serde_json::to_value(&page2).unwrap();
     let shapes2: Vec<(&str, &str)> = v2["data"]
         .as_array()
@@ -215,10 +201,7 @@ async fn pg_memory_list_directory_browse_matches_live() {
     );
 
     // invalid order_by → the exact live 400 message.
-    let err = svc
-        .list_memories(&ctx, ms.id.as_str(), None, Some("bogus"), None)
-        .await
-        .unwrap_err();
+    let err = svc.list_memories(&ctx, ms.id.as_str(), None, Some("bogus"), None).await.unwrap_err();
     assert_eq!(err.message, "order_by must be one of: created_at, path");
 
     // no depth → flat list of all memories (no prefixes).

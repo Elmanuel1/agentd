@@ -24,8 +24,7 @@ use tower::ServiceExt;
 const KEY: &str = "conformance-key";
 
 fn enabled() -> bool {
-    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
-        && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
+    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1") && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
 }
 
 /// Compose the router over live Postgres + object store with a fresh tenant
@@ -41,18 +40,11 @@ async fn app() -> Option<Router> {
     let blobs: Arc<dyn BlobStore> =
         Arc::new(S3BlobStore::connect(format!("agentdconf{stamp}")).await.unwrap());
     let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
-    state
-        .keys
-        .register(KEY, format!("org_c{stamp}"), format!("wrkspc_c{stamp}"), "apikey_01conf");
+    state.keys.register(KEY, format!("org_c{stamp}"), format!("wrkspc_c{stamp}"), "apikey_01conf");
     Some(build_router(state))
 }
 
-async fn call(
-    app: &Router,
-    method: &str,
-    uri: &str,
-    body: Option<&str>,
-) -> (StatusCode, serde_json::Value) {
+async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, serde_json::Value) {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -67,10 +59,7 @@ async fn call(
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
-    )
+    (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
 }
 
 fn fixture(name: &str) -> serde_json::Value {
@@ -87,11 +76,7 @@ fn fixture(name: &str) -> serde_json::Value {
 
 fn assert_conformant(name: &str, expected: &serde_json::Value, actual: &serde_json::Value) {
     let mismatches = diff(expected, actual);
-    assert!(
-        mismatches.is_empty(),
-        "{name} diverges from the live capture:\n  {}",
-        mismatches.join("\n  ")
-    );
+    assert!(mismatches.is_empty(), "{name} diverges from the live capture:\n  {}", mismatches.join("\n  "));
 }
 
 #[tokio::test]
@@ -132,13 +117,9 @@ async fn memory_store_create_matches_live_capture() {
     let Some(app) = app().await else {
         return;
     };
-    let (st, actual) = call(
-        &app,
-        "POST",
-        "/v1/memory_stores",
-        Some(r#"{"name":"compat-probe-mem","description":"probe"}"#),
-    )
-    .await;
+    let (st, actual) =
+        call(&app, "POST", "/v1/memory_stores", Some(r#"{"name":"compat-probe-mem","description":"probe"}"#))
+            .await;
     assert_eq!(st, StatusCode::OK);
     assert_conformant("memory_store.create", &fixture("memory_store.create"), &actual);
 }
@@ -148,13 +129,9 @@ async fn memory_create_matches_live_capture() {
     let Some(app) = app().await else {
         return;
     };
-    let (_, store) = call(
-        &app,
-        "POST",
-        "/v1/memory_stores",
-        Some(r#"{"name":"compat-probe-mem","description":"probe"}"#),
-    )
-    .await;
+    let (_, store) =
+        call(&app, "POST", "/v1/memory_stores", Some(r#"{"name":"compat-probe-mem","description":"probe"}"#))
+            .await;
     let sid = store["id"].as_str().unwrap();
     let (st, actual) = call(
         &app,
@@ -166,10 +143,7 @@ async fn memory_create_matches_live_capture() {
     assert_eq!(st, StatusCode::OK);
     // The live sha256 of "v1 content" must match EXACTLY (not normalized
     // away — same input → same hash on both servers).
-    assert_eq!(
-        actual["content_sha256"],
-        "60329bc85480d3c6a566d6101ce5f9fbee836b89e1952cf16326fb392cb59c55"
-    );
+    assert_eq!(actual["content_sha256"], "60329bc85480d3c6a566d6101ce5f9fbee836b89e1952cf16326fb392cb59c55");
     assert_conformant("memory.create", &fixture("memory.create"), &actual);
 }
 
@@ -215,15 +189,24 @@ async fn error_envelopes_match_live_captures() {
     // Each (request, expected error body) pair captured live.
     let cases: Vec<(&str, &str, Option<&str>, u16, serde_json::Value)> = vec![
         (
-            "POST", "/v1/agents", Some(r#"{"name":"x"}"#), 400,
+            "POST",
+            "/v1/agents",
+            Some(r#"{"name":"x"}"#),
+            400,
             serde_json::json!({"type":"error","error":{"type":"invalid_request_error","message":"model: Field required"},"request_id":"req_011CcfvHvqyhVMVsfTNRo4SG"}),
         ),
         (
-            "GET", "/v1/agents/agent_00bogus", None, 400,
+            "GET",
+            "/v1/agents/agent_00bogus",
+            None,
+            400,
             serde_json::json!({"type":"error","error":{"type":"invalid_request_error","message":"Invalid agent ID."},"request_id":"req_011CcfvHwY92XABALiTyT5E1"}),
         ),
         (
-            "POST", "/v1/agents", Some(r#"{"name":"x","model":"gpt-4"}"#), 400,
+            "POST",
+            "/v1/agents",
+            Some(r#"{"name":"x","model":"gpt-4"}"#),
+            400,
             serde_json::json!({"type":"error","error":{"type":"invalid_request_error","message":"`model.id`: model \"gpt-4\": model is not supported"},"request_id":"req_011CcfvHxBqUbtrVL335TgLY"}),
         ),
     ];
@@ -264,10 +247,7 @@ async fn memory_conflict_409_matches_live_capture() {
         .as_str()
         .unwrap()
         .starts_with("path `/a.md` is already used by `mem_"));
-    assert!(actual["error"]["message"]
-        .as_str()
-        .unwrap()
-        .ends_with("`; use update to modify it"));
+    assert!(actual["error"]["message"].as_str().unwrap().ends_with("`; use update to modify it"));
 }
 
 #[tokio::test]

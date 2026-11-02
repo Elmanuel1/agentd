@@ -31,19 +31,9 @@ pub trait SessionsStore: Send + Sync {
     /// All sessions, insertion order.
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Session>, StoreError>;
     /// Append an event to the log.
-    async fn append_event(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        event: Event,
-    ) -> Result<(), StoreError>;
+    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
     /// Replace an event in place (processed_at stamping).
-    async fn replace_event(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        event: Event,
-    ) -> Result<(), StoreError>;
+    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
     /// Full event history, append order.
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
 }

@@ -3,9 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{
-    ApiJson, AuthContext, Page, Pagination, RouteError,
-};
+use agentd_core::{ApiJson, AuthContext, Page, Pagination, RouteError};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,23 +18,14 @@ use crate::types::{
 pub fn router() -> Router {
     Router::new()
         .route("/v1/vaults", post(create_vault).get(list_vaults))
-        .route(
-            "/v1/vaults/{id}",
-            get(get_vault).post(update_vault).delete(delete_vault),
-        )
+        .route("/v1/vaults/{id}", get(get_vault).post(update_vault).delete(delete_vault))
         .route("/v1/vaults/{id}/archive", post(archive_vault))
-        .route(
-            "/v1/vaults/{id}/credentials",
-            post(create_credential).get(list_credentials),
-        )
+        .route("/v1/vaults/{id}/credentials", post(create_credential).get(list_credentials))
         .route(
             "/v1/vaults/{id}/credentials/{cid}",
             get(get_credential).post(update_credential).delete(delete_credential),
         )
-        .route(
-            "/v1/vaults/{id}/credentials/{cid}/archive",
-            post(archive_credential),
-        )
+        .route("/v1/vaults/{id}/credentials/{cid}/archive", post(archive_credential))
 }
 
 async fn create_vault(

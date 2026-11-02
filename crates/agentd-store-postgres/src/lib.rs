@@ -14,15 +14,7 @@
 //! / Flyway 11) and `crate::schema` mirrors them — the same Flyway → jOOQ
 //! split as the tosspaper Java stack. This crate never creates tables.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod entities;
 pub mod schema;
@@ -70,10 +62,8 @@ impl PgBackend {
     /// Connect using `database_url` (or `DATABASE_URL`), pooled.
     pub async fn connect(database_url: &str) -> Result<Self, PgError> {
         let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
-        let diesel = DieselPool::builder(manager)
-            .max_size(10)
-            .build()
-            .map_err(|e| PgError::Connect(e.to_string()))?;
+        let diesel =
+            DieselPool::builder(manager).max_size(10).build().map_err(|e| PgError::Connect(e.to_string()))?;
         Ok(Self { diesel })
     }
 }
@@ -86,9 +76,7 @@ pub(crate) fn diesel_be<E: FromBackend>(e: diesel::result::Error) -> E {
 }
 
 /// Map a diesel-async pool checkout error to a store `Backend` variant.
-pub(crate) fn pool_be<E: FromBackend>(
-    e: diesel_async::pooled_connection::deadpool::PoolError,
-) -> E {
+pub(crate) fn pool_be<E: FromBackend>(e: diesel_async::pooled_connection::deadpool::PoolError) -> E {
     E::backend(agentd_core::BackendError::new(e))
 }
 
@@ -123,10 +111,7 @@ from_backend!(
 /// (e.g. `EnvironmentState::Active` → `"active"`). Falls back to `""` for
 /// non-string serializations, which never happens for these tag enums.
 pub(crate) fn enum_str<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+    serde_json::to_value(value).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
 /// Deserialize a `doc` jsonb value into a wire type. Generic over the entity

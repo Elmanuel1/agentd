@@ -50,11 +50,7 @@ fn be(e: AwsError) -> StoreError {
 #[async_trait]
 impl DeploymentsStore for DynamoDeploymentsStore {
     async fn insert(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
-        self.aws
-            .dynamo
-            .put(&self.dtable(), ws.as_str(), d.id.as_str(), &d)
-            .await
-            .map_err(be)
+        self.aws.dynamo.put(&self.dtable(), ws.as_str(), d.id.as_str(), &d).await.map_err(be)
     }
 
     async fn get(&self, ws: &WorkspaceId, id: &DeploymentId) -> Result<Deployment, StoreError> {
@@ -68,41 +64,25 @@ impl DeploymentsStore for DynamoDeploymentsStore {
 
     async fn replace(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
         // put is upsert; existence already implied by the caller having read it.
-        self.aws
-            .dynamo
-            .put(&self.dtable(), ws.as_str(), d.id.as_str(), &d)
-            .await
-            .map_err(be)
+        self.aws.dynamo.put(&self.dtable(), ws.as_str(), d.id.as_str(), &d).await.map_err(be)
     }
 
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Deployment>, StoreError> {
-        let all: Vec<Deployment> = self
-            .aws
-            .dynamo
-            .query(&self.dtable(), ws.as_str(), None)
-            .await
-            .map_err(be)?;
+        let all: Vec<Deployment> =
+            self.aws.dynamo.query(&self.dtable(), ws.as_str(), None).await.map_err(be)?;
         Ok(page.window(all))
     }
 
     async fn count(&self, ws: &WorkspaceId) -> Result<usize, StoreError> {
-        let all: Vec<Deployment> = self
-            .aws
-            .dynamo
-            .query(&self.dtable(), ws.as_str(), None)
-            .await
-            .map_err(be)?;
+        let all: Vec<Deployment> =
+            self.aws.dynamo.query(&self.dtable(), ws.as_str(), None).await.map_err(be)?;
         Ok(all.len())
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DeploymentRun) -> Result<(), StoreError> {
         let pk = Self::run_pk(ws, &run.deployment_id);
         let sk = format!("{}#{}", run.created_at.to_wire(), run.id.as_str());
-        self.aws
-            .dynamo
-            .put(&self.rtable(), &pk, &sk, &run)
-            .await
-            .map_err(be)
+        self.aws.dynamo.put(&self.rtable(), &pk, &sk, &run).await.map_err(be)
     }
 
     async fn runs(
@@ -116,10 +96,7 @@ impl DeploymentsStore for DynamoDeploymentsStore {
             self.aws.dynamo.query(&self.rtable(), &pk, None).await.map_err(be)?;
         // Ascending by sk (created_at) → newest first.
         runs.reverse();
-        Ok(runs
-            .into_iter()
-            .filter(|r| has_error.is_none_or(|want| r.error.is_some() == want))
-            .collect())
+        Ok(runs.into_iter().filter(|r| has_error.is_none_or(|want| r.error.is_some() == want)).collect())
     }
 
     async fn claim_fire(
@@ -131,10 +108,6 @@ impl DeploymentsStore for DynamoDeploymentsStore {
         // Conditional write: the FIRST replica to write this key wins; every
         // other gets false. This is the real cross-replica exactly-once.
         let pk = format!("{}#{}#{scheduled_at}", ws.as_str(), deployment.as_str());
-        self.aws
-            .dynamo
-            .put_if_absent(&self.ctable(), &pk, "claim")
-            .await
-            .map_err(be)
+        self.aws.dynamo.put_if_absent(&self.ctable(), &pk, "claim").await.map_err(be)
     }
 }

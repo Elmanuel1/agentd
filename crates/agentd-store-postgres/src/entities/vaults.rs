@@ -62,11 +62,7 @@ impl PgVaultsStore {
     ) -> Result<(), StoreError> {
         let key = Self::secret_key(ws, vault, id);
         match auth {
-            Some(a) => self
-                .secrets
-                .put(&key, Bytes::from(a.seal().into_bytes()))
-                .await
-                .map_err(blob_be),
+            Some(a) => self.secrets.put(&key, Bytes::from(a.seal().into_bytes())).await.map_err(blob_be),
             None => match self.secrets.delete(&key).await {
                 Ok(()) | Err(agentd_blobs::BlobError::NotFound(_)) => Ok(()),
                 Err(e) => Err(blob_be(e)),
@@ -135,10 +131,7 @@ impl VaultsStore for PgVaultsStore {
                 .filter(vaults::workspace_id.eq(ws.as_str()))
                 .filter(vaults::vault_id.eq(vault.id.as_str())),
         )
-        .set((
-            vaults::display_name.eq(&vault.display_name),
-            vaults::doc.eq(to_doc(&vault)?),
-        ))
+        .set((vaults::display_name.eq(&vault.display_name), vaults::doc.eq(to_doc(&vault)?)))
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;
@@ -176,11 +169,7 @@ impl VaultsStore for PgVaultsStore {
         Ok(vault)
     }
 
-    async fn list_vaults(
-        &self,
-        ws: &WorkspaceId,
-        page: &Pagination,
-    ) -> Result<Vec<Vault>, StoreError> {
+    async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = vaults::table
             .filter(vaults::workspace_id.eq(ws.as_str()))
@@ -238,11 +227,7 @@ impl VaultsStore for PgVaultsStore {
         let (doc, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
         let wire: Credential = parse_doc(doc)?;
         let auth = if has_secret {
-            let sealed = self
-                .secrets
-                .get(&Self::secret_key(ws, vault, id))
-                .await
-                .map_err(blob_be)?;
+            let sealed = self.secrets.get(&Self::secret_key(ws, vault, id)).await.map_err(blob_be)?;
             CredentialAuthInput::unseal(&String::from_utf8_lossy(&sealed))
         } else {
             None
@@ -314,13 +299,6 @@ impl VaultsStore for PgVaultsStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter()
-            .map(|d| {
-                Ok(StoredCredential {
-                    wire: parse_doc(d)?,
-                    auth: None,
-                })
-            })
-            .collect()
+        docs.into_iter().map(|d| Ok(StoredCredential { wire: parse_doc(d)?, auth: None })).collect()
     }
 }

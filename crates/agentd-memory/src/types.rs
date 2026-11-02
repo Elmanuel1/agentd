@@ -278,10 +278,8 @@ mod tests {
 
     #[test]
     fn precondition_parses() {
-        let p: Precondition = serde_json::from_str(
-            r#"{"type":"content_sha256","content_sha256":"deadbeef"}"#,
-        )
-        .unwrap();
+        let p: Precondition =
+            serde_json::from_str(r#"{"type":"content_sha256","content_sha256":"deadbeef"}"#).unwrap();
         assert!(matches!(p, Precondition::ContentSha256 { .. }));
     }
 }

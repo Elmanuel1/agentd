@@ -128,12 +128,8 @@ impl ApiError {
             ErrorType::MemoryPathConflict,
             format!("path `{path}` is already used by `{memory_id}`; use update to modify it"),
         );
-        e.extra
-            .insert("conflicting_path".into(), Value::String(path.into()));
-        e.extra.insert(
-            "conflicting_memory_id".into(),
-            Value::String(memory_id.into()),
-        );
+        e.extra.insert("conflicting_path".into(), Value::String(path.into()));
+        e.extra.insert("conflicting_memory_id".into(), Value::String(memory_id.into()));
         e
     }
 
@@ -150,21 +146,13 @@ impl ApiError {
     }
 
     fn of(error_type: ErrorType, message: impl Into<String>) -> Self {
-        Self {
-            status: error_type.status(),
-            error_type,
-            message: message.into(),
-            extra: Map::new(),
-        }
+        Self { status: error_type.status(), error_type, message: message.into(), extra: Map::new() }
     }
 
     /// Render the full wire envelope with a request id.
     pub fn to_envelope(&self, request_id: &RequestId) -> Value {
         let mut error = Map::new();
-        error.insert(
-            "type".into(),
-            Value::String(self.error_type.wire_name().into()),
-        );
+        error.insert("type".into(), Value::String(self.error_type.wire_name().into()));
         error.insert("message".into(), Value::String(self.message.clone()));
         for (k, v) in &self.extra {
             error.insert(k.clone(), v.clone());
@@ -172,23 +160,14 @@ impl ApiError {
         let mut envelope = Map::new();
         envelope.insert("type".into(), Value::String("error".into()));
         envelope.insert("error".into(), Value::Object(error));
-        envelope.insert(
-            "request_id".into(),
-            Value::String(request_id.as_str().into()),
-        );
+        envelope.insert("request_id".into(), Value::String(request_id.as_str().into()));
         Value::Object(envelope)
     }
 }
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} ({}): {}",
-            self.error_type.wire_name(),
-            self.status,
-            self.message
-        )
+        write!(f, "{} ({}): {}", self.error_type.wire_name(), self.status, self.message)
     }
 }
 
@@ -274,10 +253,7 @@ mod tests {
             "path `/a.md` is already used by `mem_019fjZBeerJmg5Smuyy2mCS5`; use update to modify it"
         );
         assert_eq!(v["error"]["conflicting_path"], "/a.md");
-        assert_eq!(
-            v["error"]["conflicting_memory_id"],
-            "mem_019fjZBeerJmg5Smuyy2mCS5"
-        );
+        assert_eq!(v["error"]["conflicting_memory_id"], "mem_019fjZBeerJmg5Smuyy2mCS5");
     }
 
     #[test]

@@ -21,16 +21,10 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     fn ok(s: impl Into<String>) -> Self {
-        Self {
-            output: s.into(),
-            is_error: false,
-        }
+        Self { output: s.into(), is_error: false }
     }
     fn err(s: impl Into<String>) -> Self {
-        Self {
-            output: s.into(),
-            is_error: true,
-        }
+        Self { output: s.into(), is_error: true }
     }
 }
 
@@ -63,14 +57,9 @@ impl WorkspaceTools {
             return Err(format!("path {relative} is outside the workspace"));
         }
         let resolved = self.root.join(relative);
-        let canonical_root = self
-            .root
-            .canonicalize()
-            .map_err(|e| format!("workspace unavailable: {e}"))?;
+        let canonical_root = self.root.canonicalize().map_err(|e| format!("workspace unavailable: {e}"))?;
         let canonical = if resolved.exists() {
-            resolved
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve {relative}: {e}"))?
+            resolved.canonicalize().map_err(|e| format!("cannot resolve {relative}: {e}"))?
         } else {
             let mut existing = resolved.as_path();
             let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -86,9 +75,7 @@ impl WorkspaceTools {
                     _ => return Err(format!("path {relative} is outside the workspace")),
                 }
             }
-            let mut c = existing
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve {relative}: {e}"))?;
+            let mut c = existing.canonicalize().map_err(|e| format!("cannot resolve {relative}: {e}"))?;
             for seg in tail.iter().rev() {
                 c.push(seg);
             }
@@ -104,17 +91,17 @@ impl WorkspaceTools {
         let Some(path) = input["path"].as_str() else {
             return ToolOutcome::err("read: `path` is required");
         };
-        match self.jail(path).and_then(|p| {
-            std::fs::read_to_string(&p).map_err(|e| format!("read {path}: {e}"))
-        }) {
+        match self
+            .jail(path)
+            .and_then(|p| std::fs::read_to_string(&p).map_err(|e| format!("read {path}: {e}")))
+        {
             Ok(content) => ToolOutcome::ok(content),
             Err(e) => ToolOutcome::err(e),
         }
     }
 
     fn write(&self, input: &serde_json::Value) -> ToolOutcome {
-        let (Some(path), Some(content)) = (input["path"].as_str(), input["content"].as_str())
-        else {
+        let (Some(path), Some(content)) = (input["path"].as_str(), input["content"].as_str()) else {
             return ToolOutcome::err("write: `path` and `content` are required");
         };
         match self.jail(path) {
@@ -134,11 +121,9 @@ impl WorkspaceTools {
     }
 
     fn edit(&self, input: &serde_json::Value) -> ToolOutcome {
-        let (Some(path), Some(old), Some(new)) = (
-            input["path"].as_str(),
-            input["old_str"].as_str(),
-            input["new_str"].as_str(),
-        ) else {
+        let (Some(path), Some(old), Some(new)) =
+            (input["path"].as_str(), input["old_str"].as_str(), input["new_str"].as_str())
+        else {
             return ToolOutcome::err("edit: `path`, `old_str`, `new_str` are required");
         };
         let p = match self.jail(path) {
@@ -154,9 +139,7 @@ impl WorkspaceTools {
             return ToolOutcome::err(format!("edit {path}: old_str not found"));
         }
         if matches > 1 {
-            return ToolOutcome::err(format!(
-                "edit {path}: old_str matches {matches} times; must be unique"
-            ));
+            return ToolOutcome::err(format!("edit {path}: old_str matches {matches} times; must be unique"));
         }
         let updated = content.replacen(old, new, 1);
         match std::fs::write(&p, updated) {
@@ -180,11 +163,7 @@ impl WorkspaceTools {
             Ok(paths) => {
                 let mut out: Vec<String> = paths
                     .filter_map(Result::ok)
-                    .filter_map(|p| {
-                        p.strip_prefix(&self.root)
-                            .ok()
-                            .map(|r| r.to_string_lossy().into_owned())
-                    })
+                    .filter_map(|p| p.strip_prefix(&self.root).ok().map(|r| r.to_string_lossy().into_owned()))
                     .collect();
                 out.sort();
                 ToolOutcome::ok(out.join("\n"))
@@ -272,44 +251,26 @@ mod tests {
     #[tokio::test]
     async fn read_write_edit_roundtrip() {
         let (_d, t) = rig();
-        let r = t
-            .execute("read", &serde_json::json!({"path":"a.md"}))
-            .await;
+        let r = t.execute("read", &serde_json::json!({"path":"a.md"})).await;
         assert!(!r.is_error);
         assert!(r.output.contains("hello agentd"));
 
-        let w = t
-            .execute(
-                "write",
-                &serde_json::json!({"path":"new/dir/c.txt","content":"created"}),
-            )
-            .await;
+        let w = t.execute("write", &serde_json::json!({"path":"new/dir/c.txt","content":"created"})).await;
         assert!(!w.is_error, "{}", w.output);
 
         let e = t
-            .execute(
-                "edit",
-                &serde_json::json!({"path":"a.md","old_str":"line two","new_str":"line 2"}),
-            )
+            .execute("edit", &serde_json::json!({"path":"a.md","old_str":"line two","new_str":"line 2"}))
             .await;
         assert!(!e.is_error);
-        let r = t
-            .execute("read", &serde_json::json!({"path":"a.md"}))
-            .await;
+        let r = t.execute("read", &serde_json::json!({"path":"a.md"})).await;
         assert!(r.output.contains("line 2"));
     }
 
     #[tokio::test]
     async fn edit_requires_unique_match() {
         let (_d, t) = rig();
-        t.execute("write", &serde_json::json!({"path":"dup.txt","content":"x x"}))
-            .await;
-        let e = t
-            .execute(
-                "edit",
-                &serde_json::json!({"path":"dup.txt","old_str":"x","new_str":"y"}),
-            )
-            .await;
+        t.execute("write", &serde_json::json!({"path":"dup.txt","content":"x x"})).await;
+        let e = t.execute("edit", &serde_json::json!({"path":"dup.txt","old_str":"x","new_str":"y"})).await;
         assert!(e.is_error);
         assert!(e.output.contains("2 times"));
     }
@@ -320,9 +281,7 @@ mod tests {
         for path in ["../etc/passwd", "sub/../../escape.txt", "/etc/passwd"] {
             let r = t.execute("read", &serde_json::json!({ "path": path })).await;
             assert!(r.is_error, "{path} must be rejected");
-            let w = t
-                .execute("write", &serde_json::json!({"path": path, "content":"x"}))
-                .await;
+            let w = t.execute("write", &serde_json::json!({"path": path, "content":"x"})).await;
             assert!(w.is_error, "{path} write must be rejected");
         }
     }
@@ -330,21 +289,15 @@ mod tests {
     #[tokio::test]
     async fn glob_and_grep_stay_inside() {
         let (_d, t) = rig();
-        let g = t
-            .execute("glob", &serde_json::json!({"pattern":"**/*.md"}))
-            .await;
+        let g = t.execute("glob", &serde_json::json!({"pattern":"**/*.md"})).await;
         assert!(!g.is_error);
         assert!(g.output.contains("a.md"));
         assert!(g.output.contains("sub/b.md"));
         // Escaping glob rejected.
-        let bad = t
-            .execute("glob", &serde_json::json!({"pattern":"../**/*"}))
-            .await;
+        let bad = t.execute("glob", &serde_json::json!({"pattern":"../**/*"})).await;
         assert!(bad.is_error);
 
-        let hits = t
-            .execute("grep", &serde_json::json!({"pattern":"hello"}))
-            .await;
+        let hits = t.execute("grep", &serde_json::json!({"pattern":"hello"})).await;
         assert!(hits.output.contains("a.md:1:hello agentd"));
         assert!(hits.output.contains("sub/b.md:1:hello nested"));
     }

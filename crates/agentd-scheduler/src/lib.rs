@@ -15,22 +15,12 @@
 //! TickWorkflow whose single activity POSTs `/internal/fire` — the port
 //! guarantees make it a drop-in.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use agentd_core::ports::{
-    FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort,
-};
+use agentd_core::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
 use agentd_core::schedule::{CompiledSchedule, CronKind, CronSchedule};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -74,10 +64,7 @@ impl std::fmt::Debug for LocalScheduler {
 impl LocalScheduler {
     /// Build with a fire sink.
     pub fn new(sink: Arc<dyn FireSink>) -> Self {
-        Self {
-            sink,
-            inner: Mutex::new(BTreeMap::new()),
-        }
+        Self { sink, inner: Mutex::new(BTreeMap::new()) }
     }
 
     /// Advance the clock to `now`, firing everything due. Called by the
@@ -153,31 +140,21 @@ impl SchedulerPort for LocalScheduler {
         let next = compiled.next_fires(Utc::now(), 1).first().copied();
         self.inner.lock().insert(
             spec.target.key(),
-            Registered {
-                spec,
-                compiled,
-                paused: false,
-                next_fire: next,
-                last_fire: None,
-            },
+            Registered { spec, compiled, paused: false, next_fire: next, last_fire: None },
         );
         Ok(())
     }
 
     async fn pause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
         let mut g = self.inner.lock();
-        let reg = g
-            .get_mut(&target.key())
-            .ok_or_else(|| SchedulerError::Unknown(target.key()))?;
+        let reg = g.get_mut(&target.key()).ok_or_else(|| SchedulerError::Unknown(target.key()))?;
         reg.paused = true;
         Ok(())
     }
 
     async fn unpause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
         let mut g = self.inner.lock();
-        let reg = g
-            .get_mut(&target.key())
-            .ok_or_else(|| SchedulerError::Unknown(target.key()))?;
+        let reg = g.get_mut(&target.key()).ok_or_else(|| SchedulerError::Unknown(target.key()))?;
         reg.paused = false;
         // Resume from the NEXT occurrence — no backfill of the pause window.
         reg.next_fire = reg.compiled.next_fires(Utc::now(), 1).first().copied();
@@ -194,13 +171,8 @@ impl SchedulerPort for LocalScheduler {
 
     async fn describe(&self, target: &FireTarget) -> Result<ScheduleState, SchedulerError> {
         let g = self.inner.lock();
-        let reg = g
-            .get(&target.key())
-            .ok_or_else(|| SchedulerError::Unknown(target.key()))?;
-        Ok(ScheduleState {
-            paused: reg.paused,
-            last_fire: reg.last_fire,
-        })
+        let reg = g.get(&target.key()).ok_or_else(|| SchedulerError::Unknown(target.key()))?;
+        Ok(ScheduleState { paused: reg.paused, last_fire: reg.last_fire })
     }
 }
 
@@ -219,11 +191,7 @@ mod tests {
 
     #[async_trait]
     impl FireSink for RecordingSink {
-        async fn fire(
-            &self,
-            target: &FireTarget,
-            scheduled_at: DateTime<Utc>,
-        ) -> Result<(), FireError> {
+        async fn fire(&self, target: &FireTarget, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
             if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(FireError("agentd down".into()));
             }
@@ -240,13 +208,8 @@ mod tests {
         ScheduleSpec {
             cron: cron.into(),
             timezone: "UTC".into(),
-            target: FireTarget::Deployment {
-                id: "depl_01test".into(),
-            },
-            tenant: TenantRef {
-                org_id: "org_t".into(),
-                workspace_id: "wrkspc_01t".into(),
-            },
+            target: FireTarget::Deployment { id: "depl_01test".into() },
+            tenant: TenantRef { org_id: "org_t".into(), workspace_id: "wrkspc_01t".into() },
         }
     }
 
@@ -258,11 +221,7 @@ mod tests {
         {
             let mut g = sched.inner.lock();
             for reg in g.values_mut() {
-                reg.next_fire = reg
-                    .compiled
-                    .next_fires(utc("2026-01-01T00:00:30Z"), 1)
-                    .first()
-                    .copied();
+                reg.next_fire = reg.compiled.next_fires(utc("2026-01-01T00:00:30Z"), 1).first().copied();
             }
         }
         (sched, sink)
@@ -282,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn no_backfill_only_latest_missed_occurrence_fires() {
         let (sched, sink) = rig("*/5 * * * *").await; // next: 00:05
-        // 27 minutes pass with no ticks (downtime): 00:05/10/15/20/25 missed.
+                                                      // 27 minutes pass with no ticks (downtime): 00:05/10/15/20/25 missed.
         sched.tick(utc("2026-01-01T00:27:00Z")).await;
         {
             let fires = sink.fires.lock();
@@ -313,9 +272,7 @@ mod tests {
     #[tokio::test]
     async fn pause_suppresses_unpause_resumes_without_backfill() {
         let (sched, sink) = rig("*/5 * * * *").await;
-        let target = FireTarget::Deployment {
-            id: "depl_01test".into(),
-        };
+        let target = FireTarget::Deployment { id: "depl_01test".into() };
         sched.pause(&target).await.unwrap();
         sched.tick(utc("2026-01-01T00:05:00Z")).await;
         sched.tick(utc("2026-01-01T00:10:00Z")).await;
@@ -332,17 +289,12 @@ mod tests {
     #[tokio::test]
     async fn delete_and_describe() {
         let (sched, _sink) = rig("0 0 * * *").await;
-        let target = FireTarget::Deployment {
-            id: "depl_01test".into(),
-        };
+        let target = FireTarget::Deployment { id: "depl_01test".into() };
         let st = sched.describe(&target).await.unwrap();
         assert!(!st.paused);
         assert!(st.last_fire.is_none());
         sched.delete(&target).await.unwrap();
-        assert!(matches!(
-            sched.describe(&target).await,
-            Err(SchedulerError::Unknown(_))
-        ));
+        assert!(matches!(sched.describe(&target).await, Err(SchedulerError::Unknown(_))));
     }
 
     #[tokio::test]
@@ -350,28 +302,17 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let sched = LocalScheduler::new(sink);
         let mut s = spec("99 * * * *");
-        assert!(matches!(
-            sched.upsert(s.clone()).await,
-            Err(SchedulerError::InvalidSpec(_))
-        ));
+        assert!(matches!(sched.upsert(s.clone()).await, Err(SchedulerError::InvalidSpec(_))));
         s.cron = "0 0 * * *".into();
         s.timezone = "Mars/Olympus".into();
-        assert!(matches!(
-            sched.upsert(s).await,
-            Err(SchedulerError::InvalidSpec(_))
-        ));
+        assert!(matches!(sched.upsert(s).await, Err(SchedulerError::InvalidSpec(_))));
     }
 
     #[tokio::test]
     async fn last_fire_is_recorded() {
         let (sched, _sink) = rig("*/5 * * * *").await;
         sched.tick(utc("2026-01-01T00:05:00Z")).await;
-        let target = FireTarget::Deployment {
-            id: "depl_01test".into(),
-        };
-        assert_eq!(
-            sched.describe(&target).await.unwrap().last_fire,
-            Some(utc("2026-01-01T00:05:00Z"))
-        );
+        let target = FireTarget::Deployment { id: "depl_01test".into() };
+        assert_eq!(sched.describe(&target).await.unwrap().last_fire, Some(utc("2026-01-01T00:05:00Z")));
     }
 }

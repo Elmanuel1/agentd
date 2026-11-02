@@ -63,14 +63,8 @@ struct NewFile {
 impl FilesStore for PgFilesStore {
     async fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> Result<(), StoreError> {
         // Bytes → S3 first, then metadata → Postgres.
-        self.blobs
-            .put(&Self::key(ws, &f.meta.id), f.bytes.clone())
-            .await
-            .map_err(blob_be)?;
-        let doc = FileDoc {
-            meta: f.meta.clone(),
-            scope_id: f.scope_id.clone(),
-        };
+        self.blobs.put(&Self::key(ws, &f.meta.id), f.bytes.clone()).await.map_err(blob_be)?;
+        let doc = FileDoc { meta: f.meta.clone(), scope_id: f.scope_id.clone() };
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::insert_into(files::table)
             .values(NewFile {
@@ -100,20 +94,14 @@ impl FilesStore for PgFilesStore {
             .map_err(diesel_be)?;
         let doc: FileDoc = parse_doc(doc.ok_or(StoreError::NotFound)?)?;
         let bytes = self.blobs.get(&Self::key(ws, id)).await.map_err(blob_be)?;
-        Ok(StoredFile {
-            meta: doc.meta,
-            bytes,
-            scope_id: doc.scope_id,
-        })
+        Ok(StoredFile { meta: doc.meta, bytes, scope_id: doc.scope_id })
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
         let existing = self.get(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         diesel::delete(
-            files::table
-                .filter(files::workspace_id.eq(ws.as_str()))
-                .filter(files::file_id.eq(id.as_str())),
+            files::table.filter(files::workspace_id.eq(ws.as_str())).filter(files::file_id.eq(id.as_str())),
         )
         .execute(&mut conn)
         .await
@@ -136,9 +124,7 @@ impl FilesStore for PgFilesStore {
         // Resolve a cursor id to its (created_at, file_id) sort key. A missing
         // id yields None (a no-op bound), matching the Files API.
         async fn sort_key(
-            conn: &mut diesel_async::pooled_connection::deadpool::Object<
-                diesel_async::AsyncPgConnection,
-            >,
+            conn: &mut diesel_async::pooled_connection::deadpool::Object<diesel_async::AsyncPgConnection>,
             ws: &WorkspaceId,
             scope_id: Option<&str>,
             id: &str,
@@ -150,11 +136,7 @@ impl FilesStore for PgFilesStore {
             if let Some(s) = scope_id {
                 q = q.filter(files::scope_id.eq(s.to_owned()));
             }
-            q.select((files::created_at, files::file_id))
-                .first(conn)
-                .await
-                .optional()
-                .map_err(diesel_be)
+            q.select((files::created_at, files::file_id)).first(conn).await.optional().map_err(diesel_be)
         }
 
         let after_key = match &cursor.after_id {
@@ -166,26 +148,16 @@ impl FilesStore for PgFilesStore {
             None => None,
         };
 
-        let mut q = files::table
-            .filter(files::workspace_id.eq(ws.as_str()))
-            .into_boxed();
+        let mut q = files::table.filter(files::workspace_id.eq(ws.as_str())).into_boxed();
         if let Some(s) = scope_id {
             q = q.filter(files::scope_id.eq(s.to_owned()));
         }
         // Keyset: strictly-after the cursor in DESC order = a smaller sort key.
         if let Some((ca, fid)) = after_key {
-            q = q.filter(
-                files::created_at
-                    .lt(ca)
-                    .or(files::created_at.eq(ca).and(files::file_id.lt(fid))),
-            );
+            q = q.filter(files::created_at.lt(ca).or(files::created_at.eq(ca).and(files::file_id.lt(fid))));
         }
         if let Some((ca, fid)) = before_key {
-            q = q.filter(
-                files::created_at
-                    .gt(ca)
-                    .or(files::created_at.eq(ca).and(files::file_id.gt(fid))),
-            );
+            q = q.filter(files::created_at.gt(ca).or(files::created_at.eq(ca).and(files::file_id.gt(fid))));
         }
         let docs: Vec<serde_json::Value> = q
             .order((files::created_at.desc(), files::file_id.desc()))
@@ -198,11 +170,7 @@ impl FilesStore for PgFilesStore {
             .into_iter()
             .map(|d| {
                 let doc: FileDoc = parse_doc(d)?;
-                Ok(StoredFile {
-                    meta: doc.meta,
-                    bytes: Bytes::new(),
-                    scope_id: doc.scope_id,
-                })
+                Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
             })
             .collect::<Result<_, StoreError>>()?;
         let has_more = rows.len() > cursor.limit;

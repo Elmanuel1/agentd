@@ -6,8 +6,7 @@ use std::collections::HashMap;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
 use aws_sdk_dynamodb::types::{
-    AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
-    ScalarAttributeType,
+    AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType, ScalarAttributeType,
 };
 use aws_sdk_dynamodb::Client;
 use serde::de::DeserializeOwned;
@@ -29,24 +28,12 @@ impl DynamoDoc {
 
     /// Create the `(pk, sk)` table if it doesn't exist (idempotent).
     pub async fn ensure_table(&self, table: &str) -> Result<(), AwsError> {
-        let existing = self
-            .client
-            .list_tables()
-            .send()
-            .await
-            .map_err(|e| AwsError::Dynamo(e.to_string()))?;
-        if existing
-            .table_names()
-            .iter()
-            .any(|t| t == table)
-        {
+        let existing = self.client.list_tables().send().await.map_err(|e| AwsError::Dynamo(e.to_string()))?;
+        if existing.table_names().iter().any(|t| t == table) {
             return Ok(());
         }
         let s = |n: &str| {
-            AttributeDefinition::builder()
-                .attribute_name(n)
-                .attribute_type(ScalarAttributeType::S)
-                .build()
+            AttributeDefinition::builder().attribute_name(n).attribute_type(ScalarAttributeType::S).build()
         };
         let key = |n: &str, t: KeyType| KeySchemaElement::builder().attribute_name(n).key_type(t).build();
         self.client
@@ -64,13 +51,7 @@ impl DynamoDoc {
     }
 
     /// Upsert a document.
-    pub async fn put<T: Serialize>(
-        &self,
-        table: &str,
-        pk: &str,
-        sk: &str,
-        doc: &T,
-    ) -> Result<(), AwsError> {
+    pub async fn put<T: Serialize>(&self, table: &str, pk: &str, sk: &str, doc: &T) -> Result<(), AwsError> {
         let json = serde_json::to_string(doc).map_err(|e| AwsError::Decode(e.to_string()))?;
         self.client
             .put_item()
@@ -87,12 +68,7 @@ impl DynamoDoc {
     /// Insert only if `(pk, sk)` is absent. Returns `true` if this call
     /// created the item, `false` if it already existed — the **atomic
     /// cross-replica claim** (exactly-once).
-    pub async fn put_if_absent(
-        &self,
-        table: &str,
-        pk: &str,
-        sk: &str,
-    ) -> Result<bool, AwsError> {
+    pub async fn put_if_absent(&self, table: &str, pk: &str, sk: &str) -> Result<bool, AwsError> {
         let res = self
             .client
             .put_item()
@@ -168,9 +144,7 @@ impl DynamoDoc {
             let page = req.send().await.map_err(|e| AwsError::Dynamo(e.to_string()))?;
             for item in page.items() {
                 if let Some(AttributeValue::S(json)) = item.get("doc") {
-                    out.push(
-                        serde_json::from_str(json).map_err(|e| AwsError::Decode(e.to_string()))?,
-                    );
+                    out.push(serde_json::from_str(json).map_err(|e| AwsError::Decode(e.to_string()))?);
                 }
             }
             match page.last_evaluated_key() {
@@ -199,9 +173,9 @@ impl DynamoDoc {
             .await
             .map_err(|e| AwsError::Dynamo(e.to_string()))?;
         match out.attributes().and_then(|a| a.get("doc")) {
-            Some(AttributeValue::S(json)) => Ok(Some(
-                serde_json::from_str(json).map_err(|e| AwsError::Decode(e.to_string()))?,
-            )),
+            Some(AttributeValue::S(json)) => {
+                Ok(Some(serde_json::from_str(json).map_err(|e| AwsError::Decode(e.to_string()))?))
+            }
             _ => Ok(None),
         }
     }

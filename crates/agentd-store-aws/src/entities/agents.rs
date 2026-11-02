@@ -5,8 +5,8 @@
 //! highest `sk` under the agent's prefix.
 
 use agentd_agents::store::{AgentsStore, StoreError};
-use agentd_agents::Agent;
 use agentd_agents::types::AgentId;
+use agentd_agents::Agent;
 use agentd_core::{Pagination, WorkspaceId};
 use async_trait::async_trait;
 
@@ -54,22 +54,13 @@ impl AgentsStore for DynamoAgentsStore {
     }
 
     async fn latest(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Agent, StoreError> {
-        let mut versions: Vec<Agent> = self
-            .aws
-            .dynamo
-            .query(&self.table(), ws.as_str(), Some(&Self::prefix(id)))
-            .await
-            .map_err(be)?;
+        let mut versions: Vec<Agent> =
+            self.aws.dynamo.query(&self.table(), ws.as_str(), Some(&Self::prefix(id))).await.map_err(be)?;
         versions.sort_by_key(|a| a.version);
         versions.pop().ok_or(StoreError::NotFound)
     }
 
-    async fn version(
-        &self,
-        ws: &WorkspaceId,
-        id: &AgentId,
-        version: u64,
-    ) -> Result<Agent, StoreError> {
+    async fn version(&self, ws: &WorkspaceId, id: &AgentId, version: u64) -> Result<Agent, StoreError> {
         self.aws
             .dynamo
             .get(&self.table(), ws.as_str(), &Self::sk(id, version))
@@ -103,12 +94,8 @@ impl AgentsStore for DynamoAgentsStore {
     }
 
     async fn versions(&self, ws: &WorkspaceId, id: &AgentId) -> Result<Vec<Agent>, StoreError> {
-        let mut versions: Vec<Agent> = self
-            .aws
-            .dynamo
-            .query(&self.table(), ws.as_str(), Some(&Self::prefix(id)))
-            .await
-            .map_err(be)?;
+        let mut versions: Vec<Agent> =
+            self.aws.dynamo.query(&self.table(), ws.as_str(), Some(&Self::prefix(id))).await.map_err(be)?;
         if versions.is_empty() {
             return Err(StoreError::NotFound);
         }
@@ -117,12 +104,7 @@ impl AgentsStore for DynamoAgentsStore {
     }
 
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Agent>, StoreError> {
-        let all: Vec<Agent> = self
-            .aws
-            .dynamo
-            .query(&self.table(), ws.as_str(), None)
-            .await
-            .map_err(be)?;
+        let all: Vec<Agent> = self.aws.dynamo.query(&self.table(), ws.as_str(), None).await.map_err(be)?;
         // Latest of each agent id, insertion-stable by id.
         let mut latest: std::collections::BTreeMap<String, Agent> = std::collections::BTreeMap::new();
         for a in all {

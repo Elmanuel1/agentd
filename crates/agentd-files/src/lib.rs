@@ -5,15 +5,7 @@
 //! Wire shapes follow the documented Files API; conformance against live
 //! uploads is verified by the harness (marked: shape unprobed live).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod routes;
 pub mod store;
@@ -65,14 +57,7 @@ impl FilesService {
             tag: FileTag::File,
         };
         self.store
-            .insert(
-                &ctx.workspace,
-                StoredFile {
-                    meta: meta.clone(),
-                    bytes,
-                    scope_id,
-                },
-            )
+            .insert(&ctx.workspace, StoredFile { meta: meta.clone(), bytes, scope_id })
             .await
             .map_err(map_store)?;
         Ok(meta)
@@ -81,21 +66,13 @@ impl FilesService {
     /// `GET /v1/files/{id}` — metadata.
     pub async fn metadata(&self, ctx: &AuthContext, raw_id: &str) -> Result<FileMetadata, ApiError> {
         let id = parse_id(raw_id)?;
-        self.store
-            .get(&ctx.workspace, &id)
-            .await
-            .map(|f| f.meta)
-            .map_err(map_store)
+        self.store.get(&ctx.workspace, &id).await.map(|f| f.meta).map_err(map_store)
     }
 
     /// `GET /v1/files/{id}/content` — raw bytes.
     pub async fn download(&self, ctx: &AuthContext, raw_id: &str) -> Result<(FileMetadata, Bytes), ApiError> {
         let id = parse_id(raw_id)?;
-        self.store
-            .get(&ctx.workspace, &id)
-            .await
-            .map(|f| (f.meta, f.bytes))
-            .map_err(map_store)
+        self.store.get(&ctx.workspace, &id).await.map(|f| (f.meta, f.bytes)).map_err(map_store)
     }
 
     /// `GET /v1/files?scope_id=…` — one id-cursor page + `has_more`.
@@ -105,22 +82,14 @@ impl FilesService {
         scope_id: Option<&str>,
         cursor: &IdCursor,
     ) -> Result<(Vec<FileMetadata>, bool), ApiError> {
-        let (files, has_more) = self
-            .store
-            .list(&ctx.workspace, scope_id, cursor)
-            .await
-            .map_err(map_store)?;
+        let (files, has_more) = self.store.list(&ctx.workspace, scope_id, cursor).await.map_err(map_store)?;
         Ok((files.into_iter().map(|f| f.meta).collect(), has_more))
     }
 
     /// `DELETE /v1/files/{id}`.
     pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<FileMetadata, ApiError> {
         let id = parse_id(raw_id)?;
-        self.store
-            .delete(&ctx.workspace, &id)
-            .await
-            .map(|f| f.meta)
-            .map_err(map_store)
+        self.store.delete(&ctx.workspace, &id).await.map(|f| f.meta).map_err(map_store)
     }
 }
 

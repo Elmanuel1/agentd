@@ -49,9 +49,7 @@ pub struct S3BlobStore {
 
 impl std::fmt::Debug for S3BlobStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("S3BlobStore")
-            .field("bucket", &self.bucket)
-            .finish_non_exhaustive()
+        f.debug_struct("S3BlobStore").field("bucket", &self.bucket).finish_non_exhaustive()
     }
 }
 
@@ -63,18 +61,17 @@ impl S3BlobStore {
         let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".into());
         let mut loader = aws_config::defaults(BehaviorVersion::latest()).region(Region::new(region));
         if let Some(ep) = &endpoint {
-            loader = loader
-                .endpoint_url(ep)
-                .credentials_provider(Credentials::new("test", "test", None, None, "agentd-blobs"));
+            loader = loader.endpoint_url(ep).credentials_provider(Credentials::new(
+                "test",
+                "test",
+                None,
+                None,
+                "agentd-blobs",
+            ));
         }
         let shared = loader.load().await;
-        let conf = aws_sdk_s3::config::Builder::from(&shared)
-            .force_path_style(endpoint.is_some())
-            .build();
-        let store = Self {
-            client: aws_sdk_s3::Client::from_conf(conf),
-            bucket: bucket.into(),
-        };
+        let conf = aws_sdk_s3::config::Builder::from(&shared).force_path_style(endpoint.is_some()).build();
+        let store = Self { client: aws_sdk_s3::Client::from_conf(conf), bucket: bucket.into() };
         store.ensure_bucket().await?;
         Ok(store)
     }
@@ -83,8 +80,7 @@ impl S3BlobStore {
         match self.client.head_bucket().bucket(&self.bucket).send().await {
             Ok(_) => Ok(()),
             Err(SdkError::ServiceError(se))
-                if matches!(se.err(), HeadBucketError::NotFound(_))
-                    || se.raw().status().as_u16() == 404 =>
+                if matches!(se.err(), HeadBucketError::NotFound(_)) || se.raw().status().as_u16() == 404 =>
             {
                 self.client
                     .create_bucket()
@@ -114,24 +110,14 @@ impl BlobStore for S3BlobStore {
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, BlobError> {
-        let out = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| match &e {
+        let out =
+            self.client.get_object().bucket(&self.bucket).key(key).send().await.map_err(|e| match &e {
                 SdkError::ServiceError(se) if se.err().is_no_such_key() => {
                     BlobError::NotFound(key.to_owned())
                 }
                 _ => BlobError::Backend(e.to_string()),
             })?;
-        let data = out
-            .body
-            .collect()
-            .await
-            .map_err(|e| BlobError::Backend(e.to_string()))?;
+        let data = out.body.collect().await.map_err(|e| BlobError::Backend(e.to_string()))?;
         Ok(data.into_bytes())
     }
 

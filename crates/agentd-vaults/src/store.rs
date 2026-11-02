@@ -45,11 +45,7 @@ pub trait VaultsStore: Send + Sync {
     /// Delete a vault (and its credentials).
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// All vaults, insertion order.
-    async fn list_vaults(
-        &self,
-        ws: &WorkspaceId,
-        page: &Pagination,
-    ) -> Result<Vec<Vault>, StoreError>;
+    async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
 
     /// Insert a credential into a vault.
     async fn insert_credential(

@@ -20,8 +20,7 @@ const KEY: &str = "test-key-workspace-a";
 const KEY_B: &str = "test-key-workspace-b";
 
 fn enabled() -> bool {
-    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
-        && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
+    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1") && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
 }
 
 /// Build the composed router over live Postgres + object store, or `None` when
@@ -39,12 +38,8 @@ async fn app() -> Option<Router> {
     let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
     let stamp = Timestamp::now().as_datetime().timestamp_micros();
     let org = format!("org_t{stamp}");
-    state
-        .keys
-        .register(KEY, &org, format!("wrkspc_a{stamp}"), "apikey_01a");
-    state
-        .keys
-        .register(KEY_B, &org, format!("wrkspc_b{stamp}"), "apikey_01b");
+    state.keys.register(KEY, &org, format!("wrkspc_a{stamp}"), "apikey_01a");
+    state.keys.register(KEY_B, &org, format!("wrkspc_b{stamp}"), "apikey_01b");
     Some(build_router(state))
 }
 
@@ -57,10 +52,7 @@ async fn call_raw(
     api_key: Option<&str>,
     beta: bool,
 ) -> (StatusCode, serde_json::Value) {
-    let mut b = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json");
+    let mut b = Request::builder().method(method).uri(uri).header("content-type", "application/json");
     if let Some(k) = api_key {
         b = b.header("x-api-key", k);
     }
@@ -81,12 +73,7 @@ async fn call_raw(
 }
 
 /// Standard authenticated + beta call.
-async fn call(
-    app: &Router,
-    method: &str,
-    uri: &str,
-    body: Option<&str>,
-) -> (StatusCode, serde_json::Value) {
+async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, serde_json::Value) {
     call_raw(app, method, uri, body, Some(KEY), true).await
 }
 
@@ -129,10 +116,7 @@ async fn missing_beta_header_reproduces_live_unknown_field_error() {
     )
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        v["error"]["message"],
-        "Failed to parse request body: unknown field \"model\""
-    );
+    assert_eq!(v["error"]["message"], "Failed to parse request body: unknown field \"model\"");
     // GETs pass without the beta header (list still works).
     let (st, _) = call_raw(&app, "GET", "/v1/agents", None, Some(KEY), false).await;
     assert_eq!(st, StatusCode::OK);
@@ -212,43 +196,18 @@ async fn workspace_isolation_through_http() {
     let Some(app) = app().await else {
         return;
     };
-    let (_, agent) = call(
-        &app,
-        "POST",
-        "/v1/agents",
-        Some(r#"{"name":"private","model":"claude-sonnet-4-6"}"#),
-    )
-    .await;
+    let (_, agent) =
+        call(&app, "POST", "/v1/agents", Some(r#"{"name":"private","model":"claude-sonnet-4-6"}"#)).await;
     let id = agent["id"].as_str().unwrap();
     // Key B (same org, different workspace) cannot see the agent…
-    let (st, _) = call_raw(
-        &app,
-        "GET",
-        &format!("/v1/agents/{id}"),
-        None,
-        Some(KEY_B),
-        true,
-    )
-    .await;
+    let (st, _) = call_raw(&app, "GET", &format!("/v1/agents/{id}"), None, Some(KEY_B), true).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     // …but CAN see the org-scoped environment.
-    let (_, env) = call(
-        &app,
-        "POST",
-        "/v1/environments",
-        Some(r#"{"name":"shared","config":{"type":"self_hosted"}}"#),
-    )
-    .await;
+    let (_, env) =
+        call(&app, "POST", "/v1/environments", Some(r#"{"name":"shared","config":{"type":"self_hosted"}}"#))
+            .await;
     let eid = env["id"].as_str().unwrap();
-    let (st, got) = call_raw(
-        &app,
-        "GET",
-        &format!("/v1/environments/{eid}"),
-        None,
-        Some(KEY_B),
-        true,
-    )
-    .await;
+    let (st, got) = call_raw(&app, "GET", &format!("/v1/environments/{eid}"), None, Some(KEY_B), true).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(got["id"], env["id"]);
 }
@@ -258,20 +217,11 @@ async fn deployment_create_and_internal_fire_through_http() {
     let Some(app) = app().await else {
         return;
     };
-    let (_, env) = call(
-        &app,
-        "POST",
-        "/v1/environments",
-        Some(r#"{"name":"d-env","config":{"type":"self_hosted"}}"#),
-    )
-    .await;
-    let (_, agent) = call(
-        &app,
-        "POST",
-        "/v1/agents",
-        Some(r#"{"name":"d-agent","model":"claude-sonnet-4-6"}"#),
-    )
-    .await;
+    let (_, env) =
+        call(&app, "POST", "/v1/environments", Some(r#"{"name":"d-env","config":{"type":"self_hosted"}}"#))
+            .await;
+    let (_, agent) =
+        call(&app, "POST", "/v1/agents", Some(r#"{"name":"d-agent","model":"claude-sonnet-4-6"}"#)).await;
     let (st, depl) = call(
         &app,
         "POST",
@@ -294,26 +244,15 @@ async fn deployment_create_and_internal_fire_through_http() {
         &app,
         "POST",
         "/internal/fire",
-        Some(&format!(
-            r#"{{"deployment_id":"{did}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#
-        )),
+        Some(&format!(r#"{{"deployment_id":"{did}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#)),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(fired["fired"], true);
-    assert!(fired["run"]["session_id"]
-        .as_str()
-        .unwrap()
-        .starts_with("sesn_01"));
+    assert!(fired["run"]["session_id"].as_str().unwrap().starts_with("sesn_01"));
 
     // The run is listable and the session got the kickoff event.
-    let (st, runs) = call(
-        &app,
-        "GET",
-        &format!("/v1/deployment_runs?deployment_id={did}"),
-        None,
-    )
-    .await;
+    let (st, runs) = call(&app, "GET", &format!("/v1/deployment_runs?deployment_id={did}"), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(runs["data"].as_array().unwrap().len(), 1);
     let sid = fired["run"]["session_id"].as_str().unwrap();
@@ -325,9 +264,7 @@ async fn deployment_create_and_internal_fire_through_http() {
         &app,
         "POST",
         "/internal/fire",
-        Some(&format!(
-            r#"{{"deployment_id":"{did}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#
-        )),
+        Some(&format!(r#"{{"deployment_id":"{did}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#)),
     )
     .await;
     assert_eq!(again["fired"], false);
@@ -368,10 +305,7 @@ async fn list_pagination_matches_live_cursor_shape() {
     // Unknown query param → live 400 "unknown field" (agentd allowlists limit/page).
     let (st, err) = call(&app, "GET", "/v1/agents?bogusparam=1", None).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        err["error"]["message"],
-        "Failed to parse request body: unknown field \"bogusparam\""
-    );
+    assert_eq!(err["error"]["message"], "Failed to parse request body: unknown field \"bogusparam\"");
 }
 
 #[tokio::test]
@@ -389,13 +323,9 @@ async fn memory_patch_405_through_the_composed_router() {
     )
     .await;
     let mid = mem["id"].as_str().unwrap();
-    let (st, _) = call(
-        &app,
-        "PATCH",
-        &format!("/v1/memory_stores/{sid}/memories/{mid}"),
-        Some(r#"{"content":"two"}"#),
-    )
-    .await;
+    let (st, _) =
+        call(&app, "PATCH", &format!("/v1/memory_stores/{sid}/memories/{mid}"), Some(r#"{"content":"two"}"#))
+            .await;
     assert_eq!(st, StatusCode::METHOD_NOT_ALLOWED);
 }
 
@@ -407,32 +337,15 @@ async fn exact_live_error_strings_survive_the_full_stack() {
     let (st, v) = call(&app, "POST", "/v1/agents", Some(r#"{"name":"x"}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "model: Field required");
-    let (st, v) = call(
-        &app,
-        "POST",
-        "/v1/agents",
-        Some(r#"{"name":"x","model":"gpt-4"}"#),
-    )
-    .await;
+    let (st, v) = call(&app, "POST", "/v1/agents", Some(r#"{"name":"x","model":"gpt-4"}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        v["error"]["message"],
-        "`model.id`: model \"gpt-4\": model is not supported"
-    );
+    assert_eq!(v["error"]["message"], "`model.id`: model \"gpt-4\": model is not supported");
     let (st, v) = call(&app, "GET", "/v1/agents/agent_00bogus", None).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "Invalid agent ID.");
     // Unknown BODY field → live 400 "unknown field" (deny_unknown_fields + ApiJson).
-    let (st, v) = call(
-        &app,
-        "POST",
-        "/v1/agents",
-        Some(r#"{"name":"x","model":"claude-sonnet-4-6","bogus":1}"#),
-    )
-    .await;
+    let (st, v) =
+        call(&app, "POST", "/v1/agents", Some(r#"{"name":"x","model":"claude-sonnet-4-6","bogus":1}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        v["error"]["message"],
-        "Failed to parse request body: unknown field \"bogus\""
-    );
+    assert_eq!(v["error"]["message"], "Failed to parse request body: unknown field \"bogus\"");
 }

@@ -7,9 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agentd_core::{
-    reject_unknown_params, ApiJson, AuthContext, Page, Pagination, RouteError,
-};
+use agentd_core::{reject_unknown_params, ApiJson, AuthContext, Page, Pagination, RouteError};
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -30,32 +28,17 @@ fn view_of(params: &HashMap<String, String>, default: View) -> View {
 pub fn router() -> Router {
     Router::new()
         .route("/v1/memory_stores", post(create_store).get(list_stores))
-        .route(
-            "/v1/memory_stores/{id}",
-            get(get_store).delete(delete_store),
-        )
+        .route("/v1/memory_stores/{id}", get(get_store).delete(delete_store))
         .route("/v1/memory_stores/{id}/archive", post(archive_store))
-        .route(
-            "/v1/memory_stores/{id}/memories",
-            post(create_memory).get(list_memories),
-        )
+        .route("/v1/memory_stores/{id}/memories", post(create_memory).get(list_memories))
         // ONLY get/post/delete — PATCH/PUT get 405 + Allow, matching live.
         .route(
             "/v1/memory_stores/{id}/memories/{mid}",
             get(get_memory).post(update_memory).delete(delete_memory),
         )
-        .route(
-            "/v1/memory_stores/{id}/memory_versions",
-            get(list_versions),
-        )
-        .route(
-            "/v1/memory_stores/{id}/memory_versions/{vid}",
-            get(get_version),
-        )
-        .route(
-            "/v1/memory_stores/{id}/memory_versions/{vid}/redact",
-            post(redact_version),
-        )
+        .route("/v1/memory_stores/{id}/memory_versions", get(list_versions))
+        .route("/v1/memory_stores/{id}/memory_versions/{vid}", get(get_version))
+        .route("/v1/memory_stores/{id}/memory_versions/{vid}/redact", post(redact_version))
 }
 
 async fn create_store(
@@ -163,11 +146,7 @@ async fn list_versions(
     let view = view_of(&params, View::Basic);
     let memory_id = params.get("memory_id").map(String::as_str);
     let page = Pagination::from_params(&params)?;
-    Ok(Json(Page::paginate(
-        svc.list_versions(&ctx, &id, memory_id, view).await?,
-        &page,
-    ))
-    .into_response())
+    Ok(Json(Page::paginate(svc.list_versions(&ctx, &id, memory_id, view).await?, &page)).into_response())
 }
 
 async fn get_version(

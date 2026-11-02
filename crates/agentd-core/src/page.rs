@@ -35,10 +35,7 @@ impl<T> Page<T> {
     /// echo of just-sent events.
     #[must_use]
     pub fn of(data: Vec<T>) -> Self {
-        Self {
-            data,
-            next_page: None,
-        }
+        Self { data, next_page: None }
     }
 
     /// Slice `all` (a fully-ordered result set) to the requested page and set
@@ -63,10 +60,7 @@ impl<T> Page<T> {
         let has_more = rows.len() > page.limit;
         rows.truncate(page.limit);
         let next_page = has_more.then(|| encode_cursor(page.offset + page.limit));
-        Self {
-            data: rows,
-            next_page,
-        }
+        Self { data: rows, next_page }
     }
 }
 
@@ -98,8 +92,9 @@ impl Pagination {
         };
         let offset = match params.get("page") {
             None => 0,
-            Some(cursor) => decode_cursor(cursor)
-                .ok_or_else(|| ApiError::invalid_request("page: invalid cursor"))?,
+            Some(cursor) => {
+                decode_cursor(cursor).ok_or_else(|| ApiError::invalid_request("page: invalid cursor"))?
+            }
         };
         Ok(Self { limit, offset })
     }
@@ -131,10 +126,7 @@ impl Pagination {
     /// (e.g. a DynamoDB partition query returns the whole partition).
     #[must_use]
     pub fn window<T>(&self, rows: Vec<T>) -> Vec<T> {
-        rows.into_iter()
-            .skip(self.offset)
-            .take(self.limit.saturating_add(1))
-            .collect()
+        rows.into_iter().skip(self.offset).take(self.limit.saturating_add(1)).collect()
     }
 }
 
@@ -174,12 +166,7 @@ impl<T> IdPage<T> {
     pub fn from_page(data: Vec<T>, has_more: bool, id_of: impl Fn(&T) -> &str) -> Self {
         let first_id = data.first().map(|t| id_of(t).to_owned());
         let last_id = data.last().map(|t| id_of(t).to_owned());
-        Self {
-            data,
-            has_more,
-            first_id,
-            last_id,
-        }
+        Self { data, has_more, first_id, last_id }
     }
 }
 
@@ -226,12 +213,8 @@ impl IdCursor {
             Some(b) => all.iter().position(|t| id_of(t) == b).unwrap_or(all.len()),
             None => all.len(),
         };
-        let window: Vec<T> = all
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| *i >= start && *i < end)
-            .map(|(_, t)| t)
-            .collect();
+        let window: Vec<T> =
+            all.into_iter().enumerate().filter(|(i, _)| *i >= start && *i < end).map(|(_, t)| t).collect();
         let has_more = window.len() > self.limit;
         (window.into_iter().take(self.limit).collect(), has_more)
     }
@@ -240,10 +223,7 @@ impl IdCursor {
 /// Reject any query param not in `allowed`, matching the live 400
 /// `Failed to parse request body: unknown field "X"`. Callers pass exactly the
 /// params they read, so a valid param is never rejected.
-pub fn reject_unknown_params(
-    params: &HashMap<String, String>,
-    allowed: &[&str],
-) -> Result<(), ApiError> {
+pub fn reject_unknown_params(params: &HashMap<String, String>, allowed: &[&str]) -> Result<(), ApiError> {
     for key in params.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(ApiError::invalid_request(format!(

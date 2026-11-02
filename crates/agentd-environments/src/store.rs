@@ -28,10 +28,5 @@ pub trait EnvironmentsStore: Send + Sync {
     /// Remove one.
     async fn delete(&self, org: &OrgId, id: &EnvironmentId) -> Result<Environment, StoreError>;
     /// All environments in the org, insertion order.
-    async fn list(
-        &self,
-        org: &OrgId,
-        page: &Pagination,
-    ) -> Result<Vec<Environment>, StoreError>;
+    async fn list(&self, org: &OrgId, page: &Pagination) -> Result<Vec<Environment>, StoreError>;
 }
-

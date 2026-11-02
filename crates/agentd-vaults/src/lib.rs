@@ -10,15 +10,7 @@
 //! (write-only secrets, unique key per vault → 409, ≤20 per vault,
 //! immutable keys, archive purges the secret).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod routes;
 pub mod service;

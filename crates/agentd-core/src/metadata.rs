@@ -32,9 +32,7 @@ pub struct MetadataPolicy {
 impl MetadataPolicy {
     /// Agent-style policy: 16-entry cap (live-verified).
     pub fn capped() -> Self {
-        Self {
-            max_entries: Some(values::METADATA_MAX_ENTRIES),
-        }
+        Self { max_entries: Some(values::METADATA_MAX_ENTRIES) }
     }
 
     /// Session-style policy: no entry cap (live-verified divergence from docs).
@@ -91,12 +89,7 @@ impl Metadata {
 
 impl<const N: usize> From<[(&str, &str); N]> for Metadata {
     fn from(pairs: [(&str, &str); N]) -> Self {
-        Self(
-            pairs
-                .into_iter()
-                .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                .collect(),
-        )
+        Self(pairs.into_iter().map(|(k, v)| (k.to_owned(), v.to_owned())).collect())
     }
 }
 
@@ -105,11 +98,7 @@ mod tests {
     use super::*;
 
     fn of(n: usize) -> Metadata {
-        Metadata(
-            (0..n)
-                .map(|i| (format!("k{i}"), "v".to_owned()))
-                .collect(),
-        )
+        Metadata((0..n).map(|i| (format!("k{i}"), "v".to_owned())).collect())
     }
 
     #[test]
@@ -135,7 +124,9 @@ mod tests {
         let e = m.validate(MetadataPolicy::capped()).unwrap_err();
         assert_eq!(
             e.message,
-            format!("invalid metadata: metadata key \"{key}\" exceeds maximum length of 64 characters (got 65)")
+            format!(
+                "invalid metadata: metadata key \"{key}\" exceeds maximum length of 64 characters (got 65)"
+            )
         );
     }
 

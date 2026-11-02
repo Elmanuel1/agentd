@@ -13,15 +13,7 @@
 //! (`attribute_not_exists`) — see [`dynamo::DynamoDoc::put_if_absent`] and
 //! the deployment fire claim.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod dynamo;
 pub mod entities;
@@ -49,9 +41,7 @@ pub struct AwsBackend {
 
 impl std::fmt::Debug for AwsBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AwsBackend")
-            .field("prefix", &self.prefix)
-            .finish_non_exhaustive()
+        f.debug_struct("AwsBackend").field("prefix", &self.prefix).finish_non_exhaustive()
     }
 }
 
@@ -62,13 +52,16 @@ impl AwsBackend {
         let endpoint = std::env::var("AGENTD_AWS_ENDPOINT").ok();
         let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "us-east-1".into());
 
-        let mut loader = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(region));
+        let mut loader = aws_config::defaults(BehaviorVersion::latest()).region(Region::new(region));
         if let Some(ep) = &endpoint {
             // Emulators accept any non-empty credentials.
-            loader = loader
-                .endpoint_url(ep)
-                .credentials_provider(Credentials::new("test", "test", None, None, "agentd-emulator"));
+            loader = loader.endpoint_url(ep).credentials_provider(Credentials::new(
+                "test",
+                "test",
+                None,
+                None,
+                "agentd-emulator",
+            ));
         }
         let shared = loader.load().await;
 
@@ -81,11 +74,7 @@ impl AwsBackend {
                 .map_err(|e| AwsError::S3(e.to_string()))?,
         );
 
-        Ok(Self {
-            dynamo,
-            blobs,
-            prefix,
-        })
+        Ok(Self { dynamo, blobs, prefix })
     }
 
     /// Fully-qualified table name for an entity (`{prefix}_{entity}`).

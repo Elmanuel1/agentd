@@ -73,14 +73,8 @@ impl ModelInput {
     /// Canonicalize to the full object (live rule: shorthand → standard speed).
     pub fn canonicalize(self) -> ModelSpec {
         match self {
-            Self::Shorthand(id) => ModelSpec {
-                id,
-                speed: ModelSpeed::Standard,
-            },
-            Self::Full { id, speed } => ModelSpec {
-                id,
-                speed: speed.unwrap_or(ModelSpeed::Standard),
-            },
+            Self::Shorthand(id) => ModelSpec { id, speed: ModelSpeed::Standard },
+            Self::Full { id, speed } => ModelSpec { id, speed: speed.unwrap_or(ModelSpeed::Standard) },
         }
     }
 }
@@ -109,10 +103,7 @@ pub struct ToolDefaultConfig {
 impl Default for ToolDefaultConfig {
     fn default() -> Self {
         // Live canonical expansion of a bare toolset entry.
-        Self {
-            enabled: true,
-            permission_policy: PermissionPolicy::AlwaysAllow,
-        }
+        Self { enabled: true, permission_policy: PermissionPolicy::AlwaysAllow }
     }
 }
 
@@ -338,11 +329,7 @@ impl Agent {
 
     /// The compact projection used by deployments.
     pub fn reference(&self) -> AgentRef {
-        AgentRef {
-            id: self.id.clone(),
-            tag: AgentTag::Agent,
-            version: self.version,
-        }
+        AgentRef { id: self.id.clone(), tag: AgentTag::Agent, version: self.version }
     }
 }
 
@@ -473,15 +460,8 @@ mod tests {
 
     #[test]
     fn model_object_form_accepted() {
-        let m: ModelInput =
-            serde_json::from_str(r#"{"id":"claude-opus-4-6","speed":"fast"}"#).unwrap();
-        assert_eq!(
-            m.canonicalize(),
-            ModelSpec {
-                id: "claude-opus-4-6".into(),
-                speed: ModelSpeed::Fast
-            }
-        );
+        let m: ModelInput = serde_json::from_str(r#"{"id":"claude-opus-4-6","speed":"fast"}"#).unwrap();
+        assert_eq!(m.canonicalize(), ModelSpec { id: "claude-opus-4-6".into(), speed: ModelSpeed::Fast });
     }
 
     #[test]
@@ -493,10 +473,7 @@ mod tests {
         assert_eq!(v["type"], "agent_toolset_20260401");
         assert_eq!(v["configs"], serde_json::json!([]));
         assert_eq!(v["default_config"]["enabled"], true);
-        assert_eq!(
-            v["default_config"]["permission_policy"]["type"],
-            "always_allow"
-        );
+        assert_eq!(v["default_config"]["permission_policy"]["type"], "always_allow");
     }
 
     #[test]
@@ -548,17 +525,8 @@ mod tests {
         .unwrap();
         assert_eq!(roster.len(), 3);
         assert!(matches!(roster[0], RosterEntry::Shorthand(_)));
-        assert!(matches!(
-            roster[1],
-            RosterEntry::Tagged(TaggedRosterEntry::Agent {
-                version: Some(4),
-                ..
-            })
-        ));
-        assert!(matches!(
-            roster[2],
-            RosterEntry::Tagged(TaggedRosterEntry::SelfEntry {})
-        ));
+        assert!(matches!(roster[1], RosterEntry::Tagged(TaggedRosterEntry::Agent { version: Some(4), .. })));
+        assert!(matches!(roster[2], RosterEntry::Tagged(TaggedRosterEntry::SelfEntry {})));
     }
 
     #[test]

@@ -4,16 +4,13 @@
 use std::sync::Arc;
 
 use agentd_core::limits::{
-    required, validate_array_max, validate_model_supported, validate_string_len, values,
-    ModelCatalog,
+    required, validate_array_max, validate_model_supported, validate_string_len, values, ModelCatalog,
 };
 use agentd_core::metadata::MetadataPolicy;
 use agentd_core::{ApiError, AuthContext, Pagination, Timestamp};
 
 use crate::store::{AgentsStore, StoreError};
-use crate::types::{
-    Agent, AgentConfig, AgentId, AgentTag, CreateAgentRequest, UpdateAgentRequest,
-};
+use crate::types::{Agent, AgentConfig, AgentId, AgentTag, CreateAgentRequest, UpdateAgentRequest};
 
 /// Agent service — all handlers delegate here.
 pub struct AgentsService {
@@ -34,11 +31,7 @@ impl AgentsService {
     }
 
     /// `POST /v1/agents`.
-    pub async fn create(
-        &self,
-        ctx: &AuthContext,
-        req: CreateAgentRequest,
-    ) -> Result<Agent, ApiError> {
+    pub async fn create(&self, ctx: &AuthContext, req: CreateAgentRequest) -> Result<Agent, ApiError> {
         let metadata = req.metadata.clone();
         let config = self.validate_config(req)?;
         let now = Timestamp::now();
@@ -59,10 +52,7 @@ impl AgentsService {
             updated_at: now,
             version: 1,
         };
-        self.store
-            .insert(&ctx.workspace, agent.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert(&ctx.workspace, agent.clone()).await.map_err(map_store)?;
         Ok(agent)
     }
 
@@ -85,19 +75,13 @@ impl AgentsService {
 
     /// `GET /v1/agents` — latest version of each agent.
     pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Agent>, ApiError> {
-        self.store
-            .list(&ctx.workspace, page)
-            .await
-            .map_err(map_store)
+        self.store.list(&ctx.workspace, page).await.map_err(map_store)
     }
 
     /// `GET /v1/agents/{id}/versions` — ascending.
     pub async fn versions(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vec<Agent>, ApiError> {
         let id = parse_id(raw_id)?;
-        self.store
-            .versions(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.versions(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     /// `POST /v1/agents/{id}` — every update mints version latest+1.
@@ -111,15 +95,9 @@ impl AgentsService {
         // Live: `version` is required (optimistic lock) — a missing one fails
         // body validation with "version: Field required".
         let expected = required("version", req.version)?;
-        let current = self
-            .store
-            .latest(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)?;
+        let current = self.store.latest(&ctx.workspace, &id).await.map_err(map_store)?;
         if current.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot update an archived agent",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot update an archived agent"));
         }
         if expected != current.version {
             // Live 400 message, verbatim.
@@ -140,9 +118,7 @@ impl AgentsService {
             description: req.description.or_else(|| current.description.clone()),
             system: req.system.or_else(|| current.system.clone()),
             tools: req.tools.unwrap_or_else(|| current.tools.clone()),
-            mcp_servers: req
-                .mcp_servers
-                .unwrap_or_else(|| current.mcp_servers.clone()),
+            mcp_servers: req.mcp_servers.unwrap_or_else(|| current.mcp_servers.clone()),
             skills: req.skills.unwrap_or_else(|| current.skills.clone()),
             multiagent: req.multiagent.or_else(|| current.multiagent.clone()),
             metadata: req.metadata.unwrap_or_else(|| current.metadata.clone()),
@@ -166,28 +142,18 @@ impl AgentsService {
             updated_at: Timestamp::now(),
             version: current.version + 1,
         };
-        self.store
-            .append_version(&ctx.workspace, next.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.append_version(&ctx.workspace, next.clone()).await.map_err(map_store)?;
         Ok(next)
     }
 
     /// `POST /v1/agents/{id}/archive` — permanent, idempotent stamp.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Agent, ApiError> {
         let id = parse_id(raw_id)?;
-        let mut current = self
-            .store
-            .latest(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)?;
+        let mut current = self.store.latest(&ctx.workspace, &id).await.map_err(map_store)?;
         if current.archived_at.is_none() {
             current.archived_at = Some(Timestamp::now());
             current.updated_at = Timestamp::now();
-            self.store
-                .replace_latest(&ctx.workspace, current.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace_latest(&ctx.workspace, current.clone()).await.map_err(map_store)?;
         }
         Ok(current)
     }
@@ -203,11 +169,7 @@ impl AgentsService {
             validate_string_len("system", s, 0, values::SYSTEM_MAX)?;
         }
         validate_array_max("tools", req.tools.len(), values::TOOLS_MAX)?;
-        validate_array_max(
-            "mcp_servers",
-            req.mcp_servers.len(),
-            values::MCP_SERVERS_MAX,
-        )?;
+        validate_array_max("mcp_servers", req.mcp_servers.len(), values::MCP_SERVERS_MAX)?;
         // Live: duplicate skill_id → "Agent has invalid configuration: duplicate skill_id "pdf""
         let mut seen = std::collections::BTreeSet::new();
         for s in &req.skills {

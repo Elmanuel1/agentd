@@ -9,10 +9,9 @@ use agentd_core::{ApiError, AuthContext, ErrorType, Pagination, Timestamp};
 
 use crate::store::{MemoryPersistence, MemoryRecord, StoreError, VersionRecord, VersionSelector};
 use crate::types::{
-    CreateMemoryRequest, CreateStoreRequest, Memory, MemoryId, MemoryListItem, MemoryListPage,
-    MemoryPrefix, MemoryPrefixTag, MemoryStoreEntity, MemoryStoreId, MemoryStoreTag, MemoryTag,
-    MemoryVersion, MemoryVersionId, MemoryVersionTag, Precondition, UpdateMemoryRequest,
-    VersionOperation,
+    CreateMemoryRequest, CreateStoreRequest, Memory, MemoryId, MemoryListItem, MemoryListPage, MemoryPrefix,
+    MemoryPrefixTag, MemoryStoreEntity, MemoryStoreId, MemoryStoreTag, MemoryTag, MemoryVersion,
+    MemoryVersionId, MemoryVersionTag, Precondition, UpdateMemoryRequest, VersionOperation,
 };
 
 /// List ordering — matches the live `order_by` values (default `created_at`).
@@ -29,9 +28,7 @@ impl MemoryOrder {
         match raw {
             None | Some("created_at") => Ok(Self::CreatedAt),
             Some("path") => Ok(Self::Path),
-            Some(_) => Err(ApiError::invalid_request(
-                "order_by must be one of: created_at, path",
-            )),
+            Some(_) => Err(ApiError::invalid_request("order_by must be one of: created_at, path")),
         }
     }
 }
@@ -136,24 +133,14 @@ impl MemoriesService {
             tag: MemoryStoreTag::MemoryStore,
             updated_at: now,
         };
-        self.store
-            .insert_store(&ctx.workspace, s.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert_store(&ctx.workspace, s.clone()).await.map_err(map_store)?;
         Ok(s)
     }
 
     /// `GET /v1/memory_stores/{id}`.
-    pub async fn get_store(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-    ) -> Result<MemoryStoreEntity, ApiError> {
+    pub async fn get_store(&self, ctx: &AuthContext, raw_id: &str) -> Result<MemoryStoreEntity, ApiError> {
         let id = parse_store_id(raw_id)?;
-        self.store
-            .get_store(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.get_store(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     /// `GET /v1/memory_stores`.
@@ -162,10 +149,7 @@ impl MemoriesService {
         ctx: &AuthContext,
         page: &Pagination,
     ) -> Result<Vec<MemoryStoreEntity>, ApiError> {
-        self.store
-            .list_stores(&ctx.workspace, page)
-            .await
-            .map_err(map_store)
+        self.store.list_stores(&ctx.workspace, page).await.map_err(map_store)
     }
 
     /// `POST /v1/memory_stores/{id}/archive`.
@@ -175,33 +159,19 @@ impl MemoriesService {
         raw_id: &str,
     ) -> Result<MemoryStoreEntity, ApiError> {
         let id = parse_store_id(raw_id)?;
-        let mut s = self
-            .store
-            .get_store(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)?;
+        let mut s = self.store.get_store(&ctx.workspace, &id).await.map_err(map_store)?;
         if s.archived_at.is_none() {
             s.archived_at = Some(Timestamp::now());
             s.updated_at = Timestamp::now();
-            self.store
-                .replace_store(&ctx.workspace, s.clone())
-                .await
-                .map_err(map_store)?;
+            self.store.replace_store(&ctx.workspace, s.clone()).await.map_err(map_store)?;
         }
         Ok(s)
     }
 
     /// `DELETE /v1/memory_stores/{id}` — live returned 200.
-    pub async fn delete_store(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-    ) -> Result<MemoryStoreEntity, ApiError> {
+    pub async fn delete_store(&self, ctx: &AuthContext, raw_id: &str) -> Result<MemoryStoreEntity, ApiError> {
         let id = parse_store_id(raw_id)?;
-        self.store
-            .delete_store(&ctx.workspace, &id)
-            .await
-            .map_err(map_store)
+        self.store.delete_store(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     // ── Memories ──────────────────────────────────────────────────────────
@@ -214,15 +184,9 @@ impl MemoriesService {
         req: CreateMemoryRequest,
     ) -> Result<Memory, ApiError> {
         let store_id = parse_store_id(raw_store_id)?;
-        let store = self
-            .store
-            .get_store(&ctx.workspace, &store_id)
-            .await
-            .map_err(map_store)?;
+        let store = self.store.get_store(&ctx.workspace, &store_id).await.map_err(map_store)?;
         if store.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request(
-                "cannot write to an archived memory store",
-            ));
+            return Err(ApiError::conflict_invalid_request("cannot write to an archived memory store"));
         }
         let path = required("path", req.path)?;
         validate_path(&path)?;
@@ -261,15 +225,9 @@ impl MemoriesService {
         let record = MemoryRecord {
             head: head.clone(),
             deleted: false,
-            chain: vec![VersionRecord {
-                version,
-                blob: Some(content),
-            }],
+            chain: vec![VersionRecord { version, blob: Some(content) }],
         };
-        self.store
-            .insert_memory(&ctx.workspace, &store_id, record)
-            .await
-            .map_err(map_store)?;
+        self.store.insert_memory(&ctx.workspace, &store_id, record).await.map_err(map_store)?;
         Ok(head)
     }
 
@@ -283,11 +241,7 @@ impl MemoriesService {
         view: View,
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
-        let record = self
-            .store
-            .get_memory(&ctx.workspace, &sid, &mid)
-            .await
-            .map_err(map_store)?;
+        let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         Ok(project_head(&record, view))
     }
 
@@ -309,30 +263,20 @@ impl MemoriesService {
         let sid = parse_store_id(raw_store_id)?;
         let order = MemoryOrder::parse(order_by)?;
         let prefix = normalize_prefix(path_prefix);
-        let records = self
-            .store
-            .list_memories(&ctx.workspace, &sid, Some(&prefix))
-            .await
-            .map_err(map_store)?;
+        let records =
+            self.store.list_memories(&ctx.workspace, &sid, Some(&prefix)).await.map_err(map_store)?;
 
-        let mut memories: Vec<Memory> =
-            records.iter().map(|r| project_head(r, View::Basic)).collect();
+        let mut memories: Vec<Memory> = records.iter().map(|r| project_head(r, View::Basic)).collect();
         match order {
             MemoryOrder::Path => memories.sort_by(|a, b| a.path.cmp(&b.path)),
             MemoryOrder::CreatedAt => memories.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
         }
 
         let data = match depth {
-            None => memories
-                .into_iter()
-                .map(|m| MemoryListItem::Memory(Box::new(m)))
-                .collect(),
+            None => memories.into_iter().map(|m| MemoryListItem::Memory(Box::new(m))).collect(),
             Some(d) => collapse_depth(memories, &prefix, d, order),
         };
-        Ok(MemoryListPage {
-            data,
-            prefixes: Vec::new(),
-        })
+        Ok(MemoryListPage { data, prefixes: Vec::new() })
     }
 
     /// Resolve a live memory by its path, with full content — used by the
@@ -344,19 +288,10 @@ impl MemoriesService {
         path: &str,
     ) -> Result<Option<Memory>, ApiError> {
         let sid = parse_store_id(raw_store_id)?;
-        let Some(mid) = self
-            .store
-            .find_by_path(&ctx.workspace, &sid, path)
-            .await
-            .map_err(map_store)?
-        else {
+        let Some(mid) = self.store.find_by_path(&ctx.workspace, &sid, path).await.map_err(map_store)? else {
             return Ok(None);
         };
-        let record = self
-            .store
-            .get_memory(&ctx.workspace, &sid, &mid)
-            .await
-            .map_err(map_store)?;
+        let record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         Ok(Some(project_head(&record, View::Full)))
     }
 
@@ -371,21 +306,14 @@ impl MemoriesService {
         req: UpdateMemoryRequest,
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
-        let mut record = self
-            .store
-            .get_memory(&ctx.workspace, &sid, &mid)
-            .await
-            .map_err(map_store)?;
+        let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         check_precondition(&record, req.precondition.as_ref())?;
         let new_content = match req.content {
             Some(c) => {
                 validate_bytes_max("content", c.len(), values::MEMORY_CONTENT_MAX_BYTES)?;
                 c
             }
-            None => record
-                .resolve(&VersionSelector::Latest)
-                .and_then(|v| v.blob.clone())
-                .unwrap_or_default(),
+            None => record.resolve(&VersionSelector::Latest).and_then(|v| v.blob.clone()).unwrap_or_default(),
         };
         let new_path = match req.path {
             Some(p) => {
@@ -411,25 +339,16 @@ impl MemoriesService {
             redacted_by: None,
             tag: MemoryVersionTag::MemoryVersion,
         };
-        record.chain.push(VersionRecord {
-            version,
-            blob: Some(new_content),
-        });
+        record.chain.push(VersionRecord { version, blob: Some(new_content) });
         // Advance the `latest` ref.
         record.head.memory_version_id = ver_id;
         record.head.content_sha256 = sha;
-        record.head.content_size_bytes = record
-            .chain
-            .last()
-            .and_then(|v| v.version.content_size_bytes)
-            .unwrap_or_default();
+        record.head.content_size_bytes =
+            record.chain.last().and_then(|v| v.version.content_size_bytes).unwrap_or_default();
         record.head.path = new_path;
         record.head.updated_at = now;
         let head = record.head.clone();
-        self.store
-            .replace_memory(&ctx.workspace, &sid, record)
-            .await
-            .map_err(map_store)?;
+        self.store.replace_memory(&ctx.workspace, &sid, record).await.map_err(map_store)?;
         Ok(head)
     }
 
@@ -443,11 +362,7 @@ impl MemoriesService {
         expected_content_sha256: Option<&str>,
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
-        let mut record = self
-            .store
-            .get_memory(&ctx.workspace, &sid, &mid)
-            .await
-            .map_err(map_store)?;
+        let mut record = self.store.get_memory(&ctx.workspace, &sid, &mid).await.map_err(map_store)?;
         if let Some(expected) = expected_content_sha256 {
             validate_sha256_hex("expected_content_sha256", expected)?;
             if record.head.content_sha256 != expected {
@@ -475,10 +390,7 @@ impl MemoriesService {
         record.deleted = true;
         record.head.updated_at = now;
         let head = record.head.clone();
-        self.store
-            .replace_memory(&ctx.workspace, &sid, record)
-            .await
-            .map_err(map_store)?;
+        self.store.replace_memory(&ctx.workspace, &sid, record).await.map_err(map_store)?;
         Ok(head)
     }
 
@@ -497,11 +409,8 @@ impl MemoriesService {
             Some(raw) => Some(parse_mem_id(raw)?),
             None => None,
         };
-        let versions = self
-            .store
-            .list_versions(&ctx.workspace, &sid, mid.as_ref())
-            .await
-            .map_err(map_store)?;
+        let versions =
+            self.store.list_versions(&ctx.workspace, &sid, mid.as_ref()).await.map_err(map_store)?;
         Ok(versions.iter().map(|v| project_version(v, view)).collect())
     }
 
@@ -514,11 +423,7 @@ impl MemoriesService {
     ) -> Result<MemoryVersion, ApiError> {
         let sid = parse_store_id(raw_store_id)?;
         let vid = parse_version_id(raw_version_id)?;
-        let (_, v) = self
-            .store
-            .get_version(&ctx.workspace, &sid, &vid)
-            .await
-            .map_err(map_store)?;
+        let (_, v) = self.store.get_version(&ctx.workspace, &sid, &vid).await.map_err(map_store)?;
         Ok(project_version(&v, View::Full))
     }
 
@@ -532,11 +437,7 @@ impl MemoriesService {
     ) -> Result<MemoryVersion, ApiError> {
         let sid = parse_store_id(raw_store_id)?;
         let vid = parse_version_id(raw_version_id)?;
-        let (mem_id, mut v) = self
-            .store
-            .get_version(&ctx.workspace, &sid, &vid)
-            .await
-            .map_err(map_store)?;
+        let (mem_id, mut v) = self.store.get_version(&ctx.workspace, &sid, &vid).await.map_err(map_store)?;
         // Redact: clear content/sha/size/path, stamp redacted_by.
         v.blob = None;
         v.version.content_sha256 = None;
@@ -544,20 +445,13 @@ impl MemoriesService {
         v.version.path = None;
         v.version.redacted_by = Some(ctx.actor());
         // Persist by rewriting the record's chain entry.
-        let mut record = self
-            .store
-            .get_memory(&ctx.workspace, &sid, &mem_id)
-            .await
-            .map_err(map_store)?;
+        let mut record = self.store.get_memory(&ctx.workspace, &sid, &mem_id).await.map_err(map_store)?;
         for entry in &mut record.chain {
             if entry.version.id == vid {
                 *entry = v.clone();
             }
         }
-        self.store
-            .replace_memory(&ctx.workspace, &sid, record)
-            .await
-            .map_err(map_store)?;
+        self.store.replace_memory(&ctx.workspace, &sid, record).await.map_err(map_store)?;
         Ok(project_version(&v, View::Basic))
     }
 
@@ -571,11 +465,7 @@ impl MemoriesService {
         mem_id: &MemoryId,
         selector: &VersionSelector,
     ) -> Result<MemoryVersion, ApiError> {
-        let record = self
-            .store
-            .get_memory(&ctx.workspace, store_id, mem_id)
-            .await
-            .map_err(map_store)?;
+        let record = self.store.get_memory(&ctx.workspace, store_id, mem_id).await.map_err(map_store)?;
         record
             .resolve(selector)
             .map(|v| project_version(v, View::Full))
@@ -592,11 +482,7 @@ impl MemoriesService {
     ) -> Result<Memory, ApiError> {
         let (sid, mid) = parse_mem_pair(raw_store_id, raw_mem_id)?;
         let vid = parse_version_id(raw_version_id)?;
-        let record = self
-            .store
-            .rollback(&ctx.workspace, &sid, &mid, &vid)
-            .await
-            .map_err(map_store)?;
+        let record = self.store.rollback(&ctx.workspace, &sid, &mid, &vid).await.map_err(map_store)?;
         Ok(record.head)
     }
 }
@@ -606,9 +492,7 @@ impl MemoriesService {
 fn project_head(record: &MemoryRecord, view: View) -> Memory {
     let mut head = record.head.clone();
     head.content = match view {
-        View::Full => record
-            .resolve(&VersionSelector::Latest)
-            .and_then(|v| v.blob.clone()),
+        View::Full => record.resolve(&VersionSelector::Latest).and_then(|v| v.blob.clone()),
         View::Basic => None,
     };
     head
@@ -623,10 +507,7 @@ fn project_version(v: &VersionRecord, view: View) -> MemoryVersion {
     out
 }
 
-fn check_precondition(
-    record: &MemoryRecord,
-    pre: Option<&Precondition>,
-) -> Result<(), ApiError> {
+fn check_precondition(record: &MemoryRecord, pre: Option<&Precondition>) -> Result<(), ApiError> {
     if let Some(Precondition::ContentSha256 { content_sha256 }) = pre {
         validate_sha256_hex("precondition.content_sha256", content_sha256)?;
         if &record.head.content_sha256 != content_sha256 {
@@ -647,9 +528,7 @@ fn precondition_failed() -> ApiError {
 
 fn validate_path(path: &str) -> Result<(), ApiError> {
     if !path.starts_with('/') || path.len() < 2 {
-        return Err(ApiError::invalid_request(
-            "path: must be an absolute path like \"/notes.md\"",
-        ));
+        return Err(ApiError::invalid_request("path: must be an absolute path like \"/notes.md\""));
     }
     Ok(())
 }

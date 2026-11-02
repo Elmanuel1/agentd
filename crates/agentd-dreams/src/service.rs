@@ -19,8 +19,8 @@ use async_trait::async_trait;
 
 use crate::store::{DreamsStore, StoreError};
 use crate::types::{
-    Candidate, CandidateOutcome, CreateDreamRequest, Dream, DreamId, DreamRun, DreamRunId,
-    DreamRunTag, DreamStatus, DreamTag, Verdict,
+    Candidate, CandidateOutcome, CreateDreamRequest, Dream, DreamId, DreamRun, DreamRunId, DreamRunTag,
+    DreamStatus, DreamTag, Verdict,
 };
 
 /// Generates candidate memories from recent activity. The LLM implementation
@@ -28,11 +28,7 @@ use crate::types::{
 #[async_trait]
 pub trait Proposer: Send + Sync {
     /// Propose candidates for one dream firing.
-    async fn propose(
-        &self,
-        ctx: &AuthContext,
-        dream: &Dream,
-    ) -> Result<Vec<Candidate>, ApiError>;
+    async fn propose(&self, ctx: &AuthContext, dream: &Dream) -> Result<Vec<Candidate>, ApiError>;
 }
 
 /// Judges one candidate against the live memory (evidence·conflict·novelty).
@@ -73,13 +69,7 @@ impl DreamsService {
         gate: Arc<dyn ReviewGate>,
         scheduler: Arc<dyn SchedulerPort>,
     ) -> Self {
-        Self {
-            store,
-            memories,
-            proposer,
-            gate,
-            scheduler,
-        }
+        Self { store, memories, proposer, gate, scheduler }
     }
 
     /// `POST /v1/dreams`.
@@ -110,17 +100,12 @@ impl DreamsService {
             tag: DreamTag::Dream,
             updated_at: now,
         };
-        self.store
-            .insert(&ctx.workspace, dream.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.insert(&ctx.workspace, dream.clone()).await.map_err(map_store)?;
         self.scheduler
             .upsert(ScheduleSpec {
                 cron: dream.schedule.expression.clone(),
                 timezone: dream.schedule.timezone.clone(),
-                target: FireTarget::Dream {
-                    id: dream.id.as_str().to_owned(),
-                },
+                target: FireTarget::Dream { id: dream.id.as_str().to_owned() },
                 tenant: agentd_core::ports::TenantRef {
                     org_id: ctx.org.as_str().to_owned(),
                     workspace_id: ctx.workspace.as_str().to_owned(),
@@ -161,9 +146,7 @@ impl DreamsService {
         match dream.status {
             DreamStatus::Archived => {
                 if manual {
-                    return Err(ApiError::conflict_invalid_request(
-                        "cannot run an archived dream",
-                    ));
+                    return Err(ApiError::conflict_invalid_request("cannot run an archived dream"));
                 }
                 return Ok(None);
             }
@@ -179,16 +162,11 @@ impl DreamsService {
 
         for candidate in candidates {
             // Live content at the candidate's path (the gate's comparison target).
-            let live = self
-                .memories
-                .content_at_path(ctx, &dream.memory_store_id, &candidate.path)
-                .await?;
+            let live = self.memories.content_at_path(ctx, &dream.memory_store_id, &candidate.path).await?;
 
             // 2. Review against live memory.
-            let verdict = self
-                .gate
-                .review(ctx, &candidate, live.as_ref().and_then(|m| m.content.as_deref()))
-                .await?;
+            let verdict =
+                self.gate.review(ctx, &candidate, live.as_ref().and_then(|m| m.content.as_deref())).await?;
 
             // 3. Pass → write the version (create or update). Fail → nothing.
             let memory_version_id = if verdict.promoted() {
@@ -226,11 +204,7 @@ impl DreamsService {
                 None
             };
 
-            outcomes.push(CandidateOutcome {
-                candidate,
-                verdict,
-                memory_version_id,
-            });
+            outcomes.push(CandidateOutcome { candidate, verdict, memory_version_id });
         }
 
         let run = DreamRun {
@@ -242,10 +216,7 @@ impl DreamsService {
             rejected_count: rejected,
             tag: DreamRunTag::DreamRun,
         };
-        self.store
-            .push_run(&ctx.workspace, run.clone())
-            .await
-            .map_err(map_store)?;
+        self.store.push_run(&ctx.workspace, run.clone()).await.map_err(map_store)?;
         Ok(Some(run))
     }
 
@@ -262,12 +233,7 @@ impl DreamsService {
     /// `POST /v1/dreams/{id}/archive` — terminal.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Dream, ApiError> {
         let d = self.set_status(ctx, raw_id, DreamStatus::Archived, false).await?;
-        let _ = self
-            .scheduler
-            .delete(&FireTarget::Dream {
-                id: d.id.as_str().to_owned(),
-            })
-            .await;
+        let _ = self.scheduler.delete(&FireTarget::Dream { id: d.id.as_str().to_owned() }).await;
         Ok(d)
     }
 
@@ -281,19 +247,12 @@ impl DreamsService {
         let id = parse_id(raw_id)?;
         let mut d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         if guard_archived && d.status == DreamStatus::Archived {
-            return Err(ApiError::conflict_invalid_request(
-                "dream is archived and immutable",
-            ));
+            return Err(ApiError::conflict_invalid_request("dream is archived and immutable"));
         }
         d.status = status;
         d.updated_at = Timestamp::now();
-        self.store
-            .replace(&ctx.workspace, d.clone())
-            .await
-            .map_err(map_store)?;
-        let target = FireTarget::Dream {
-            id: d.id.as_str().to_owned(),
-        };
+        self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
+        let target = FireTarget::Dream { id: d.id.as_str().to_owned() };
         match status {
             DreamStatus::Paused => {
                 let _ = self.scheduler.pause(&target).await;

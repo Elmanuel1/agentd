@@ -10,15 +10,7 @@
 //! `stats {active_seconds, duration_seconds}`, usage block with
 //! present-and-null `cache_creation`.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod events;
 pub mod routes;
