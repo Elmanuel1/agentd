@@ -157,5 +157,15 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: false
+          load: true
+          tags: agentd:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # The binary must start in the runtime image (a glibc mismatch between
+      # the build and runtime bases only shows here): a bad config is its
+      # first answer, before it touches any backend.
+      - name: Start the binary
+        run: |
+          out=$(docker run --rm -e AGENTD_STORE=none agentd:ci 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "invalid configuration: AGENTD_STORE"

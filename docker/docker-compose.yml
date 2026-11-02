@@ -28,13 +28,13 @@ services:
     environment:
       AGENTD_ADDR: 0.0.0.0:8080
       AGENTD_API_KEYS: ${AGENTD_API_KEYS:-agentd-dev-key:org_dev:wrkspc_01dev}
-      # Records → Postgres; file BYTES → object storage (MinIO locally, real S3 in prod).
+      # Records → Postgres; file BYTES → object storage (LocalStack S3 locally, real S3 in prod).
       AGENTD_STORE: ${AGENTD_STORE:-postgres}
       DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:-agentd}@postgres:5432/agentd
-      AGENTD_AWS_ENDPOINT: http://minio:9000     # blobs; drop this for real S3
+      AGENTD_AWS_ENDPOINT: http://s3:4566        # blobs; drop this for real S3
       AGENTD_S3_CREATE_BUCKET: "1"
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-agentd}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-agentd-dev-secret}
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
       RUST_LOG: info
     depends_on:
@@ -42,8 +42,8 @@ services:
         condition: service_healthy
       flyway:
         condition: service_completed_successfully   # schema ready before boot
-      minio:
-        condition: service_started
+      s3:
+        condition: service_healthy
     deploy:
       replicas: ${AGENTD_REPLICAS:-1}   # one: event streams and timers are per process
 
@@ -63,20 +63,20 @@ services:
       timeout: 3s
       retries: 20
 
-  # Object storage for file BYTES (never in the DB). MinIO locally = real S3
-  # in prod (drop AGENTD_AWS_ENDPOINT to use AWS S3 directly).
-  minio:
-    image: minio/minio:latest
-    command: server /data
+  # Object storage for file BYTES (never in the DB): LocalStack's S3 locally
+  # (MinIO no longer publishes public images); drop AGENTD_AWS_ENDPOINT to
+  # use AWS S3 directly.
+  s3:
+    image: localstack/localstack:3.0
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-agentd}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-agentd-dev-secret}
-    volumes:
-      - minio_data:/data
+      SERVICES: s3
     ports:
-      - "9000:9000"
-
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
 
 volumes:
   pg_data:
-  minio_data:
