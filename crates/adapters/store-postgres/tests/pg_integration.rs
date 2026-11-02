@@ -168,6 +168,7 @@ async fn pg_files_roundtrip() {
     let meta = files::types::FileMetadata {
         created_at: Timestamp::now(),
         downloadable: true,
+        expires_at: None,
         filename: "data.csv".into(),
         id: files::types::FileId::generate(),
         mime_type: "text/csv".into(),
@@ -191,7 +192,7 @@ async fn pg_files_roundtrip() {
     let scoped = store
         .list(
             &ws,
-            Some("sesn_01A"),
+            &files::FileFilter { scope_id: Some("sesn_01A".into()), ids: vec![] },
             &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap(),
         )
         .await
@@ -201,7 +202,7 @@ async fn pg_files_roundtrip() {
     assert!(store
         .list(
             &ws,
-            Some("sesn_01Z"),
+            &files::FileFilter { scope_id: Some("sesn_01Z".into()), ids: vec![] },
             &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()
         )
         .await

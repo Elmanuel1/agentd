@@ -90,8 +90,12 @@ impl S3BlobStore {
                 .credentials_provider(aws_sdk_s3::config::SharedCredentialsProvider::new(role.await))
                 .build();
         }
-        // The endpoint applies to S3 only: STS keeps its own.
-        let mut conf = aws_sdk_s3::config::Builder::from(&shared).force_path_style(config.path_style);
+        // The endpoint applies to S3 only: STS keeps its own. Checksums are
+        // sent only where S3 requires them: S3-compatible stores (LocalStack,
+        // older MinIO) reject the default trailing checksum on empty bodies.
+        let mut conf = aws_sdk_s3::config::Builder::from(&shared)
+            .force_path_style(config.path_style)
+            .request_checksum_calculation(aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired);
         if let Some(endpoint) = &config.endpoint {
             conf = conf.endpoint_url(endpoint);
         }
@@ -140,10 +144,11 @@ impl BlobStore for S3BlobStore {
             .put_object()
             .bucket(&self.bucket)
             .key(key)
+            .content_length(i64::try_from(bytes.len()).unwrap_or(i64::MAX))
             .body(ByteStream::from(bytes))
             .send()
             .await
-            .map_err(|e| BlobError::Backend(e.to_string()))?;
+            .map_err(|e| BlobError::Backend(aws_sdk_s3::error::DisplayErrorContext(&e).to_string()))?;
         Ok(())
     }
 

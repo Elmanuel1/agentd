@@ -5,6 +5,7 @@ use bytes::Bytes;
 use shared::{IdCursor, WorkspaceId};
 
 use crate::types::{FileId, FileMetadata};
+use crate::FileFilter;
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -42,7 +43,7 @@ pub trait FilesStore: Send + Sync {
     async fn list(
         &self,
         ws: &WorkspaceId,
-        scope_id: Option<&str>,
+        filter: &FileFilter,
         cursor: &IdCursor,
     ) -> Result<(Vec<StoredFile>, bool), StoreError>;
 }
