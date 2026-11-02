@@ -1,7 +1,8 @@
 //! agentd — the Managed-Agents-compatible control plane.
 //!
 //! Boot: read [`Config`] from the environment, connect the backends it
-//! selects, assemble the app, and serve. Records and blobs live in Postgres and
+//! selects, assemble the app, and serve. `agentd keys …` manages API keys
+//! instead ([`api::cli`]). Records and blobs live in Postgres and
 //! object storage; event streams and the local scheduler live in the process,
 //! so run one replica until a shared event bus and scheduler replace them.
 
@@ -20,6 +21,15 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.split_first() {
+        None => {}
+        Some((cmd, rest)) if cmd == "keys" => return api::cli::keys(&config, rest).await,
+        Some(_) => {
+            eprintln!("{}", api::cli::USAGE);
+            return ExitCode::FAILURE;
+        }
+    }
     let _telemetry = match api::telemetry::init(config.telemetry.otlp, config.telemetry.json_logs) {
         Ok(t) => t,
         Err(e) => {

@@ -3,10 +3,8 @@
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
 use blobs_s3::S3Config;
+use secrets_aws::AwsSecretsConfig;
 use store_postgres::PoolSettings;
-
-use crate::keys::env_keys;
-pub use crate::keys::{ApiKey, DEV_KEY};
 
 /// Everything the binary needs to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +16,7 @@ pub struct Config {
     /// Blob store (`AGENTD_BLOBS`).
     pub blobs: BlobsConfig,
     /// Secret store (`AGENTD_SECRETS`).
-    pub secrets: SecretsConfig,
+    pub secrets: AwsSecretsConfig,
     /// API-key source (`AGENTD_KEYS`).
     pub keys: KeysConfig,
     /// Scheduler (`AGENTD_SCHEDULER`).
@@ -30,7 +28,7 @@ pub struct Config {
 }
 
 /// `AGENTD_STORE`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum StoreConfig {
     /// `postgres`, at `DATABASE_URL`.
     Postgres {
@@ -42,6 +40,22 @@ pub enum StoreConfig {
     },
 }
 
+/// Shows the URL without its password or its query, where libpq also takes one.
+impl std::fmt::Debug for StoreConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self::Postgres { url, pool } = self;
+        let url = url.split('?').next().unwrap_or_default();
+        let shown = match url.rsplit_once('@') {
+            Some((credentials, rest)) => {
+                let user = credentials.split_once(':').map_or(credentials, |(user, _)| user);
+                format!("{user}:***@{rest}")
+            }
+            None => url.to_owned(),
+        };
+        f.debug_struct("Postgres").field("url", &shown).field("pool", pool).finish()
+    }
+}
+
 /// `AGENTD_BLOBS`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobsConfig {
@@ -49,19 +63,12 @@ pub enum BlobsConfig {
     S3(S3Config),
 }
 
-/// `AGENTD_SECRETS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecretsConfig {
-    /// `blob`: secrets as objects in the blob store.
-    Blob,
-}
-
 /// `AGENTD_KEYS`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeysConfig {
-    /// `env`: the keys listed in `AGENTD_API_KEYS`, plus the development key
-    /// when `AGENTD_DEV_KEY=1`.
-    Env(Vec<ApiKey>),
+    /// `aws`: the keys `agentd keys create` issued, one Secrets Manager secret
+    /// each, holding a peppered digest, never the key.
+    Aws,
 }
 
 /// `AGENTD_SCHEDULER`.
@@ -86,8 +93,10 @@ impl Config {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let store = match selector(&get, "AGENTD_STORE", "postgres").as_str() {
             "postgres" => StoreConfig::Postgres {
-                url: get("DATABASE_URL")
-                    .unwrap_or_else(|| "postgres://agentd:agentd@localhost:5432/agentd".into()),
+                url: get("DATABASE_URL").filter(|u| !u.is_empty()).ok_or_else(|| ConfigError {
+                    var: "DATABASE_URL",
+                    reason: "required: the Postgres connection URL".into(),
+                })?,
                 pool: PoolSettings {
                     max_size: number(&get, "AGENTD_DB_POOL_SIZE", 10)?,
                     wait: std::time::Duration::from_millis(number(&get, "AGENTD_DB_POOL_WAIT_MS", 5000)?),
@@ -99,12 +108,9 @@ impl Config {
             "s3" => BlobsConfig::S3(s3_config(&get)?),
             other => return Err(unknown("AGENTD_BLOBS", other)),
         };
-        let secrets = match selector(&get, "AGENTD_SECRETS", "blob").as_str() {
-            "blob" => SecretsConfig::Blob,
-            other => return Err(unknown("AGENTD_SECRETS", other)),
-        };
-        let keys = match selector(&get, "AGENTD_KEYS", "env").as_str() {
-            "env" => KeysConfig::Env(env_keys(&get)?),
+        let secrets = secrets::from_lookup(&get)?;
+        let keys = match selector(&get, "AGENTD_KEYS", "aws").as_str() {
+            "aws" => KeysConfig::Aws,
             other => return Err(unknown("AGENTD_KEYS", other)),
         };
         let scheduler = match selector(&get, "AGENTD_SCHEDULER", "local").as_str() {
@@ -142,7 +148,7 @@ fn unknown(var: &'static str, value: &str) -> ConfigError {
     ConfigError { var, reason: format!("unknown backend `{value}`") }
 }
 
-pub(crate) fn flag(
+fn flag(
     get: &impl Fn(&str) -> Option<String>,
     var: &'static str,
     default: bool,
@@ -157,8 +163,20 @@ pub(crate) fn flag(
     }
 }
 
+/// An endpoint override from `var`, refused when it would send AWS traffic in
+/// clear ([`aws_common::endpoint_problem`]).
+fn endpoint(get: &impl Fn(&str) -> Option<String>, var: &'static str) -> Result<Option<String>, ConfigError> {
+    match get(var) {
+        Some(e) => match aws_common::endpoint_problem(&e) {
+            Some(problem) => Err(ConfigError { var, reason: format!("`{e}` {problem}") }),
+            None => Ok(Some(e)),
+        },
+        None => Ok(None),
+    }
+}
+
 fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigError> {
-    let endpoint = get("AGENTD_AWS_ENDPOINT");
+    let endpoint = endpoint(get, "AGENTD_AWS_ENDPOINT")?;
     Ok(S3Config {
         bucket: get("AGENTD_BLOB_BUCKET").unwrap_or_else(|| "agentd-artifacts".into()),
         region: get("AGENTD_S3_REGION"),
@@ -171,6 +189,7 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
 }
 
 mod runtime;
+mod secrets;
 mod telemetry;
 
 pub use runtime::{RuntimeConfig, DEFAULT_SANDBOX_IMAGE};

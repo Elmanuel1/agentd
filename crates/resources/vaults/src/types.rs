@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use shared::{Id, Metadata, Resource, Timestamp};
+use zeroize::Zeroizing;
 
 /// Marker for `vlt_…` ids.
 #[derive(Debug, Clone, Copy)]
@@ -36,15 +37,16 @@ pub type CredentialId = Id<CredentialResource>;
 /// Secret material. Deliberately:
 /// - **no** `Serialize` impl (compile error if placed in a wire type),
 /// - redacting `Debug`,
-/// - `Deserialize` only (secrets flow in, never out).
+/// - `Deserialize` only (secrets flow in, never out),
+/// - zeroed when dropped.
 #[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(transparent)]
-pub struct SecretString(String);
+pub struct SecretString(Zeroizing<String>);
 
 impl SecretString {
     /// Construct from a raw secret.
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        Self(Zeroizing::new(s.into()))
     }
 
     /// Expose the secret for egress injection ONLY. Never log the result.
@@ -234,66 +236,6 @@ impl CredentialAuthInput {
                 }
             }
         }
-    }
-
-    /// Seal the FULL material — **including secrets** — to JSON for a secret
-    /// store (S3/MinIO stand-in for a secret manager). This is the deliberate
-    /// inverse of [`Self::unseal`]; it is NOT the wire projection and must
-    /// never reach a client. The output matches this type's `Deserialize`
-    /// shape, so `unseal` is a plain round-trip.
-    pub fn seal(&self) -> String {
-        match self {
-            Self::McpOauth { mcp_server_url, access_token, expires_at, refresh } => serde_json::json!({
-                "type": "mcp_oauth",
-                "mcp_server_url": mcp_server_url,
-                "access_token": access_token.expose(),
-                "expires_at": expires_at,
-                "refresh": refresh.as_ref().map(OauthRefreshInput::seal_value),
-            }),
-            Self::StaticBearer { mcp_server_url, token } => serde_json::json!({
-                "type": "static_bearer",
-                "mcp_server_url": mcp_server_url,
-                "token": token.expose(),
-            }),
-            Self::EnvironmentVariable { secret_name, secret_value, networking, injection_location } => {
-                serde_json::json!({
-                    "type": "environment_variable",
-                    "secret_name": secret_name,
-                    "secret_value": secret_value.expose(),
-                    "networking": networking,
-                    "injection_location": injection_location,
-                })
-            }
-        }
-        .to_string()
-    }
-
-    /// Recover sealed material produced by [`Self::seal`].
-    pub fn unseal(sealed: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(sealed)
-    }
-}
-
-impl OauthRefreshInput {
-    fn seal_value(&self) -> serde_json::Value {
-        let token_endpoint_auth = self.token_endpoint_auth.as_ref().map(|a| match a {
-            TokenEndpointAuthInput::None => serde_json::json!({"type": "none"}),
-            TokenEndpointAuthInput::ClientSecretBasic { client_secret } => serde_json::json!({
-                "type": "client_secret_basic",
-                "client_secret": client_secret.expose(),
-            }),
-            TokenEndpointAuthInput::ClientSecretPost { client_secret } => serde_json::json!({
-                "type": "client_secret_post",
-                "client_secret": client_secret.expose(),
-            }),
-        });
-        serde_json::json!({
-            "token_endpoint": self.token_endpoint,
-            "client_id": self.client_id,
-            "scope": self.scope,
-            "refresh_token": self.refresh_token.expose(),
-            "token_endpoint_auth": token_endpoint_auth,
-        })
     }
 }
 

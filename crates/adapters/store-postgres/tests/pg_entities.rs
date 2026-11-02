@@ -15,12 +15,12 @@
 use std::sync::Arc;
 
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
-use secrets_blob::BlobSecretStore;
 use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{
     PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgVaultsStore,
 };
+use test_support::MemorySecretStore;
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -110,18 +110,15 @@ async fn pg_environments_service_roundtrip() {
 }
 
 #[tokio::test]
-async fn pg_vaults_secret_sealed_to_object_store() {
+async fn pg_vaults_secret_sealed_to_the_secret_store() {
     if !enabled() {
         return;
     }
-    let Some(secrets) = s3("vaults").await else {
-        eprintln!("skipping vaults (needs AGENTD_AWS_ENDPOINT)");
-        return;
-    };
     use vaults::store::VaultsStore;
     use vaults::types::CredentialAuthInput;
     use vaults::VaultsService;
-    let store = Arc::new(PgVaultsStore::new(backend().await, Arc::new(BlobSecretStore::new(secrets))));
+    let secrets = Arc::new(MemorySecretStore::default());
+    let store = Arc::new(PgVaultsStore::new(backend().await, secrets.clone()));
     let svc = VaultsService::new(store.clone());
     let ctx = ctx_ws(&uniq_ws("vaults"));
     let vault =
@@ -153,6 +150,12 @@ async fn pg_vaults_secret_sealed_to_object_store() {
         }
         other => panic!("expected sealed env-var secret, got {other:?}"),
     }
+    let key =
+        shared::ports::secrets::SecretKey::new(ctx.workspace.as_str(), vault.id.as_str(), cred.id.as_str())
+            .unwrap();
+    assert!(secrets.exposed(&key).unwrap().contains("s3cr3t"), "sealed under its workspace, vault and id");
+    svc.delete_vault(&ctx, vault.id.as_str()).await.unwrap();
+    assert!(secrets.exposed(&key).is_none(), "a vault delete deletes its secrets");
 }
 
 #[tokio::test]

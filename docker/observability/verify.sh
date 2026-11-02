@@ -23,7 +23,7 @@ check sh -c 'curl -sf --get http://localhost:3200/api/search --data-urlencode "q
 label="logs in Loki"
 check sh -c 'curl -sf --get http://localhost:3100/loki/api/v1/query_range --data-urlencode "query={service_name=\"agentd\"}" | grep -q "\"values\""'
 label="dashboard provisioned"
-check sh -c 'curl -sf -u admin:admin http://localhost:3000/api/dashboards/uid/agentd-boundaries >/dev/null'
+check sh -c 'curl -sf -u "admin:${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}" http://localhost:3000/api/dashboards/uid/agentd-boundaries >/dev/null'
 label="alert rules provisioned"
-check sh -c 'test "$(curl -sf -u admin:admin http://localhost:3000/api/v1/provisioning/alert-rules | grep -o "\"uid\":\"agentd-" | wc -l)" -ge 7'
+check sh -c 'test "$(curl -sf -u "admin:${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}" http://localhost:3000/api/v1/provisioning/alert-rules | grep -o "\"uid\":\"agentd-" | wc -l)" -ge 7'
 exit $fail

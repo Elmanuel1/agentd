@@ -11,13 +11,16 @@ use shared::{wire_response, ApiError, AuthContext};
 
 /// Resolve the caller's key to its tenant. Live (auth/03, 04): no key is
 /// `x-api-key header is required`, an unknown one `invalid x-api-key`, both
-/// 401 `authentication_error`.
+/// 401 `authentication_error`. A key store that cannot be read is a 500, so a
+/// client retries instead of taking its key for revoked.
 pub async fn auth(State(keys): State<Arc<dyn KeySource>>, mut req: Request, next: Next) -> Response {
     let Some(key) = api_key(req.headers()) else {
         return wire_response(&ApiError::authentication("x-api-key header is required"));
     };
-    let Some(ctx) = keys.resolve(&key).await else {
-        return wire_response(&ApiError::authentication("invalid x-api-key"));
+    let ctx = match keys.resolve(&key).await {
+        Ok(Some(ctx)) => ctx,
+        Ok(None) => return wire_response(&ApiError::authentication("invalid x-api-key")),
+        Err(e) => return wire_response(&ApiError::internal(e.to_string())),
     };
     let tenant = [
         ("anthropic-organization-id", HeaderValue::from_str(ctx.org.as_str()).ok()),

@@ -26,6 +26,22 @@ test('environment delete returns the deleted body', async () => {
   assert.deepEqual([deleted.id, deleted.type], [env.id, 'environment_deleted']);
 });
 
+test('a credential secret is stored and never returned', async () => {
+  const c = client();
+  const vault = await c.beta.vaults.create({ display_name: name('ts-cred-vault') });
+  const token = `ts-token-${crypto.randomUUID()}`;
+  const credential = await c.beta.vaults.credentials.create(vault.id, {
+    display_name: name('ts-cred'),
+    auth: { type: 'static_bearer', mcp_server_url: 'https://mcp.example.com/mcp', token },
+  });
+  assert.deepEqual([credential.auth.type, credential.auth.mcp_server_url], ['static_bearer', 'https://mcp.example.com/mcp']);
+  const fetched = await c.beta.vaults.credentials.retrieve(credential.id, { vault_id: vault.id });
+  assert.ok(!JSON.stringify(fetched).includes(token));
+  const archived = await c.beta.vaults.credentials.archive(credential.id, { vault_id: vault.id });
+  assert.ok(archived.archived_at);
+  await c.beta.vaults.delete(vault.id);
+});
+
 test('agents auto-paginate across pages', async () => {
   const c = client();
   const created = new Set();
