@@ -51,16 +51,16 @@ impl<'de> Deserialize<'de> for EventPayload {
     /// category (`missing field \`content\``) reach the caller unchanged.
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(d)?;
-        let category = match value.get("type").and_then(serde_json::Value::as_str) {
-            Some(t) => t.split('.').next().unwrap_or_default().to_owned(),
+        let kind = match value.get("type").and_then(serde_json::Value::as_str) {
+            Some(t) => t.to_owned(),
             None => return Err(D::Error::missing_field("type")),
         };
-        let payload = match category.as_str() {
+        let payload = match kind.split('.').next().unwrap_or_default() {
             "user" | "system" => serde_json::from_value(value).map(Self::User),
             "agent" => serde_json::from_value(value).map(Self::Agent),
             "session" => serde_json::from_value(value).map(Self::Session),
             "span" => serde_json::from_value(value).map(Self::Span),
-            _ => return Err(D::Error::custom(format!("unknown variant `{category}`"))),
+            _ => return Err(D::Error::custom(format!("unknown variant `{kind}`"))),
         };
         payload.map_err(D::Error::custom)
     }

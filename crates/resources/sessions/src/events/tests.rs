@@ -98,6 +98,8 @@ fn a_category_keeps_serdes_own_messages() {
     assert!(err.to_string().contains("missing field `content`"), "{err}");
     let err = serde_json::from_str::<EventPayload>(r#"{"type":"user.bogus"}"#).unwrap_err();
     assert!(err.to_string().contains("unknown variant `user.bogus`"), "{err}");
+    let err = serde_json::from_str::<EventPayload>(r#"{"type":"usr.message"}"#).unwrap_err();
+    assert!(err.to_string().contains("unknown variant `usr.message`"), "{err}");
     let err = serde_json::from_str::<EventPayload>(r#"{"content":[]}"#).unwrap_err();
     assert!(err.to_string().contains("missing field `type`"), "{err}");
 }
