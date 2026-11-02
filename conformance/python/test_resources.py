@@ -34,6 +34,22 @@ def test_vault_delete_returns_the_deleted_body(client: anthropic.Anthropic) -> N
     assert (deleted.id, deleted.type) == (vault.id, "vault_deleted")
 
 
+def test_a_credential_secret_is_stored_and_never_returned(client: anthropic.Anthropic) -> None:
+    vault = client.beta.vaults.create(display_name=name("sdk-cred-vault"))
+    token = f"sdk-token-{uuid.uuid4().hex}"
+    credential = client.beta.vaults.credentials.create(
+        vault.id,
+        display_name=name("sdk-cred"),
+        auth={"type": "static_bearer", "mcp_server_url": "https://mcp.example.com/mcp", "token": token},
+    )
+    assert (credential.auth.type, credential.auth.mcp_server_url) == ("static_bearer", "https://mcp.example.com/mcp")
+    fetched = client.beta.vaults.credentials.retrieve(credential.id, vault_id=vault.id)
+    assert token not in fetched.model_dump_json()
+    archived = client.beta.vaults.credentials.archive(credential.id, vault_id=vault.id)
+    assert archived.archived_at is not None
+    client.beta.vaults.delete(vault.id)
+
+
 def test_agents_auto_paginate_across_pages(client: anthropic.Anthropic) -> None:
     created = {client.beta.agents.create(name=name("sdk-page"), model="claude-sonnet-4-6").id for _ in range(3)}
     seen = {a.id for a in client.beta.agents.list(limit=1)}

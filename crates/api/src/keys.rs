@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use shared::charset::is_id_charset;
 use shared::ports::keys::KeySource;
 use shared::{AuthContext, OrgId, WorkspaceId};
 
@@ -54,7 +55,8 @@ pub(crate) fn env_keys(get: &impl Fn(&str) -> Option<String>) -> Result<Vec<ApiK
         .iter()
         .enumerate()
         .map(|(i, triple)| match triple.splitn(3, ':').collect::<Vec<_>>().as_slice() {
-            [key, org, workspace] if !key.is_empty() && !org.is_empty() && !workspace.is_empty() => {
+            // The workspace id names its secrets, so it takes the id charset.
+            [key, org, workspace] if !key.is_empty() && !org.is_empty() && is_id_charset(workspace) => {
                 Ok(ApiKey {
                     key: (*key).to_owned(),
                     org: (*org).to_owned(),
@@ -62,7 +64,12 @@ pub(crate) fn env_keys(get: &impl Fn(&str) -> Option<String>) -> Result<Vec<ApiK
                     api_key_id: format!("apikey_01local{i:010}"),
                 })
             }
-            _ => Err(ConfigError { var: VAR, reason: format!("entry {i} is not key:org:workspace") }),
+            _ => Err(ConfigError {
+                var: VAR,
+                reason: format!(
+                    "entry {i} is not key:org:workspace, with a workspace id of letters, digits and _"
+                ),
+            }),
         })
         .collect()
 }

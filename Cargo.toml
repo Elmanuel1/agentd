@@ -18,6 +18,8 @@ members = [
     "crates/adapters/store-postgres",
     "crates/adapters/blobs-s3",
     "crates/adapters/secrets-blob",
+    "crates/adapters/secrets-aws",
+    "crates/adapters/aws-common",
     "crates/adapters/sandbox-docker",
 ]
 
@@ -45,6 +47,8 @@ api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }
 secrets-blob = { path = "crates/adapters/secrets-blob" }
+secrets-aws = { path = "crates/adapters/secrets-aws" }
+aws-common = { path = "crates/adapters/aws-common" }
 sandbox-docker = { path = "crates/adapters/sandbox-docker" }
 
 # external
@@ -78,9 +82,15 @@ tracing-opentelemetry = "0.34"
 bytes = "1"
 parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
-aws-config = { version = "1", default-features = false, features = ["rustls", "rt-tokio", "credentials-process", "sso"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["rustls", "rt-tokio"] }
+aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-runtime-api = "1"
+aws-credential-types = "1"
+aws-smithy-types = "1"
+secrecy = "0.10"
+zeroize = { version = "1", features = ["serde"] }
 diesel = { version = "2.2", default-features = false, features = ["postgres_backend", "serde_json", "chrono"] }
 diesel-async = { version = "0.5", default-features = false, features = ["postgres", "deadpool"] }
 

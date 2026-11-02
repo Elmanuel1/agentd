@@ -16,12 +16,13 @@ use sandbox_docker::DockerRuntime;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
 use scheduler_local::LocalScheduler;
+use secrets_aws::AwsSecretStore;
 use secrets_blob::BlobSecretStore;
 use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
-use shared::ports::secrets::SecretStore;
+use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
@@ -118,6 +119,9 @@ pub enum BootError {
     /// The blob store.
     #[error("blobs: {0}")]
     Blobs(#[from] BlobError),
+    /// The secret store, or its KMS key.
+    #[error("secrets: {0}")]
+    Secrets(#[from] SecretError),
     /// The sandbox runtime.
     #[error("sandbox: {0}")]
     Sandbox(String),
@@ -132,7 +136,8 @@ impl Backends {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
-        let secrets: Arc<dyn SecretStore> = match config.secrets {
+        let secrets: Arc<dyn SecretStore> = match &config.secrets {
+            SecretsConfig::Aws(aws) => Arc::new(AwsSecretStore::connect(aws).await?),
             SecretsConfig::Blob => Arc::new(BlobSecretStore::new(blobs.clone())),
         };
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(secrets, metrics.clone()));

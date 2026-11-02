@@ -28,6 +28,7 @@ bytes = { workspace = true }
 futures = { workspace = true }
 blobs-s3 = { workspace = true }
 secrets-blob = { workspace = true }
+secrets-aws = { workspace = true }
 sandbox-docker = { workspace = true }
 bollard = { workspace = true }
 serde = { workspace = true }

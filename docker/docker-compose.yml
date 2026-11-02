@@ -33,6 +33,10 @@ services:
       DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:-agentd}@postgres:5432/agentd
       AGENTD_AWS_ENDPOINT: http://s3:4566        # blobs; drop this for real S3
       AGENTD_S3_CREATE_BUCKET: "1"
+      # Credentials as plain objects in the blob store: development only.
+      # Production uses AGENTD_SECRETS=aws (docs/configuration.md).
+      AGENTD_SECRETS: blob
+      AGENTD_DEV_SECRETS: "1"
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1

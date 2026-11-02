@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::ports::secrets::SecretStore;
+use shared::ports::secrets::{SecretKey, SecretStore};
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::{credentials, vaults};
@@ -35,8 +35,8 @@ impl PgVaultsStore {
         Self { backend, secrets }
     }
 
-    fn secret_key(ws: &WorkspaceId, vault: &VaultId, id: &CredentialId) -> String {
-        format!("secrets/{}/{}/{}", ws.as_str(), vault.as_str(), id.as_str())
+    fn secret_key(ws: &WorkspaceId, vault: &VaultId, id: &CredentialId) -> Result<SecretKey, StoreError> {
+        SecretKey::new(ws.as_str(), vault.as_str(), id.as_str()).map_err(secret_be)
     }
 
     async fn require_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<(), StoreError> {
@@ -59,7 +59,7 @@ impl PgVaultsStore {
         id: &CredentialId,
         auth: &Option<CredentialAuthInput>,
     ) -> Result<(), StoreError> {
-        let key = Self::secret_key(ws, vault, id);
+        let key = Self::secret_key(ws, vault, id)?;
         match auth {
             Some(a) => self.secrets.put(&key, &a.seal()).await.map_err(secret_be),
             None => self.secrets.delete(&key).await.map_err(secret_be),
@@ -223,7 +223,7 @@ impl VaultsStore for PgVaultsStore {
         let (doc, has_secret) = row.ok_or(StoreError::CredentialNotFound)?;
         let wire: Credential = parse_doc(doc)?;
         let auth = if has_secret {
-            let sealed = self.secrets.get(&Self::secret_key(ws, vault, id)).await.map_err(secret_be)?;
+            let sealed = self.secrets.get(&Self::secret_key(ws, vault, id)?).await.map_err(secret_be)?;
             Some(CredentialAuthInput::unseal(&sealed).map_err(secret_be)?)
         } else {
             None

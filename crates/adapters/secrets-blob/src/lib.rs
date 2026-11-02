@@ -1,6 +1,7 @@
 //! secrets-blob: a [`SecretStore`] over a [`BlobStore`]: each secret is one
-//! object, stored as written. A stand-in for a secret manager in development;
-//! the material is not encrypted.
+//! object, `secrets/<workspace>/<vault>/<credential>`, stored as written. For
+//! development only: the material is not encrypted, and agentd boots with it
+//! only when `AGENTD_DEV_SECRETS=1`.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use shared::ports::blobs::{BlobError, BlobStore};
-use shared::ports::secrets::{SecretError, SecretStore};
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
 
 /// Secrets kept as objects in a blob store.
 #[derive(Clone)]
@@ -30,6 +31,10 @@ impl BlobSecretStore {
     }
 }
 
+fn object_key(key: &SecretKey) -> String {
+    format!("secrets/{key}")
+}
+
 fn secret_error(e: BlobError) -> SecretError {
     match e {
         BlobError::NotFound(key) => SecretError::NotFound(key),
@@ -39,18 +44,20 @@ fn secret_error(e: BlobError) -> SecretError {
 
 #[async_trait]
 impl SecretStore for BlobSecretStore {
-    async fn put(&self, key: &str, secret: &str) -> Result<(), SecretError> {
-        self.blobs.put(key, Bytes::from(secret.to_owned())).await.map_err(secret_error)
+    async fn put(&self, key: &SecretKey, secret: &SecretString) -> Result<(), SecretError> {
+        let bytes = Bytes::copy_from_slice(secret.expose_secret().as_bytes());
+        self.blobs.put(&object_key(key), bytes).await.map_err(secret_error)
     }
 
-    async fn get(&self, key: &str) -> Result<String, SecretError> {
-        let bytes = self.blobs.get(key).await.map_err(secret_error)?;
-        String::from_utf8(bytes.to_vec())
+    async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
+        let bytes = self.blobs.get(&object_key(key)).await.map_err(secret_error)?;
+        std::str::from_utf8(&bytes)
+            .map(SecretString::from)
             .map_err(|e| SecretError::Backend(format!("secret at {key} is not UTF-8: {e}")))
     }
 
-    async fn delete(&self, key: &str) -> Result<(), SecretError> {
-        match self.blobs.delete(key).await {
+    async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
+        match self.blobs.delete(&object_key(key)).await {
             Ok(()) | Err(BlobError::NotFound(_)) => Ok(()),
             Err(e) => Err(secret_error(e)),
         }
@@ -85,18 +92,21 @@ mod tests {
     async fn secrets_round_trip_and_delete_is_idempotent() {
         let blobs = Arc::new(MemoryBlobs::default());
         let secrets = BlobSecretStore::new(blobs.clone());
-        secrets.put("secrets/a", "{\"token\":\"t\"}").await.unwrap();
-        assert_eq!(secrets.get("secrets/a").await.unwrap(), "{\"token\":\"t\"}");
-        secrets.delete("secrets/a").await.unwrap();
-        secrets.delete("secrets/a").await.unwrap();
-        assert!(matches!(secrets.get("secrets/a").await, Err(SecretError::NotFound(_))));
+        let key = SecretKey::new("wrkspc_a", "vlt_a", "cred_a").unwrap();
+        secrets.put(&key, &SecretString::from("{\"token\":\"t\"}")).await.unwrap();
+        assert_eq!(secrets.get(&key).await.unwrap().expose_secret(), "{\"token\":\"t\"}");
+        assert!(blobs.0.lock().unwrap().contains_key("secrets/wrkspc_a/vlt_a/cred_a"));
+        secrets.delete(&key).await.unwrap();
+        secrets.delete(&key).await.unwrap();
+        assert!(matches!(secrets.get(&key).await, Err(SecretError::NotFound(_))));
     }
 
     #[tokio::test]
     async fn unreadable_material_is_an_error() {
         let blobs = Arc::new(MemoryBlobs::default());
-        blobs.put("secrets/bad", Bytes::from_static(&[0xff, 0xfe])).await.unwrap();
+        blobs.put("secrets/wrkspc_a/vlt_a/cred_bad", Bytes::from_static(&[0xff, 0xfe])).await.unwrap();
         let secrets = BlobSecretStore::new(blobs);
-        assert!(matches!(secrets.get("secrets/bad").await, Err(SecretError::Backend(_))));
+        let key = SecretKey::new("wrkspc_a", "vlt_a", "cred_bad").unwrap();
+        assert!(matches!(secrets.get(&key).await, Err(SecretError::Backend(_))));
     }
 }

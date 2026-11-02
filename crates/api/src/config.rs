@@ -49,13 +49,6 @@ pub enum BlobsConfig {
     S3(S3Config),
 }
 
-/// `AGENTD_SECRETS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecretsConfig {
-    /// `blob`: secrets as objects in the blob store.
-    Blob,
-}
-
 /// `AGENTD_KEYS`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeysConfig {
@@ -99,10 +92,7 @@ impl Config {
             "s3" => BlobsConfig::S3(s3_config(&get)?),
             other => return Err(unknown("AGENTD_BLOBS", other)),
         };
-        let secrets = match selector(&get, "AGENTD_SECRETS", "blob").as_str() {
-            "blob" => SecretsConfig::Blob,
-            other => return Err(unknown("AGENTD_SECRETS", other)),
-        };
+        let secrets = SecretsConfig::from_lookup(&get)?;
         let keys = match selector(&get, "AGENTD_KEYS", "env").as_str() {
             "env" => KeysConfig::Env(env_keys(&get)?),
             other => return Err(unknown("AGENTD_KEYS", other)),
@@ -171,9 +161,11 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
 }
 
 mod runtime;
+mod secrets;
 mod telemetry;
 
 pub use runtime::{RuntimeConfig, DEFAULT_SANDBOX_IMAGE};
+pub use secrets::SecretsConfig;
 pub use telemetry::TelemetryConfig;
 
 #[cfg(test)]

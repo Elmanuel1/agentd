@@ -45,7 +45,7 @@ jobs:
       localstack:
         image: localstack/localstack:3.0
         env:
-          SERVICES: s3
+          SERVICES: s3,secretsmanager,kms
         ports: ["4566:4566"]
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
@@ -90,7 +90,7 @@ jobs:
       localstack:
         image: localstack/localstack:3.0
         env:
-          SERVICES: s3
+          SERVICES: s3,secretsmanager,kms
         ports: ["4566:4566"]
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
@@ -103,6 +103,13 @@ jobs:
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
       AGENTD_API_KEYS: sdk-conformance-key:org_sdk:wrkspc_sdk
+      # Credentials go to Secrets Manager on LocalStack, the production path;
+      # the dev flag only allows its plain http endpoint.
+      AGENTD_SECRETS: aws
+      AGENTD_SECRETS_ENDPOINT: http://localhost:4566
+      AGENTD_DEV_SECRETS: "1"
+      # Every log line, so the last check shows no token reaches one.
+      RUST_LOG: trace
       AGENTD_ADDR: 127.0.0.1:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
       AGENTD_TEST_KEY: sdk-conformance-key
@@ -129,6 +136,10 @@ jobs:
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql migrate
       - run: cargo build --locked -p api
+      - name: Create the secrets KMS key on LocalStack
+        run: |
+          key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
+          echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
@@ -144,6 +155,16 @@ jobs:
         run: |
           npm ci
           npm test
+      - name: Credentials are in Secrets Manager under the key, and nowhere else
+        run: |
+          secrets=$(aws --endpoint-url http://localhost:4566 secretsmanager list-secrets --include-planned-deletion \
+            --filters Key=name,Values=agentd/wrkspc_sdk/ --output json)
+          echo "$secrets" | jq -e --arg key "$AGENTD_SECRETS_KMS_KEY_ID" '
+            .SecretList | length >= 2 and all(
+              .KmsKeyId == $key and .DeletedDate != null
+              and ([.Tags[] | select(.Key == "managed-by" and .Value == "agentd")] | length == 1))'
+          test -z "$(aws --endpoint-url http://localhost:4566 s3 ls s3://agentd-artifacts/secrets/ --recursive)"
+          ! grep -E "sdk-token-|ts-token-" agentd.log
       - if: failure()
         run: cat agentd.log
 

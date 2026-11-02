@@ -51,7 +51,7 @@ resolving `latest` adopts the promotion — promote-don't-replace.
 
 ```sh
 docker compose -f docker/docker-compose.yml up   # full stack
-AGENTD_DEV_KEY=1 AGENTD_S3_CREATE_BUCKET=1 cargo run -p api   # against your own Postgres and S3
+AGENTD_DEV_KEY=1 AGENTD_SECRETS=blob AGENTD_DEV_SECRETS=1 AGENTD_S3_CREATE_BUCKET=1 cargo run -p api   # against your own Postgres and S3
 cargo test --workspace                           # hermetic; AGENTD_PG_TESTS=1 adds the Postgres and S3 tests
 ```
 

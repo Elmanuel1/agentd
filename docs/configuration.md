@@ -12,7 +12,7 @@ stops the boot with an error naming the variable.
 |---|---|---|
 | Record store | `AGENTD_STORE` | `postgres` |
 | Blob store | `AGENTD_BLOBS` | `s3` |
-| Secret store | `AGENTD_SECRETS` | `blob`: secrets as objects in the blob store, not encrypted |
+| Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)). `blob`: secrets as objects in the blob store, not encrypted, only with `AGENTD_DEV_SECRETS=1` |
 | API keys | `AGENTD_KEYS` | `env`: the keys in `AGENTD_API_KEYS` |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
 | Sandbox runtime | `AGENTD_RUNTIME` | `none`: sessions run without a sandbox. `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `alpine:3.20`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. `limited` networking runs it with no network; any other runs on the `agentd-sandboxes` bridge, which has container-to-container traffic off. Each runs as `nobody`, with every capability dropped, `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
@@ -32,12 +32,14 @@ stops the boot with an error naming the variable.
 | `AGENTD_S3_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
 | `AGENTD_S3_CREATE_BUCKET` | `0` | Create the bucket at boot when it is missing |
 | `AGENTD_S3_LOCATION_CONSTRAINT` | the region on AWS S3 (none in `us-east-1`); none with a custom endpoint | The location constraint a created bucket gets, for an S3-compatible store that names locations its own way |
-| `AGENTD_API_KEYS` | unset | `key:org:workspace[,key:org:workspace…]` |
+| `AGENTD_API_KEYS` | unset | `key:org:workspace[,key:org:workspace…]`; the workspace id is 1 to 64 ASCII letters, digits and `_` |
 | `AGENTD_DEV_KEY` | `0` | `1` also registers `agentd-dev-key` for `org_dev`/`wrkspc_01dev` |
 | `RUST_LOG` | `info` | Log level |
 
 At least one API key is required: with neither `AGENTD_API_KEYS` nor
-`AGENTD_DEV_KEY=1`, agentd does not start.
+`AGENTD_DEV_KEY=1`, agentd does not start. Likewise `AGENTD_SECRETS=blob`
+keeps credentials unencrypted, and without `AGENTD_DEV_SECRETS=1` agentd does
+not start with it.
 
 ## S3 credentials
 
@@ -45,6 +47,38 @@ S3 credentials always come from the AWS default chain: `AWS_ACCESS_KEY_ID` and
 `AWS_SECRET_ACCESS_KEY`, a profile (including SSO and `credential_process`),
 web identity, the ECS task role or the EC2 instance role. This holds with or without `AGENTD_AWS_ENDPOINT`. With
 `AGENTD_S3_ROLE_ARN`, those credentials assume the role and S3 is called as it.
+
+## Vault credentials
+
+With `AGENTD_SECRETS=aws`, each credential's secret material is one Secrets
+Manager secret, `<prefix>/<workspace>/<vault>/<credential>`, created under the
+configured KMS key and tagged `workspace`, `vault` and `managed-by=agentd`.
+Each part of the name is checked against the id charset before any call, so
+no input names a secret outside the prefix or in another workspace. A write
+creates the secret, or puts a new value when it exists, with one
+`ClientRequestToken`, so a retry never adds a second version. A secret deleted
+inside its recovery window is restored and written again. Archiving a
+credential deletes its secret with the recovery window. Reads are not cached.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTD_SECRETS_KMS_KEY_ID` | required | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. The `aws/secretsmanager` key is refused |
+| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every secret name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters |
+| `AGENTD_SECRETS_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Region |
+| `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager and KMS (LocalStack). Plain `http` needs `AGENTD_DEV_SECRETS=1` |
+| `AGENTD_SECRETS_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
+| `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | Days a deleted secret stays recoverable, 7 to 30 |
+| `AGENTD_DEV_SECRETS` | `0` | `1` allows `AGENTD_SECRETS=blob` and a plain `http` secrets endpoint, for development |
+
+Credentials come from the AWS default chain, as for S3. The least-privilege
+IAM policies for agentd, the key and the sandboxes are in
+[`deploy/iam`](../deploy/iam/README.md).
+
+Secret values cross the secret store port as `secrecy::SecretString`, whose
+`Debug` is redacted and whose memory is zeroed on drop. Errors name the secret
+and the AWS error code, never a value or an AWS message. The AWS SDK's
+`debug` and `trace` events, which can print request and response bodies, are
+dropped from every log whatever `RUST_LOG` says.
 
 ## Scheduled work
 

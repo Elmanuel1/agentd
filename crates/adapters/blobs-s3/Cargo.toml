@@ -10,7 +10,7 @@ shared = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
-aws-config = { workspace = true }
+aws-common = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 
 [lints]
