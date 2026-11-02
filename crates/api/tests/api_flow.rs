@@ -52,6 +52,7 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         runtime: Some(runtime),
+        metrics: Arc::new(api::telemetry::Metrics::global()),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

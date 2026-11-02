@@ -32,5 +32,5 @@ pub fn build_router(state: AppState) -> Router {
     let routes = state.modules.into_iter().fold(Router::new(), |router, module| {
         router.merge(edge::limits::bounded(module.router, module.body_limit))
     });
-    edge::wrap(routes, state.keys, gates, Arc::new(telemetry::Metrics::global()))
+    edge::wrap(routes, state.keys, gates, state.metrics)
 }

@@ -27,6 +27,8 @@ pub struct AppState {
     pub keys: Arc<dyn KeySource>,
     /// One module per resource.
     pub modules: Vec<Module>,
+    /// The instruments the edge records requests into.
+    pub metrics: Arc<Metrics>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -40,7 +42,7 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, FireError> {
-        let Backends { stores, keys, scheduler, fires, runtime } = backends;
+        let Backends { stores, keys, scheduler, fires, runtime, metrics } = backends;
         let agents = Arc::new(AgentsService::new(stores.agents, ModelCatalog::default_catalog()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let sessions = SessionsService::new(
@@ -72,10 +74,9 @@ impl AppState {
             sessions::module(sessions),
             deployments::module(deployments),
         ];
-        let metrics = Arc::new(Metrics::global());
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
-        Ok(Self { keys, modules })
+        Ok(Self { keys, modules, metrics })
     }
 }

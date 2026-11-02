@@ -106,7 +106,8 @@ impl Drop for Telemetry {
 }
 
 /// Install the log subscriber and, when `otlp` is set, the OTLP trace,
-/// metric and log pipelines (the first two as the global providers). Logs
+/// metric and log pipelines (the meter provider as the global one; spans
+/// reach the tracer through the `tracing` layer). Logs
 /// still go to stdout; over OTLP they carry the trace and span ids.
 pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

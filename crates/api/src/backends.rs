@@ -99,6 +99,8 @@ pub struct Backends {
     pub fires: Arc<FireRegistry>,
     /// The sandbox runtime; `None` runs sessions without one.
     pub runtime: Option<Arc<dyn Runtime>>,
+    /// The instruments every boundary records into.
+    pub metrics: Arc<Metrics>,
 }
 
 impl std::fmt::Debug for Backends {
@@ -162,6 +164,6 @@ impl Backends {
                 Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
             }
         };
-        Ok(Self { stores, keys, scheduler, fires, runtime })
+        Ok(Self { stores, keys, scheduler, fires, runtime, metrics })
     }
 }
