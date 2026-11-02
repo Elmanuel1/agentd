@@ -16,18 +16,17 @@ pub struct Credential {
     pub placeholder: String,
     /// The real value.
     pub value: String,
-    /// Hosts the value may be sent to; `None` when any host may.
+    /// Hosts the value may be sent to. A credential that names none is
+    /// sent nowhere: "any host" would include one the agent controls.
     pub hosts: Option<Vec<String>>,
-    /// Put into request headers.
+    /// Put into request headers (the only place the proxy puts a value).
     pub header: bool,
-    /// Put into request bodies.
-    pub body: bool,
 }
 
 impl Credential {
     /// Whether the value may be sent to `host`.
     pub fn allows(&self, host: &str) -> bool {
-        self.hosts.as_ref().is_none_or(|h| any_matches(h, host))
+        self.hosts.as_ref().is_some_and(|h| any_matches(h, host))
     }
 }
 
@@ -119,21 +118,6 @@ pub fn redact(body: &[u8], credentials: &[Credential]) -> (Vec<u8>, Vec<String>)
         }
     }
     (out, found)
-}
-
-/// `body` with the placeholders of credentials injected into bodies (and
-/// allowed for `host`) replaced by their values; the ids used.
-pub fn inject_body(body: &[u8], credentials: &[Credential], host: &str) -> (Vec<u8>, Vec<String>) {
-    let mut out = body.to_vec();
-    let mut used = Vec::new();
-    for c in credentials.iter().filter(|c| c.body && c.allows(host)) {
-        let swapped = swap(&out, c.placeholder.as_bytes(), c.value.as_bytes());
-        if swapped != out {
-            used.push(c.id.clone());
-            out = swapped;
-        }
-    }
-    (out, used)
 }
 
 /// `haystack` with every `from` replaced by `to`.

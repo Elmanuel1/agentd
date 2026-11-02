@@ -29,7 +29,13 @@ impl SessionsService {
                 .map(|w| w.issue(ctx, &session.environment_id, &session.id))
                 .unwrap_or_default(),
         };
-        match runtime.launch(job).await {
+        let launched = runtime.launch(job).await;
+        if launched.is_err() {
+            if let Some(work) = &self.work {
+                work.end(&session.id);
+            }
+        }
+        match launched {
             Ok(_) => Ok(()),
             // A daemon that cannot be reached is transient: 529, which the
             // SDKs retry.

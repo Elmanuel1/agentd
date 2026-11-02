@@ -41,9 +41,10 @@ async fn upstream(seen: Arc<Mutex<Vec<String>>>) -> u16 {
                             .map(|v| v.to_str().unwrap().to_owned())
                             .unwrap_or_default();
                         seen.lock().push(auth.clone());
-                        Ok::<_, Infallible>(hyper::Response::new(Full::new(Bytes::from(format!(
-                            "you sent {auth}"
-                        )))))
+                        let mut r = hyper::Response::new(Full::new(Bytes::from(format!("you sent {auth}"))));
+                        let echo = hyper::header::HeaderValue::from_str(&auth).unwrap();
+                        r.headers_mut().insert("x-echo", echo);
+                        Ok::<_, Infallible>(r)
                     }
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
@@ -67,7 +68,6 @@ async fn proxy() -> (u16, String) {
             value: "ghp_real".into(),
             hosts: Some(vec!["localhost".into()]),
             header: true,
-            body: false,
         }],
         ca: Arc::new(SessionCa::from_pem(&pem).unwrap()),
         internal_hosts: vec!["localhost".into(), "127.0.0.1".into()],
@@ -101,6 +101,7 @@ async fn an_allowed_host_gets_the_secret_and_the_sandbox_gets_it_masked_back() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
+    assert_eq!(r.headers()["x-echo"], "Bearer agentd-ph-abc");
     assert_eq!(r.text().await.unwrap(), "you sent Bearer agentd-ph-abc");
     assert_eq!(seen.lock().clone(), ["Bearer ghp_real"]);
 }

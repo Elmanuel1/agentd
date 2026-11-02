@@ -25,10 +25,10 @@ impl WorkService {
                     && !e.hosted
                     && e.work.state == WorkState::Queued
                     && free)
-                    .then(|| e.work.id.clone())
+                    .then(|| (e.work.created_at, e.work.id.clone()))
             });
-            taken.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-            if let Some(id) = taken.first() {
+            taken.sort_by_key(|(at, _)| at.as_datetime());
+            if let Some((_, id)) = taken.first() {
                 let claims = board.with(id, |e| {
                     e.handed_out = Some(now);
                     WorkClaims {

@@ -65,8 +65,10 @@ impl AppState {
         let key = agent.as_ref().and_then(|a| a.config.work_token_key.clone());
         let key = key.unwrap_or_else(|| rand::random::<[u8; 32]>().to_vec());
         let work = Arc::new(WorkService::new(WorkTokens::new(key.clone())));
+        let egress_slot = Arc::new(std::sync::OnceLock::new());
         let issuer = agent.as_ref().map(|a| {
-            Arc::new(WorkIssuer { work: work.clone(), api_url: a.config.sandbox_api_url.clone() })
+            let api_url = a.config.sandbox_api_url.clone();
+            Arc::new(WorkIssuer { work: work.clone(), api_url, egress: egress_slot.clone() })
                 as Arc<dyn sessions::SandboxWork>
         });
         let sessions = Arc::new(match runtime {
@@ -83,6 +85,7 @@ impl AppState {
                 VaultSecrets::new(stores.vaults.clone()),
                 agent.config.egress_internal_hosts.clone(),
             ));
+            let _ = egress_slot.set(policy.clone());
             if let Some(listener) = agent.egress.take() {
                 tokio::spawn(egress_proxy::serve(listener, policy.clone()));
             }

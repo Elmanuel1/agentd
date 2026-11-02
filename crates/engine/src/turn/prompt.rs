@@ -25,7 +25,7 @@ pub fn credentials_section(credentials: &[(String, String, Option<Vec<String>>)]
     }
     let mut out = String::from("\n\n# Credentials\n\nThese environment variables hold placeholders; the egress proxy puts the real value into requests to the hosts listed, and refuses to send it anywhere else.\n\n");
     for (name, description, hosts) in credentials {
-        let hosts = hosts.as_ref().map_or_else(|| "any host".to_owned(), |h| h.join(", "));
+        let hosts = hosts.as_ref().map_or_else(|| "no host; it lists none".to_owned(), |h| h.join(", "));
         out.push_str(&format!("- `{name}`: {description} (sent to: {hosts})\n"));
     }
     out

@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use sandbox_protocol::{Envelope, Outcome};
 use tokio::sync::{oneshot, Notify};
 
-use crate::types::{Work, WorkId};
+use crate::types::{Work, WorkId, WorkState};
 
 /// One work item with what agentd keeps beside it.
 #[derive(Debug)]
@@ -114,6 +114,16 @@ impl Board {
                 return None;
             }
         }
+    }
+
+    /// Whether work `id` can still run operations: not stopped, and its
+    /// lease (once a heartbeat took one) not run out.
+    pub fn alive(&self, id: &WorkId) -> bool {
+        self.with(id, |e| {
+            let stopped = matches!(e.work.state, WorkState::Stopping | WorkState::Stopped);
+            !stopped && e.lease_until.is_none_or(|t| t > tokio::time::Instant::now())
+        })
+        .unwrap_or(false)
     }
 
     /// Hand `outcome` to whoever queued operation `op` of work `id`.

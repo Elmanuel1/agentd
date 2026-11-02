@@ -15,7 +15,7 @@ stops the boot with an error naming the variable.
 | Secret store | `AGENTD_SECRETS` | `blob`: secrets as objects in the blob store, not encrypted |
 | API keys | `AGENTD_KEYS` | `env`: the keys in `AGENTD_API_KEYS` |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
-| Sandbox runtime | `AGENTD_RUNTIME` | `none`: sessions run without a sandbox. `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `alpine:3.20`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. `limited` networking runs it with no network; any other runs on the `agentd-sandboxes` bridge, which has container-to-container traffic off. Each runs as `nobody`, with every capability dropped, `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
+| Sandbox runtime | `AGENTD_RUNTIME` | `none`: sessions run without a sandbox. `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Every sandbox sits on the internal `agentd-sandboxes` network, which has no route out and container-to-container traffic off: its only way out is agentd's egress proxy, which applies the environment's networking. agentd reaches that network by joining it when `AGENTD_SANDBOX_JOIN` names agentd's own container, else through the `agentd-gateway` container, which relays only agentd's API and proxy ports to the host. The sandbox's first process is `agentd-worker`, which runs each command as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
 
 ## Settings
 
@@ -38,6 +38,47 @@ stops the boot with an error naming the variable.
 
 At least one API key is required: with neither `AGENTD_API_KEYS` nor
 `AGENTD_DEV_KEY=1`, agentd does not start.
+
+## Agent loop
+
+The agent loop runs whenever the sandbox runtime is `docker`. It calls the
+model from agentd and runs each tool call in the session's sandbox, whose
+`agentd-worker` long-polls agentd for work; the sandbox takes no inbound
+connection.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTD_ANTHROPIC_API_KEY` | unset | Key for `claude-*` models |
+| `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API base |
+| `AGENTD_OPENAI_API_KEY` | unset | Key for `vendor/model` ids, over the OpenAI-compatible API |
+| `AGENTD_OPENAI_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible API base |
+| `AGENTD_MOCK_MODEL` | unset | Path to a per-agent script that answers every model request instead (tests, demos) |
+| `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
+| `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | Output tokens per model call |
+| `AGENTD_BRAVE_API_KEY` | unset | Brave Search key for `web_search` |
+| `AGENTD_MAX_ACTIVE_SESSIONS` | `64` | Session loops one replica runs at once, each holding a lease connection |
+| `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or AGENTD_SANDBOX_JOIN>:<AGENTD_ADDR port>` | agentd's API as a sandbox's worker reaches it |
+| `AGENTD_SANDBOX_JOIN` | unset | agentd's own container, which joins the sandbox network in place of the gateway |
+| `AGENTD_WORK_TOKEN_KEY` | random per process | Hex key that signs work tokens and egress proxy passwords; set it when more than one replica runs |
+| `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | Where the egress proxy listens |
+| `AGENTD_SANDBOX_EGRESS_HOST` | `<agentd-gateway or AGENTD_SANDBOX_JOIN>:<AGENTD_EGRESS_ADDR port>` | The egress proxy as a sandbox reaches it |
+| `AGENTD_EGRESS_INTERNAL_HOSTS` | unset | Hosts sandboxes may reach at internal addresses, comma-separated |
+
+### Credentials and egress
+
+Each `environment_variable` credential in the session's vaults is set in the
+sandbox under its own name, with a per-session placeholder
+(`agentd-ph-...`) as its value; the system prompt lists each name, its
+description and its hosts. Sandbox traffic leaves through the egress proxy,
+which the sandbox reaches through `HTTP_PROXY` and `HTTPS_PROXY` and trusts
+through a per-session CA. For a host the credential allows, the proxy puts
+the real value in place of the placeholder in the request headers. A
+placeholder sent to any other host, or from a credential that names no host,
+is refused, as is a host outside `limited` networking. A real value in a
+response, headers or body, is masked back to its placeholder. Each
+substitution is logged with the session, credential, host, method and path,
+never the value. The proxy reads a session's values again at most 30 seconds
+after it last read them, so a rotated secret takes effect without a restart.
 
 ## S3 credentials
 

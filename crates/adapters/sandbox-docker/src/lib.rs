@@ -5,9 +5,13 @@
 
 use std::collections::HashMap;
 
+mod network;
+
+pub use network::{SandboxNetwork, GATEWAY};
+
 use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
-use bollard::models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig, NetworkCreateRequest};
+use bollard::models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
 };
@@ -40,12 +44,20 @@ pub struct DockerRuntime {
     docker: Docker,
     image: String,
     limits: SandboxLimits,
+    /// How agentd is on the sandbox network.
+    network: SandboxNetwork,
 }
 
 impl DockerRuntime {
-    /// Run jobs from `image` on `docker`, each within `limits`.
-    pub fn new(docker: Docker, image: impl Into<String>, limits: SandboxLimits) -> Self {
-        Self { docker, image: image.into(), limits }
+    /// Run jobs from `image` on `docker`, each within `limits`, on the
+    /// sandbox network agentd joins as `network` says.
+    pub fn new(
+        docker: Docker,
+        image: impl Into<String>,
+        limits: SandboxLimits,
+        network: SandboxNetwork,
+    ) -> Self {
+        Self { docker, image: image.into(), limits, network }
     }
 
     /// The container a job runs in.
@@ -58,29 +70,6 @@ impl DockerRuntime {
     pub async fn prepare(&self) -> Result<(), RuntimeError> {
         self.ensure_network().await?;
         self.ensure_image().await
-    }
-
-    async fn ensure_network(&self) -> Result<(), RuntimeError> {
-        match self.docker.inspect_network(SANDBOX_NETWORK, None).await {
-            Ok(_) => return Ok(()),
-            Err(e) if not_found(&e) => {}
-            Err(e) => return Err(RuntimeError::Unavailable(e.to_string())),
-        }
-        let request = NetworkCreateRequest {
-            name: SANDBOX_NETWORK.into(),
-            driver: Some("bridge".into()),
-            options: Some(HashMap::from([(
-                "com.docker.network.bridge.enable_icc".to_owned(),
-                "false".to_owned(),
-            )])),
-            ..Default::default()
-        };
-        match self.docker.create_network(request).await {
-            Ok(_) => Ok(()),
-            // Another replica created it first.
-            Err(DockerError::DockerResponseServerError { status_code: 409, .. }) => Ok(()),
-            Err(e) => Err(RuntimeError::Unavailable(e.to_string())),
-        }
     }
 
     async fn ensure_image(&self) -> Result<(), RuntimeError> {
@@ -110,12 +99,6 @@ const WORKER_USER: &str = "0:0";
 /// the agent's user and to own files for it.
 const WORKER_CAPS: [&str; 5] = ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "FOWNER"];
 
-/// Every sandbox goes on the sandbox network, never the default bridge: its
-/// worker must reach agentd. What else it reaches is the egress proxy's call.
-fn network_mode(_environment: &serde_json::Value) -> &'static str {
-    SANDBOX_NETWORK
-}
-
 fn not_found(e: &DockerError) -> bool {
     matches!(e, DockerError::DockerResponseServerError { status_code: 404, .. })
 }
@@ -138,11 +121,10 @@ impl Runtime for DockerRuntime {
             labels: Some(labels),
             user: Some(WORKER_USER.into()),
             host_config: Some(HostConfig {
-                network_mode: Some(network_mode(&job.environment).to_owned()),
+                network_mode: Some(SANDBOX_NETWORK.to_owned()),
                 init: Some(true),
                 cap_drop: Some(vec!["ALL".into()]),
                 cap_add: Some(WORKER_CAPS.iter().map(|c| (*c).to_owned()).collect()),
-                extra_hosts: Some(vec!["host.docker.internal:host-gateway".into()]),
                 security_opt: Some(vec!["no-new-privileges".into()]),
                 pids_limit: Some(PIDS_LIMIT),
                 memory: Some(self.limits.memory_mib * 1024 * 1024),

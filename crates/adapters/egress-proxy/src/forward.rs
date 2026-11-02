@@ -12,7 +12,7 @@ use hyper::body::Incoming;
 
 use crate::net::public_addrs;
 use crate::policy::SessionEgress;
-use crate::rules::{inject, inject_body, redact, Refusal};
+use crate::rules::{inject, redact, Refusal};
 
 /// Most bytes of a request or response body the proxy handles.
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -87,10 +87,10 @@ async fn forward_inner(
         }
     }
     strip_hop(&mut parts.headers);
-    let mut used = inject(&mut parts.headers, &session.credentials, host)
+    // Values go into headers only: a value put into a body could be stored
+    // by the allowed host where the agent can read it back.
+    let used = inject(&mut parts.headers, &session.credentials, host)
         .map_err(|why| refused(session, host, &parts.method, &path, &why))?;
-    let (body, in_body) = inject_body(&body, &session.credentials, host);
-    used.extend(in_body);
     for id in &used {
         tracing::info!(target: "agentd::egress", session = %session.session, credential = %id, host, method = %parts.method, path, "secret injected");
     }
@@ -128,16 +128,19 @@ async fn forward_inner(
     let upstream = upstream.map_err(|e| reply(StatusCode::BAD_GATEWAY, &format!("egress: {e}")))?;
     let status = StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut out_headers = HeaderMap::new();
+    let mut masked_in_headers = Vec::new();
     for (k, v) in upstream.headers() {
-        if let (Ok(k), Ok(v)) =
-            (HeaderName::from_bytes(k.as_ref()), http::HeaderValue::from_bytes(v.as_bytes()))
-        {
+        // A secret echoed in a header is masked as one in the body is.
+        let (value, found) = redact(v.as_bytes(), &session.credentials);
+        masked_in_headers.extend(found);
+        if let (Ok(k), Ok(v)) = (HeaderName::from_bytes(k.as_ref()), http::HeaderValue::from_bytes(&value)) {
             out_headers.append(k, v);
         }
     }
     let bytes =
         upstream.bytes().await.map_err(|e| reply(StatusCode::BAD_GATEWAY, &format!("egress: {e}")))?;
-    let (bytes, masked) = redact(&bytes, &session.credentials);
+    let (bytes, mut masked) = redact(&bytes, &session.credentials);
+    masked.extend(masked_in_headers);
     for id in &masked {
         tracing::warn!(target: "agentd::egress", session = %session.session, credential = %id, host, method = %parts.method, path, "secret masked in a response");
     }

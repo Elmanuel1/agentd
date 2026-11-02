@@ -6,11 +6,14 @@
 //!
 //! Environment: `AGENTD_API_URL`, `AGENTD_ENVIRONMENT_ID`, `AGENTD_WORK_ID`,
 //! `AGENTD_WORK_SECRET`; `AGENTD_AGENT_UID` / `AGENTD_AGENT_GID` (65534).
+//!
+//! `agentd-worker relay` runs the gateway instead (see `relay`).
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 mod client;
 mod ops;
+mod relay;
 
 use std::time::Duration;
 
@@ -18,6 +21,13 @@ use client::{Client, Config};
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("relay") {
+        match relay::parse(&std::env::var("AGENTD_RELAY").unwrap_or_default()) {
+            Ok(pairs) => relay::run(pairs).await,
+            Err(e) => eprintln!("agentd-worker: {e}"),
+        }
+        std::process::exit(1);
+    }
     let config = match Config::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
         Err(e) => {

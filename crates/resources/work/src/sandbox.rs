@@ -17,6 +17,9 @@ use crate::board::Board;
 /// how long a file transfer may take.
 const GRACE: Duration = Duration::from_secs(120);
 
+/// How often a waiting operation checks its worker still holds the lease.
+const LEASE_CHECK: Duration = Duration::from_secs(5);
+
 /// The sandbox of a session, reached through its worker.
 #[derive(Debug, Clone)]
 pub struct RemoteSandbox {
@@ -36,14 +39,27 @@ impl RemoteSandbox {
             .board
             .enqueue(&work, Envelope { id, op })
             .ok_or_else(|| RuntimeError::Unknown(session.to_owned()))?;
-        match tokio::time::timeout(wait, rx).await {
-            Ok(Ok(Outcome::Error { message })) => Err(RuntimeError::Launch(message)),
-            Ok(Ok(outcome)) => Ok(outcome),
-            Ok(Err(_)) => Err(RuntimeError::Unknown(session.to_owned())),
-            Err(_) => Err(RuntimeError::Unavailable(format!(
-                "the sandbox of {session} did not answer in {}s",
-                wait.as_secs()
-            ))),
+        let deadline = tokio::time::Instant::now() + wait;
+        tokio::pin!(rx);
+        loop {
+            // A worker whose lease ran out will not answer: fail now, not at the deadline.
+            let tick = tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + LEASE_CHECK));
+            tokio::select! {
+                got = &mut rx => return match got {
+                    Ok(Outcome::Error { message }) => Err(RuntimeError::Launch(message)),
+                    Ok(outcome) => Ok(outcome),
+                    Err(_) => Err(RuntimeError::Unknown(session.to_owned())),
+                },
+                () = tick => {
+                    if tokio::time::Instant::now() >= deadline {
+                        let secs = wait.as_secs();
+                        return Err(RuntimeError::Unavailable(format!("the sandbox of {session} did not answer in {secs}s")));
+                    }
+                    if !self.board.alive(&work) {
+                        return Err(RuntimeError::Unavailable(format!("the sandbox worker of {session} lost its lease")));
+                    }
+                }
+            }
         }
     }
 }

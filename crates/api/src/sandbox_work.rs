@@ -16,6 +16,9 @@ pub struct WorkIssuer {
     pub work: Arc<WorkService>,
     /// agentd's API as the sandbox reaches it.
     pub api_url: String,
+    /// Egress state kept per session, dropped with the sandbox (set once the
+    /// policy, which reads sessions, exists).
+    pub egress: Arc<std::sync::OnceLock<Arc<crate::egress::SessionEgressPolicy>>>,
 }
 
 impl SandboxWork for WorkIssuer {
@@ -36,5 +39,8 @@ impl SandboxWork for WorkIssuer {
 
     fn end(&self, session: &SessionId) {
         self.work.end(session.as_str());
+        if let Some(egress) = self.egress.get() {
+            egress.forget(session.as_str());
+        }
     }
 }

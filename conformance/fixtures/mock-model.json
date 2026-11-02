@@ -335,7 +335,7 @@
      "id": "toolu_allowed",
      "name": "bash",
      "input": {
-      "command": "curl -s -H \"Authorization: Bearer $ECHO_TOKEN\" http://host.docker.internal:18765/echo"
+      "command": "curl -s -H \"Authorization: Bearer $ECHO_TOKEN\" http://echo.agentd.test:18765/echo"
      }
     }
    ],

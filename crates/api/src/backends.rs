@@ -179,10 +179,10 @@ impl Backends {
         };
         let (runtime, agent): (Option<Arc<dyn Runtime>>, _) = match (&config.runtime, &config.store) {
             (RuntimeConfig::None, _) => (None, None),
-            (RuntimeConfig::Docker { image, limits }, StoreConfig::Postgres { url, .. }) => {
+            (RuntimeConfig::Docker { image, limits, network }, StoreConfig::Postgres { url, .. }) => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let runtime = Arc::new(DockerRuntime::new(docker, image.clone(), *limits));
+                let runtime = Arc::new(DockerRuntime::new(docker, image.clone(), *limits, network.clone()));
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
                 let leases = PgLeases::connect(url, config.engine.max_active_sessions).await?;
                 let egress =

@@ -3,9 +3,10 @@ name and a placeholder, never the value; the proxy puts the value into
 requests to the hosts the credential allows, refuses it anywhere else, and
 masks it in responses.
 
-Runs with the agent loop (AGENTD_TEST_RUNTIME=1, the scripted model) and
-AGENTD_EGRESS_INTERNAL_HOSTS=host.docker.internal, so the sandbox may reach
-the echo server this test starts on the runner.
+Runs with the agent loop (AGENTD_TEST_RUNTIME=1, the scripted model);
+`echo.agentd.test` must resolve to this machine and be in
+AGENTD_EGRESS_INTERNAL_HOSTS, so the proxy may reach the echo server this test
+starts.
 """
 
 import http.server
@@ -56,12 +57,12 @@ def test_a_credential_is_a_placeholder_in_the_sandbox_and_the_value_on_the_wire(
             "type": "environment_variable",
             "secret_name": "ECHO_TOKEN",
             "secret_value": SECRET,
-            "networking": {"type": "limited", "allowed_hosts": ["host.docker.internal"]},
+            "networking": {"type": "limited", "allowed_hosts": ["echo.agentd.test"]},
         },
     )
     env = client.beta.environments.create(
         name=f"rt-egress-{uuid.uuid4().hex[:6]}",
-        config={"type": "cloud", "networking": {"type": "limited", "allowed_hosts": ["host.docker.internal"]}},
+        config={"type": "cloud", "networking": {"type": "limited", "allowed_hosts": ["echo.agentd.test"]}},
     )
     tools = [{"type": "agent_toolset_20260401", "default_config": {"permission_policy": {"type": "always_allow"}}}]
     agent = client.beta.agents.create(name="rt-egress", model="claude-sonnet-4-6", tools=tools)

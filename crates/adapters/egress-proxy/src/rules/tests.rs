@@ -10,7 +10,6 @@ fn github() -> Credential {
         value: "ghp_real".into(),
         hosts: Some(vec!["api.github.com".into(), "*.githubusercontent.com".into()]),
         header: true,
-        body: false,
     }
 }
 
@@ -61,11 +60,10 @@ fn debug_never_prints_the_value() {
 }
 
 #[test]
-fn a_body_placeholder_is_swapped_only_where_the_credential_says_bodies() {
+fn a_credential_without_allowed_hosts_is_sent_nowhere() {
     let mut c = github();
-    assert_eq!(inject_body(b"t=agentd-ph-abc", &[c.clone()], "api.github.com").1, Vec::<String>::new());
-    c.body = true;
-    let (body, used) = inject_body(b"t=agentd-ph-abc", &[c.clone()], "api.github.com");
-    assert_eq!((body.as_slice(), used), (b"t=ghp_real".as_slice(), vec!["vcrd_1".to_owned()]));
-    assert_eq!(inject_body(b"t=agentd-ph-abc", &[c], "evil.example").0, b"t=agentd-ph-abc");
+    c.hosts = None;
+    let mut h = HeaderMap::new();
+    h.insert("authorization", HeaderValue::from_static("Bearer agentd-ph-abc"));
+    assert!(matches!(inject(&mut h, &[c], "api.github.com"), Err(Refusal::PlaceholderToWrongHost { .. })));
 }

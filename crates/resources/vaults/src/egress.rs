@@ -21,8 +21,6 @@ pub struct EnvSecret {
     pub hosts: Option<Vec<String>>,
     /// Whether it is put into request headers.
     pub header: bool,
-    /// Whether it is put into request bodies.
-    pub body: bool,
     /// The value.
     pub value: SecretString,
 }
@@ -87,7 +85,6 @@ impl VaultSecrets {
                         CredentialNetworking::Limited { allowed_hosts } => Some(allowed_hosts.clone()),
                     },
                     header: injection_location.header,
-                    body: injection_location.body,
                     value: secret_value,
                 });
             }

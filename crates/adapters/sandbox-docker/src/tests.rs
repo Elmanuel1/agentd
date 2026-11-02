@@ -6,12 +6,6 @@ use shared::ports::JobKind;
 use super::*;
 
 #[test]
-fn every_sandbox_goes_on_the_sandbox_network() {
-    assert_eq!(network_mode(&json!({"networking": {"type": "limited"}})), SANDBOX_NETWORK);
-    assert_eq!(network_mode(&serde_json::Value::Null), SANDBOX_NETWORK);
-}
-
-#[test]
 fn a_job_runs_in_a_container_named_after_its_target() {
     assert_eq!(DockerRuntime::container_name("sesn_01x"), "agentd-sesn_01x");
 }
@@ -25,7 +19,9 @@ async fn a_container_comes_and_goes() {
         return;
     };
     let docker = Docker::connect_with_local_defaults().unwrap();
-    let runtime = DockerRuntime::new(docker, image, SandboxLimits::default());
+    let relays = vec![(18080, "host.docker.internal:18080".to_owned())];
+    let runtime =
+        DockerRuntime::new(docker, image, SandboxLimits::default(), SandboxNetwork::Gateway { relays });
     runtime.prepare().await.unwrap();
     let target = format!("test-{}", std::process::id());
     let job = JobSpec {
@@ -46,6 +42,12 @@ async fn a_container_comes_and_goes() {
     let handle = runtime.launch(job).await.unwrap();
     assert_eq!(Some(&handle), runtime.handle_for(&target).as_ref());
     assert_eq!(runtime.status(&handle).await.unwrap(), TaskState::Running);
+    let network = runtime.docker.inspect_network(SANDBOX_NETWORK, None).await.unwrap();
+    assert_eq!(network.internal, Some(true));
+    let container =
+        runtime.docker.inspect_container(&DockerRuntime::container_name(&target), None).await.unwrap();
+    let mode = container.host_config.and_then(|h| h.network_mode);
+    assert_eq!(mode.as_deref(), Some(SANDBOX_NETWORK));
     runtime.stop(&handle).await.unwrap();
     assert!(matches!(runtime.status(&handle).await, Err(RuntimeError::Unknown(_))));
     assert!(matches!(runtime.stop(&handle).await, Err(RuntimeError::Unknown(_))));

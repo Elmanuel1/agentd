@@ -118,6 +118,12 @@ impl SessionEgressPolicy {
         Ok((pem, ca))
     }
 
+    /// Drop what is kept for `session` (its sandbox is gone).
+    pub fn forget(&self, session: &str) {
+        self.cas.lock().remove(session);
+        self.cache.lock().remove(session);
+    }
+
     /// The session's rules, read fresh.
     pub async fn rules(&self, ctx: &AuthContext, session: &str) -> Result<SessionEgress, ApiError> {
         let s = self.sessions.get(ctx, session).await?;
@@ -150,7 +156,6 @@ impl SessionEgressPolicy {
                 value: e.value.expose().to_owned(),
                 hosts: e.hosts,
                 header: e.header,
-                body: e.body,
             })
             .collect();
         let (_, ca) = self.ca(session)?;
@@ -197,7 +202,9 @@ impl EgressPolicy for SessionEgressPolicy {
             api_key_id: "agentd-egress".into(),
         };
         let rules = Arc::new(self.rules(&ctx, &claims.session).await.ok()?);
-        self.cache.lock().insert(claims.session, (Instant::now(), rules.clone()));
+        let mut cache = self.cache.lock();
+        cache.retain(|_, (at, _)| at.elapsed() < FRESH);
+        cache.insert(claims.session, (Instant::now(), rules.clone()));
         Some(rules)
     }
 }
