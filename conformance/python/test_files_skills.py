@@ -71,8 +71,11 @@ def test_a_skill_lifecycle_in_ga_shapes(client: anthropic.Anthropic) -> None:
     gone = client.skills.versions.delete(v2.id, skill_id=skill.id)
     assert (gone.id, gone.type) == (v2.id, "skill_version_deleted")
     assert client.skills.retrieve(skill.id).latest_version_id == skill.latest_version_id
-    with pytest.raises(anthropic.BadRequestError):
+    with pytest.raises(anthropic.BadRequestError) as caught:
         client.skills.versions.delete(skill.latest_version_id, skill_id=skill.id)
+    assert caught.value.body["error"]["message"] == (
+        "cannot delete a Skill's only version. Delete the Skill, or create another version first"
+    )
     assert skill.id in {s.id for s in client.skills.list(source="custom")}
     deleted = client.skills.delete(skill.id)
     assert (deleted.id, deleted.type) == (skill.id, "skill_deleted")
@@ -106,3 +109,33 @@ def test_a_page_cursor_survives_deleting_its_anchor(client: anthropic.Anthropic)
     second = client.files.list(limit=1, page=first.next_page)
     assert second.data[0].id != first.data[0].id
     assert second.data[0].created_at <= first.data[0].created_at
+
+
+def test_the_beta_version_list_is_oldest_first(client: anthropic.Anthropic) -> None:
+    skill = client.skills.create(files=skill_files("sdk-skill"), display_name=f"order {uuid.uuid4().hex[:6]}")
+    newer = client.skills.versions.create(skill.id, files=skill_files("sdk-skill"))
+    beta = client.skills.versions.with_raw_response.list(skill.id, extra_headers={"anthropic-beta": "skills-2025-10-02"})
+    ids = [v["id"] for v in json.loads(beta.http_response.text)["data"]]
+    assert [v.id for v in client.skills.versions.list(skill.id)] == [newer.id, skill.latest_version_id]
+    assert len(ids) == 2 and json.loads(beta.http_response.text)["data"][0]["version"] < json.loads(beta.http_response.text)["data"][1]["version"]
+
+
+def test_concurrent_deletes_never_leave_a_skill_without_a_version(client: anthropic.Anthropic) -> None:
+    import concurrent.futures
+
+    skill = client.skills.create(files=skill_files("sdk-skill"), display_name=f"race {uuid.uuid4().hex[:6]}")
+    second = client.skills.versions.create(skill.id, files=skill_files("sdk-skill"))
+    ids = [skill.latest_version_id, second.id]
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda v: _try_delete(client, skill.id, v), ids))
+    assert sorted(results) == [200, 400], results
+    left = client.skills.versions.list(skill.id).data
+    assert len(left) == 1 and client.skills.retrieve(skill.id).latest_version_id == left[0].id
+
+
+def _try_delete(client: anthropic.Anthropic, skill_id: str, version_id: str) -> int:
+    try:
+        client.skills.versions.delete(version_id, skill_id=skill_id)
+        return 200
+    except anthropic.BadRequestError:
+        return 400

@@ -13,6 +13,9 @@ pub enum StoreError {
     /// No such version.
     #[error("skill version not found")]
     VersionNotFound,
+    /// The version is the skill's only one (delete the skill instead).
+    #[error("only version")]
+    OnlyVersion,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
@@ -46,14 +49,17 @@ pub trait SkillsStore: Send + Sync {
 /// [`SkillsStore::create`].
 #[async_trait]
 pub trait SkillVersionsStore: Send + Sync {
-    /// One page of a skill's versions, newest first (fetched DB-side).
+    /// One page of a skill's versions, newest first or, with `oldest_first`,
+    /// oldest first (fetched DB-side).
     async fn versions(
         &self,
         ws: &WorkspaceId,
         id: &SkillId,
         page: &Pagination,
+        oldest_first: bool,
     ) -> Result<Vec<SkillVersion>, StoreError>;
-    /// Add a version and its bundle.
+    /// Add a version and its bundle, and make it the skill's latest unless a
+    /// newer version landed first.
     async fn add(&self, ws: &WorkspaceId, version: SkillVersion, bundle: Bytes) -> Result<(), StoreError>;
     /// The version `which` names.
     async fn get(
@@ -66,6 +72,7 @@ pub trait SkillVersionsStore: Send + Sync {
     async fn count(&self, ws: &WorkspaceId, id: &SkillId) -> Result<usize, StoreError>;
     /// A version's bundle.
     async fn bundle(&self, ws: &WorkspaceId, version: &SkillVersion) -> Result<Bytes, StoreError>;
-    /// Delete one version and its bundle.
+    /// Delete one version and its bundle, moving the skill's latest to the
+    /// newest left; the only version is [`StoreError::OnlyVersion`].
     async fn delete_version(&self, ws: &WorkspaceId, version: &SkillVersion) -> Result<(), StoreError>;
 }
