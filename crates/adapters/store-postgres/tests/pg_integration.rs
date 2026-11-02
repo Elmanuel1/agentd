@@ -84,6 +84,10 @@ async fn pg_agents_versioned_roundtrip() {
     assert_eq!(versions.iter().map(|a| a.version).collect::<Vec<_>>(), vec![1, 2]);
     // workspace isolation
     assert!(store.latest(&uniq_ws("other"), &id).await.is_err());
+    // An archive that read version 1 cannot stamp it once version 2 exists.
+    let stale = store.version(&ws, &id, 1).await.unwrap();
+    assert!(matches!(store.replace_latest(&ws, stale).await, Err(agents::store::StoreError::Conflict)));
+    store.replace_latest(&ws, store.latest(&ws, &id).await.unwrap()).await.unwrap();
 }
 
 #[tokio::test]
