@@ -6,7 +6,7 @@
 //! - versions are immutable once written (redact scrubs *content*, never the
 //!   audit spine),
 //! - the head (`latest`) is a pointer to one version; update advances it,
-//!   [`MemoryPersistence::rollback`] repoints it in O(1),
+//!   [`MemoryVersionPersistence::rollback`] repoints it in O(1),
 //! - resolve happens through [`VersionSelector`] so callers (sessions,
 //!   dreams) choose `latest` or a pinned version explicitly.
 
@@ -85,8 +85,19 @@ impl MemoryRecord {
 }
 
 /// Persistence port for stores/memories/versions.
+pub trait MemoryPersistence:
+    MemoryStorePersistence + MemoryRecordPersistence + MemoryVersionPersistence
+{
+}
+
+impl<T> MemoryPersistence for T where
+    T: MemoryStorePersistence + MemoryRecordPersistence + MemoryVersionPersistence
+{
+}
+
+/// Persistence port for memory stores.
 #[async_trait]
-pub trait MemoryPersistence: Send + Sync {
+pub trait MemoryStorePersistence: Send + Sync {
     /// Insert a store.
     async fn insert_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError>;
     /// Fetch a store.
@@ -105,7 +116,11 @@ pub trait MemoryPersistence: Send + Sync {
         ws: &WorkspaceId,
         page: &Pagination,
     ) -> Result<Vec<MemoryStoreEntity>, StoreError>;
+}
 
+/// Persistence port for memory records (head + chain).
+#[async_trait]
+pub trait MemoryRecordPersistence: Send + Sync {
     /// Insert a brand-new memory (version 1 chain). Fails on occupied path.
     async fn insert_memory(
         &self,
@@ -141,6 +156,11 @@ pub trait MemoryPersistence: Send + Sync {
         store: &MemoryStoreId,
         path: &str,
     ) -> Result<Option<MemoryId>, StoreError>;
+}
+
+/// Persistence port for memory versions.
+#[async_trait]
+pub trait MemoryVersionPersistence: Send + Sync {
     /// All versions across the store, newest first, optionally filtered.
     async fn list_versions(
         &self,
