@@ -96,3 +96,18 @@ fn s3_options_come_from_config() {
         "AGENTD_S3_CREATE_BUCKET"
     );
 }
+
+#[test]
+fn telemetry_is_off_and_logs_are_text_unless_configured() {
+    let c = config(&[("AGENTD_API_KEYS", "k:o:w")]).unwrap();
+    assert_eq!((c.otlp, c.json_logs), (false, false));
+    let c = config(&[
+        ("AGENTD_API_KEYS", "k:o:w"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
+        ("AGENTD_LOG_FORMAT", "json"),
+    ])
+    .unwrap();
+    assert_eq!((c.otlp, c.json_logs), (true, true));
+    let err = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_LOG_FORMAT", "xml")]).unwrap_err();
+    assert_eq!(err.var, "AGENTD_LOG_FORMAT");
+}

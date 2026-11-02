@@ -12,7 +12,7 @@ use axum::extract::{FromRequest, Request};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
-use crate::error::ApiError;
+use crate::error::{ApiError, ErrorType};
 use crate::id::RequestId;
 
 /// Drop-in replacement for `axum::Json<T>` on request bodies whose extraction
@@ -77,9 +77,25 @@ pub fn request_too_large_response(api: &str, max_mb: usize) -> Response {
     response
 }
 
+/// A 5xx's own message, kept off the wire (which says only `Internal server
+/// error` or `Overloaded`, as live does) and on the response for the edge to
+/// log.
+#[derive(Debug, Clone)]
+pub struct ErrorCause(pub String);
+
 fn render(error: &ApiError, rid: Option<&RequestId>) -> Response {
     let status = axum::http::StatusCode::from_u16(error.status)
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    if status.is_server_error() {
+        let public = match error.error_type {
+            ErrorType::Overloaded => "Overloaded",
+            _ => "Internal server error",
+        };
+        let shown = ApiError { message: public.into(), ..error.clone() };
+        let mut response = (status, Json(shown.to_envelope(rid))).into_response();
+        response.extensions_mut().insert(ErrorCause(error.message.clone()));
+        return response;
+    }
     let mut response = (status, Json(error.to_envelope(rid))).into_response();
     if status.is_client_error() && !matches!(error.status, 408 | 429) {
         response.headers_mut().insert("x-should-retry", axum::http::HeaderValue::from_static("false"));
@@ -155,5 +171,20 @@ mod tests {
     fn extracts_field_name() {
         assert_eq!(between("missing field `version` at line 1", "missing field `", "`"), Some("version"));
         assert_eq!(between("unknown field `bogus`, expected", "unknown field `", "`"), Some("bogus"));
+    }
+
+    #[tokio::test]
+    async fn a_server_error_keeps_its_cause_off_the_wire() {
+        let response = wire_response(&ApiError::internal("store backend: password=hunter2 refused"));
+        assert_eq!(
+            response.extensions().get::<ErrorCause>().map(|c| c.0.as_str()),
+            Some("store backend: password=hunter2 refused")
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["type"], "api_error");
+        assert_eq!(body["error"]["message"], "Internal server error");
+        let client = wire_response(&ApiError::invalid_request("name: too long"));
+        assert!(client.extensions().get::<ErrorCause>().is_none());
     }
 }

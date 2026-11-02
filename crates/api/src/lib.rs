@@ -13,6 +13,7 @@ pub mod deps;
 pub mod edge;
 pub mod keys;
 pub mod state;
+pub mod telemetry;
 
 pub use backends::{Backends, Stores};
 pub use config::Config;
@@ -31,5 +32,5 @@ pub fn build_router(state: AppState) -> Router {
     let routes = state.modules.into_iter().fold(Router::new(), |router, module| {
         router.merge(edge::limits::bounded(module.router, module.body_limit))
     });
-    edge::wrap(routes, state.keys, gates)
+    edge::wrap(routes, state.keys, gates, Arc::new(telemetry::Metrics::global()))
 }

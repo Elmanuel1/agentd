@@ -8,7 +8,9 @@
 //!    without their beta against the GA schema,
 //! 4. [`methods`]: HEAD and unserved methods are 405s with the live body; an
 //!    unknown path is the live 404 (`request_id: null`, live auth/08),
-//! 5. [`limits`]: each module's body cap, a 413 above it.
+//! 5. [`limits`]: each module's body cap, a 413 above it,
+//! 6. [`telemetry::http`]: a span and a duration sample per request, inside
+//!    the request id so both carry it.
 //!
 //! Routing comes first, as live: an unknown path is a 404 before any auth.
 
@@ -25,8 +27,15 @@ use axum::Router;
 use shared::beta::BetaGate;
 use shared::ports::keys::KeySource;
 
+use crate::telemetry::{self, Metrics};
+
 /// Put the edge around the merged module routes.
-pub fn wrap(routes: Router, keys: Arc<dyn KeySource>, gates: Arc<[BetaGate]>) -> Router {
+pub fn wrap(
+    routes: Router,
+    keys: Arc<dyn KeySource>,
+    gates: Arc<[BetaGate]>,
+    metrics: Arc<Metrics>,
+) -> Router {
     routes
         .method_not_allowed_fallback(methods::not_allowed)
         .route_layer(from_fn_with_state(gates, contract::betas))
@@ -34,5 +43,6 @@ pub fn wrap(routes: Router, keys: Arc<dyn KeySource>, gates: Arc<[BetaGate]>) ->
         .route_layer(from_fn(methods::reject_head))
         .route_layer(from_fn_with_state(keys, auth::auth))
         .fallback(|| async { shared::unknown_route_response() })
+        .layer(from_fn_with_state(metrics, telemetry::http::observe))
         .layer(from_fn(request_id::request_id))
 }

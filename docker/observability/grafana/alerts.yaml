@@ -1,0 +1,189 @@
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: agentd-boundaries
+    folder: agentd
+    interval: 1m
+    rules:
+      - uid: agentd-5xx-ratio
+        title: agentd 5xx ratio above 1%
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'sum(rate(http_server_request_duration_seconds_count{job="agentd",http_response_status_code=~"5.."}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job="agentd"}[5m])), 1e-9)'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [0.01]}}]
+              refId: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: page
+        annotations:
+          summary: agentd 5xx ratio above 1%
+          description: 'More than 1% of requests answer 5xx. The error logs and failed traces panels name the route and the failing boundary.'
+      - uid: agentd-p95-latency
+        title: agentd p95 latency above 1s
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job="agentd"}[5m])))'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [1]}}]
+              refId: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warn
+        annotations:
+          summary: agentd p95 latency above 1s
+          description: 'p95 request latency is above 1s. Compare the Postgres and port p95 panels to find the slow boundary.'
+      - uid: agentd-sql-failures
+        title: agentd SQL statements failing
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'sum(rate(db_client_operation_duration_seconds_count{job="agentd",outcome="error"}[5m]))'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [0.05]}}]
+              refId: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: page
+        annotations:
+          summary: agentd SQL statements failing
+          description: 'Postgres statements fail (unique violations are expected and counted, but at this rate the database or a migration is wrong).'
+      - uid: agentd-port-failures
+        title: agentd blob, secret or sandbox operations failing
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'sum by (agentd_port) (rate(agentd_port_operation_duration_seconds_count{job="agentd",agentd_port!="fires",outcome="error"}[5m]))'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [0.05]}}]
+              refId: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warn
+        annotations:
+          summary: agentd blob, secret or sandbox operations failing
+          description: 'An outbound port fails: {{ $labels.agentd_port }}. Check object storage or the Docker daemon.'
+      - uid: agentd-fire-failures
+        title: agentd scheduled fires failing
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'sum by (agentd_operation) (increase(agentd_port_operation_duration_seconds_count{job="agentd",agentd_port="fires",outcome="error"}[15m]))'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [0]}}]
+              refId: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warn
+        annotations:
+          summary: agentd scheduled fires failing
+          description: 'A scheduled {{ $labels.agentd_operation }} fire failed in the last 15 minutes; fires are not retried.'
+      - uid: agentd-absent
+        title: agentd sends no telemetry
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'absent_over_time(target_info{job="agentd"}[5m])'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [0]}}]
+              refId: C
+        for: 0s
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: page
+        annotations:
+          summary: agentd sends no telemetry
+          description: 'No agentd telemetry for 5 minutes: agentd is down or cannot reach the collector.'
+      - uid: agentd-pool-saturated
+        title: agentd connection pool saturated
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              expr: 'max(db_client_connection_pending_requests{job="agentd"})'
+              instant: true
+              refId: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions: [{evaluator: {type: gt, params: [0]}}]
+              refId: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warn
+        annotations:
+          summary: agentd connection pool saturated
+          description: 'Requests wait for a Postgres connection: the pool (10 per replica) is the limit.'

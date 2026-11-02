@@ -18,6 +18,8 @@ use vaults::VaultsService;
 
 use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
+use crate::telemetry::ports::Observed;
+use crate::telemetry::Metrics;
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
@@ -70,8 +72,9 @@ impl AppState {
             sessions::module(sessions),
             deployments::module(deployments),
         ];
+        let metrics = Arc::new(Metrics::global());
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
-            fires.register(handler.clone())?;
+            fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
         Ok(Self { keys, modules })
     }

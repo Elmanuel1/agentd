@@ -12,6 +12,9 @@ use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
 use sandbox_docker::DockerRuntime;
+
+use crate::telemetry::ports::Observed;
+use crate::telemetry::{self, Metrics};
 use scheduler_local::LocalScheduler;
 use secrets_blob::BlobSecretStore;
 use sessions::{SessionEventLog, SessionsStore};
@@ -122,14 +125,21 @@ impl Backends {
     /// Connect the backends `config` selects. The local scheduler starts
     /// ticking here.
     pub async fn from_config(config: &Config) -> Result<Self, BootError> {
+        let metrics = Arc::new(Metrics::global());
         let blobs: Arc<dyn BlobStore> = match &config.blobs {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
+        let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
         let secrets: Arc<dyn SecretStore> = match config.secrets {
             SecretsConfig::Blob => Arc::new(BlobSecretStore::new(blobs.clone())),
         };
+        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(secrets, metrics.clone()));
         let stores = match &config.store {
-            StoreConfig::Postgres { url } => Stores::postgres(PgBackend::connect(url).await?, blobs, secrets),
+            StoreConfig::Postgres { url } => {
+                let pg = PgBackend::connect_observed(url, telemetry::db::observer(metrics.clone())).await?;
+                telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
+                Stores::postgres(pg, blobs, secrets)
+            }
         };
         let keys: Arc<dyn KeySource> = match &config.keys {
             KeysConfig::Env(keys) => Arc::new(EnvKeySource::new(keys)),
@@ -149,7 +159,7 @@ impl Backends {
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
                 let runtime = DockerRuntime::new(docker, image.clone());
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
-                Some(Arc::new(runtime))
+                Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
             }
         };
         Ok(Self { stores, keys, scheduler, fires, runtime })

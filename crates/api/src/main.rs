@@ -9,11 +9,19 @@ use api::{build_router, AppState, Backends, Config};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber_init();
+    // No subscriber exists before the config is read, so a bad config goes
+    // to stderr.
     let config = match Config::from_lookup(|var| std::env::var(var).ok()) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "invalid configuration");
+            eprintln!("invalid configuration: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _telemetry = match api::telemetry::init(config.otlp, config.json_logs) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("telemetry: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -44,61 +52,4 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
-}
-
-fn tracing_subscriber_init() {
-    // Minimal env-filter logging without extra deps.
-    let level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
-    let _ = tracing::subscriber::set_global_default(tracing_subscriber_stub::Subscriber::new(level));
-}
-
-/// Tiny stdout subscriber (avoids pulling tracing-subscriber; swap freely).
-mod tracing_subscriber_stub {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use tracing::span;
-
-    /// Minimal subscriber printing events to stdout.
-    pub struct Subscriber {
-        level: tracing::Level,
-        ids: AtomicU64,
-    }
-
-    impl Subscriber {
-        /// Build with a level string.
-        pub fn new(level: String) -> Self {
-            let level = match level.to_ascii_lowercase().as_str() {
-                "trace" => tracing::Level::TRACE,
-                "debug" => tracing::Level::DEBUG,
-                "warn" => tracing::Level::WARN,
-                "error" => tracing::Level::ERROR,
-                _ => tracing::Level::INFO,
-            };
-            Self { level, ids: AtomicU64::new(1) }
-        }
-    }
-
-    impl tracing::Subscriber for Subscriber {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            *metadata.level() <= self.level
-        }
-        fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(self.ids.fetch_add(1, Ordering::Relaxed))
-        }
-        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct V(String);
-            impl tracing::field::Visit for V {
-                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                    use std::fmt::Write;
-                    let _ = write!(self.0, " {}={value:?}", field.name());
-                }
-            }
-            let mut v = V(String::new());
-            event.record(&mut v);
-            println!("[{}] {}{}", event.metadata().level(), event.metadata().target(), v.0);
-        }
-        fn enter(&self, _span: &span::Id) {}
-        fn exit(&self, _span: &span::Id) {}
-    }
 }
