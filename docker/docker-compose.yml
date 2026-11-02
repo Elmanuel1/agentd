@@ -105,9 +105,10 @@ services:
       - "127.0.0.1:4566:4566"
     healthcheck:
       test: ["CMD-SHELL", "awslocal kms describe-key --key-id alias/agentd-secrets >/dev/null"]
-      interval: 2s
-      timeout: 10s
-      retries: 90
+      interval: 3s
+      timeout: 30s
+      start_period: 60s
+      retries: 60
 
   # The sandbox runtime's Docker API: networks, images and containers only,
   # so agentd never holds the raw socket. Creating containers is still as
