@@ -29,7 +29,7 @@ def test_the_scripted_demo_runs_every_upload_to_a_graded_result(tmp_path: Path) 
     assert all(g["criteria"] == 2 for g in summary["grades"].values())
     u0 = json.loads((tmp_path / "u0-result.json").read_text())
     assert u0["name"] == "Welland Street Trail and Road Reconstruction"
-    types = [json.loads(line)["type"] for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    types = [json.loads(line)["type"] for line in (tmp_path / "events-final.jsonl").read_text().splitlines()]
     for t in ("user.define_outcome", "session.thread_created", "agent.thread_message_sent", "agent.thread_message_received",
               "span.outcome_evaluation_start", "span.outcome_evaluation_end", "session.status_idle"):
         assert t in types, t

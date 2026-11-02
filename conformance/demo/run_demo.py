@@ -17,7 +17,8 @@ rubrics against agentd, with only the SDK's base URL changed:
 usage: run_demo.py --out DIR [--model ID] [--data ~/tosspaper-eval-data]
        [--max-iterations N] [--uploads 0,1,2]
 Environment: AGENTD_BASE_URL, AGENTD_API_KEY; OPENROUTER_API_KEY (optional)
-reads that key's spend before and after.
+reads that key's spend before and after, as the earlier runs measured cost,
+so use a key nothing else spends on during the run.
 """
 import argparse
 import ast
@@ -160,13 +161,12 @@ def grade(client, args, env_id, resources, upload_plan, result: bytes, model: st
 
 def which_upload(result: dict, plan: dict) -> int | None:
     """Several outputs are named result.json; the content says whose it is."""
-    if "changes" not in result:
-        return 0
     text = json.dumps(result)
     for u in plan["uploads"][1:]:
         if any(d["doc_id"] in text for d in u["docs"]):
             return u["upload"]
-    return None
+    later = ("changes" in result) or ("questions_answers" in result)
+    return None if later else 0
 
 
 def main() -> None:
@@ -234,6 +234,10 @@ def main() -> None:
                 (args.out / f"u{n}-result.json").write_bytes(body)
     session = client.beta.sessions.retrieve(session.id)
     spend_after = key_usage()
+    # The full log as the API keeps it, whatever the live stream caught.
+    with (args.out / "events-final.jsonl").open("w") as f:
+        for event in client.beta.sessions.events.list(session.id, limit=1000):
+            f.write(event.model_dump_json() + "\n")
     grades = {}
     for u in plan["uploads"]:
         n = u["upload"]
