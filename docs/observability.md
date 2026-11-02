@@ -17,7 +17,7 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 | Postgres statements | `telemetry::db`, diesel `Instrumentation` on every pooled connection | `SELECT postgres` and so on, under the request | `db.client.operation.duration` (s) by operation and outcome | `error`; a unique violation is `debug` (it is a 409) |
 | Postgres connections | the pool's setup hook | | a failed `CONNECT` in `db.client.operation.duration`; `db.client.connection.count` (idle, used), `.max`, `.pending_requests` | `error` |
 | Blobs, secrets, sandbox | `telemetry::ports::Observed` around each port | `blobs.put`, `secrets.get`, `sandbox.launch` | `agentd.port.operation.duration` (s) by port, operation and outcome | `warn` |
-| Scheduled fires | `Observed` around each module's fire handler | `fires.deployment`, `fires.dream` | the same, port `fires` | `warn` |
+| Scheduled fires | `Observed` around each module's fire handler | `fires.deployment` (the one fire kind today) | the same, port `fires` | `warn` |
 
 Every boundary operation is covered: 49 route registrations plus the unknown-path fallback, every statement
 through the pool, all 3 operations of each of the 3 outbound ports, and every fire kind. Inside a request, time
