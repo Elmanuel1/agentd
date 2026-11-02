@@ -16,8 +16,11 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+mod checkout;
 pub mod entities;
 pub mod schema;
+
+pub use checkout::{DieselPgPool, PooledConnection};
 
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use std::sync::Arc;
@@ -25,9 +28,6 @@ use std::sync::Arc;
 use diesel::connection::Instrumentation;
 use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig};
 use diesel_async::{AsyncConnection, AsyncPgConnection};
-
-/// The diesel-async connection pool type (tokio-postgres under the hood).
-pub type DieselPgPool = DieselPool<AsyncPgConnection>;
 
 pub use entities::agents::PgAgentsStore;
 pub use entities::deployments::PgDeploymentsStore;
@@ -124,7 +124,7 @@ impl PgBackend {
         manager: AsyncDieselConnectionManager<AsyncPgConnection>,
         settings: PoolSettings,
     ) -> Result<Self, PgError> {
-        let diesel = DieselPool::builder(manager)
+        let inner = DieselPool::builder(manager)
             .max_size(settings.max_size)
             .wait_timeout(Some(settings.wait))
             // Opening or recycling a connection counts against the same bound,
@@ -134,7 +134,7 @@ impl PgBackend {
             .runtime(deadpool::Runtime::Tokio1)
             .build()
             .map_err(|e| PgError::Connect(e.to_string()))?;
-        Ok(Self { diesel })
+        Ok(Self { diesel: DieselPgPool::new(inner, settings.wait) })
     }
 }
 
