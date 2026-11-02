@@ -9,7 +9,7 @@
 //! - `terminated` is absorbing; archived sessions are read-only,
 //! - `session.status_idle` carries a `stop_reason`; `requires_action` is
 //!   NOT terminal for drain loops.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -106,6 +106,16 @@ pub trait TurnTrigger: Send + Sync {
     fn wake(&self, ctx: &AuthContext, session: &SessionId);
 }
 
+/// Issues the work item a session's sandbox worker runs.
+pub trait SandboxWork: Send + Sync {
+    /// The environment variables the sandbox starts with: where its worker
+    /// reports and the work it runs.
+    fn issue(&self, ctx: &AuthContext, environment_id: &str, session: &SessionId)
+        -> BTreeMap<String, String>;
+    /// The session's sandbox is gone.
+    fn end(&self, session: &SessionId);
+}
+
 /// The live fan-out: one broadcast channel per session that has a listener.
 type Channels = Arc<Mutex<HashMap<SessionId, broadcast::Sender<Event>>>>;
 
@@ -120,6 +130,8 @@ pub struct SessionsService {
     catalog: ModelCatalog,
     /// Runs one sandbox per session; `None` runs no sandbox.
     sandbox: Option<Arc<dyn Runtime>>,
+    /// Issues each sandbox's work item, which its worker runs.
+    work: Option<Arc<dyn SandboxWork>>,
     /// Runs the agent loop; unset, the service only stores events.
     trigger: std::sync::OnceLock<Arc<dyn TurnTrigger>>,
 }
@@ -146,14 +158,17 @@ impl SessionsService {
             catalog,
             channels: Channels::default(),
             sandbox: None,
+            work: None,
             trigger: std::sync::OnceLock::new(),
         }
     }
 
-    /// Run each session's sandbox on `runtime`.
+    /// Run each session's sandbox on `runtime`, its worker on a work item
+    /// from `work`.
     #[must_use]
-    pub fn with_sandbox(mut self, runtime: Arc<dyn Runtime>) -> Self {
+    pub fn with_sandbox(mut self, runtime: Arc<dyn Runtime>, work: Option<Arc<dyn SandboxWork>>) -> Self {
         self.sandbox = Some(runtime);
+        self.work = work;
         self
     }
 

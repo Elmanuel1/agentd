@@ -25,14 +25,13 @@ use std::sync::Arc;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
 use shared::beta::BetaGate;
-use shared::ports::keys::KeySource;
 
 use crate::telemetry::{self, Metrics};
 
 /// Put the edge around the merged module routes.
 pub fn wrap(
     routes: Router,
-    keys: Arc<dyn KeySource>,
+    credentials: auth::Credentials,
     gates: Arc<[BetaGate]>,
     metrics: Arc<Metrics>,
 ) -> Router {
@@ -41,7 +40,7 @@ pub fn wrap(
         .route_layer(from_fn_with_state(gates, contract::betas))
         .route_layer(from_fn(contract::version))
         .route_layer(from_fn(methods::reject_head))
-        .route_layer(from_fn_with_state(keys, auth::auth))
+        .route_layer(from_fn_with_state(credentials, auth::auth))
         .fallback(|| async { shared::unknown_route_response() })
         .layer(from_fn_with_state(metrics, telemetry::http::observe))
         .layer(from_fn(request_id::request_id))

@@ -16,7 +16,7 @@ deterministic. `fixture/` is the slice of the demo data it needs
 (`make_fixture.py` rebuilds it; each document keeps its first three pages).
 
 ```bash
-docker build -t agentd-sandbox docker/sandbox
+docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
 AGENTD_RUNTIME=docker AGENTD_SANDBOX_IMAGE=agentd-sandbox \
   AGENTD_MOCK_MODEL=conformance/demo/mock-model.json ./target/debug/agentd &
 AGENTD_TEST_DEMO=1 AGENTD_BASE_URL=http://127.0.0.1:8080 AGENTD_TEST_KEY=<key> \

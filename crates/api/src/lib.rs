@@ -12,7 +12,9 @@ pub mod backends;
 pub mod config;
 pub mod deps;
 pub mod edge;
+pub mod egress;
 pub mod keys;
+pub mod sandbox_work;
 pub mod state;
 pub mod telemetry;
 
@@ -33,5 +35,6 @@ pub fn build_router(state: AppState) -> Router {
     let routes = state.modules.into_iter().fold(Router::new(), |router, module| {
         router.merge(edge::limits::bounded(module.router, module.body_limit))
     });
-    edge::wrap(routes, state.keys, gates, state.metrics)
+    let credentials = edge::auth::Credentials { keys: state.keys, work: state.work_tokens };
+    edge::wrap(routes, credentials, gates, state.metrics)
 }

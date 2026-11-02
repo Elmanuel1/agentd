@@ -13,6 +13,19 @@ pub struct SkillFiles {
     pub files: Vec<(String, Vec<u8>)>,
 }
 
+/// What a session's sandbox is told about egress: the environment its
+/// commands run with (each credential's placeholder, the proxy, the CA
+/// bundle), the session CA, and the credentials as the agent may know them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SandboxEgress {
+    /// Variables for every command.
+    pub env: std::collections::BTreeMap<String, String>,
+    /// The session CA the sandbox trusts, PEM.
+    pub ca_pem: Option<String>,
+    /// `(name, description, hosts)` of each credential; never a value.
+    pub credentials: Vec<(String, String, Option<Vec<String>>)>,
+}
+
 /// Files, skills, environments and session outputs, by id, as `ctx` (the
 /// caller whose events started the loop) sees them.
 #[async_trait]
@@ -27,6 +40,8 @@ pub trait SessionAssets: Send + Sync {
         ctx: &AuthContext,
         environment_id: &str,
     ) -> Result<serde_json::Value, ApiError>;
+    /// The egress setup of `session`'s sandbox.
+    async fn egress(&self, ctx: &AuthContext, session: &str) -> Result<SandboxEgress, ApiError>;
     /// Keep `bytes` as a file scoped to `session` named `filename`, in place
     /// of `previous` (an earlier version of the same output). The new file id.
     async fn save_output(

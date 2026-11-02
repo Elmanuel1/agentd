@@ -18,6 +18,8 @@ pub struct FakeAssets {
     pub skills: Arc<Mutex<BTreeMap<String, SkillFiles>>>,
     /// The environment config every lookup returns.
     pub environment: Arc<Mutex<serde_json::Value>>,
+    /// The egress setup every session gets.
+    pub egress: Arc<Mutex<crate::worker::SandboxEgress>>,
     /// Each output saved.
     pub outputs: Arc<Mutex<Vec<SavedOutput>>>,
 }
@@ -46,6 +48,14 @@ impl SessionAssets for FakeAssets {
         _version: &str,
     ) -> Result<SkillFiles, ApiError> {
         self.skills.lock().get(skill_id).cloned().ok_or_else(|| ApiError::not_found("skill not found"))
+    }
+
+    async fn egress(
+        &self,
+        _ctx: &AuthContext,
+        _session: &str,
+    ) -> Result<crate::worker::SandboxEgress, ApiError> {
+        Ok(self.egress.lock().clone())
     }
 
     async fn environment(&self, _ctx: &AuthContext, _id: &str) -> Result<serde_json::Value, ApiError> {

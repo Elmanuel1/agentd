@@ -22,6 +22,21 @@ pub struct EngineConfig {
     /// `AGENTD_MAX_ACTIVE_SESSIONS` (default 64): session loops this replica
     /// runs at once, each holding a lease connection.
     pub max_active_sessions: usize,
+    /// `AGENTD_SANDBOX_API_URL`: agentd's API as a sandbox's worker reaches
+    /// it (default `http://host.docker.internal:<AGENTD_ADDR port>`).
+    pub sandbox_api_url: String,
+    /// `AGENTD_WORK_TOKEN_KEY` (hex): signs work tokens and egress proxy
+    /// passwords; random per process when unset, which suits one replica.
+    pub work_token_key: Option<Vec<u8>>,
+    /// `AGENTD_EGRESS_ADDR` (default `0.0.0.0:8890`): where the egress proxy
+    /// listens.
+    pub egress_addr: String,
+    /// `AGENTD_SANDBOX_EGRESS_HOST`: the proxy as a sandbox reaches it
+    /// (default `host.docker.internal:<AGENTD_EGRESS_ADDR port>`).
+    pub sandbox_egress_host: String,
+    /// `AGENTD_EGRESS_INTERNAL_HOSTS`: hosts sandboxes may reach at internal
+    /// addresses (comma-separated); none by default.
+    pub egress_internal_hosts: Vec<String>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -32,7 +47,8 @@ impl std::fmt::Debug for EngineConfig {
             .field("max_tokens", &self.max_tokens)
             .field("web_search", &self.search_key.is_some())
             .field("max_active_sessions", &self.max_active_sessions)
-            .finish()
+            .field("sandbox_api_url", &self.sandbox_api_url)
+            .finish_non_exhaustive()
     }
 }
 
@@ -48,19 +64,44 @@ impl EngineConfig {
             }),
             mock_script: key("AGENTD_MOCK_MODEL").map(Into::into),
         };
-        let extra_models = get("AGENTD_MODELS")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_owned)
-            .collect();
+        let extra_models = list(get("AGENTD_MODELS"));
         Ok(Self {
             providers,
             extra_models,
             max_tokens: number(get, "AGENTD_MAX_OUTPUT_TOKENS", 16000)?,
             search_key: key("AGENTD_BRAVE_API_KEY"),
             max_active_sessions: number(get, "AGENTD_MAX_ACTIVE_SESSIONS", 64)?,
+            sandbox_api_url: get("AGENTD_SANDBOX_API_URL").unwrap_or_else(|| {
+                let addr = get("AGENTD_ADDR").unwrap_or_default();
+                let port = addr.rsplit(':').next().filter(|p| !p.is_empty()).unwrap_or("8080").to_owned();
+                format!("http://host.docker.internal:{port}")
+            }),
+            egress_addr: get("AGENTD_EGRESS_ADDR").unwrap_or_else(|| "0.0.0.0:8890".into()),
+            sandbox_egress_host: get("AGENTD_SANDBOX_EGRESS_HOST").unwrap_or_else(|| {
+                let addr = get("AGENTD_EGRESS_ADDR").unwrap_or_default();
+                format!(
+                    "host.docker.internal:{}",
+                    addr.rsplit(':').next().filter(|p| !p.is_empty()).unwrap_or("8890")
+                )
+            }),
+            egress_internal_hosts: list(get("AGENTD_EGRESS_INTERNAL_HOSTS")),
+            work_token_key: match key("AGENTD_WORK_TOKEN_KEY") {
+                Some(hex) => Some(decode_hex(&hex).ok_or_else(|| ConfigError {
+                    var: "AGENTD_WORK_TOKEN_KEY",
+                    reason: "must be at least 16 bytes of hex".into(),
+                })?),
+                None => None,
+            },
         })
     }
+}
+
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    (s.len() % 2 == 0 && s.len() >= 32)
+        .then(|| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect())?
+}
+
+/// A comma-separated list.
+fn list(raw: Option<String>) -> Vec<String> {
+    raw.unwrap_or_default().split(',').map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned).collect()
 }

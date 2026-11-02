@@ -32,6 +32,8 @@ pub struct Team {
     primary: ThreadCtx,
     roster: Vec<AgentSnapshot>,
     skills: HashMap<String, Vec<SkillInfo>>,
+    /// The system prompt's closing notes (the credentials section).
+    notes: String,
     members: Mutex<HashMap<ThreadId, Arc<Member>>>,
     /// Threads with input to answer, in arrival order.
     runnable: Mutex<Vec<ThreadId>>,
@@ -54,6 +56,7 @@ impl Team {
         primary: ThreadCtx,
         roster: Vec<AgentSnapshot>,
         skills: HashMap<String, Vec<SkillInfo>>,
+        notes: String,
         wake: Arc<Notify>,
     ) -> Self {
         let members = HashMap::from([(
@@ -65,6 +68,7 @@ impl Team {
             primary,
             roster,
             skills,
+            notes,
             members: Mutex::new(members),
             runnable: Mutex::new(Vec::new()),
             busy: Mutex::default(),
@@ -93,7 +97,7 @@ impl Team {
             scope: Some(id.clone()),
             id,
             toolbox: Toolbox::for_agent(&agent, false),
-            system: system_prompt(&agent, &skills, &[]),
+            system: system_prompt(&agent, &skills, &[], &self.notes),
             threaded: true,
             agent,
         }

@@ -15,8 +15,6 @@ use bollard::Docker;
 use futures::TryStreamExt;
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 
-mod exec;
-
 /// What one sandbox may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxLimits {
@@ -104,17 +102,18 @@ impl DockerRuntime {
 /// The most processes one sandbox may run.
 const PIDS_LIMIT: i64 = 1024;
 
-/// Sandboxes run as `nobody`, not root.
-const SANDBOX_USER: &str = "65534:65534";
+/// The sandbox's first process is its worker, as root so it can write the
+/// root-owned uploads and skills; it runs every agent command as `nobody`.
+const WORKER_USER: &str = "0:0";
 
-/// `limited` networking gets no network: the allow-list proxy is a later
-/// step, and denying all egress is the safe reading of `limited` until then.
-/// Everything else goes on the sandbox network, never the default bridge.
-fn network_mode(environment: &serde_json::Value) -> &'static str {
-    match environment.pointer("/networking/type").and_then(serde_json::Value::as_str) {
-        Some("limited") => "none",
-        _ => SANDBOX_NETWORK,
-    }
+/// What the worker needs beyond an unprivileged process: to run commands as
+/// the agent's user and to own files for it.
+const WORKER_CAPS: [&str; 5] = ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "FOWNER"];
+
+/// Every sandbox goes on the sandbox network, never the default bridge: its
+/// worker must reach agentd. What else it reaches is the egress proxy's call.
+fn network_mode(_environment: &serde_json::Value) -> &'static str {
+    SANDBOX_NETWORK
 }
 
 fn not_found(e: &DockerError) -> bool {
@@ -134,14 +133,16 @@ impl Runtime for DockerRuntime {
         ]);
         let body = ContainerCreateBody {
             image: Some(self.image.clone()),
-            cmd: Some(vec!["sleep".into(), "infinity".into()]),
+            cmd: Some(vec!["agentd-worker".into()]),
             env: Some(env),
             labels: Some(labels),
-            user: Some(SANDBOX_USER.into()),
+            user: Some(WORKER_USER.into()),
             host_config: Some(HostConfig {
                 network_mode: Some(network_mode(&job.environment).to_owned()),
                 init: Some(true),
                 cap_drop: Some(vec!["ALL".into()]),
+                cap_add: Some(WORKER_CAPS.iter().map(|c| (*c).to_owned()).collect()),
+                extra_hosts: Some(vec!["host.docker.internal:host-gateway".into()]),
                 security_opt: Some(vec!["no-new-privileges".into()]),
                 pids_limit: Some(PIDS_LIMIT),
                 memory: Some(self.limits.memory_mib * 1024 * 1024),

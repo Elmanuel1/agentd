@@ -41,7 +41,7 @@ fn app() -> Router {
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });
     edge::wrap(
         routes,
-        Arc::new(keys),
+        api::edge::auth::Credentials { keys: Arc::new(keys), work: None },
         Arc::from(vec![BetaGate::managed(&["/v1/things"])]),
         Arc::new(api::telemetry::Metrics::global()),
     )

@@ -1,12 +1,19 @@
 # Session sandbox image
 
 Each session runs in one container of this image (`AGENTD_RUNTIME=docker`,
-`AGENTD_SANDBOX_IMAGE=agentd-sandbox`). The agent loop runs in agentd and
-reaches the container only through `docker exec` and the archive API, so no
-model key or vault secret enters it.
+`AGENTD_SANDBOX_IMAGE=agentd-sandbox`). The agent loop runs in agentd; the
+container's first process, `agentd-worker`, acknowledges the session's work
+item, heartbeats its lease, and long-polls agentd
+(`/v1/environments/{id}/work/{work_id}/ops`) for the commands and file
+transfers the loop queues. The sandbox opens no port, so the same worker
+runs on any runtime; it authenticates with a work token that reaches only its
+own work item, and no model key or vault secret enters the container.
+
+The worker reaches agentd at `AGENTD_SANDBOX_API_URL` (default
+`http://host.docker.internal:<port>`).
 
 ```bash
-docker build -t agentd-sandbox docker/sandbox
+docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
 ```
 
 Layout inside the container:

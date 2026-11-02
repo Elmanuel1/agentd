@@ -10,6 +10,9 @@ members = [
     "crates/resources/skills",
     "crates/resources/sessions",
     "crates/resources/deployments",
+    "crates/resources/work",
+    "crates/sandbox-protocol",
+    "crates/sandbox-worker",
     "crates/resources/dreams",
     "crates/adapters/scheduler-local",
     "crates/engine",
@@ -19,6 +22,7 @@ members = [
     "crates/adapters/blobs-s3",
     "crates/adapters/secrets-blob",
     "crates/adapters/sandbox-docker",
+    "crates/adapters/egress-proxy",
 ]
 
 [workspace.package]
@@ -38,6 +42,8 @@ files = { path = "crates/resources/files" }
 skills = { path = "crates/resources/skills" }
 sessions = { path = "crates/resources/sessions" }
 deployments = { path = "crates/resources/deployments" }
+work = { path = "crates/resources/work" }
+sandbox-protocol = { path = "crates/sandbox-protocol" }
 dreams = { path = "crates/resources/dreams" }
 scheduler-local = { path = "crates/adapters/scheduler-local" }
 engine = { path = "crates/engine" }
@@ -46,6 +52,7 @@ store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }
 secrets-blob = { path = "crates/adapters/secrets-blob" }
 sandbox-docker = { path = "crates/adapters/sandbox-docker" }
+egress-proxy = { path = "crates/adapters/egress-proxy" }
 
 # external
 serde = { version = "1", features = ["derive"] }

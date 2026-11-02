@@ -22,7 +22,6 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
 use shared::ports::lease::Leases;
-use shared::ports::sandbox::Sandbox;
 use shared::ports::secrets::SecretStore;
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
@@ -111,10 +110,9 @@ pub struct Backends {
 }
 
 /// The agent loop's backends.
-#[derive(Clone)]
 pub struct AgentBackends {
-    /// Where tools run.
-    pub sandbox: Arc<dyn Sandbox>,
+    /// Where the egress proxy listens.
+    pub egress: Option<tokio::net::TcpListener>,
     /// One loop per session across replicas.
     pub leases: Arc<dyn Leases>,
     /// Providers and limits.
@@ -187,8 +185,12 @@ impl Backends {
                 let runtime = Arc::new(DockerRuntime::new(docker, image.clone(), *limits));
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
                 let leases = PgLeases::connect(url, config.engine.max_active_sessions).await?;
+                let egress =
+                    tokio::net::TcpListener::bind(&config.engine.egress_addr).await.map_err(|e| {
+                        BootError::Sandbox(format!("egress proxy on {}: {e}", config.engine.egress_addr))
+                    })?;
                 let agent = AgentBackends {
-                    sandbox: runtime.clone(),
+                    egress: Some(egress),
                     leases: Arc::new(leases),
                     config: config.engine.clone(),
                 };

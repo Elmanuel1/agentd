@@ -24,7 +24,7 @@ use shared::beta::BetaGate;
 use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
-pub use service::{EngineContract, SessionDeps, SessionsService, Subscription, TurnTrigger};
+pub use service::{EngineContract, SandboxWork, SessionDeps, SessionsService, Subscription, TurnTrigger};
 pub use store::{SessionEventLog, SessionsStore};
 pub use types::{Session, SessionId, SessionStatus};
 

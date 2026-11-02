@@ -22,6 +22,9 @@ deployments = { workspace = true }
 dreams = { workspace = true }
 scheduler-local = { workspace = true }
 engine = { workspace = true }
+work = { workspace = true }
+egress-proxy = { workspace = true }
+rand = { workspace = true }
 store-postgres = { workspace = true }
 diesel = { workspace = true }
 bytes = { workspace = true }

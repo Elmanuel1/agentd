@@ -23,7 +23,11 @@ impl SessionsService {
             workspace_id: ctx.workspace.as_str().to_owned(),
             environment_id: session.environment_id.clone(),
             environment,
-            env: Default::default(),
+            env: self
+                .work
+                .as_ref()
+                .map(|w| w.issue(ctx, &session.environment_id, &session.id))
+                .unwrap_or_default(),
         };
         match runtime.launch(job).await {
             Ok(_) => Ok(()),
@@ -43,6 +47,9 @@ impl SessionsService {
     /// of truth, so a runtime that cannot be reached is logged, not raised:
     /// an archive or delete never waits on the sandbox host.
     pub(super) async fn stop_sandbox(&self, id: &SessionId) {
+        if let Some(work) = &self.work {
+            work.end(id);
+        }
         let Some(runtime) = &self.sandbox else {
             return;
         };

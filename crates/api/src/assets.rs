@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use engine::worker::{SessionAssets, SkillFiles};
+use engine::worker::setup::{CA_BUNDLE, CA_PATH};
+use engine::worker::{SandboxEgress, SessionAssets, SkillFiles};
+
+use crate::egress::SessionEgressPolicy;
 use environments::EnvironmentsService;
 use files::FilesService;
 use shared::{ApiError, AuthContext};
@@ -19,6 +22,10 @@ pub struct RealSessionAssets {
     pub skills: Arc<SkillsService>,
     /// Environment configs.
     pub environments: Arc<EnvironmentsService>,
+    /// Egress rules: placeholders, proxy passwords, session CAs.
+    pub egress: Arc<SessionEgressPolicy>,
+    /// The proxy as a sandbox reaches it (`host:port`).
+    pub egress_host: String,
 }
 
 impl std::fmt::Debug for RealSessionAssets {
@@ -51,6 +58,23 @@ impl SessionAssets for RealSessionAssets {
     ) -> Result<serde_json::Value, ApiError> {
         let env = self.environments.get(ctx, environment_id).await?;
         serde_json::to_value(&env.config).map_err(|e| ApiError::internal(e.to_string()))
+    }
+
+    async fn egress(&self, ctx: &AuthContext, session: &str) -> Result<SandboxEgress, ApiError> {
+        let (mut env, disclosed) = self.egress.disclose(ctx, session).await?;
+        let (pem, _) = self.egress.ca(session)?;
+        let proxy = format!("http://session:{}@{}", self.egress.password(ctx, session), self.egress_host);
+        for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"] {
+            env.insert(name.to_owned(), proxy.clone());
+        }
+        env.insert("NO_PROXY".into(), "localhost,127.0.0.1".into());
+        env.insert("no_proxy".into(), "localhost,127.0.0.1".into());
+        for name in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] {
+            env.insert(name.to_owned(), CA_BUNDLE.to_owned());
+        }
+        env.insert("NODE_EXTRA_CA_CERTS".into(), CA_PATH.to_owned());
+        let credentials = disclosed.into_iter().map(|d| (d.name, d.description, d.hosts)).collect();
+        Ok(SandboxEgress { env, ca_pem: Some(pem.cert), credentials })
     }
 
     async fn save_output(

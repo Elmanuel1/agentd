@@ -17,8 +17,28 @@ pub struct SkillInfo {
     pub description: String,
 }
 
-/// The system prompt for `agent`.
-pub fn system_prompt(agent: &AgentSnapshot, skills: &[SkillInfo], roster: &[&AgentSnapshot]) -> String {
+/// The section naming the session's credentials: each variable, what it is
+/// for and where it may be sent. Values never reach the model.
+pub fn credentials_section(credentials: &[(String, String, Option<Vec<String>>)]) -> String {
+    if credentials.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n\n# Credentials\n\nThese environment variables hold placeholders; the egress proxy puts the real value into requests to the hosts listed, and refuses to send it anywhere else.\n\n");
+    for (name, description, hosts) in credentials {
+        let hosts = hosts.as_ref().map_or_else(|| "any host".to_owned(), |h| h.join(", "));
+        out.push_str(&format!("- `{name}`: {description} (sent to: {hosts})\n"));
+    }
+    out
+}
+
+/// The system prompt for `agent`, ending with `notes` (the credentials
+/// section).
+pub fn system_prompt(
+    agent: &AgentSnapshot,
+    skills: &[SkillInfo],
+    roster: &[&AgentSnapshot],
+    notes: &str,
+) -> String {
     let mut out = agent.config.system.clone().unwrap_or_default();
     if !skills.is_empty() {
         out.push_str("\n\n# Skills\n\nBefore doing work a skill covers, read its SKILL.md with the `read` tool; its scripts and references sit beside it.\n\n");
@@ -36,6 +56,7 @@ pub fn system_prompt(agent: &AgentSnapshot, skills: &[SkillInfo], roster: &[&Age
             ));
         }
     }
+    out.push_str(notes);
     out
 }
 

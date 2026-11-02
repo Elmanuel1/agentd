@@ -20,18 +20,33 @@ pub struct ExecRequest {
     pub workdir: Option<String>,
     /// The command is killed after this long.
     pub timeout: Duration,
+    /// Extra environment variables (credential placeholders, the proxy).
+    pub env: BTreeMap<String, String>,
 }
 
 impl ExecRequest {
     /// Run `argv` with no stdin, killed after `timeout`.
     pub fn new(argv: impl IntoIterator<Item = impl Into<String>>, timeout: Duration) -> Self {
-        Self { argv: argv.into_iter().map(Into::into).collect(), stdin: None, workdir: None, timeout }
+        Self {
+            argv: argv.into_iter().map(Into::into).collect(),
+            stdin: None,
+            workdir: None,
+            timeout,
+            env: BTreeMap::new(),
+        }
     }
 
     /// Feed `bytes` to stdin.
     #[must_use]
     pub fn with_stdin(mut self, bytes: Vec<u8>) -> Self {
         self.stdin = Some(bytes);
+        self
+    }
+
+    /// Add `env` to the command's environment.
+    #[must_use]
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env.extend(env);
         self
     }
 

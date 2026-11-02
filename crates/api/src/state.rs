@@ -19,9 +19,14 @@ use vaults::VaultsService;
 use crate::assets::RealSessionAssets;
 use crate::backends::{AgentBackends, Backends};
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
+use crate::egress::SessionEgressPolicy;
+use crate::sandbox_work::WorkIssuer;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
 use engine::{Dispatcher, Engine, ModelRouter};
+use shared::hash::Signer;
+use vaults::egress::VaultSecrets;
+use work::{RemoteSandbox, WorkService, WorkTokens};
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
@@ -31,6 +36,8 @@ pub struct AppState {
     pub modules: Vec<Module>,
     /// The instruments the edge records requests into.
     pub metrics: Arc<Metrics>,
+    /// Signs sandbox workers' work tokens, when the agent loop runs.
+    pub work_tokens: Option<WorkTokens>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -54,19 +61,40 @@ impl AppState {
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
             catalog,
         );
+        // One key signs work tokens and egress passwords, each under its own purpose.
+        let key = agent.as_ref().and_then(|a| a.config.work_token_key.clone());
+        let key = key.unwrap_or_else(|| rand::random::<[u8; 32]>().to_vec());
+        let work = Arc::new(WorkService::new(WorkTokens::new(key.clone())));
+        let issuer = agent.as_ref().map(|a| {
+            Arc::new(WorkIssuer { work: work.clone(), api_url: a.config.sandbox_api_url.clone() })
+                as Arc<dyn sessions::SandboxWork>
+        });
         let sessions = Arc::new(match runtime {
-            Some(runtime) => sessions.with_sandbox(runtime),
+            Some(runtime) => sessions.with_sandbox(runtime, issuer),
             None => sessions,
         });
         let files = Arc::new(FilesService::new(stores.files));
         let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
-        if let Some(agent) = agent {
+        if let Some(mut agent) = agent {
+            let policy = Arc::new(SessionEgressPolicy::new(
+                Signer::new(key),
+                sessions.clone(),
+                environments.clone(),
+                VaultSecrets::new(stores.vaults.clone()),
+                agent.config.egress_internal_hosts.clone(),
+            ));
+            if let Some(listener) = agent.egress.take() {
+                tokio::spawn(egress_proxy::serve(listener, policy.clone()));
+            }
             let assets = RealSessionAssets {
                 files: files.clone(),
                 skills: skills.clone(),
                 environments: environments.clone(),
+                egress: policy,
+                egress_host: agent.config.sandbox_egress_host.clone(),
             };
-            sessions.set_trigger(Arc::new(dispatcher(agent, sessions.clone(), assets)?));
+            let sandbox = Arc::new(RemoteSandbox::new(work.board()));
+            sessions.set_trigger(Arc::new(dispatcher(agent, sessions.clone(), assets, sandbox)?));
         }
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
@@ -86,11 +114,12 @@ impl AppState {
             skills::module(skills),
             sessions::module(sessions),
             deployments::module(deployments),
+            work::module(work.clone()),
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
-        Ok(Self { keys, modules, metrics })
+        Ok(Self { keys, modules, metrics, work_tokens: Some(work.tokens().clone()) })
     }
 }
 
@@ -110,12 +139,13 @@ fn dispatcher(
     agent: AgentBackends,
     sessions: Arc<SessionsService>,
     assets: RealSessionAssets,
+    sandbox: Arc<RemoteSandbox>,
 ) -> Result<Dispatcher, BuildError> {
     let models = ModelRouter::from_config(&agent.config.providers).map_err(BuildError::Models)?;
     let engine = Engine {
         contract: sessions,
         models: Arc::new(models),
-        sandbox: agent.sandbox,
+        sandbox,
         assets: Arc::new(assets),
         http: engine::tools::web::client(),
         search_key: agent.config.search_key.clone(),

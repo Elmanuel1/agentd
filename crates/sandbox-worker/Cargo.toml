@@ -1,0 +1,25 @@
+[package]
+name = "sandbox-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "agentd-worker: runs inside a session's sandbox, takes its work item's operations from agentd and runs them."
+
+[[bin]]
+name = "agentd-worker"
+path = "src/main.rs"
+
+[dependencies]
+sandbox-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

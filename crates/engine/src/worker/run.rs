@@ -39,7 +39,8 @@ impl SessionRun {
         let skills = self.prepare(&session, &agents).await?;
         let primary = self.primary(&session, &skills);
         let primary_id = primary.id.clone();
-        let team = Arc::new(Team::new(contract.clone(), primary, roster, skills, wake.clone()));
+        let notes = crate::turn::prompt::credentials_section(&self.egress.credentials);
+        let team = Arc::new(Team::new(contract.clone(), primary, roster, skills, notes, wake.clone()));
         for e in &events {
             if let (EventPayload::Session(SessionEvent::ThreadCreated { agent_name }), Some(tid)) =
                 (&e.payload, &e.session_thread_id)

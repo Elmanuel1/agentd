@@ -20,6 +20,11 @@ use crate::turn::prompt::{skill_description, SkillInfo, SKILLS_DIR};
 pub const UPLOADS: &str = "/mnt/session/uploads";
 /// Files written here become session-scoped files.
 pub const OUTPUTS: &str = "/mnt/session/outputs";
+/// The session CA the sandbox trusts, for its egress proxy.
+pub const CA_PATH: &str = "/etc/agentd/egress-ca.pem";
+/// The system CAs and the session CA together, for tools that take one file.
+pub const CA_BUNDLE: &str = "/tmp/agentd/ca-bundle.pem";
+
 /// The largest output file copied back.
 const MAX_OUTPUT: u64 = 100 * 1024 * 1024;
 /// agentd's own bookkeeping in the sandbox, owned by root.
@@ -87,6 +92,7 @@ impl SessionRun {
             skills.insert(agent.config.name.clone(), infos);
         }
         if provisioned {
+            self.trust_ca(target).await?;
             return Ok(skills);
         }
         for files in unpacked.values() {
@@ -104,11 +110,29 @@ impl SessionRun {
                 put.push(SandboxFile { path: upload_path(file_id, mount_path), bytes, mode: 0o444 });
             }
         }
+        if let Some(pem) = &self.egress.ca_pem {
+            put.push(SandboxFile { path: CA_PATH.into(), bytes: pem.as_bytes().to_vec(), mode: 0o644 });
+        }
         self.engine.sandbox.make_dir(target, WORKDIR, Owner::Agent).await.map_err(err)?;
         self.engine.sandbox.make_dir(target, OUTPUTS, Owner::Agent).await.map_err(err)?;
         put.push(SandboxFile { path: marker, bytes: Vec::new(), mode: 0o600 });
         self.engine.sandbox.put_files(target, put).await.map_err(err)?;
+        self.trust_ca(target).await?;
         Ok(skills)
+    }
+
+    /// Write the CA bundle the egress environment points at: the system CAs
+    /// and the session CA (in `/tmp`, which a restarted sandbox may lose).
+    async fn trust_ca(&self, target: &str) -> Result<(), ApiError> {
+        if self.egress.ca_pem.is_none() {
+            return Ok(());
+        }
+        let script = format!(
+            "mkdir -p /tmp/agentd && cat /etc/ssl/certs/ca-certificates.crt {CA_PATH} > {CA_BUNDLE} 2>/dev/null || cp {CA_PATH} {CA_BUNDLE}"
+        );
+        let req = ExecRequest::new(["sh", "-c", script.as_str()], Duration::from_secs(30));
+        self.engine.sandbox.exec(target, req).await.map_err(err)?;
+        Ok(())
     }
 
     /// Copy outputs that changed since the last sync into session files,

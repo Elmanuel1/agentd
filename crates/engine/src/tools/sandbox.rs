@@ -30,6 +30,8 @@ pub struct SandboxTools {
     sandbox: Arc<dyn Sandbox>,
     target: String,
     web: WebTools,
+    /// Variables every command gets (credential placeholders, the proxy).
+    env: std::collections::BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for SandboxTools {
@@ -64,7 +66,14 @@ pub(super) fn combined(out: &ExecOutput) -> String {
 impl SandboxTools {
     /// Run tools in `target`'s sandbox; the web tools go through `web`.
     pub fn new(sandbox: Arc<dyn Sandbox>, target: impl Into<String>, web: WebTools) -> Self {
-        Self { sandbox, target: target.into(), web }
+        Self { sandbox, target: target.into(), web, env: std::collections::BTreeMap::new() }
+    }
+
+    /// Give every command `env`.
+    #[must_use]
+    pub fn with_env(mut self, env: std::collections::BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
     }
 
     pub(super) async fn run(
@@ -73,7 +82,7 @@ impl SandboxTools {
         stdin: Option<Vec<u8>>,
         timeout: Duration,
     ) -> Result<ExecOutput, ToolOutcome> {
-        let mut req = ExecRequest::new(argv, timeout).in_dir(WORKDIR);
+        let mut req = ExecRequest::new(argv, timeout).in_dir(WORKDIR).with_env(self.env.clone());
         if let Some(bytes) = stdin {
             req = req.with_stdin(bytes);
         }

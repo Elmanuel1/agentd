@@ -15,7 +15,7 @@ use crate::model::ModelClient;
 use crate::tools::web::WebTools;
 use crate::tools::SandboxTools;
 use crate::turn::policy::Toolbox;
-use crate::turn::prompt::system_prompt;
+use crate::turn::prompt::{credentials_section, system_prompt};
 use crate::turn::ThreadCtx;
 
 pub mod assets;
@@ -24,10 +24,10 @@ mod grade;
 mod intake;
 mod outcome;
 mod run;
-mod setup;
+pub mod setup;
 pub mod team;
 
-pub use assets::{SessionAssets, SkillFiles};
+pub use assets::{SandboxEgress, SessionAssets, SkillFiles};
 pub use dispatch::Dispatcher;
 
 /// Everything a session's agent loop runs on.
@@ -64,6 +64,7 @@ pub(crate) struct SessionRun {
     pub(crate) session: SessionId,
     pub(crate) tools: SandboxTools,
     pub(crate) primary_model: String,
+    pub(crate) egress: SandboxEgress,
 }
 
 impl SessionRun {
@@ -100,13 +101,15 @@ impl Engine {
         }
         let environment = self.assets.environment(ctx, &session.environment_id).await?;
         let web = WebTools::new(self.http.clone(), allowed_hosts(&environment), self.search_key.clone());
+        let egress = self.assets.egress(ctx, id.as_str()).await?;
         let run = SessionRun {
             engine: self.clone(),
             ctx: ctx.clone(),
             ws: ws.clone(),
             session: id.clone(),
-            tools: SandboxTools::new(self.sandbox.clone(), id.as_str(), web),
+            tools: SandboxTools::new(self.sandbox.clone(), id.as_str(), web).with_env(egress.env.clone()),
             primary_model: session.agent.config.model.id.clone(),
+            egress,
         };
         run.drive(session, wake).await
     }
@@ -144,7 +147,7 @@ impl SessionRun {
             id: primary_thread_id(&session.id),
             scope: None,
             toolbox: Toolbox::for_agent(&agent, !roster.is_empty()),
-            system: system_prompt(&agent, &own, &roster),
+            system: system_prompt(&agent, &own, &roster, &credentials_section(&self.egress.credentials)),
             threaded: !roster.is_empty(),
             agent,
         }
