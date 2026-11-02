@@ -32,8 +32,13 @@ region and account is tighter and loses nothing.
     (`secretsmanager:KmsKeyArn`, as in AWS's
     [identity-based policy examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_iam-policies.html);
     agentd always sends the key ARN).
-  - `GetSecretValue`, `PutSecretValue`, `DescribeSecret`, `DeleteSecret` and
-    `RestoreSecret` on `PREFIX/` secrets tagged `managed-by=agentd`.
+  - `GetSecretValue`, `DescribeSecret` and `DeleteSecret` on `PREFIX/`
+    secrets. These are scoped by name only: a tag condition fails for a secret
+    that does not exist, so AWS would answer `AccessDenied` where agentd needs
+    `ResourceNotFound` (an unknown API key is a 401, a missing pepper is
+    created, a gone secret is already deleted).
+  - `PutSecretValue` and `RestoreSecret`, which only touch existing secrets,
+    on `PREFIX/` secrets tagged `managed-by=agentd`.
   - `ListSecrets`, which takes no resource, for `agentd keys list` and
     `revoke`. It returns names and tags, never a value.
   - No delete without a recovery window.
