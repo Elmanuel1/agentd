@@ -100,6 +100,21 @@ fn s3_options_come_from_config() {
 }
 
 #[test]
+fn telemetry_is_off_and_logs_are_text_unless_configured() {
+    let c = config(&[("AGENTD_API_KEYS", "k:o:w")]).unwrap();
+    assert_eq!((c.telemetry.otlp, c.telemetry.json_logs), (false, false));
+    let c = config(&[
+        ("AGENTD_API_KEYS", "k:o:w"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
+        ("AGENTD_LOG_FORMAT", "json"),
+    ])
+    .unwrap();
+    assert_eq!((c.telemetry.otlp, c.telemetry.json_logs), (true, true));
+    let err = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_LOG_FORMAT", "xml")]).unwrap_err();
+    assert_eq!(err.var, "AGENTD_LOG_FORMAT");
+}
+
+#[test]
 fn the_pool_is_sized_by_config_and_rejects_nonsense() {
     let c = config(&[
         ("AGENTD_API_KEYS", "k:o:w"),

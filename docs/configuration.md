@@ -1,7 +1,8 @@
 # Configuration
 
 The binary reads its configuration from the environment once, at boot
-(`api::Config::from_lookup`). Nothing else in agentd reads the environment.
+(`api::Config::from_lookup`). Nothing else in agentd reads the environment,
+except the OpenTelemetry SDK, which reads the standard `OTEL_*` variables.
 Every port gets one backend, chosen by a selector variable; an unknown value
 stops the boot with an error naming the variable.
 
@@ -51,3 +52,14 @@ A resource that owns scheduled work (deployments, dreams) registers a fire
 handler for its kind. The scheduler delivers each tick to the handler of the
 target's kind, which runs it under the tenant that registered the schedule.
 A tick whose kind has no handler fails and is logged as dropped.
+
+## Telemetry
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (no export) | OTLP gRPC endpoint for traces, metrics and logs, such as `http://localhost:4317`. The OpenTelemetry SDK reads the other standard `OTEL_*` variables (`OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_EXPORTER_OTLP_HEADERS`) itself |
+| `AGENTD_LOG_FORMAT` | `text` | `json` writes one JSON object per log line to stdout |
+| `RUST_LOG` | `info` | Log filter, `tracing-subscriber` syntax |
+
+`docs/observability.md` lists every signal.
+

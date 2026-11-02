@@ -12,6 +12,9 @@ use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
 use sandbox_docker::DockerRuntime;
+
+use crate::telemetry::ports::Observed;
+use crate::telemetry::{self, Metrics};
 use scheduler_local::LocalScheduler;
 use secrets_blob::BlobSecretStore;
 use sessions::{SessionEventLog, SessionsStore};
@@ -96,6 +99,8 @@ pub struct Backends {
     pub fires: Arc<FireRegistry>,
     /// The sandbox runtime; `None` runs sessions without one.
     pub runtime: Option<Arc<dyn Runtime>>,
+    /// The instruments every boundary records into.
+    pub metrics: Arc<Metrics>,
 }
 
 impl std::fmt::Debug for Backends {
@@ -122,15 +127,21 @@ impl Backends {
     /// Connect the backends `config` selects. The local scheduler starts
     /// ticking here.
     pub async fn from_config(config: &Config) -> Result<Self, BootError> {
+        let metrics = Arc::new(Metrics::global());
         let blobs: Arc<dyn BlobStore> = match &config.blobs {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
+        let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
         let secrets: Arc<dyn SecretStore> = match config.secrets {
             SecretsConfig::Blob => Arc::new(BlobSecretStore::new(blobs.clone())),
         };
+        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(secrets, metrics.clone()));
         let stores = match &config.store {
             StoreConfig::Postgres { url, pool } => {
-                Stores::postgres(PgBackend::connect_with(url, *pool).await?, blobs, secrets)
+                let observer = telemetry::db::observer(metrics.clone());
+                let pg = PgBackend::connect_observed(url, *pool, observer).await?;
+                telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
+                Stores::postgres(pg, blobs, secrets)
             }
         };
         let keys: Arc<dyn KeySource> = match &config.keys {
@@ -151,9 +162,9 @@ impl Backends {
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
                 let runtime = DockerRuntime::new(docker, image.clone(), *limits);
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
-                Some(Arc::new(runtime))
+                Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
             }
         };
-        Ok(Self { stores, keys, scheduler, fires, runtime })
+        Ok(Self { stores, keys, scheduler, fires, runtime, metrics })
     }
 }

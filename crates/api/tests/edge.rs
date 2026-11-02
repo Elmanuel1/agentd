@@ -39,7 +39,12 @@ fn app() -> Router {
     keys.register(KEY, "org_e", "wrkspc_e", "apikey_e");
     let routes = Router::new().route("/v1/things", get(echo).post(create));
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });
-    edge::wrap(routes, Arc::new(keys), Arc::from(vec![BetaGate::managed(&["/v1/things"])]))
+    edge::wrap(
+        routes,
+        Arc::new(keys),
+        Arc::from(vec![BetaGate::managed(&["/v1/things"])]),
+        Arc::new(api::telemetry::Metrics::global()),
+    )
 }
 
 struct Sent {

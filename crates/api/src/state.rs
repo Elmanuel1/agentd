@@ -18,6 +18,8 @@ use vaults::VaultsService;
 
 use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
+use crate::telemetry::ports::Observed;
+use crate::telemetry::Metrics;
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
@@ -25,6 +27,8 @@ pub struct AppState {
     pub keys: Arc<dyn KeySource>,
     /// One module per resource.
     pub modules: Vec<Module>,
+    /// The instruments the edge records requests into.
+    pub metrics: Arc<Metrics>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -38,7 +42,7 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, FireError> {
-        let Backends { stores, keys, scheduler, fires, runtime } = backends;
+        let Backends { stores, keys, scheduler, fires, runtime, metrics } = backends;
         let agents = Arc::new(AgentsService::new(stores.agents, ModelCatalog::default_catalog()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let sessions = SessionsService::new(
@@ -71,8 +75,8 @@ impl AppState {
             deployments::module(deployments),
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
-            fires.register(handler.clone())?;
+            fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
-        Ok(Self { keys, modules })
+        Ok(Self { keys, modules, metrics })
     }
 }

@@ -1,0 +1,17 @@
+# Grafana, the OpenTelemetry collector, Prometheus, Tempo and Loki in one
+# container, with the agentd dashboard and alert rules provisioned. Point
+# agentd at it with OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317.
+services:
+  lgtm:
+    image: grafana/otel-lgtm:0.36.0
+    ports:
+      - "3000:3000"   # Grafana (admin / admin)
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "9090:9090"   # Prometheus
+      - "3200:3200"   # Tempo
+      - "3100:3100"   # Loki
+    volumes:
+      - ./grafana/agentd-dashboard.json:/otel-lgtm/agentd/agentd-dashboard.json:ro
+      - ./grafana/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/agentd.yaml:ro
+      - ./grafana/alerts.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/agentd.yaml:ro

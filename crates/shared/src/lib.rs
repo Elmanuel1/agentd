@@ -37,7 +37,7 @@ pub use deleted::Deleted;
 pub use error::{ApiError, BackendError, ErrorType};
 pub use extract::{
     multipart_error, request_too_large_response, unknown_route_response, wire_response, with_request_id,
-    ApiJson, ApiJsonError, NoRequestId, RouteError,
+    ApiJson, ApiJsonError, ErrorCause, NoRequestId, RouteError,
 };
 pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;

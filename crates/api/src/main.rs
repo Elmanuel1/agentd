@@ -11,11 +11,19 @@ use api::{build_router, AppState, Backends, Config};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber_init();
+    // No subscriber exists before the config is read, so a bad config goes
+    // to stderr.
     let config = match Config::from_lookup(|var| std::env::var(var).ok()) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "invalid configuration");
+            eprintln!("invalid configuration: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _telemetry = match api::telemetry::init(config.telemetry.otlp, config.telemetry.json_logs) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("telemetry: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -41,66 +49,54 @@ async fn main() -> ExitCode {
         }
     };
     tracing::info!(addr = %config.addr, "agentd listening");
-    if let Err(e) = axum::serve(listener, app).await {
-        tracing::error!(error = %e, "server error");
-        return ExitCode::FAILURE;
+    let stopping = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signal = stopping.clone();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown().await;
+        signal.notify_one();
+    });
+    // An open event stream never ends on its own, so draining is capped;
+    // past it the streams are dropped and the telemetry still flushes.
+    let drained = async {
+        stopping.notified().await;
+        tokio::time::sleep(DRAIN).await;
+        tracing::warn!(seconds = DRAIN.as_secs(), "drain timed out; closing open streams");
+    };
+    tokio::select! {
+        served = server => {
+            if let Err(e) = served {
+                tracing::error!(error = %e, "server error");
+                return ExitCode::FAILURE;
+            }
+        }
+        () = drained => {}
     }
     ExitCode::SUCCESS
 }
 
-fn tracing_subscriber_init() {
-    // Minimal env-filter logging without extra deps.
-    let level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
-    let _ = tracing::subscriber::set_global_default(tracing_subscriber_stub::Subscriber::new(level));
-}
+/// How long in-flight requests get to finish after a shutdown signal.
+const DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Tiny stdout subscriber (avoids pulling tracing-subscriber; swap freely).
-mod tracing_subscriber_stub {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use tracing::span;
-
-    /// Minimal subscriber printing events to stdout.
-    pub struct Subscriber {
-        level: tracing::Level,
-        ids: AtomicU64,
-    }
-
-    impl Subscriber {
-        /// Build with a level string.
-        pub fn new(level: String) -> Self {
-            let level = match level.to_ascii_lowercase().as_str() {
-                "trace" => tracing::Level::TRACE,
-                "debug" => tracing::Level::DEBUG,
-                "warn" => tracing::Level::WARN,
-                "error" => tracing::Level::ERROR,
-                _ => tracing::Level::INFO,
-            };
-            Self { level, ids: AtomicU64::new(1) }
-        }
-    }
-
-    impl tracing::Subscriber for Subscriber {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            *metadata.level() <= self.level
-        }
-        fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(self.ids.fetch_add(1, Ordering::Relaxed))
-        }
-        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct V(String);
-            impl tracing::field::Visit for V {
-                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                    use std::fmt::Write;
-                    let _ = write!(self.0, " {}={value:?}", field.name());
-                }
+/// SIGTERM or Ctrl-C: stop accepting, finish in-flight requests, then return
+/// so the telemetry guard flushes the last spans, logs and metrics.
+async fn shutdown() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
             }
-            let mut v = V(String::new());
-            event.record(&mut v);
-            println!("[{}] {}{}", event.metadata().level(), event.metadata().target(), v.0);
+            Err(_) => std::future::pending().await,
         }
-        fn enter(&self, _span: &span::Id) {}
-        fn exit(&self, _span: &span::Id) {}
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = interrupt => {}
+        () = terminate => {}
     }
+    tracing::info!("agentd shutting down");
 }
