@@ -33,6 +33,12 @@ pub fn parse_bundle(mut files: Vec<UploadFile>) -> Result<Bundle, ApiError> {
     if files.len() == 1 && files.first().is_some_and(|(p, _)| p.ends_with(".zip")) {
         files = unzip(&files.remove(0).1)?;
     }
+    let mut seen = std::collections::HashSet::new();
+    if !files.iter().all(|(p, _)| relative(p) && seen.insert(p.as_str())) {
+        return Err(ApiError::invalid_request(
+            "files[]: paths must be unique and relative, with no empty, `.` or `..` segments",
+        ));
+    }
     let skill_md = |path: &str| path == "SKILL.md" || path.split('/').nth(1) == Some("SKILL.md");
     let (md_path, md) = files
         .iter()
@@ -70,17 +76,38 @@ fn frontmatter(md: &str) -> Option<(String, String)> {
     Some((name.filter(|n| !n.is_empty())?, description.filter(|d| !d.is_empty())?))
 }
 
+/// A path inside the bundle: relative, with no empty, `.` or `..` segment,
+/// backslash or NUL, so the stored `directory` is always a real folder name.
+fn relative(path: &str) -> bool {
+    !path.contains(['\\', '\0']) && path.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+}
+
+/// An archive expands to at most what an upload may carry (the Skills
+/// body limit), in at most this many files.
+const MAX_EXPANDED: u64 = 30 * 1024 * 1024;
+const MAX_ENTRIES: usize = 1000;
+
 fn unzip(bytes: &[u8]) -> Result<Vec<UploadFile>, ApiError> {
     let bad = || ApiError::invalid_request("SKILL.md not found in uploaded files");
+    let too_large =
+        || ApiError::invalid_request("files[]: the zip expands past the 30 MB Skills upload limit");
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| bad())?;
-    let mut files = Vec::new();
+    if archive.len() > MAX_ENTRIES {
+        return Err(too_large());
+    }
+    let (mut files, mut total) = (Vec::new(), 0u64);
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|_| bad())?;
         if entry.is_dir() {
             continue;
         }
+        // The declared size can lie; the read itself stops at what is left.
         let mut body = Vec::new();
-        entry.read_to_end(&mut body).map_err(|_| bad())?;
+        (&mut entry).take(MAX_EXPANDED - total + 1).read_to_end(&mut body).map_err(|_| bad())?;
+        total += body.len() as u64;
+        if total > MAX_EXPANDED {
+            return Err(too_large());
+        }
         files.push((entry.name().to_owned(), Bytes::from(body)));
     }
     Ok(files)
