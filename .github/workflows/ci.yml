@@ -66,7 +66,7 @@ jobs:
       - name: Migrate the schema with Flyway
         run: |
           docker run --rm --network host \
-            -v "$PWD/crates/agentd-store-postgres/migrations:/flyway/sql" \
+            -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql migrate

@@ -1,0 +1,41 @@
+[package]
+name = "store-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+shared = { workspace = true }
+agents = { workspace = true }
+deployments = { workspace = true }
+files = { workspace = true }
+environments = { workspace = true }
+vaults = { workspace = true }
+skills = { workspace = true }
+sessions = { workspace = true }
+dreams = { workspace = true }
+memory = { workspace = true }
+blobs-s3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+diesel = { workspace = true }
+diesel-async = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+blobs-s3 = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

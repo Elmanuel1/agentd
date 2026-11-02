@@ -14,8 +14,8 @@ client.beta.agents.create(name="X", model="claude-sonnet-4-6")   # identical wir
 ## Ground truth, not docs
 
 Every wire shape, limit, and error string was captured from the **live**
-Anthropic API (fixtures in `fixtures/`, captured 2026-07-03) and enforced by
-`agentd-conformance`. Probing found the docs wrong six times; agentd follows
+Anthropic API (fixtures in `conformance/fixtures/`, captured 2026-07-03) and enforced by
+`conformance`. Probing found the docs wrong six times; agentd follows
 observed reality:
 
 1. memory update is **POST** (PATCH/PUT → 405 `Allow: DELETE, GET, HEAD, POST`)
@@ -28,14 +28,14 @@ observed reality:
 ## Architecture
 
 ```
-SDK / ant CLI → agentd-api (auth · beta gate · envelopes)
-   ├─ entity crates (one per resource, vertical slices):
+SDK / ant CLI → api (auth · beta gate · envelopes)
+   ├─ crates/resources (one per resource, vertical slices):
    │    agents · environments · vaults(+credentials) · memory(+versions)
    │    files · skills · sessions(+events/SSE) · deployments(+runs) · dreams(+runs)
-   ├─ agentd-core     ids · limits (exact strings) · error envelope · cron/DST engine · ports
-   ├─ agentd-engine   the loop (ModelClient/ToolExecutor/Grader ports, jailed tools)
-   ├─ agentd-scheduler SchedulerPort backends (Local; Temporal = same contract)
-   └─ agentd-conformance  the swappability oracle (fixture diff, normalized)
+   ├─ shared           ids · limits (exact strings) · error envelope · cron/DST engine · ports
+   ├─ engine           the loop (ModelClient/ToolExecutor/Grader ports, jailed tools)
+   ├─ scheduler-local  SchedulerPort backends (Local; Temporal = same contract)
+   └─ conformance      the swappability oracle (fixture diff, normalized)
 ```
 
 **Swappable ports:** `Runtime` (Fargate/Firecracker/local), `SchedulerPort`
@@ -50,7 +50,7 @@ resolving `latest` adopts the promotion — promote-don't-replace.
 ## Run
 
 ```sh
-cargo run -p agentd-api                      # dev: in-memory + local scheduler
+cargo run -p api                                 # dev: in-memory + local scheduler
 docker compose -f docker/docker-compose.yml up   # full stack
 cargo test --workspace                       # 250+ tests, all hermetic
 ```

@@ -14,7 +14,7 @@ services:
       -user=agentd -password=${POSTGRES_PASSWORD:-agentd}
       -locations=filesystem:/flyway/sql -connectRetries=20 migrate
     volumes:
-      - ../crates/agentd-store-postgres/migrations:/flyway/sql:ro
+      - ../crates/adapters/store-postgres/migrations:/flyway/sql:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,162 @@
+//! List envelopes + cursor pagination.
+//!
+//! Live-probed (managed-agents-2026-04-01, 2026-07-05): list endpoints return
+//! `{"data":[…], "next_page":"page_…"}` where `next_page` is an opaque cursor
+//! present ONLY when more results exist (omitted otherwise). The next page is
+//! fetched with `?page=<cursor>&limit=N`; `limit` defaults to 20 and must be
+//! 1–100 (else 400). The cursor value is opaque to clients, so agentd mints its
+//! own `page_…` tokens.
+
+use std::collections::HashMap;
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use serde::Serialize;
+
+use crate::error::ApiError;
+
+mod id_cursor;
+
+pub use id_cursor::{IdCursor, IdPage};
+
+/// Default page size when `limit` is omitted.
+pub const DEFAULT_LIMIT: usize = 20;
+/// Maximum allowed `limit`.
+pub const MAX_LIMIT: usize = 100;
+
+/// A paginated list response — `{data, next_page?}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Page<T> {
+    /// The items on this page.
+    pub data: Vec<T>,
+    /// Opaque cursor for the next page; omitted when there are no more results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page: Option<String>,
+}
+
+impl<T> Page<T> {
+    /// Bare `{"data":[…]}` (no pagination) — for non-list responses like the
+    /// echo of just-sent events.
+    #[must_use]
+    pub fn of(data: Vec<T>) -> Self {
+        Self { data, next_page: None }
+    }
+
+    /// Slice `all` (a fully-ordered result set) to the requested page and set
+    /// `next_page` when more remain.
+    #[must_use]
+    pub fn paginate(all: Vec<T>, page: &Pagination) -> Self {
+        let total = all.len();
+        let start = page.offset.min(total);
+        let end = start.saturating_add(page.limit).min(total);
+        let data: Vec<T> = all.into_iter().skip(start).take(page.limit).collect();
+        let next_page = (end < total).then(|| encode_cursor(end));
+        Self { data, next_page }
+    }
+
+    /// Build a page from rows the store fetched DB-side with
+    /// [`Pagination::fetch_limit`] + [`Pagination::sql_offset`]: the store asks
+    /// for `limit + 1` rows, so a returned row beyond `limit` proves more remain
+    /// without loading the whole table. Behaviourally identical to
+    /// [`Self::paginate`] over the full set, but only `limit + 1` rows travel.
+    #[must_use]
+    pub fn from_fetched(mut rows: Vec<T>, page: &Pagination) -> Self {
+        let has_more = rows.len() > page.limit;
+        rows.truncate(page.limit);
+        let next_page = has_more.then(|| encode_cursor(page.offset + page.limit));
+        Self { data: rows, next_page }
+    }
+}
+
+/// Parsed pagination controls: a page size and an offset into the ordered set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pagination {
+    /// Page size (1..=100).
+    pub limit: usize,
+    /// Offset into the ordered result set (decoded from the `page` cursor).
+    pub offset: usize,
+}
+
+impl Pagination {
+    /// Parse `limit` + `page` from query params, matching the live validation
+    /// (`limit: value must be greater than or equal to 1 and less than or
+    /// equal to 100`).
+    pub fn from_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
+        let limit = match params.get("limit") {
+            None => DEFAULT_LIMIT,
+            Some(raw) => {
+                let n = raw.parse::<usize>().unwrap_or(0);
+                if !(1..=MAX_LIMIT).contains(&n) {
+                    return Err(ApiError::invalid_request(
+                        "limit: value must be greater than or equal to 1 and less than or equal to 100",
+                    ));
+                }
+                n
+            }
+        };
+        let offset = match params.get("page") {
+            None => 0,
+            Some(cursor) => {
+                decode_cursor(cursor).ok_or_else(|| ApiError::invalid_request("page: invalid cursor"))?
+            }
+        };
+        Ok(Self { limit, offset })
+    }
+
+    /// A plain list endpoint's controls: reject any param other than
+    /// `limit`/`page`, then parse. Collapses the `reject_unknown_params(…) +
+    /// from_params(…)` pair repeated at every simple list route.
+    pub fn from_list_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
+        reject_unknown_params(params, &["limit", "page"])?;
+        Self::from_params(params)
+    }
+
+    /// SQL `LIMIT` to fetch: `limit + 1`. The extra row (if present) signals
+    /// "more remain" without a second count query. Capped at `i64`.
+    #[must_use]
+    pub fn fetch_limit(&self) -> i64 {
+        self.limit.saturating_add(1).min(i64::MAX as usize) as i64
+    }
+
+    /// SQL `OFFSET` for this page.
+    #[must_use]
+    pub fn sql_offset(&self) -> i64 {
+        self.offset.min(i64::MAX as usize) as i64
+    }
+
+    /// Slice an already-materialized ordered set to this page's window,
+    /// yielding up to `limit + 1` rows so [`Page::from_fetched`] can still
+    /// detect "more". For stores that cannot push LIMIT/OFFSET into the query
+    /// (e.g. a DynamoDB partition query returns the whole partition).
+    #[must_use]
+    pub fn window<T>(&self, rows: Vec<T>) -> Vec<T> {
+        rows.into_iter().skip(self.offset).take(self.limit.saturating_add(1)).collect()
+    }
+}
+
+/// Reject any query param not in `allowed`, matching the live 400
+/// `Failed to parse request body: unknown field "X"`. Callers pass exactly the
+/// params they read, so a valid param is never rejected.
+pub fn reject_unknown_params(params: &HashMap<String, String>, allowed: &[&str]) -> Result<(), ApiError> {
+    for key in params.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(ApiError::invalid_request(format!(
+                "Failed to parse request body: unknown field \"{key}\""
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn encode_cursor(offset: usize) -> String {
+    format!("page_{}", URL_SAFE_NO_PAD.encode(offset.to_string()))
+}
+
+fn decode_cursor(cursor: &str) -> Option<usize> {
+    let b64 = cursor.strip_prefix("page_")?;
+    let bytes = URL_SAFE_NO_PAD.decode(b64).ok()?;
+    std::str::from_utf8(&bytes).ok()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests;

@@ -4,8 +4,8 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY fixtures ./fixtures
-RUN cargo build --release --locked -p agentd-api
+COPY conformance ./conformance
+RUN cargo build --release --locked -p api
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
