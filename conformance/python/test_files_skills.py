@@ -96,3 +96,13 @@ def test_the_beta_skills_header_selects_the_beta_shapes(client: anthropic.Anthro
     versions = client.skills.versions.with_raw_response.list(skill["id"], extra_headers=beta, extra_query={"beta": "true"})
     v = json.loads(versions.http_response.text)["data"][0]
     assert v["id"].startswith("skill_version_") and v["directory"] == "beta-skill"
+
+
+def test_a_page_cursor_survives_deleting_its_anchor(client: anthropic.Anthropic) -> None:
+    for i in range(3):
+        upload(client, f"anchor{i}.txt")
+    first = client.files.list(limit=1)
+    client.files.delete(first.data[0].id)
+    second = client.files.list(limit=1, page=first.next_page)
+    assert second.data[0].id != first.data[0].id
+    assert second.data[0].created_at <= first.data[0].created_at

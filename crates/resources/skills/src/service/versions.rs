@@ -80,8 +80,13 @@ impl SkillsService {
         raw_id: &str,
         raw_version: &str,
     ) -> Result<SkillVersionId, ApiError> {
-        let version = self.version(ctx, raw_id, raw_version).await?;
+        let which = VersionRef::parse(raw_version)?;
         let mut skill = self.get(ctx, raw_id).await?;
+        let version = self
+            .versions
+            .get(&ctx.workspace, &skill.id, &which)
+            .await
+            .map_err(|e| map_store(e, raw_id, raw_version))?;
         let ws = &ctx.workspace;
         if self.versions.count(ws, &skill.id).await.map_err(|e| map_store(e, raw_id, raw_version))? <= 1 {
             return Err(ApiError::invalid_request(

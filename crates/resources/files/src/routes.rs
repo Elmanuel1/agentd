@@ -12,11 +12,13 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use shared::beta::{BetaSet, FILES_API};
+use shared::Timestamp;
 use shared::{
     multipart_error, ApiError, AuthContext, Deleted, IdCursor, IdPage, ListQuery, ListSpec, Messages,
     RouteError, UnknownParams,
 };
 
+use crate::types::FileMetadata;
 use crate::{FileFilter, FilesService};
 
 /// The files list (live files/21-28): limit 1 to 1000, unknown params
@@ -67,9 +69,6 @@ async fn upload(
             _ => {}
         }
     }
-    if bytes.is_none() {
-        filename = None;
-    }
     let meta = svc.upload(&ctx, filename, mime, bytes.unwrap_or_default(), scope_id, expires).await?;
     Ok(Json(meta.wire(betas.has(FILES_API))).into_response())
 }
@@ -89,6 +88,7 @@ async fn list(
         let limit = BETA_LIST.parse(&params)?.limit;
         let cursor = IdCursor {
             after_id: params.get("after_id").cloned(),
+            after_created: None,
             before_id: params.get("before_id").cloned(),
             limit,
         };
@@ -100,24 +100,29 @@ async fn list(
         }))
         .into_response());
     }
-    // The GA cursor is the id of the last file served, opaque to clients.
-    let after_id = params.remove("page").map(|p| decode(&p)).transpose()?;
+    // The GA cursor is the last file served, its creation time and id, opaque
+    // to clients; it stays valid when that file is deleted.
+    let after = params.remove("page").map(|p| decode(&p)).transpose()?;
     let limit = LIST.parse(&params)?.limit;
-    let (files, has_more) = svc.list(&ctx, &filter, &IdCursor { after_id, before_id: None, limit }).await?;
-    let next_page = has_more.then(|| files.last().map(|f| encode(f.id.as_str()))).flatten();
+    let (after_created, after_id) = after.map_or((None, None), |(t, id)| (Some(t), Some(id)));
+    let cursor = IdCursor { after_id, after_created, before_id: None, limit };
+    let (files, has_more) = svc.list(&ctx, &filter, &cursor).await?;
+    let next_page = has_more.then(|| files.last().map(encode)).flatten();
     let data: Vec<_> = files.iter().map(|f| f.wire(false)).collect();
     Ok(Json(serde_json::json!({"data": data, "next_page": next_page})).into_response())
 }
 
-fn encode(last_id: &str) -> String {
-    format!("page_{}", URL_SAFE_NO_PAD.encode(last_id))
+fn encode(last: &FileMetadata) -> String {
+    format!("page_{}", URL_SAFE_NO_PAD.encode(format!("{}|{}", last.created_at.to_wire(), last.id.as_str())))
 }
 
-fn decode(page: &str) -> Result<String, ApiError> {
-    page.strip_prefix("page_")
-        .and_then(|b| URL_SAFE_NO_PAD.decode(b).ok())
-        .and_then(|b| String::from_utf8(b).ok())
-        .ok_or_else(|| ApiError::invalid_request("page: invalid cursor"))
+fn decode(page: &str) -> Result<(Timestamp, String), ApiError> {
+    let invalid = || ApiError::invalid_request("page: invalid cursor");
+    let raw = page.strip_prefix("page_").and_then(|b| URL_SAFE_NO_PAD.decode(b).ok()).ok_or_else(invalid)?;
+    let (created, id) = std::str::from_utf8(&raw).ok().and_then(|s| s.split_once('|')).ok_or_else(invalid)?;
+    let created =
+        serde_json::from_value(serde_json::Value::String(created.to_owned())).map_err(|_| invalid())?;
+    Ok((created, id.to_owned()))
 }
 
 async fn metadata(

@@ -101,7 +101,7 @@ impl FilesService {
     }
 
     /// `GET /v1/files`: one id-cursor page and whether more remain, newest
-    /// first, without expired files.
+    /// first; the store leaves expired files out.
     pub async fn list(
         &self,
         ctx: &AuthContext,
@@ -110,8 +110,7 @@ impl FilesService {
     ) -> Result<(Vec<FileMetadata>, bool), ApiError> {
         let (files, has_more) =
             self.store.list(&ctx.workspace, filter, cursor).await.map_err(|e| map_store(e, ""))?;
-        let now = Timestamp::now();
-        Ok((files.into_iter().map(|f| f.meta).filter(|m| !m.expired(now)).collect(), has_more))
+        Ok((files.into_iter().map(|f| f.meta).collect(), has_more))
     }
 
     /// `DELETE /v1/files/{id}`.
