@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 // ─── Scheduler port ────────────────────────────────────────────────────────
 
-/// What a schedule fires: the owning resource's [`fire::FireHandler::kind`]
+/// What a schedule fires: the owning resource's [`super::fire::FireHandler::kind`]
 /// and the id of the scheduled resource.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FireTarget {
