@@ -1,22 +1,22 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/agentd-core",
-    "crates/agentd-agents",
-    "crates/agentd-environments",
-    "crates/agentd-vaults",
-    "crates/agentd-memory",
-    "crates/agentd-files",
-    "crates/agentd-skills",
-    "crates/agentd-sessions",
-    "crates/agentd-deployments",
-    "crates/agentd-dreams",
-    "crates/agentd-scheduler",
-    "crates/agentd-engine",
-    "crates/agentd-api",
-    "crates/agentd-conformance",
-    "crates/agentd-store-postgres",
-    "crates/agentd-blobs",
+    "crates/shared",
+    "crates/resources/agents",
+    "crates/resources/environments",
+    "crates/resources/vaults",
+    "crates/resources/memory",
+    "crates/resources/files",
+    "crates/resources/skills",
+    "crates/resources/sessions",
+    "crates/resources/deployments",
+    "crates/resources/dreams",
+    "crates/adapters/scheduler-local",
+    "crates/engine",
+    "crates/api",
+    "conformance/rust",
+    "crates/adapters/store-postgres",
+    "crates/adapters/blobs-s3",
 ]
 
 [workspace.package]
@@ -27,21 +27,21 @@ license = "UNLICENSED"
 
 [workspace.dependencies]
 # intra-workspace
-agentd-core = { path = "crates/agentd-core" }
-agentd-agents = { path = "crates/agentd-agents" }
-agentd-environments = { path = "crates/agentd-environments" }
-agentd-vaults = { path = "crates/agentd-vaults" }
-agentd-memory = { path = "crates/agentd-memory" }
-agentd-files = { path = "crates/agentd-files" }
-agentd-skills = { path = "crates/agentd-skills" }
-agentd-sessions = { path = "crates/agentd-sessions" }
-agentd-deployments = { path = "crates/agentd-deployments" }
-agentd-dreams = { path = "crates/agentd-dreams" }
-agentd-scheduler = { path = "crates/agentd-scheduler" }
-agentd-engine = { path = "crates/agentd-engine" }
-agentd-api = { path = "crates/agentd-api" }
-agentd-store-postgres = { path = "crates/agentd-store-postgres" }
-agentd-blobs = { path = "crates/agentd-blobs" }
+shared = { path = "crates/shared" }
+agents = { path = "crates/resources/agents" }
+environments = { path = "crates/resources/environments" }
+vaults = { path = "crates/resources/vaults" }
+memory = { path = "crates/resources/memory" }
+files = { path = "crates/resources/files" }
+skills = { path = "crates/resources/skills" }
+sessions = { path = "crates/resources/sessions" }
+deployments = { path = "crates/resources/deployments" }
+dreams = { path = "crates/resources/dreams" }
+scheduler-local = { path = "crates/adapters/scheduler-local" }
+engine = { path = "crates/engine" }
+api = { path = "crates/api" }
+store-postgres = { path = "crates/adapters/store-postgres" }
+blobs-s3 = { path = "crates/adapters/blobs-s3" }
 
 # external
 serde = { version = "1", features = ["derive"] }

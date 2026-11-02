@@ -1,0 +1,43 @@
+[package]
+name = "api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agentd"
+path = "src/main.rs"
+
+[dependencies]
+shared = { workspace = true }
+agents = { workspace = true }
+environments = { workspace = true }
+vaults = { workspace = true }
+memory = { workspace = true }
+files = { workspace = true }
+skills = { workspace = true }
+sessions = { workspace = true }
+deployments = { workspace = true }
+dreams = { workspace = true }
+scheduler-local = { workspace = true }
+engine = { workspace = true }
+store-postgres = { workspace = true }
+blobs-s3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+
+[lints]
+workspace = true

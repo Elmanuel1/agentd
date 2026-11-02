@@ -1,0 +1,24 @@
+[package]
+name = "conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+shared = { workspace = true }
+api = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+store-postgres = { workspace = true }
+blobs-s3 = { workspace = true }
+
+[lints]
+workspace = true

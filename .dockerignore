@@ -2,5 +2,5 @@ target/
 .git/
 .github/
 .claude/
-fixtures/live/
-fixtures/capture/
+conformance/fixtures/live/
+conformance/fixtures/capture/

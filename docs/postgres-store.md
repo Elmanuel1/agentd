@@ -1,4 +1,4 @@
-# PostgreSQL persistence (agentd-store-postgres) — the default
+# PostgreSQL persistence (store-postgres) — the default
 
 Chosen because agentd is **dashboard-first**. Everything a UI needs —
 list, filter, sort, search, paginate, count — is plain SQL, with no second
@@ -47,7 +47,7 @@ convention). Apply them with real Flyway:
 
 ```sh
 docker run --rm --network host \
-  -v "$PWD/crates/agentd-store-postgres/migrations:/flyway/sql" \
+  -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
   flyway/flyway:11-alpine \
   -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
   -locations=filesystem:/flyway/sql migrate
@@ -63,7 +63,7 @@ Hermetic `cargo test` skips them; against a live migrated DB:
 
 ```sh
 AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
-  cargo test -p agentd-store-postgres --test pg_integration
+  cargo test -p store-postgres --test pg_integration
 ```
 
 `dashboard_queries_are_native_sql` proves the list/filter/count value;
@@ -74,6 +74,6 @@ AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
 
 Implemented + tested against live Postgres: **agents** (versioned, `DISTINCT
 ON` list), **deployments** (+ runs + claim), **files** (metadata in Postgres,
-bytes in object storage via the shared `agentd-blobs` `BlobStore` — never in
+bytes in object storage via the shared `blobs-s3` `BlobStore` — never in
 the DB). Remaining entities reuse the same hybrid pattern — one module + a
 `V2__*.sql` (or extend `V1`) each.
