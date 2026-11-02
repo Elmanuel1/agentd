@@ -146,10 +146,10 @@ impl Backends {
         };
         let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
             RuntimeConfig::None => None,
-            RuntimeConfig::Docker { image } => {
+            RuntimeConfig::Docker { image, limits } => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let runtime = DockerRuntime::new(docker, image.clone());
+                let runtime = DockerRuntime::new(docker, image.clone(), *limits);
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
                 Some(Arc::new(runtime))
             }

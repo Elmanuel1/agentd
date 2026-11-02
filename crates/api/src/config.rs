@@ -3,6 +3,7 @@
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
 use blobs_s3::S3Config;
+use sandbox_docker::SandboxLimits;
 use store_postgres::PoolSettings;
 
 use crate::keys::env_keys;
@@ -79,6 +80,9 @@ pub enum RuntimeConfig {
     Docker {
         /// The sandbox image.
         image: String,
+        /// `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) and
+        /// `AGENTD_SANDBOX_MILLICPUS` (default 2000) per sandbox.
+        limits: SandboxLimits,
     },
 }
 
@@ -126,6 +130,10 @@ impl Config {
             "none" => RuntimeConfig::None,
             "docker" => RuntimeConfig::Docker {
                 image: get("AGENTD_SANDBOX_IMAGE").unwrap_or_else(|| DEFAULT_SANDBOX_IMAGE.into()),
+                limits: SandboxLimits {
+                    memory_mib: number(&get, "AGENTD_SANDBOX_MEMORY_MIB", 2048)?,
+                    millicpus: number(&get, "AGENTD_SANDBOX_MILLICPUS", 2000)?,
+                },
             },
             other => return Err(unknown("AGENTD_RUNTIME", other)),
         };
