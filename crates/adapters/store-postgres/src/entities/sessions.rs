@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::RunQueryDsl;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::sessions;
@@ -66,21 +67,44 @@ impl SessionsStore for PgSessionsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn replace(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
+    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let affected = diesel::update(
-            sessions::table
-                .filter(sessions::workspace_id.eq(ws.as_str()))
-                .filter(sessions::session_id.eq(s.id.as_str())),
-        )
-        .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(to_doc(&s)?)))
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
+        let doc = to_doc(&s)?;
+        // The row is locked and compared as a Session, not as raw JSON: a doc
+        // written before a field existed re-serializes differently but holds
+        // the same session.
+        let outcome = conn
+            .transaction::<_, diesel::result::Error, _>(|c| {
+                async move {
+                    let stored: Option<serde_json::Value> = sessions::table
+                        .filter(sessions::workspace_id.eq(ws.as_str()))
+                        .filter(sessions::session_id.eq(s.id.as_str()))
+                        .select(sessions::doc)
+                        .for_update()
+                        .first(c)
+                        .await
+                        .optional()?;
+                    let Some(stored) = stored else {
+                        return Ok(Err(StoreError::NotFound));
+                    };
+                    if serde_json::from_value::<Session>(stored).ok().as_ref() != Some(read) {
+                        return Ok(Err(StoreError::Conflict));
+                    }
+                    diesel::update(
+                        sessions::table
+                            .filter(sessions::workspace_id.eq(ws.as_str()))
+                            .filter(sessions::session_id.eq(s.id.as_str())),
+                    )
+                    .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
+                    .execute(c)
+                    .await?;
+                    Ok(Ok(()))
+                }
+                .scope_boxed()
+            })
+            .await
+            .map_err(diesel_be)?;
+        outcome
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {

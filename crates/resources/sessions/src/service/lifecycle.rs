@@ -88,6 +88,7 @@ impl SessionsService {
     ) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let read = s.clone();
         guard_writable(&s)?;
         if req.vault_ids.is_some() {
             return Err(ApiError::invalid_request("vault_ids: updating vault_ids is not yet supported"));
@@ -105,7 +106,7 @@ impl SessionsService {
         }
         s.budget = req.budget.apply_to_option(s.budget);
         s.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, s.clone()).await.map_err(map_store)?;
+        self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
         Ok(s)
     }
 
@@ -113,6 +114,7 @@ impl SessionsService {
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let read = s.clone();
         if s.status == SessionStatus::Running {
             // Documented race: cannot archive while running.
             return Err(ApiError::conflict_invalid_request("cannot archive a running session"));
@@ -120,7 +122,7 @@ impl SessionsService {
         if s.archived_at.is_none() {
             s.archived_at = Some(Timestamp::now());
             s.updated_at = Timestamp::now();
-            self.store.replace(&ctx.workspace, s.clone()).await.map_err(map_store)?;
+            self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
             // Drop the broadcast sender — an archived session takes no new
             // events, so keeping its channel would leak the entry (and its
             // ring buffer) for the process lifetime.
@@ -137,9 +139,10 @@ impl SessionsService {
         if s.status == SessionStatus::Running {
             return Err(ApiError::conflict_invalid_request("cannot delete a running session"));
         }
-        // Log rows first so a crash never orphans events.
-        self.events.delete_events(&ctx.workspace, &id).await.map_err(map_store)?;
+        // The session first: an append checks the session in the same
+        // statement as its insert, so none can land after this.
         let deleted = self.store.delete(&ctx.workspace, &id).await.map_err(map_store)?;
+        self.events.delete_events(&ctx.workspace, &id).await.map_err(map_store)?;
         let mut last = Event::new(SessionEvent::Deleted {}.into());
         last.processed_at = Some(Timestamp::now());
         if let Some(tx) = self.channels.lock().remove(&id) {

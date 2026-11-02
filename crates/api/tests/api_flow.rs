@@ -35,9 +35,9 @@ async fn app() -> Option<Router> {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let backend = PgBackend::connect(&url).await.unwrap();
-    let bucket = format!("agentdapi{}", Timestamp::now().as_datetime().timestamp_micros());
+    let bucket = format!("agentdapi{}", unique_stamp());
     let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(&s3_config(bucket)).await.unwrap());
-    let stamp = Timestamp::now().as_datetime().timestamp_micros();
+    let stamp = unique_stamp();
     let org = format!("org_t{stamp}");
     let mut keys = EnvKeySource::default();
     keys.register(KEY, &org, &format!("wrkspc_a{stamp}"), "apikey_01a");
@@ -380,4 +380,12 @@ async fn exact_live_error_strings_survive_the_full_stack() {
         call(&app, "POST", "/v1/agents", Some(r#"{"name":"x","model":"claude-sonnet-4-6","bogus":1}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "Failed to parse request body: unknown field \"bogus\"");
+}
+
+/// A stamp no other app in this test binary shares: tests run in parallel, and
+/// two apps built in the same microsecond would share a workspace.
+fn unique_stamp() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}x{n}", Timestamp::now().as_datetime().timestamp_micros())
 }
