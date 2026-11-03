@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
@@ -34,6 +35,9 @@ pub enum CaError {
     /// The TLS configuration was refused.
     #[error("tls: {0}")]
     Tls(#[from] rustls::Error),
+    /// The session made more certificates this minute than it may.
+    #[error("too many new hosts this minute")]
+    Busy,
 }
 
 impl CaPem {
@@ -54,12 +58,20 @@ impl CaPem {
 /// Most leaf certificates one session keeps; past it the cache starts over,
 /// so a sandbox calling host after host cannot grow the shared service.
 const MAX_LEAVES: usize = 256;
+/// Most leaf certificates one session makes a minute: each costs a key and
+/// two signatures on the shared service.
+const MAX_PER_MINUTE: u32 = 60;
+/// How long a leaf is valid, and how long it is reused: a day less.
+const LEAF_DAYS: i64 = 30;
+const REUSE: Duration = Duration::from_secs(29 * 24 * 3600);
 
 /// A CA ready to sign, with the server configs it made, by host.
 pub struct SessionCa {
     issuer_params: CertificateParams,
     issuer_key: KeyPair,
-    leaves: Mutex<HashMap<String, Arc<ServerConfig>>>,
+    leaves: Mutex<HashMap<String, (Instant, Arc<ServerConfig>)>>,
+    /// The start of this minute's window and the leaves made in it.
+    minted: Mutex<(Instant, u32)>,
 }
 
 impl std::fmt::Debug for SessionCa {
@@ -73,21 +85,34 @@ impl SessionCa {
     pub fn from_pem(pem: &CaPem) -> Result<Self, CaError> {
         let issuer_key = KeyPair::from_pem(&pem.key)?;
         let issuer_params = CertificateParams::from_ca_cert_pem(&pem.cert)?;
-        Ok(Self { issuer_params, issuer_key, leaves: Mutex::new(HashMap::new()) })
+        let minted = Mutex::new((Instant::now(), 0));
+        Ok(Self { issuer_params, issuer_key, leaves: Mutex::new(HashMap::new()), minted })
     }
 
     /// A TLS server config presenting a certificate for `host`, signed by
     /// this CA.
     pub fn server_config(&self, host: &str) -> Result<Arc<ServerConfig>, CaError> {
-        if let Some(c) = self.leaves.lock().get(host) {
-            return Ok(c.clone());
+        if let Some((made, c)) = self.leaves.lock().get(host) {
+            if made.elapsed() < REUSE {
+                return Ok(c.clone());
+            }
+        }
+        {
+            let mut minted = self.minted.lock();
+            if minted.0.elapsed() >= Duration::from_secs(60) {
+                *minted = (Instant::now(), 0);
+            }
+            if minted.1 >= MAX_PER_MINUTE {
+                return Err(CaError::Busy);
+            }
+            minted.1 += 1;
         }
         let issuer = self.issuer_params.clone().self_signed(&self.issuer_key)?;
         let key = KeyPair::generate()?;
         let mut params = CertificateParams::new(vec![host.to_owned()])?;
         params.distinguished_name.push(DnType::CommonName, host);
         params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
-        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(30);
+        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(LEAF_DAYS);
         let leaf = params.signed_by(&key, &issuer, &self.issuer_key)?;
         let chain = vec![CertificateDer::from(leaf.der().to_vec())];
         let private = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
@@ -104,7 +129,22 @@ impl SessionCa {
         if leaves.len() >= MAX_LEAVES {
             leaves.clear();
         }
-        leaves.insert(host.to_owned(), config.clone());
+        leaves.insert(host.to_owned(), (Instant::now(), config.clone()));
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_makes_at_most_its_minutes_worth_of_certificates() {
+        let ca = SessionCa::from_pem(&CaPem::generate("sesn_1").unwrap()).unwrap();
+        for i in 0..MAX_PER_MINUTE {
+            ca.server_config(&format!("h{i}.example.com")).unwrap();
+        }
+        assert!(ca.server_config("h0.example.com").is_ok(), "a cached host costs nothing");
+        assert!(matches!(ca.server_config("new.example.com"), Err(CaError::Busy)));
     }
 }
