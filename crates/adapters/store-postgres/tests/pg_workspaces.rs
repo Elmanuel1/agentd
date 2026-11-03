@@ -21,8 +21,9 @@ async fn store() -> PgWorkspacesStore {
     PgWorkspacesStore::new(PgBackend::connect(&url).await.unwrap())
 }
 
-fn org() -> OrgId {
-    OrgId::new(format!("org_w{}", Timestamp::now().as_datetime().timestamp_micros()))
+// The tag keeps tests that start in the same microsecond in separate orgs.
+fn org(tag: &str) -> OrgId {
+    OrgId::new(format!("org_w{tag}{}", Timestamp::now().as_datetime().timestamp_micros()))
 }
 
 fn workspace(n: i64) -> Workspace {
@@ -57,7 +58,7 @@ async fn a_workspace_is_seen_only_in_its_org_and_replaced_whole() {
     if !enabled() {
         return;
     }
-    let (store, org) = (store().await, org());
+    let (store, org) = (store().await, org("get"));
     let mut ws = workspace(1);
     store.insert(&org, &ws).await.unwrap();
     assert_eq!(store.get(&org, &ws.id).await.unwrap(), ws);
@@ -73,7 +74,7 @@ async fn a_list_pages_newest_first_both_ways_and_hides_archived_ones() {
     if !enabled() {
         return;
     }
-    let (store, org) = (store().await, org());
+    let (store, org) = (store().await, org("list"));
     for n in 1..=5 {
         store.insert(&org, &workspace(n)).await.unwrap();
     }
