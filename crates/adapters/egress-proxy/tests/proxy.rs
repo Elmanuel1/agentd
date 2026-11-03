@@ -41,6 +41,26 @@ async fn a_placeholder_for_another_host_and_a_host_off_the_list_are_blocked() {
 }
 
 #[tokio::test]
+async fn a_placeholder_in_the_body_goes_on_only_with_a_credential_the_host_allows() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let up = upstream(seen.clone()).await;
+    let p = proxy().await;
+    let c = client(p.port, "agentd-px-good", None);
+    let context = "tool output: GITHUB_TOKEN=agentd-ph-abc";
+    let model = c
+        .post(format!("http://127.0.0.1:{up}/v1/chat/completions"))
+        .header("authorization", "Bearer agentd-ph-model")
+        .body(context)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(model.status(), 200);
+    let bare = c.post(format!("http://127.0.0.1:{up}/x")).body(context).send().await.unwrap();
+    assert_eq!(bare.status(), 403);
+    assert_eq!(seen.lock().clone(), [format!("Bearer {SECRET}")]);
+}
+
+#[tokio::test]
 async fn an_unknown_proxy_password_is_refused() {
     let p = proxy().await;
     let r = client(p.port, "nope", None).get("http://localhost/").send().await.unwrap();

@@ -19,7 +19,10 @@ pub enum Refusal {
     /// The environment's `limited` networking does not allow the host.
     HostNotAllowed,
     /// A credential's placeholder was sent to a host the credential does not
-    /// allow; sending it on would leak which credential the sandbox holds.
+    /// allow; sending it on would leak which credential the sandbox holds. A
+    /// placeholder only in the body of a request that carries a credential
+    /// the host does allow is content for that service (a tool's output in
+    /// the agent's context, sent to the model API) and goes on unchanged.
     PlaceholderToWrongHost {
         /// The credential's name.
         name: String,
@@ -84,9 +87,11 @@ async fn fill(
     (host, cleartext): (&str, bool),
     injection: &mut Injection,
 ) -> Result<(), Refusal> {
+    let mut in_body_only = None;
     for b in bindings {
         let in_headers = headers.values().any(|v| b.found_in(v.as_bytes()));
-        if !in_headers && !b.found_in(path.as_bytes()) && !b.found_in(body) {
+        let in_path = b.found_in(path.as_bytes());
+        if !in_headers && !in_path && !b.found_in(body) {
             continue;
         }
         let name = b.name.clone();
@@ -99,7 +104,11 @@ async fn fill(
             }
         };
         if !current.allows(host) {
-            return Err(Refusal::PlaceholderToWrongHost { name });
+            if in_headers || in_path {
+                return Err(Refusal::PlaceholderToWrongHost { name });
+            }
+            in_body_only.get_or_insert(name);
+            continue;
         }
         if !in_headers || !current.header {
             continue;
@@ -124,5 +133,8 @@ async fn fill(
         injection.prints.push(Fingerprint::of(&b.id, &b.placeholder, current.value.expose()));
         injection.used.push(b.id.clone());
     }
-    Ok(())
+    match in_body_only {
+        Some(name) if injection.used.is_empty() => Err(Refusal::PlaceholderToWrongHost { name }),
+        _ => Ok(()),
+    }
 }

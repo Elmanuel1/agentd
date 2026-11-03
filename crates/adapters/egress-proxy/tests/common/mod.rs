@@ -28,11 +28,13 @@ pub struct Vault(pub Mutex<Option<String>>);
 
 #[async_trait]
 impl SecretSource for Vault {
-    async fn current(&self, _key: &SecretKey) -> Result<Current, SecretError> {
+    async fn current(&self, key: &SecretKey) -> Result<Current, SecretError> {
         let value = self.0.lock().clone().ok_or_else(|| SecretError::Backend("unreachable".into()))?;
+        // The model key is bound to 127.0.0.1, every other credential to localhost.
+        let host = if key.credential() == "vcrd_model" { "127.0.0.1" } else { "localhost" };
         Ok(Current {
             value: Locked::new(value.as_bytes()).unwrap(),
-            hosts: Some(vec!["localhost".into()]),
+            hosts: Some(vec![host.into()]),
             header: true,
         })
     }
@@ -86,13 +88,22 @@ pub async fn proxy() -> Proxy {
     let reg = Registration {
         password_sha256: hex::encode(Sha256::digest(b"agentd-px-good")),
         allowed_hosts: Some(vec!["localhost".into(), "127.0.0.1".into()]),
-        credentials: vec![BindingSpec {
-            id: "vcrd_1".into(),
-            name: "GITHUB_TOKEN".into(),
-            placeholder: "agentd-ph-abc".into(),
-            workspace: "wrkspc_1".into(),
-            vault: "vlt_1".into(),
-        }],
+        credentials: vec![
+            BindingSpec {
+                id: "vcrd_1".into(),
+                name: "GITHUB_TOKEN".into(),
+                placeholder: "agentd-ph-abc".into(),
+                workspace: "wrkspc_1".into(),
+                vault: "vlt_1".into(),
+            },
+            BindingSpec {
+                id: "vcrd_model".into(),
+                name: "OPENROUTER_API_KEY".into(),
+                placeholder: "agentd-ph-model".into(),
+                workspace: "operator".into(),
+                vault: "models".into(),
+            },
+        ],
     };
     let url = format!("http://127.0.0.1:{admin_port}/v1/sessions/sesn_1");
     let http = reqwest::Client::new();
