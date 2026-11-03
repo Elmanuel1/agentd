@@ -67,18 +67,24 @@ def test_a_credential_is_a_placeholder_in_the_sandbox_and_the_value_on_the_wire(
     tools = [{"type": "agent_toolset_20260401", "default_config": {"permission_policy": {"type": "always_allow"}}}]
     agent = client.beta.agents.create(name="rt-egress", model="claude-sonnet-4-6", tools=tools)
     session = client.beta.sessions.create(agent=agent.id, environment_id=env.id, vault_ids=[vault.id])
-    client.beta.sessions.events.send(session.id, events=[{"type": "user.message", "content": [{"type": "text", "text": "go"}]}])
-    for _ in range(120):
-        events = list(client.beta.sessions.events.list(session.id, limit=1000))
-        if events and events[-1].type == "session.status_idle":
-            break
-        time.sleep(1)
-    results = [e.content[0].text for e in events if e.type == "agent.tool_result"]
-    assert len(results) == 3, results
-    env_out, allowed, blocked = results
-    assert "ECHO_TOKEN=agentd-ph-" in env_out and SECRET not in env_out
-    assert SEEN == [f"Bearer {SECRET}"]
-    assert "agentd-ph-" in allowed and SECRET not in allowed
-    assert blocked.strip().startswith("403")
-    everything = json.dumps([e.model_dump(mode="json") for e in events])
-    assert SECRET not in everything
+    try:
+        client.beta.sessions.events.send(session.id, events=[{"type": "user.message", "content": [{"type": "text", "text": "go"}]}])
+        for _ in range(120):
+            events = list(client.beta.sessions.events.list(session.id, limit=1000))
+            if events and events[-1].type == "session.status_idle":
+                break
+            time.sleep(1)
+        results = [e.content[0].text for e in events if e.type == "agent.tool_result"]
+        assert len(results) == 3, results
+        env_out, allowed, blocked = results
+        assert "ECHO_TOKEN=agentd-ph-" in env_out and SECRET not in env_out
+        assert SEEN == [f"Bearer {SECRET}"]
+        assert "agentd-ph-" in allowed and SECRET not in allowed
+        assert blocked.strip().startswith("403")
+        everything = json.dumps([e.model_dump(mode="json") for e in events])
+        assert SECRET not in everything
+    finally:
+        # The session and the vault go, so the credential's secret is
+        # scheduled for deletion like every other in the run.
+        client.beta.sessions.delete(session.id)
+        client.beta.vaults.delete(vault.id)
