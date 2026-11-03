@@ -178,18 +178,30 @@ dropped from every log whatever `RUST_LOG` says.
 
 ## API keys
 
-Each API key is a Secrets Manager secret, `<prefix>/system/api_keys/<digest>`,
-under the same KMS key as the credentials. A key is `sk-ant-api03-` and 86
-base64url characters from 64 random bytes, then `AA`, bound to one org and
-one workspace and named `apikey_…`. Its secret holds only the key's
-HMAC-SHA256 digest, keyed with a pepper agentd keeps as
-`<prefix>/system/api_key_pepper` (created on first use), and its id, org and
-workspace; the tags carry what a listing shows. With 512 bits of entropy a key
-cannot be guessed, so a slow password hash such as argon2id would only add
-cost to every request; the pepper means a leaked secret list or digest
-verifies nothing. A request computes its key's digest, reads that one secret,
-and compares the digest in constant time. Nothing is cached, so a revoke,
-which deletes the secret, holds from the next request.
+There are two kinds of key, and the route decides which one a request needs:
+`/v1/organizations` routes take admin keys only, every other route takes
+workspace keys only. Both are 86 base64url characters from 64 random bytes
+after their prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
+keyed with a pepper agentd keeps as `<prefix>/system/api_key_pepper` in
+Secrets Manager (created on first use), so the stored digests alone verify
+nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
+hash such as argon2id would only add cost to every request. Nothing is
+cached, so a revoke holds from the next request.
+
+- **Workspace keys** (`sk-ant-api03-…`, `apikey_…`) act for one org and one
+  workspace. Each is a row in the Postgres `api_keys` table: its digest under
+  a unique index, its id, org, workspace, name, partial key hint, and the time
+  it was created and revoked. A request computes its key's digest and reads
+  the unrevoked row with that digest. Archiving a workspace
+  (`POST /v1/organizations/workspaces/{id}/archive`) revokes every unrevoked
+  key of that workspace, so each gets a 401 from its next request. Secrets under
+  `<prefix>/system/api_keys/` are never read: reissue each of those keys with
+  `agentd keys create`, and switch callers to the new keys before deploying.
+- **Admin keys** (`sk-ant-admin01-…`, `adminkey_…`) act for one org. Each is a
+  Secrets Manager secret, `<prefix>/system/admin_keys/<digest>`, under the
+  same KMS key as the credentials, holding the digest, its id and org; the
+  tags carry what a listing shows. A request reads the one secret its digest
+  names and compares the digest in constant time. A revoke deletes the secret.
 
 ```bash
 agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]   # prints the key once, on stdout
