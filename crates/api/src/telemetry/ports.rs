@@ -13,10 +13,10 @@ use chrono::{DateTime, Utc};
 use opentelemetry::KeyValue;
 use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::fire::{FireError, FireHandler};
-use shared::ports::keys::{KeyError, KeySource};
+use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
-use shared::AuthContext;
+use shared::{AdminContext, AuthContext};
 use tracing::field::Empty;
 use tracing::Instrument;
 
@@ -100,6 +100,14 @@ impl<T: SecretStore + ?Sized> SecretStore for Observed<T> {
 impl<T: KeySource + ?Sized> KeySource for Observed<T> {
     async fn resolve(&self, key: &str) -> Result<Option<AuthContext>, KeyError> {
         self.run("keys", "resolve", self.inner.resolve(key)).await
+    }
+}
+
+/// An admin request's key lookup, as `admin_keys.resolve`.
+#[async_trait]
+impl<T: AdminKeySource + ?Sized> AdminKeySource for Observed<T> {
+    async fn resolve(&self, key: &str) -> Result<Option<AdminContext>, KeyError> {
+        self.run("admin_keys", "resolve", self.inner.resolve(key)).await
     }
 }
 

@@ -4,6 +4,8 @@ members = [
     "crates/shared",
     "crates/resources/agents",
     "crates/resources/environments",
+    "crates/resources/api-keys",
+    "crates/resources/organizations",
     "crates/resources/vaults",
     "crates/resources/memory",
     "crates/resources/files",
@@ -37,6 +39,8 @@ license = "UNLICENSED"
 shared = { path = "crates/shared" }
 agents = { path = "crates/resources/agents" }
 environments = { path = "crates/resources/environments" }
+api-keys = { path = "crates/resources/api-keys" }
+organizations = { path = "crates/resources/organizations" }
 vaults = { path = "crates/resources/vaults" }
 memory = { path = "crates/resources/memory" }
 files = { path = "crates/resources/files" }

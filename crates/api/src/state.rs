@@ -8,16 +8,17 @@ use deployments::DeploymentsService;
 use environments::EnvironmentsService;
 use files::FilesService;
 use memory::MemoriesService;
+use organizations::WorkspacesService;
 use sessions::SessionsService;
 use shared::limits::ModelCatalog;
 use shared::ports::fire::FireError;
-use shared::ports::keys::KeySource;
+use shared::ports::keys::{AdminKeySource, KeySource};
 use shared::Module;
 use skills::SkillsService;
 use vaults::VaultsService;
 
 use crate::backends::Backends;
-use crate::deps::{RealDeploymentDeps, RealSessionDeps};
+use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealWorkspaceKeys};
 use crate::egress::{EgressAdmin, SessionEgressPolicy};
 use crate::harness::{self, Harness};
 use crate::sandbox_work::WorkIssuer;
@@ -29,8 +30,10 @@ use work::{WorkService, WorkTokens};
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
-    /// API-key resolution.
+    /// Workspace key resolution.
     pub keys: Arc<dyn KeySource>,
+    /// Admin key resolution.
+    pub admin_keys: Arc<dyn AdminKeySource>,
     /// One module per resource.
     pub modules: Vec<Module>,
     /// The instruments the edge records requests into.
@@ -50,7 +53,8 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, BuildError> {
-        let Backends { stores, keys, scheduler, fires, runtime, sandbox, extra_models, metrics } = backends;
+        let Backends { stores, keys, admin_keys, scheduler, fires, runtime, sandbox, extra_models, metrics } =
+            backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
@@ -107,11 +111,15 @@ impl AppState {
             sessions::module(sessions),
             deployments::module(deployments),
             work::module(work.clone()),
+            organizations::module(Arc::new(WorkspacesService::new(
+                stores.workspaces,
+                Arc::new(RealWorkspaceKeys { keys: stores.api_keys }),
+            ))),
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
-        Ok(Self { keys, modules, metrics, work_tokens: Some(work.tokens().clone()) })
+        Ok(Self { keys, admin_keys, modules, metrics, work_tokens: Some(work.tokens().clone()) })
     }
 }
 

@@ -1,10 +1,11 @@
 //! agentd — the Managed-Agents-compatible control plane.
 //!
 //! Boot: read [`Config`] from the environment, connect the backends it
-//! selects, assemble the app, and serve. `agentd keys …` manages API keys
-//! instead ([`api::cli`]). Records and blobs live in Postgres and
-//! object storage; event streams and the local scheduler live in the process,
-//! so run one replica until a shared event bus and scheduler replace them.
+//! selects, assemble the app, and serve. `agentd keys …` and `agentd
+//! admin-keys …` manage keys instead ([`api::cli`]). Records and blobs live
+//! in Postgres and object storage; event streams and the local scheduler live
+//! in the process, so run one replica until a shared event bus and scheduler
+//! replace them.
 
 use std::process::ExitCode;
 
@@ -25,6 +26,9 @@ async fn main() -> ExitCode {
     match args.split_first() {
         None => {}
         Some((cmd, rest)) if cmd == "keys" => return api::cli::keys(&config, rest).await,
+        Some((cmd, rest)) if cmd == "admin-keys" => {
+            return api::cli::admin_keys::admin_keys(&config, rest).await
+        }
         Some((cmd, rest)) if cmd == "model-key" => return api::model_key::model_key(&config, rest).await,
         Some(_) => {
             eprintln!("{}\n{}", api::cli::USAGE, api::model_key::USAGE);

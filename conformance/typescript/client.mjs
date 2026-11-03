@@ -1,6 +1,7 @@
 // The official TypeScript SDK against a running agentd, with only the base URL
-// changed. AGENTD_BASE_URL (default http://127.0.0.1:8080) and AGENTD_TEST_KEY
-// name the server and a key it accepts.
+// changed. AGENTD_BASE_URL (default http://127.0.0.1:8080) names the server,
+// AGENTD_TEST_KEY a workspace key it accepts and AGENTD_TEST_ADMIN_KEY an admin
+// key for the same organization.
 import Anthropic from '@anthropic-ai/sdk';
 
 export const baseURL = process.env.AGENTD_BASE_URL ?? 'http://127.0.0.1:8080';
@@ -8,6 +9,10 @@ export const apiKey = process.env.AGENTD_TEST_KEY;
 
 export function client(options = {}) {
   return new Anthropic({ apiKey, baseURL, ...options });
+}
+
+export function admin(options = {}) {
+  return new Anthropic({ apiKey: process.env.AGENTD_TEST_ADMIN_KEY, baseURL, ...options });
 }
 
 export function name(prefix) {

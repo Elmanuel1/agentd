@@ -71,8 +71,8 @@ pub enum BlobsConfig {
 /// `AGENTD_KEYS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeysConfig {
-    /// `aws`: the keys `agentd keys create` issued, one Secrets Manager secret
-    /// each, holding a peppered digest, never the key.
+    /// `aws`: workspace keys in Postgres and admin keys in Secrets Manager,
+    /// each a digest keyed with the pepper in Secrets Manager, never the key.
     Aws,
 }
 
