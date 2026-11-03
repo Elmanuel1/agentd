@@ -56,8 +56,10 @@ def unpack_skill(archive, skills_dir=Path(SKILLS_DIR)):
         wrapped = len(top) == 1 and all("/" in n for n in names)
         md = next((n for n in names if n.rsplit("/", 1)[-1] == "SKILL.md"), None)
         text = z.read(md).decode("utf-8", "replace") if md else ""
-        name = next((l.split(":", 1)[1].strip().strip('"') for l in text.split("\n---", 1)[0].splitlines()
-                     if l.startswith("name:")), None) or (top.pop() if wrapped else "skill")
+        # The archive's top directory names the skill, as agentd's own bundles do.
+        name = top.pop() if wrapped else next(
+            (l.split(":", 1)[1].strip().strip('"') for l in text.split("\n---", 1)[0].splitlines() if l.startswith("name:")),
+            "skill")
         dest = skills_dir / name
         for n in names:
             rel = n.split("/", 1)[1] if wrapped else n
@@ -75,6 +77,9 @@ def mount_skills(agentd, agents):
     for agent in agents:
         infos = []
         for skill in agent.get("skills") or []:
+            # Anthropic's prebuilt skills are not agentd's to serve.
+            if skill.get("type") != "custom":
+                continue
             key = (skill["skill_id"], str(skill.get("version") or "latest"))
             if key not in done:
                 done[key] = unpack_skill(agentd.skill(skill["skill_id"], key[1]))
