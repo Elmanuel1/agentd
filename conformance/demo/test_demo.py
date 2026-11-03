@@ -1,8 +1,8 @@
-"""The scripted demo replay: agentd runs the extraction agents on the fixture
-slice of the demo data, with every model call answered by mock-model.json.
+"""The scripted demo replay: the extraction agents run on the fixture slice of
+the demo data, with every model call answered by mock-model.json.
 
-Runs when agentd uses AGENTD_RUNTIME=docker and
-AGENTD_MOCK_MODEL=conformance/demo/mock-model.json, and AGENTD_TEST_DEMO=1.
+Runs when AGENTD_TEST_DEMO=1 says agentd's sessions run their harness against
+that script.
 """
 
 import json
