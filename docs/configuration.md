@@ -177,7 +177,9 @@ cached, so a revoke holds from the next request.
   workspace. Each is a row in the Postgres `api_keys` table: its digest under
   a unique index, its id, org, workspace, name, partial key hint, and the time
   it was created and revoked. A request computes its key's digest and reads
-  the unrevoked row with that digest.
+  the unrevoked row with that digest. Secrets under
+  `<prefix>/system/api_keys/` are never read: reissue each of those keys with
+  `agentd keys create`, and switch callers to the new keys before deploying.
 - **Admin keys** (`sk-ant-admin01-…`, `adminkey_…`) act for one org. Each is a
   Secrets Manager secret, `<prefix>/system/admin_keys/<digest>`, under the
   same KMS key as the credentials, holding the digest, its id and org; the
@@ -193,10 +195,11 @@ agentd admin-keys list                                                        # 
 agentd admin-keys revoke <adminkey_id>
 ```
 
-The commands read the same configuration as the server. `agentd keys` needs
-Postgres (migrated) and Secrets Manager for the pepper; `agentd admin-keys`
-needs only Secrets Manager. A key is printed once and never stored; lose it
-and create another. No environment variable holds a key.
+The commands read the same configuration as the server, so `DATABASE_URL` is
+required for both when `AGENTD_STORE` is unset or `postgres`. `agentd keys`
+uses Postgres (migrated) and Secrets Manager for the pepper; `agentd
+admin-keys` uses only Secrets Manager. A key is printed once and never stored;
+lose it and create another. No environment variable holds a key.
 
 ## Security
 

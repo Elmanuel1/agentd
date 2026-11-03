@@ -51,7 +51,7 @@ region and account is tighter and loses nothing.
     (`kms:EncryptionContext:SecretARN`).
 - `egress-secrets-policy.json`, on the egress service's role: only
   `GetSecretValue`, on `PREFIX/` secrets in `REGION` and `ACCOUNT_ID` only, and an explicit deny on
-  `PREFIX/system/`, where the API key records and the pepper live. The
+  `PREFIX/system/`, where the admin keys and the pepper live. The
   service reads a credential's current value when a request needs it and
   makes no other AWS call.
 - `kms-key-policy.json`, the key policy. The account administers the key but
