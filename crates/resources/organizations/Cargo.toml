@@ -9,6 +9,8 @@ license.workspace = true
 shared = { workspace = true }
 serde = { workspace = true }
 axum = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

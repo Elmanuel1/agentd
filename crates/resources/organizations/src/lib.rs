@@ -9,6 +9,7 @@
 
 pub mod routes;
 pub mod types;
+pub mod workspaces;
 
 use shared::Module;
 

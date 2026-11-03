@@ -36,6 +36,7 @@ pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
+pub use entities::workspaces::PgWorkspacesStore;
 
 /// Shared diesel-async connection pool (tokio-postgres). All entity stores go
 /// through Diesel — the typed schema lives in `crate::schema`.
@@ -97,6 +98,7 @@ from_backend!(
     sessions::store::StoreError,
     dreams::store::StoreError,
     memory::store::StoreError,
+    organizations::workspaces::StoreError,
 );
 
 /// Serialize a snake_case enum to its wire string for a filter column

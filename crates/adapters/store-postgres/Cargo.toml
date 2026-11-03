@@ -18,6 +18,7 @@ skills = { workspace = true }
 sessions = { workspace = true }
 dreams = { workspace = true }
 memory = { workspace = true }
+organizations = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -33,6 +34,7 @@ deadpool = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 api-keys = { workspace = true }
+chrono = { workspace = true }
 blobs-s3 = { workspace = true }
 test-support = { workspace = true }
 axum = { workspace = true }

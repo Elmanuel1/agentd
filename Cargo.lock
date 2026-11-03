@@ -2442,11 +2442,13 @@ dependencies = [
 name = "organizations"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "http-body-util",
  "serde",
  "serde_json",
  "shared",
+ "thiserror 2.0.18",
  "tokio",
  "tower",
 ]
@@ -3463,6 +3465,7 @@ dependencies = [
  "http 1.4.2",
  "http-body-util",
  "memory",
+ "organizations",
  "serde",
  "serde_json",
  "sessions",

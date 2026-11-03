@@ -13,3 +13,4 @@ pub mod sessions;
 pub mod skill_versions;
 pub mod skills;
 pub mod vaults;
+pub mod workspaces;
