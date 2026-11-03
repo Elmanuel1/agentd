@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use shared::Usage;
+
 use super::StopReason;
+use crate::types::Budget;
 
 /// The session status events (`type` `session.*`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +31,16 @@ pub enum SessionEvent {
     Error {
         /// Error detail.
         error: serde_json::Value,
+    },
+    /// The session's cumulative usage and list cost, with its budget, at the
+    /// time of the snapshot.
+    #[serde(rename = "session.usage")]
+    Usage {
+        /// Cumulative usage.
+        usage: Usage,
+        /// The budget, `null` when the session has none.
+        #[serde(default)]
+        budget: Option<Budget>,
     },
     /// The session was deleted; the last event on its stream.
     #[serde(rename = "session.deleted")]

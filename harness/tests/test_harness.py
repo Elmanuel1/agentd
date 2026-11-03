@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "conformance"))
 
 from agentd_harness import prompt, toolhost
+from agentd_harness.budget import Budget, BudgetReached
 from agentd_harness.model import Model, text, usage
 from agentd_harness.outcome import explain
 from agentd_harness.thread import Thread, thread_id
@@ -116,31 +117,74 @@ def scripted_model():
     from http.server import ThreadingHTTPServer
     replies = {"worker": [
         {"content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}],
-         "usage": {"input_tokens": 10, "output_tokens": 2}},
-        {"content": [{"type": "text", "text": "all done"}], "usage": {"input_tokens": 12, "output_tokens": 3}}]}
+         "usage": {"input_tokens": 10, "output_tokens": 2, "cost": 0.0612}},
+        {"content": [{"type": "text", "text": "all done"}], "usage": {"input_tokens": 12, "output_tokens": 3, "cost": 0.06}}],
+        "unpriced": [{"content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}],
+                      "usage": {"input_tokens": 10, "output_tokens": 2, "cost": None}}]}
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler(Script(replies)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}/v1"
     server.shutdown()
 
 
-def test_a_turn_records_model_requests_messages_and_tool_calls(scripted_model):
+def scripted_run(base_url, budget=None):
     class Run:
-        model_base_url = scripted_model
+        model_base_url = base_url
         agentd = Recorder()
         tools = Tools()
         inbox = Inbox()
-    agent = {"name": "worker", "model": {"id": "m"}, "tools": [{"type": "agent_toolset_20260401"}]}
+    Run.budget = Budget()
+    Run.budget.refresh({"budget": budget, "usage": {}})
+    return Run
+
+
+def thread_for(run, name):
+    agent = {"name": name, "model": {"id": "m"}, "tools": [{"type": "agent_toolset_20260401"}]}
     policy = Policy(agent)
-    reply = Thread(Run, agent, "sys", policy.functions(), policy).send("go")
+    return Thread(run, agent, "sys", policy.functions(), policy)
+
+
+def test_a_turn_records_model_requests_messages_and_tool_calls(scripted_model):
+    Run = scripted_run(scripted_model)
+    reply = thread_for(Run, "worker").send("go")
     assert reply == "all done"
     kinds = [e["type"] for e in Run.agentd.events]
-    assert kinds == ["span.model_request_start", "span.model_request_end", "agent.tool_use", "agent.tool_result",
-                     "span.model_request_start", "span.model_request_end", "agent.message"]
-    use, result = Run.agentd.events[2], Run.agentd.events[3]
+    assert kinds == ["span.model_request_start", "span.model_request_end", "session.usage", "agent.tool_use",
+                     "agent.tool_result", "span.model_request_start", "span.model_request_end", "session.usage",
+                     "agent.message"]
+    costs = [e["usage"]["list_cost"] for e in Run.agentd.events if e["type"] == "session.usage"]
+    assert costs == [{"amount": "6", "currency": "USD"}, {"amount": "12", "currency": "USD"}]
+    use, result = Run.agentd.events[3], Run.agentd.events[4]
     assert use["name"] == "bash" and use["input"] == {"command": "ls"} and use["evaluated_permission"] == "allow"
     assert result["tool_use_id"] == use["id"] and Run.tools.calls == [("bash", {"command": "ls"})]
     assert Run.agentd.events[1]["model_request_start_id"] == Run.agentd.events[0]["id"]
+
+
+def limit(cents):
+    return {"type": "limit", "max_list_cost": {"amount": str(cents), "currency": "USD"}}
+
+
+def test_the_budget_stops_the_next_model_request_once_the_cost_reaches_it(scripted_model):
+    Run = scripted_run(scripted_model, limit(5))
+    with pytest.raises(BudgetReached):
+        thread_for(Run, "worker").send("go")
+    kinds = [e["type"] for e in Run.agentd.events]
+    assert kinds.count("span.model_request_start") == 1 and kinds[-1] == "agent.tool_result"
+    Run.budget.refresh({"budget": limit(100), "usage": {"list_cost": {"amount": "6", "currency": "USD"}}})
+    assert Run.budget.limit == 100 and Run.budget.check() is None
+
+
+def test_a_model_with_no_list_price_stops_a_budgeted_session(scripted_model):
+    Run = scripted_run(scripted_model, limit(1000))
+    with pytest.raises(BudgetReached):
+        thread_for(Run, "unpriced").send("go")
+    assert [e["usage"] for e in Run.agentd.events if e["type"] == "session.usage"] == [{"list_cost": None}]
+    unbudgeted = scripted_run(scripted_model)
+    thread_for(unbudgeted, "unpriced").send("go")
+    seeded = Budget()
+    seeded.refresh({"budget": limit(1000), "usage": {"input_tokens": 5}})
+    with pytest.raises(BudgetReached):
+        seeded.check()
 
 
 def test_a_lost_lease_is_left_alone_and_a_stale_beat_recovers(monkeypatch):

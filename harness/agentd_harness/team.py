@@ -7,6 +7,7 @@ import json
 import queue
 import threading
 
+from .budget import BudgetReached
 from .prompt import system_prompt
 from .thread import Thread, thread_id
 from .tools import Policy
@@ -38,6 +39,8 @@ class Team:
         self.primary_id = "sthr_" + run.agentd.session_id.removeprefix("sesn_")
         self.replies = queue.Queue()
         self.running = 0
+        # Set when the budget stopped a thread: the turn ends budget_reached, not end_turn.
+        self.over_budget = False
         self.lock = threading.Lock()
 
     def bind(self, thread):
@@ -87,6 +90,11 @@ class Team:
             ], thread=thread.tid)
             try:
                 reply = thread.send(message)
+            except BudgetReached:
+                self.run.agentd.emit([{"type": "session.thread_status_idle", "agent_name": thread.name,
+                                       "stop_reason": {"type": "budget_reached"}, "stop_details": None}], thread=thread.tid)
+                self.over_budget = True
+                return
             except Exception as e:  # noqa: BLE001 - the coordinator hears of a thread that failed
                 reply = f"The thread failed: {str(e)[-500:]}"
             content = [{"type": "text", "text": reply}]
@@ -104,18 +112,27 @@ class Team:
             self.replies.put(None)
 
     def settle(self, primary):
-        """Give the coordinator each thread's reply as it comes, until every thread is idle."""
+        """Give the coordinator (None: one the budget stopped) each thread's reply as it comes, until
+        every thread is idle. Once the budget stops it, the other threads stop at their next request."""
+        stopped = None
         while True:
             with self.lock:
                 if self.running == 0 and self.replies.empty():
-                    return
+                    break
             try:
                 note = self.replies.get(timeout=1)
             except queue.Empty:
                 self.run.inbox.check()
                 continue
-            if note is not None:
+            if note is None or primary is None:
+                continue
+            try:
                 primary.send(note)
+            except BudgetReached as e:
+                primary, stopped = None, e
+        over, self.over_budget = self.over_budget, False
+        if stopped or over:
+            raise stopped or BudgetReached()
 
 
 def describe(members):

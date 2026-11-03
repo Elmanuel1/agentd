@@ -2,7 +2,9 @@
 script named by the request's `user` (the harness's thread name), or of `default`.
 
 Scripts are Anthropic-shaped replies (`content` blocks with `text` and `tool_use`, and `usage`),
-answered as chat completions with `tool_calls`. Used by CI and the scripted demo.
+answered as chat completions with `tool_calls`. A reply's `usage.cost` is its list cost in USD, as
+OpenRouter reports it (0 when left out; `null` answers without one, as a model with no list price).
+Used by CI and the scripted demo.
 
     python conformance/mock_model.py --port 18766 conformance/fixtures/mock-model.json
 """
@@ -37,12 +39,14 @@ def completion(reply):
     calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b.get("input", {}))}}
              for b in reply.get("content", []) if b.get("type") == "tool_use"]
     u = reply.get("usage") or {}
+    cost = u.get("cost", 0)
     message = {"role": "assistant", "content": text or None, **({"tool_calls": calls} if calls else {})}
     return {"id": "chatcmpl-mock", "object": "chat.completion", "model": "mock",
             "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls" if calls else "stop"}],
             "usage": {"prompt_tokens": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0),
                       "completion_tokens": u.get("output_tokens", 0),
-                      "prompt_tokens_details": {"cached_tokens": u.get("cache_read_input_tokens", 0)}, "cost": 0}}
+                      "prompt_tokens_details": {"cached_tokens": u.get("cache_read_input_tokens", 0)},
+                      **({"cost": cost} if cost is not None else {})}}
 
 
 def handler(script):

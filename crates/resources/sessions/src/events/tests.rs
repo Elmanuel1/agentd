@@ -159,3 +159,20 @@ fn thread_messages_carry_the_other_threads_id() {
     let ev: Event = serde_json::from_str(raw).unwrap();
     assert_eq!(serde_json::to_value(&ev).unwrap(), serde_json::from_str::<serde_json::Value>(raw).unwrap());
 }
+
+#[test]
+fn budget_reached_and_usage_snapshots_match_the_sdk() {
+    let idle = r#"{"stop_reason":{"type":"budget_reached"},"type":"session.status_idle"}"#;
+    let ev: EventPayload = serde_json::from_str(idle).unwrap();
+    assert!(matches!(
+        &ev,
+        EventPayload::Session(SessionEvent::StatusIdle { stop_reason: StopReason::BudgetReached {} })
+    ));
+    assert_eq!(serde_json::to_value(&ev).unwrap(), serde_json::from_str::<serde_json::Value>(idle).unwrap());
+    let reported: EventPayload = serde_json::from_str(
+        r#"{"type":"session.usage","usage":{"list_cost":{"amount":"12","currency":"USD"}}}"#,
+    )
+    .unwrap();
+    let EventPayload::Session(SessionEvent::Usage { usage, budget: None }) = reported else { panic!() };
+    assert_eq!(usage.list_cost, Some(shared::MonetaryAmount::usd(12)));
+}

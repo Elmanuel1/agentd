@@ -50,11 +50,11 @@ def test_create_takes_budget_initial_events_and_overrides(client, setup) -> None
     session = client.beta.sessions.create(
         agent={"type": "agent_with_overrides", "id": agent.id, "system": "override"},
         environment_id=env.id,
-        budget={"type": "limit", "max_list_cost": {"amount": "5.00", "currency": "USD"}},
+        budget={"type": "limit", "max_list_cost": {"amount": "500", "currency": "USD"}},
         initial_events=[{"type": "user.message", "content": [{"type": "text", "text": "start"}]}],
     )
     assert session.agent.system == "override"
-    assert session.budget.max_list_cost.amount == "5.00"
+    assert session.budget.max_list_cost.amount == "500"
     events = client.beta.sessions.events.list(session.id)
     assert [e.type for e in events.data] == ["user.message"]
 
@@ -67,6 +67,30 @@ def test_update_merges_metadata_and_clears_on_null(client, setup) -> None:
     )
     updated = client.beta.sessions.update(session.id, metadata={"a": None}, title=None, budget=None)
     assert (updated.metadata, updated.title, updated.budget) == ({"b": "2"}, None, None)
+
+
+def limit(minor_units: str) -> dict:
+    return {"type": "limit", "max_list_cost": {"amount": minor_units, "currency": "USD"}}
+
+
+def rejection(call) -> tuple[int, str]:
+    with pytest.raises(anthropic.APIStatusError) as e:
+        call()
+    return e.value.status_code, e.value.body["error"].get("reason")
+
+
+def test_a_budget_is_set_at_create_raised_above_the_cost_and_never_re_added(client, setup) -> None:
+    agent, env = setup
+    with pytest.raises(anthropic.BadRequestError, match="minor units"):
+        client.beta.sessions.create(agent=agent.id, environment_id=env.id, budget=limit("5.00"))
+    capped = client.beta.sessions.create(agent=agent.id, environment_id=env.id, budget=limit("100"))
+    assert capped.usage.list_cost is None
+    assert rejection(lambda: client.beta.sessions.update(capped.id, budget=limit("0"))) == (400, "budget_not_raised")
+    assert client.beta.sessions.update(capped.id, budget=limit("50")).budget.max_list_cost.amount == "50"
+    client.beta.sessions.update(capped.id, budget=None)
+    assert rejection(lambda: client.beta.sessions.update(capped.id, budget=limit("50"))) == (400, "budget_create_only")
+    uncapped = client.beta.sessions.create(agent=agent.id, environment_id=env.id)
+    assert rejection(lambda: client.beta.sessions.update(uncapped.id, budget=limit("50"))) == (400, "budget_create_only")
 
 
 def test_the_list_filters_by_status_and_hides_archived(client, setup) -> None:

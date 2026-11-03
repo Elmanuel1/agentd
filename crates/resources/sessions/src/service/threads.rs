@@ -142,6 +142,7 @@ pub fn threads_projection(session: &Session, events: &[Event]) -> Vec<SessionThr
                     cache_read_input_tokens: model_usage.cache_read_input_tokens,
                     input_tokens: model_usage.input_tokens,
                     output_tokens: model_usage.output_tokens,
+                    list_cost: None,
                 });
             }
         }

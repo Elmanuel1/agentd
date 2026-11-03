@@ -8,7 +8,7 @@ import string
 from minisweagent.agents.default import DefaultAgent
 
 from .inbox import Interrupted
-from .model import Model, text, usage
+from .model import Model, cost, text, usage
 
 STEP_LIMIT = 250
 ALLOW = {"type": "auto", "evaluated_permission": {"type": "allow"}}
@@ -57,14 +57,18 @@ class Thread:
         reply = ""
         for _ in range(STEP_LIMIT):
             self.run.inbox.check()
+            self.run.budget.check()
             (start,) = self.emit({"type": "span.model_request_start"})
             message = a.query()
-            used = usage(message["extra"]["response"])
+            response = message["extra"]["response"]
+            used = usage(response)
             self.usage = {k: self.usage[k] + used[k] for k in self.usage}
             end = {"type": "span.model_request_end", "is_error": False, "model_usage": used}
             if start:
                 end["model_request_start_id"] = start["id"]
             self.emit(end)
+            # The session's list cost, whichever thread spent it; agentd adds the totals and budget.
+            self.run.agentd.emit([{"type": "session.usage", "usage": {"list_cost": self.run.budget.add(cost(response))}}])
             said = message.get("content")
             if isinstance(said, str) and said.strip():
                 reply = said

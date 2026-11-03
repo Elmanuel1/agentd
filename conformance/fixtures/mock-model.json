@@ -384,5 +384,106 @@
    },
    "thought": false
   }
+ ],
+ "rt-budget": [
+  {
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_spend1",
+     "name": "bash",
+     "input": {
+      "command": "echo step 1"
+     }
+    }
+   ],
+   "stop": "tool_use",
+   "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cost": 0.06
+   },
+   "thought": true
+  },
+  {
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_spend2",
+     "name": "bash",
+     "input": {
+      "command": "echo step 2"
+     }
+    }
+   ],
+   "stop": "tool_use",
+   "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cost": 0.06
+   },
+   "thought": true
+  },
+  {
+   "content": [
+    {
+     "type": "text",
+     "text": "under budget"
+    }
+   ],
+   "stop": "end_turn",
+   "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cost": 0.01
+   },
+   "thought": false
+  }
+ ],
+ "rt-unpriced": [
+  {
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "toolu_spend1",
+     "name": "bash",
+     "input": {
+      "command": "echo step 1"
+     }
+    }
+   ],
+   "stop": "tool_use",
+   "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cost": null
+   },
+   "thought": true
+  },
+  {
+   "content": [
+    {
+     "type": "text",
+     "text": "unreachable"
+    }
+   ],
+   "stop": "end_turn",
+   "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cost": null
+   },
+   "thought": false
+  }
  ]
 }

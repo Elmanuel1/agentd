@@ -150,3 +150,44 @@ def test_an_outcome_is_graded_and_revised(client: anthropic.Anthropic) -> None:
     assert ends == ["needs_revision", "satisfied"]
     assert [e.content[0].text for e in events if e.type == "agent.message"] == ["draft", "final"]
     assert s.outcome_evaluations[0].result == "satisfied"
+
+
+def limit(minor_units: str) -> dict:
+    return {"type": "limit", "max_list_cost": {"amount": minor_units, "currency": "USD"}}
+
+
+def reason(call) -> str:
+    with pytest.raises(anthropic.BadRequestError) as e:
+        call()
+    return e.value.body["error"]["reason"]
+
+
+def test_the_budget_stops_model_requests_at_its_list_cost_until_it_is_raised(client: anthropic.Anthropic) -> None:
+    agent = client.beta.agents.create(name="rt-budget", model="claude-sonnet-4-6", tools=TOOLSET)
+    session = client.beta.sessions.create(agent=agent.id, environment_id=env(client).id, budget=limit("10"))
+    seen = run(client, session, message("spend"))
+    idle = [e for e in seen if e.type == "session.status_idle"][-1]
+    assert idle.stop_reason.type == "budget_reached"
+    assert sum(e.type == "span.model_request_start" for e in seen) == 2
+    snapshots = [e for e in seen if e.type == "session.usage"]
+    assert [s.usage.list_cost.amount for s in snapshots] == ["6", "12"]
+    assert snapshots[-1].budget.max_list_cost.amount == "10" and snapshots[-1].usage.input_tokens == 20
+    session = client.beta.sessions.retrieve(session.id)
+    assert (session.usage.list_cost.amount, session.usage.list_cost.currency) == ("12", "USD")
+    assert reason(lambda: client.beta.sessions.update(session.id, budget=limit("12"))) == "budget_not_raised"
+    client.beta.sessions.update(session.id, budget=limit("1000"))
+    run(client, session, message("go on"))
+    events = list(client.beta.sessions.events.list(session.id, limit=1000))
+    assert events[-1].stop_reason.type == "end_turn"
+    assert [e.content[0].text for e in events if e.type == "agent.message"] == ["under budget"]
+    assert client.beta.sessions.retrieve(session.id).usage.list_cost.amount == "13"
+
+
+def test_a_model_with_no_list_price_stops_a_budgeted_session(client: anthropic.Anthropic) -> None:
+    agent = client.beta.agents.create(name="rt-unpriced", model="claude-sonnet-4-6", tools=TOOLSET)
+    session = client.beta.sessions.create(agent=agent.id, environment_id=env(client).id, budget=limit("1000"))
+    seen = run(client, session, message("spend"))
+    assert [e for e in seen if e.type == "session.status_idle"][-1].stop_reason.type == "budget_reached"
+    session = client.beta.sessions.retrieve(session.id)
+    assert session.usage.list_cost is None and session.usage.input_tokens == 10
+    assert reason(lambda: client.beta.sessions.update(session.id, budget=limit("5000"))) == "model_not_budgetable"

@@ -1,6 +1,7 @@
 //! What a session's harness reports, recorded with its effects: a status
 //! event moves the session's status, a model request's usage adds to the
-//! session's usage, and a grader verdict updates its outcome evaluations.
+//! session's usage, a usage snapshot records its list cost, and a grader
+//! verdict updates its outcome evaluations.
 
 use shared::{ApiError, Usage, WorkspaceId};
 
@@ -14,6 +15,7 @@ fn usage(u: &ModelUsage) -> Usage {
         cache_read_input_tokens: u.cache_read_input_tokens,
         input_tokens: u.input_tokens,
         output_tokens: u.output_tokens,
+        list_cost: None,
     }
 }
 
@@ -25,7 +27,7 @@ impl SessionsService {
         ws: &WorkspaceId,
         session: &SessionId,
         thread: Option<&ThreadId>,
-        payload: EventPayload,
+        mut payload: EventPayload,
     ) -> Result<Event, ApiError> {
         let status = match (&payload, thread) {
             (EventPayload::User(_), _) => {
@@ -68,6 +70,12 @@ impl SessionsService {
                     iteration: *iteration,
                 };
                 self.record_outcome(ws, session, eval).await?;
+            }
+            EventPayload::Session(SessionEvent::Usage { usage: reported, .. }) => {
+                let reported = reported.list_cost.clone();
+                // The snapshot shows the session's own usage and budget, not the harness's view.
+                let s = self.mutate(ws, session, |s| s.usage.record_list_cost(reported.clone())).await?;
+                payload = SessionEvent::Usage { usage: s.usage, budget: s.budget }.into();
             }
             _ => {}
         }

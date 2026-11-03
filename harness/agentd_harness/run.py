@@ -4,6 +4,7 @@ session's status moving between running and idle as Anthropic's does."""
 import json
 
 from . import mounts
+from .budget import Budget, BudgetReached
 from .inbox import Inbox, Interrupted
 from .outcome import run_outcome
 from .prompt import system_prompt
@@ -32,6 +33,7 @@ class SessionRun:
         # The agent's tools never see the model key, not even as its placeholder.
         self.tools = ToolHosts({k: v for k, v in env.items() if k != MODEL_KEY})
         self.inbox = Inbox(agentd)
+        self.budget = Budget()
         policy = Policy(agent)
         functions = policy.functions(FUNCTIONS if members else ())
         system = system_prompt(agent, self.skills.get(agent["name"], []), members, self.credentials)
@@ -42,7 +44,12 @@ class SessionRun:
 
     def turn(self, prompt):
         """The agent's turn on `prompt`, until it and every thread it delegated to are done."""
-        self.primary.send(prompt)
+        try:
+            self.primary.send(prompt)
+        except BudgetReached:
+            if self.team:
+                self.team.settle(None)
+            raise
         if self.team:
             self.team.settle(self.primary)
 
@@ -71,10 +78,13 @@ class SessionRun:
             self.status({"type": "session.status_running"})
             stop = {"type": "end_turn"}
             try:
+                self.budget.refresh(self.agentd.session())
                 for event in work:
                     self.handle(event)
             except Interrupted:
                 pass
+            except BudgetReached:
+                stop = {"type": "budget_reached"}
             except Exception as e:  # noqa: BLE001 - a failed turn is reported on the session, not raised
                 self.status({"type": "session.error", "error": {"type": "harness_error", "message": str(e)[-1000:]}})
                 stop = {"type": "retries_exhausted"}

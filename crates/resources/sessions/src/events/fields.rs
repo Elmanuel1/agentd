@@ -16,6 +16,9 @@ pub enum StopReason {
     },
     /// Terminal failure after retries.
     RetriesExhausted {},
+    /// The list cost reached the session's budget, or a model with no list
+    /// price ran.
+    BudgetReached {},
 }
 
 impl StopReason {

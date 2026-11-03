@@ -23,6 +23,7 @@ pub mod id;
 pub mod limits;
 pub mod metadata;
 pub mod module;
+pub mod money;
 pub mod page;
 pub mod patch;
 pub mod ports;
@@ -43,6 +44,7 @@ pub use extract::{
 pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;
 pub use module::Module;
+pub use money::MonetaryAmount;
 pub use page::{
     reject_unknown_params, IdCursor, IdPage, ListQuery, ListSpec, Messages, Page, Pagination, UnknownParams,
 };

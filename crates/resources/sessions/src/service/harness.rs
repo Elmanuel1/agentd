@@ -87,6 +87,7 @@ impl HarnessContract for SessionsService {
             Ok(())
         })
         .await
+        .map(drop)
     }
 
     async fn record_outcome(
@@ -104,6 +105,7 @@ impl HarnessContract for SessionsService {
             Ok(())
         })
         .await
+        .map(drop)
     }
 }
 
@@ -114,22 +116,22 @@ const WRITE_ATTEMPTS: usize = 8;
 
 impl SessionsService {
     /// Read the session, apply `f`, and write it back, again from a fresh
-    /// read whenever another write got there first.
+    /// read whenever another write got there first; the session as written.
     pub(super) async fn mutate(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
         f: impl Fn(&mut Session) -> Result<(), ApiError> + Send,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Session, ApiError> {
         let mut attempt = 0;
         loop {
             let mut s = self.store.get(ws, session).await.map_err(map_store)?;
             let read = s.clone();
             f(&mut s)?;
             s.updated_at = Timestamp::now();
-            match self.store.replace(ws, &read, s).await {
+            match self.store.replace(ws, &read, s.clone()).await {
                 Err(StoreError::Conflict) if attempt + 1 < WRITE_ATTEMPTS => attempt += 1,
-                other => return other.map_err(map_store),
+                other => return other.map(|()| s).map_err(map_store),
             }
         }
     }

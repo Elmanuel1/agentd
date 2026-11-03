@@ -28,6 +28,9 @@ impl SessionsService {
                 "initial_events.{i}: only user.message and user.define_outcome events are allowed"
             )));
         }
+        if let Some(budget) = &req.budget {
+            budget.max_minor_units()?;
+        }
         let initial: Vec<EventPayload> = req.initial_events.into_iter().map(EventPayload::User).collect();
         validate_sendable("initial_events", &initial)?;
         let mut agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
@@ -108,7 +111,7 @@ impl SessionsService {
             }
             s.agent = agent.apply(s.agent)?;
         }
-        s.budget = req.budget.apply_to_option(s.budget);
+        s.change_budget(req.budget)?;
         s.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
         Ok(s)

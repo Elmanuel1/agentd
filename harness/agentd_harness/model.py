@@ -64,6 +64,11 @@ def text(output):
     return f"Error: {body}" if output["is_error"] else body
 
 
+def cost(response):
+    """OpenRouter's list cost of the request in USD, or None when the model has no list price."""
+    return (response.get("usage") or {}).get("cost")
+
+
 def usage(response):
     """OpenRouter usage as Anthropic `model_usage`: input tokens exclude cache reads."""
     u = response.get("usage") or {}
