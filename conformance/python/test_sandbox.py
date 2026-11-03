@@ -15,9 +15,17 @@ import pytest
 pytestmark = pytest.mark.skipif(os.environ.get("AGENTD_TEST_DOCKER") != "1", reason="needs AGENTD_TEST_DOCKER=1")
 
 
-def container(session_id: str) -> dict | None:
-    out = subprocess.run(["docker", "inspect", f"agentd-{session_id}"], capture_output=True, text=True)
+def inspect(kind: str, name: str) -> dict | None:
+    out = subprocess.run(["docker", kind, "inspect", name], capture_output=True, text=True)
     return json.loads(out.stdout)[0] if out.returncode == 0 else None
+
+
+def container(session_id: str) -> dict | None:
+    return inspect("container", f"agentd-{session_id}")
+
+
+def network(session_id: str) -> dict | None:
+    return inspect("network", f"agentd-net-{session_id}")
 
 
 def session(client: anthropic.Anthropic, networking: str):
@@ -33,16 +41,23 @@ def test_a_session_runs_in_its_container_until_archived(client: anthropic.Anthro
     info = container(s.id)
     assert info is not None and info["State"]["Running"]
     assert info["Config"]["Labels"]["agentd.target"] == s.id
-    assert info["HostConfig"]["NetworkMode"] == "agentd-sandboxes"
-    assert info["Config"]["User"] == "65534:65534"
-    assert info["HostConfig"]["Memory"] == 2048 * 1024 * 1024 and info["HostConfig"]["CapDrop"] == ["ALL"]
+    # Its own internal network, with no route out.
+    assert info["HostConfig"]["NetworkMode"] == f"agentd-net-{s.id}"
+    assert network(s.id)["Internal"] is True
+    # The worker runs as root with only the capabilities it needs to run each
+    # command as nobody and to own files for it.
+    assert info["Config"]["User"] == "0:0"
+    assert info["HostConfig"]["CapDrop"] == ["ALL"]
+    added = sorted(c.removeprefix("CAP_") for c in info["HostConfig"]["CapAdd"])
+    assert added == ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+    assert info["HostConfig"]["Memory"] == 2048 * 1024 * 1024
     client.beta.sessions.archive(s.id)
-    assert container(s.id) is None
+    assert container(s.id) is None and network(s.id) is None
 
 
 def test_a_deleted_session_takes_its_container_with_it(client: anthropic.Anthropic) -> None:
     s = session(client, "limited")
     info = container(s.id)
-    assert info is not None and info["HostConfig"]["NetworkMode"] == "none"
+    assert info is not None and info["HostConfig"]["NetworkMode"] == f"agentd-net-{s.id}"
     client.beta.sessions.delete(s.id)
-    assert container(s.id) is None
+    assert container(s.id) is None and network(s.id) is None

@@ -80,5 +80,5 @@ def test_a_credential_is_a_placeholder_in_the_sandbox_and_the_value_on_the_wire(
     assert SEEN == [f"Bearer {SECRET}"]
     assert "agentd-ph-" in allowed and SECRET not in allowed
     assert blocked.strip().startswith("403")
-    everything = json.dumps([e.model_dump() for e in events])
+    everything = json.dumps([e.model_dump(mode="json") for e in events])
     assert SECRET not in everything
