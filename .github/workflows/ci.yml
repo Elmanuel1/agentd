@@ -205,7 +205,9 @@ jobs:
           ./target/debug/agentd keys revoke "$id"
           test "$(call)" = 401
       - if: failure()
-        run: cat agentd.log egress.log
+        run: |
+          cat agentd.log egress.log
+          for c in $(docker ps -aq --filter name=agentd-); do echo "== $(docker inspect -f '{{.Name}} {{.State.Status}} {{.State.ExitCode}}' $c)"; docker logs --tail 80 $c 2>&1; done
 
   demo:
     # The extraction demo replayed through the Python SDK, every model call
@@ -298,7 +300,9 @@ jobs:
           pip install -r conformance/demo/requirements.txt
           pytest -q conformance/demo
       - if: failure()
-        run: cat agentd.log egress.log
+        run: |
+          cat agentd.log egress.log
+          for c in $(docker ps -aq --filter name=agentd-); do echo "== $(docker inspect -f '{{.Name}} {{.State.Status}} {{.State.ExitCode}}' $c)"; docker logs --tail 80 $c 2>&1; done
 
   harness:
     # The session harness's own tests: the SDK toolset, the loop against the
