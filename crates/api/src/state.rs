@@ -8,6 +8,7 @@ use deployments::DeploymentsService;
 use environments::EnvironmentsService;
 use files::FilesService;
 use memory::MemoriesService;
+use organizations::WorkspacesService;
 use sessions::SessionsService;
 use shared::limits::ModelCatalog;
 use shared::ports::fire::FireError;
@@ -110,7 +111,7 @@ impl AppState {
             sessions::module(sessions),
             deployments::module(deployments),
             work::module(work.clone()),
-            organizations::module(),
+            organizations::module(Arc::new(WorkspacesService::new(stores.workspaces))),
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;

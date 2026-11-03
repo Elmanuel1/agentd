@@ -11,11 +11,14 @@ pub mod routes;
 pub mod types;
 pub mod workspaces;
 
+use std::sync::Arc;
+
 use shared::Module;
 
 pub use types::Organization;
+pub use workspaces::WorkspacesService;
 
 /// The organizations module. The Admin API sits behind no beta.
-pub fn module() -> Module {
-    Module::new(routes::router(), ())
+pub fn module(workspaces: Arc<WorkspacesService>) -> Module {
+    Module::new(routes::router().merge(workspaces::routes::router()), workspaces)
 }

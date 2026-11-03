@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import Anthropic from '@anthropic-ai/sdk';
-import { admin, client } from './client.mjs';
+import { admin, client, name } from './client.mjs';
 
 test('the admin key retrieves its organization', async () => {
   const org = await admin().organization.retrieve();
@@ -18,4 +18,27 @@ test('a workspace key is refused on the admin API', async () => {
 
 test('an admin key is refused on workspace routes', async () => {
   await assert.rejects(admin().beta.environments.list(), Anthropic.AuthenticationError);
+});
+
+test('a created workspace is retrieved and listed', async () => {
+  const workspaces = admin().organization.workspaces;
+  const created = await workspaces.create({ name: name('sdk'), tags: { suite: 'typescript' } });
+  assert.equal(created.type, 'workspace');
+  assert.match(created.id, /^wrkspc_/);
+  assert.equal(created.archived_at, null);
+  assert.deepEqual(created.data_residency, {
+    allowed_inference_geos: 'unrestricted',
+    default_inference_geo: 'global',
+    workspace_geo: 'us',
+  });
+  assert.deepEqual(await workspaces.retrieve(created.id), created);
+  const ids = [];
+  for await (const w of workspaces.list({ limit: 2 })) ids.push(w.id);
+  assert.ok(ids.includes(created.id), 'auto-paging reaches every workspace');
+});
+
+test('a bad workspace is a bad request', async () => {
+  const workspaces = admin().organization.workspaces;
+  await assert.rejects(workspaces.create({ name: 'x', display_color: 'red' }), Anthropic.BadRequestError);
+  await assert.rejects(workspaces.retrieve('wrkspc_01missingmissingmissin'), Anthropic.NotFoundError);
 });

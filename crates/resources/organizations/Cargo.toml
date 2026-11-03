@@ -14,6 +14,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+parking_lot = { workspace = true }
 tower = { workspace = true }
 http-body-util = { workspace = true }
 serde_json = { workspace = true }

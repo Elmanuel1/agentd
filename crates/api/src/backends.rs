@@ -11,6 +11,7 @@ use deployments::DeploymentsStore;
 use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
+use organizations::workspaces::WorkspacesStore;
 use sandbox_docker::DockerRuntime;
 
 use crate::telemetry::ports::Observed;
@@ -28,6 +29,7 @@ use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
     PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore,
     PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
+    PgWorkspacesStore,
 };
 use vaults::VaultsStore;
 
@@ -61,6 +63,8 @@ pub struct Stores {
     pub session_events: Arc<dyn SessionEventLog>,
     /// Deployments.
     pub deployments: Arc<dyn DeploymentsStore>,
+    /// Workspaces.
+    pub workspaces: Arc<dyn WorkspacesStore>,
 }
 
 impl std::fmt::Debug for Stores {
@@ -82,7 +86,8 @@ impl Stores {
             skill_versions: Arc::new(PgSkillVersionsStore::new(backend.clone(), blobs)),
             sessions: Arc::new(PgSessionsStore::new(backend.clone())),
             session_events: Arc::new(PgSessionEventLog::new(backend.clone())),
-            deployments: Arc::new(PgDeploymentsStore::new(backend)),
+            deployments: Arc::new(PgDeploymentsStore::new(backend.clone())),
+            workspaces: Arc::new(PgWorkspacesStore::new(backend)),
         }
     }
 }
