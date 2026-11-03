@@ -177,3 +177,50 @@ def test_a_lost_lease_is_left_alone_and_a_stale_beat_recovers(monkeypatch):
     got = []
     entry.keep_lease(work, "w", "e", got.append)
     assert got == ["stopping"] and work.sent == ["NO_HEARTBEAT", "NO_HEARTBEAT", "h1"]
+
+
+def test_mounts_and_skills_stay_inside_their_directories(tmp_path):
+    import io
+    import zipfile
+
+    from agentd_harness import mounts
+
+    assert mounts.upload_path("file_1", "/mnt/session/uploads/docs/a.pdf") == mounts.UPLOADS / "docs/a.pdf"
+    with pytest.raises(ValueError):
+        mounts.upload_path("file_1", "/mnt/session/uploads/../../../etc/passwd")
+
+    def archive(entries):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for name, body in entries:
+                z.writestr(name, body)
+        return buf.getvalue()
+
+    name, description = mounts.unpack_skill(archive([("cite/SKILL.md", "---\nname: cite\ndescription: Cites.\n---"),
+                                                    ("cite/bin/run.py", "x")]), skills_dir=tmp_path)
+    assert (name, description) == ("cite", "Cites.") and (tmp_path / "cite/bin/run.py").exists()
+    with pytest.raises(ValueError):
+        mounts.unpack_skill(archive([("SKILL.md", "---\nname: ../../etc\n---"), ("x", "y")]), skills_dir=tmp_path)
+    with pytest.raises(ValueError):
+        mounts.unpack_skill(archive([("SKILL.md", "---\nname: ok\n---"), ("../../escape.txt", "y")]), skills_dir=tmp_path)
+
+
+def test_outputs_sync_skips_links_the_agent_made(tmp_path):
+    from agentd_harness import mounts
+
+    root, secret = tmp_path / "outputs", tmp_path / "secret"
+    root.mkdir()
+    secret.write_text("work token")
+    (root / "result.json").write_text("{}")
+    (root / "env").symlink_to(secret)
+
+    class Agentd:
+        saved = []
+
+        def save_output(self, path, data, previous=None):
+            self.saved.append((path, data))
+            return f"file_{len(self.saved)}"
+
+    agentd = Agentd()
+    assert mounts.sync_outputs(agentd, root=root, state=tmp_path / "state.json") == 1
+    assert agentd.saved == [("result.json", b"{}")]

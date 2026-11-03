@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import zipfile
 from pathlib import Path
 
@@ -31,11 +32,19 @@ def trust_ca(pem):
     os.chmod(CA_BUNDLE, 0o644)
 
 
+def inside(root, path):
+    """`path` resolved, or ValueError when it leaves `root` (the harness writes as root)."""
+    target = Path(os.path.abspath(path))
+    if os.path.commonpath([target, os.path.abspath(root)]) != os.path.abspath(root):
+        raise ValueError(f"{path} leaves {root}")
+    return target
+
+
 def upload_path(file_id, mount_path):
     rel = (mount_path or file_id).lstrip("/")
     if rel.startswith("mnt/session/uploads/"):
         rel = rel[len("mnt/session/uploads/"):]
-    return UPLOADS / rel
+    return inside(UPLOADS, UPLOADS / rel)
 
 
 def mount_files(agentd, session):
@@ -60,12 +69,13 @@ def unpack_skill(archive, skills_dir=Path(SKILLS_DIR)):
         name = top.pop() if wrapped else next(
             (l.split(":", 1)[1].strip().strip('"') for l in text.split("\n---", 1)[0].splitlines() if l.startswith("name:")),
             "skill")
+        # One plain path segment, so the skill stays a directory of skills_dir.
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name):
+            raise ValueError(f"skill name {name!r} is not a plain directory name")
         dest = skills_dir / name
         for n in names:
             rel = n.split("/", 1)[1] if wrapped else n
-            if ".." in Path(rel).parts:
-                continue
-            out = dest / rel
+            out = inside(dest, dest / rel.lstrip("/"))
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(z.read(n))
     return name, skill_description(text)
@@ -98,7 +108,14 @@ def sync_outputs(agentd, root=OUTPUTS, state=STATE):
     """Save outputs that changed since the last sync as session files, one file per path."""
     synced = json.loads(state.read_text()) if state.exists() else {}
     count = 0
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+    # The agent owns this directory: never follow a link it made (to /proc/1/environ, say).
+    files = []
+    for directory, _dirs, names in os.walk(root, followlinks=False):
+        for n in names:
+            p = Path(directory) / n
+            if not p.is_symlink() and p.is_file():
+                files.append(p)
+    for path in sorted(files):
         rel = str(path.relative_to(root))
         data = path.read_bytes()
         digest = hashlib.sha256(data).hexdigest()

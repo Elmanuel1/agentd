@@ -7,6 +7,9 @@ on:
   pull_request:
     paths: ["crates/**", "Cargo.toml", "Cargo.lock"]
 
+permissions:
+  contents: read
+
 env:
   RUST_TOOLCHAIN: 1.94.0
   CARGO_TERM_COLOR: always
@@ -16,15 +19,17 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked -p api -p egress
+      # A tar keeps the binaries' execute bits, which an artifact upload drops.
+      - run: tar -C target/release -czf agentd-linux-arm64.tar.gz agentd agentd-egress
       - uses: actions/upload-artifact@v4
         with:
           name: agentd-linux-arm64
-          path: |
-            target/release/agentd
-            target/release/agentd-egress
+          path: agentd-linux-arm64.tar.gz
           retention-days: 7

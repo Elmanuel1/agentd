@@ -107,8 +107,15 @@ async fn output(
     })?;
     let saved = h.files.save_output(&ctx, &id, path, body).await?;
     if let Some(previous) = params.get("previous").filter(|p| p.as_str() != saved.id.as_str()) {
-        // The earlier version of this output: one file per path.
-        let _ = h.files.delete(&ctx, previous).await;
+        // The earlier version of this output, one file per path; never a file
+        // that is not this session's own output.
+        let own_output =
+            h.files.metadata(&ctx, previous).await.is_ok_and(
+                |f| matches!(&f.scope, Some(files::types::FileScope::Session { id: s }) if *s == id),
+            );
+        if own_output {
+            let _ = h.files.delete(&ctx, previous).await;
+        }
     }
     Ok(Json(saved).into_response())
 }

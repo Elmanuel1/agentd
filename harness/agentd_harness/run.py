@@ -71,6 +71,9 @@ class SessionRun:
             except Exception as e:  # noqa: BLE001 - a failed turn is reported on the session, not raised
                 self.status({"type": "session.error", "error": {"type": "harness_error", "message": str(e)[-1000:]}})
                 stop = {"type": "retries_exhausted"}
-            mounts.sync_outputs(self.agentd)
+            try:
+                mounts.sync_outputs(self.agentd)
+            except Exception as e:  # noqa: BLE001 - the turn still ends; the failure is reported
+                self.status({"type": "session.error", "error": {"type": "outputs_error", "message": str(e)[-1000:]}})
             self.status({"type": "session.status_idle", "stop_reason": stop})
         self.tools.close()

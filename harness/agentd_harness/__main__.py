@@ -67,7 +67,10 @@ def main(env=os.environ):
     mounts.trust_ca(env.get("AGENTD_EGRESS_CA"))
     api, environment_id, work_id = env["AGENTD_API_URL"], env["AGENTD_ENVIRONMENT_ID"], env["AGENTD_WORK_ID"]
     token = sessions_token(env["AGENTD_WORK_SECRET"])
-    work = anthropic.Anthropic(base_url=api, auth_token=token, max_retries=5).beta.environments.work
+    client = anthropic.Anthropic(base_url=api, auth_token=token, max_retries=5)
+    work = client.beta.environments.work
+    # No SDK retries for heartbeats: a lost answer must come back to keep_lease, not become a 412.
+    beats = client.with_options(max_retries=0).beta.environments.work
     while True:
         try:
             item = work.ack(work_id, environment_id=environment_id)
@@ -81,7 +84,7 @@ def main(env=os.environ):
         end.append(how)
         done.set()
 
-    threading.Thread(target=keep_lease, args=(work, work_id, environment_id, ended), daemon=True).start()
+    threading.Thread(target=keep_lease, args=(beats, work_id, environment_id, ended), daemon=True).start()
     runner = threading.Thread(target=SessionRun(Agentd(api, token, session_id), env).serve, daemon=True)
     runner.start()
     while runner.is_alive() and not done.is_set():

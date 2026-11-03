@@ -3,6 +3,10 @@ queued client event from agentd (which stamps it processed), and hands it to who
 it: new work for the loop, an answer for a tool call that waits, or an interrupt."""
 
 import threading
+import time
+
+import anthropic
+import httpx
 
 WORK = ("user.message", "user.define_outcome", "system.message")
 
@@ -22,15 +26,27 @@ class Inbox:
 
     def start(self):
         threading.Thread(target=self._follow, daemon=True).start()
-        self.take()
 
     def _follow(self):
+        """Follow the stream, reconnecting with a backoff; only the session's end stops it."""
+        wait = 1
         try:
-            for event in self.agentd.stream():
-                if event["type"] == "session.deleted":
-                    break
-                if event["type"].startswith(("user.", "system.")) and not event.get("processed_at"):
+            while True:
+                try:
+                    # A client event sent while no stream was open is taken here.
                     self.take()
+                    for event in self.agentd.stream():
+                        wait = 1
+                        if event["type"] == "session.deleted":
+                            return
+                        if event["type"].startswith(("user.", "system.")) and not event.get("processed_at"):
+                            self.take()
+                except anthropic.NotFoundError:
+                    return
+                except (anthropic.APIError, httpx.HTTPError):
+                    pass
+                time.sleep(wait)
+                wait = min(wait * 2, 30)
         finally:
             with self.cond:
                 self.closed = True

@@ -28,23 +28,25 @@ def message(text: str) -> dict:
     return {"type": "user.message", "content": [{"type": "text", "text": text}]}
 
 
-def wait_idle(client: anthropic.Anthropic, session_id: str, timeout: float = 60):
-    """Read the stream until the session is idle; the events seen."""
-    seen = []
+def idle_count(client: anthropic.Anthropic, session_id: str) -> int:
+    return sum(e.type == "session.status_idle" for e in client.beta.sessions.events.list(session_id, limit=1000))
+
+
+def wait_idle(client: anthropic.Anthropic, session_id: str, after: int, timeout: float = 60):
+    """Poll the event list until a new idle event follows `after` earlier ones; every event."""
     deadline = time.time() + timeout
-    with client.beta.sessions.events.stream(session_id) as stream:
-        for event in stream:
-            seen.append(event)
-            if event.type == "session.status_idle" or time.time() > deadline:
-                break
-    return seen
+    while time.time() < deadline:
+        events = list(client.beta.sessions.events.list(session_id, limit=1000))
+        if sum(e.type == "session.status_idle" for e in events) > after:
+            return events
+        time.sleep(0.5)
+    raise TimeoutError(f"session {session_id} did not go idle in {timeout}s")
 
 
 def run(client, session, *events):
+    before = idle_count(client, session.id)
     client.beta.sessions.events.send(session.id, events=list(events))
-    seen = wait_idle(client, session.id)
-    # The stream may open after a fast turn already ended; the list has it all.
-    return seen if any(e.type == "session.status_idle" for e in seen) else list(client.beta.sessions.events.list(session.id, limit=1000))
+    return wait_idle(client, session.id, before)
 
 
 def test_a_tool_runs_in_the_container_and_its_output_is_a_session_file(client: anthropic.Anthropic) -> None:
