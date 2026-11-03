@@ -38,7 +38,7 @@ fn work_route(method: &Method, path: &str, claims: &WorkClaims) -> bool {
             read && *session == claims.session
         }
         ["v1", "sessions", session, "events", "stream"] => read && *session == claims.session,
-        ["v1", "sessions", session, "harness", _] => *session == claims.session,
+        ["v1", "sessions", session, "harness", ..] => *session == claims.session,
         ["v1", "files", _] | ["v1", "files", _, "content"] => read,
         ["v1", "skills", ..] => read,
         _ => false,

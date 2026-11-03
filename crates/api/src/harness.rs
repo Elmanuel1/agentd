@@ -1,7 +1,9 @@
-//! What a session's harness, running in its sandbox, writes back to agentd:
-//! the events it emits, the client events it takes, and the files it leaves
-//! under `/mnt/session/outputs`. Only the session's own work token reaches
-//! these routes; to anything else the session does not exist here.
+//! What a session's harness, running in its sandbox, exchanges with agentd:
+//! the events it emits, the client events it takes, the files it mounts (a
+//! client's uploads are never downloadable, so only this session's own reach
+//! it here), and the files it leaves under `/mnt/session/outputs`. Only the
+//! session's own work token reaches these routes; to anything else the
+//! session does not exist here.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,11 +11,12 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use files::FilesService;
 use serde::Deserialize;
-use sessions::types::{SessionId, ThreadId};
+use sessions::events::{Rubric, UserEvent};
+use sessions::types::{SessionId, SessionResource, ThreadId};
 use sessions::{EventPayload, HarnessContract, SessionsService};
 use shared::{ApiError, ApiJson, AuthContext, Module, RouteError};
 use work::WorkScope;
@@ -32,7 +35,8 @@ pub fn module(harness: Harness) -> Module {
     let router = Router::new()
         .route("/v1/sessions/{id}/harness/events", post(events))
         .route("/v1/sessions/{id}/harness/take", post(take))
-        .route("/v1/sessions/{id}/harness/outputs", put(output));
+        .route("/v1/sessions/{id}/harness/outputs", put(output))
+        .route("/v1/sessions/{id}/harness/files/{file_id}", get(file));
     Module::new(router, harness)
 }
 
@@ -107,4 +111,32 @@ async fn output(
         let _ = h.files.delete(&ctx, previous).await;
     }
     Ok(Json(saved).into_response())
+}
+
+/// The bytes of a file the session mounts, or a rubric its outcomes name.
+async fn file(
+    Extension(h): Extension<Harness>,
+    Extension(ctx): Extension<AuthContext>,
+    scope: Option<Extension<WorkScope>>,
+    Path((id, file_id)): Path<(String, String)>,
+) -> Result<Response, RouteError> {
+    let session = own(scope, &id)?;
+    let mounted = h
+        .sessions
+        .get(&ctx, &id)
+        .await?
+        .resources
+        .iter()
+        .any(|r| matches!(r, SessionResource::File { file_id: f, .. } if *f == file_id));
+    let rubric = || async {
+        let events = h.sessions.events(&ctx.workspace, &session).await?;
+        Ok::<_, ApiError>(events.iter().any(|e| {
+            matches!(&e.payload, EventPayload::User(UserEvent::DefineOutcome { rubric: Rubric::File { file_id: f }, .. }) if *f == file_id)
+        }))
+    };
+    if !mounted && !rubric().await? {
+        return Err(RouteError(ApiError::not_found("file not found")));
+    }
+    let (_, bytes) = h.files.content(&ctx, &file_id).await?;
+    Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
 }

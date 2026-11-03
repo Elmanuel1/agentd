@@ -44,7 +44,10 @@ class Agentd:
         return r.json()["id"]
 
     def file(self, file_id):
-        return self.client.beta.files.download(file_id).read()
+        """A file the session mounts or a rubric it names: a client's uploads are not downloadable."""
+        r = self.http.get(f"/v1/sessions/{self.session_id}/harness/files/{file_id}")
+        r.raise_for_status()
+        return r.content
 
     def skill(self, skill_id, version):
         if version in (None, "", "latest"):
