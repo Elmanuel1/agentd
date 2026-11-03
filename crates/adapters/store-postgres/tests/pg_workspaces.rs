@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::Duration;
+use chrono::{Duration, SubsecRound};
 use organizations::workspaces::types::{DataResidency, WorkspaceTag};
 use organizations::workspaces::{StoreError, Workspace, WorkspacesStore};
 use shared::{IdCursor, OrgId, Timestamp};
@@ -26,7 +26,9 @@ fn org() -> OrgId {
 }
 
 fn workspace(n: i64) -> Workspace {
-    let created = Timestamp::from_datetime(chrono::Utc::now() - Duration::seconds(100 - n));
+    // The doc stores the wire's microseconds, so a nanosecond instant would not round-trip.
+    let created =
+        Timestamp::from_datetime((chrono::Utc::now() - Duration::seconds(100 - n)).trunc_subsecs(6));
     Workspace {
         id: format!("wrkspc_{n:02}"),
         tag: WorkspaceTag::Workspace,
