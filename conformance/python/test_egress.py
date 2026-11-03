@@ -88,5 +88,9 @@ def test_a_credential_is_a_placeholder_in_the_sandbox_and_the_value_on_the_wire(
     finally:
         # The session and the vault go, so the credential's secret is
         # scheduled for deletion like every other in the run.
-        client.beta.sessions.delete(session.id)
+        try:
+            client.beta.sessions.delete(session.id)
+        except anthropic.ConflictError:
+            seen = [(e.type, getattr(e, "processed_at", None)) for e in client.beta.sessions.events.list(session.id, limit=1000)]
+            raise AssertionError(f"session {session.id} ran again after going idle: {seen}") from None
         client.beta.vaults.delete(vault.id)
