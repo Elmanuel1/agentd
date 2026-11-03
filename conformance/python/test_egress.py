@@ -71,9 +71,11 @@ def test_a_credential_is_a_placeholder_in_the_sandbox_and_the_value_on_the_wire(
         client.beta.sessions.events.send(session.id, events=[{"type": "user.message", "content": [{"type": "text", "text": "go"}]}])
         for _ in range(120):
             events = list(client.beta.sessions.events.list(session.id, limit=1000))
-            if events and events[-1].type == "session.status_idle":
+            if events and events[-1].type == "session.status_idle" and client.beta.sessions.retrieve(session.id).status == "idle":
                 break
             time.sleep(1)
+        else:
+            raise TimeoutError(f"session {session.id} did not go idle: {[e.type for e in events]}")
         results = [e.content[0].text for e in events if e.type == "agent.tool_result"]
         assert len(results) == 3, results
         env_out, allowed, blocked = results

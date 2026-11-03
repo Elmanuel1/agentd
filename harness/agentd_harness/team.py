@@ -35,6 +35,7 @@ class Team:
     def __init__(self, run, coordinator, members):
         self.run, self.coordinator, self.members = run, coordinator, {m["name"]: m for m in members}
         self.threads = {}
+        self.primary_id = "sthr_" + run.agentd.session_id.removeprefix("sesn_")
         self.replies = queue.Queue()
         self.running = 0
         self.lock = threading.Lock()
@@ -79,14 +80,22 @@ class Team:
     def _work(self, thread, message):
         """Run `thread` on `message`, then hand its reply to the coordinator."""
         try:
-            self.run.agentd.emit([{"type": "session.thread_status_running", "agent_name": thread.name}], thread=thread.tid)
+            self.run.agentd.emit([
+                {"type": "session.thread_status_running", "agent_name": thread.name},
+                {"type": "agent.thread_message_received", "content": [{"type": "text", "text": message}],
+                 "from_agent_name": self.coordinator["name"], "from_session_thread_id": self.primary_id},
+            ], thread=thread.tid)
             try:
                 reply = thread.send(message)
             except Exception as e:  # noqa: BLE001 - the coordinator hears of a thread that failed
                 reply = f"The thread failed: {str(e)[-500:]}"
-            self.run.agentd.emit([{"type": "session.thread_status_idle", "agent_name": thread.name,
-                                   "stop_reason": {"type": "end_turn"}, "stop_details": None}], thread=thread.tid)
-            self.run.agentd.emit([{"type": "agent.thread_message_received", "content": [{"type": "text", "text": reply}],
+            content = [{"type": "text", "text": reply}]
+            self.run.agentd.emit([
+                {"type": "agent.thread_message_sent", "content": content, "to_session_thread_id": self.primary_id},
+                {"type": "session.thread_status_idle", "agent_name": thread.name,
+                 "stop_reason": {"type": "end_turn"}, "stop_details": None},
+            ], thread=thread.tid)
+            self.run.agentd.emit([{"type": "agent.thread_message_received", "content": content,
                                    "from_agent_name": thread.name, "from_session_thread_id": thread.tid}])
             self.replies.put(f"Message from {thread.name} (thread {thread.tid}):\n{reply}")
         finally:
