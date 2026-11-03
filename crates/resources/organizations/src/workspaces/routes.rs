@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use shared::page::filters::bool_param;
 use shared::{AdminContext, ApiJson, IdCursor, IdPage, ListSpec, Messages, RouteError, UnknownParams};
 
-use crate::workspaces::requests::CreateWorkspaceRequest;
+use crate::workspaces::requests::{CreateWorkspaceRequest, UpdateWorkspaceRequest};
 use crate::workspaces::service::WorkspacesService;
 
 /// The workspaces list: 1 to 1000 per page. agentd keeps no default
@@ -26,7 +26,8 @@ const LIST: ListSpec = ListSpec {
 pub fn router() -> Router {
     Router::new()
         .route("/v1/organizations/workspaces", post(create).get(list))
-        .route("/v1/organizations/workspaces/{id}", get(get_one))
+        .route("/v1/organizations/workspaces/{id}", get(get_one).post(update))
+        .route("/v1/organizations/workspaces/{id}/archive", post(archive))
 }
 
 async fn create(
@@ -62,4 +63,21 @@ async fn get_one(
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.get(&ctx, &id).await?).into_response())
+}
+
+async fn update(
+    Extension(svc): Extension<Arc<WorkspacesService>>,
+    Extension(ctx): Extension<AdminContext>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<UpdateWorkspaceRequest>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.update(&ctx, &id, body).await?).into_response())
+}
+
+async fn archive(
+    Extension(svc): Extension<Arc<WorkspacesService>>,
+    Extension(ctx): Extension<AdminContext>,
+    Path(id): Path<String>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.archive(&ctx, &id).await?).into_response())
 }

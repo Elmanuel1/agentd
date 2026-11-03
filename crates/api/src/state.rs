@@ -18,7 +18,7 @@ use skills::SkillsService;
 use vaults::VaultsService;
 
 use crate::backends::Backends;
-use crate::deps::{RealDeploymentDeps, RealSessionDeps};
+use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealWorkspaceKeys};
 use crate::egress::{EgressAdmin, SessionEgressPolicy};
 use crate::harness::{self, Harness};
 use crate::sandbox_work::WorkIssuer;
@@ -111,7 +111,10 @@ impl AppState {
             sessions::module(sessions),
             deployments::module(deployments),
             work::module(work.clone()),
-            organizations::module(Arc::new(WorkspacesService::new(stores.workspaces))),
+            organizations::module(Arc::new(WorkspacesService::new(
+                stores.workspaces,
+                Arc::new(RealWorkspaceKeys { keys: stores.api_keys }),
+            ))),
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;

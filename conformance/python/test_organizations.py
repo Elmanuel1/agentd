@@ -43,3 +43,15 @@ def test_a_bad_workspace_is_a_bad_request(admin: anthropic.Anthropic) -> None:
         admin.organization.workspaces.create(name="x", display_color="red")
     with pytest.raises(anthropic.NotFoundError):
         admin.organization.workspaces.retrieve("wrkspc_01missingmissingmissin")
+
+
+def test_an_update_merges_and_an_archive_is_one_way(admin: anthropic.Anthropic) -> None:
+    workspaces = admin.organization.workspaces
+    created = workspaces.create(name=f"sdk-{uuid.uuid4().hex[:8]}", tags={"a": "1", "b": "2"})
+    updated = workspaces.update(created.id, name="renamed", display_color="#123abc", tags={"b": None})
+    assert (updated.name, updated.display_color, updated.tags) == ("renamed", "#123abc", {"a": "1"})
+    archived = workspaces.archive(created.id)
+    assert archived.archived_at is not None and archived.name == "renamed"
+    active = [w.id for w in workspaces.list(limit=1000).data]
+    everything = [w.id for w in workspaces.list(limit=1000, include_archived=True).data]
+    assert created.id not in active and created.id in everything

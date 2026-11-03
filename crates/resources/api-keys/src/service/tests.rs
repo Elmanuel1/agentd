@@ -27,6 +27,19 @@ impl ApiKeysStore for MemoryKeys {
         let found = keys.iter_mut().find(|(k, _)| k.id == id && k.revoked_at.is_none());
         Ok(found.map(|(k, _)| k.revoked_at = Some(at)).is_some())
     }
+
+    async fn revoke_workspace(
+        &self,
+        org: &OrgId,
+        workspace: &WorkspaceId,
+        at: Timestamp,
+    ) -> Result<usize, StoreError> {
+        let mut keys = self.0.lock();
+        let mine = keys
+            .iter_mut()
+            .filter(|(k, _)| &k.org == org && &k.workspace == workspace && k.revoked_at.is_none());
+        Ok(mine.map(|(k, _)| k.revoked_at = Some(at)).count())
+    }
 }
 
 fn service(pepper: u8) -> (ApiKeysService, Arc<MemoryKeys>) {

@@ -123,4 +123,23 @@ impl ApiKeysStore for PgApiKeysStore {
         .map_err(diesel_be)?;
         Ok(affected > 0)
     }
+
+    async fn revoke_workspace(
+        &self,
+        org: &OrgId,
+        workspace: &WorkspaceId,
+        at: Timestamp,
+    ) -> Result<usize, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        diesel::update(
+            api_keys::table
+                .filter(api_keys::org_id.eq(org.as_str()))
+                .filter(api_keys::workspace_id.eq(workspace.as_str()))
+                .filter(api_keys::revoked_at.is_null()),
+        )
+        .set(api_keys::revoked_at.eq(at.as_datetime()))
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)
+    }
 }

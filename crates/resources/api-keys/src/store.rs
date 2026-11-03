@@ -2,7 +2,7 @@
 //! written once and never read back.
 
 use async_trait::async_trait;
-use shared::Timestamp;
+use shared::{OrgId, Timestamp, WorkspaceId};
 
 use crate::types::ApiKey;
 
@@ -25,4 +25,11 @@ pub trait ApiKeysStore: Send + Sync {
     async fn list(&self) -> Result<Vec<ApiKey>, StoreError>;
     /// Revoke `id` at `at`; `false` when no unrevoked key has it.
     async fn revoke(&self, id: &str, at: Timestamp) -> Result<bool, StoreError>;
+    /// Revoke every unrevoked key of `workspace` in `org` at `at`; how many.
+    async fn revoke_workspace(
+        &self,
+        org: &OrgId,
+        workspace: &WorkspaceId,
+        at: Timestamp,
+    ) -> Result<usize, StoreError>;
 }

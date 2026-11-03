@@ -42,3 +42,16 @@ test('a bad workspace is a bad request', async () => {
   await assert.rejects(workspaces.create({ name: 'x', display_color: 'red' }), Anthropic.BadRequestError);
   await assert.rejects(workspaces.retrieve('wrkspc_01missingmissingmissin'), Anthropic.NotFoundError);
 });
+
+test('an update merges and an archive is one way', async () => {
+  const workspaces = admin().organization.workspaces;
+  const created = await workspaces.create({ name: name('sdk'), tags: { a: '1', b: '2' } });
+  const updated = await workspaces.update(created.id, { name: 'renamed', tags: { b: null } });
+  assert.equal(updated.name, 'renamed');
+  assert.deepEqual(updated.tags, { a: '1' });
+  const archived = await workspaces.archive(created.id);
+  assert.notEqual(archived.archived_at, null);
+  const active = (await workspaces.list({ limit: 1000 })).data.map((w) => w.id);
+  const all = (await workspaces.list({ limit: 1000, include_archived: true })).data.map((w) => w.id);
+  assert.ok(!active.includes(created.id) && all.includes(created.id));
+});

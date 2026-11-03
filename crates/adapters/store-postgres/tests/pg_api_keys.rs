@@ -79,3 +79,29 @@ async fn a_digest_is_stored_once() {
     store.insert(&key(format!("apikey_a{}", stamp())), &digest).await.unwrap();
     assert!(store.insert(&key(format!("apikey_b{}", stamp())), &digest).await.is_err());
 }
+
+#[tokio::test]
+async fn a_workspace_revoke_reaches_only_that_workspaces_active_keys() {
+    if !enabled() {
+        return;
+    }
+    let store = PgApiKeysStore::new(backend().await);
+    let keys = ApiKeysService::new(Arc::new(store.clone()), Arc::new(KeyPepper::new(&[7; 32])));
+    let (archived, kept) = (format!("wrkspc_a{}", stamp()), format!("wrkspc_k{}", stamp()));
+    let (_, a1) = keys.create("org_keys", &archived, "a1").await.unwrap();
+    let (_, a2) = keys.create("org_keys", &archived, "a2").await.unwrap();
+    let (_, other_org) = keys.create("org_other", &archived, "o").await.unwrap();
+    let (_, k) = keys.create("org_keys", &kept, "k").await.unwrap();
+    let revoked =
+        store.revoke_workspace(&OrgId::new("org_keys"), &WorkspaceId::new(&archived), Timestamp::now()).await;
+    assert_eq!(revoked.unwrap(), 2);
+    for gone in [&a1, &a2] {
+        assert_eq!(keys.resolve(gone.expose_secret()).await.unwrap(), None);
+    }
+    for live in [&other_org, &k] {
+        assert!(keys.resolve(live.expose_secret()).await.unwrap().is_some());
+    }
+    let again =
+        store.revoke_workspace(&OrgId::new("org_keys"), &WorkspaceId::new(&archived), Timestamp::now()).await;
+    assert_eq!(again.unwrap(), 0, "a revoked key is not revoked again");
+}

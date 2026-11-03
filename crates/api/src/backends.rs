@@ -16,7 +16,7 @@ use sandbox_docker::DockerRuntime;
 
 use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
-use api_keys::ApiKeysService;
+use api_keys::{ApiKeysService, ApiKeysStore};
 use scheduler_local::LocalScheduler;
 use secrets_aws::{AwsAdminKeys, AwsSecretStore};
 use sessions::{SessionEventLog, SessionsStore};
@@ -65,6 +65,8 @@ pub struct Stores {
     pub deployments: Arc<dyn DeploymentsStore>,
     /// Workspaces.
     pub workspaces: Arc<dyn WorkspacesStore>,
+    /// Workspace API keys.
+    pub api_keys: Arc<dyn ApiKeysStore>,
 }
 
 impl std::fmt::Debug for Stores {
@@ -87,7 +89,8 @@ impl Stores {
             sessions: Arc::new(PgSessionsStore::new(backend.clone())),
             session_events: Arc::new(PgSessionEventLog::new(backend.clone())),
             deployments: Arc::new(PgDeploymentsStore::new(backend.clone())),
-            workspaces: Arc::new(PgWorkspacesStore::new(backend)),
+            workspaces: Arc::new(PgWorkspacesStore::new(backend.clone())),
+            api_keys: Arc::new(PgApiKeysStore::new(backend)),
         }
     }
 }
@@ -158,9 +161,10 @@ impl Backends {
                 let observer = telemetry::db::observer(metrics.clone());
                 let pg = PgBackend::connect_observed(url, *pool, observer).await?;
                 telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
-                let keys = ApiKeysService::new(Arc::new(PgApiKeysStore::new(pg.clone())), pepper);
+                let stores = Stores::postgres(pg, blobs, secrets);
+                let keys = ApiKeysService::new(stores.api_keys.clone(), pepper);
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                (Stores::postgres(pg, blobs, secrets), keys)
+                (stores, keys)
             }
         };
         let fires = Arc::new(FireRegistry::new());

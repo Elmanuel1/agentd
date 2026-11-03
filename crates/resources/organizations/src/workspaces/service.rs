@@ -7,7 +7,8 @@ use std::sync::Arc;
 use shared::limits::{required, validate_string_len};
 use shared::{AdminContext, ApiError, IdCursor, Timestamp};
 
-use crate::workspaces::requests::{CreateWorkspaceRequest, DataResidencyCreate};
+use crate::workspaces::keys::WorkspaceKeys;
+use crate::workspaces::requests::{CreateWorkspaceRequest, DataResidencyCreate, UpdateWorkspaceRequest};
 use crate::workspaces::store::{StoreError, WorkspacesStore};
 use crate::workspaces::types::{DataResidency, Workspace, WorkspaceId, WorkspaceTag};
 
@@ -17,6 +18,7 @@ pub const DEFAULT_COLOR: &str = "#6c5bb9";
 /// Workspace service.
 pub struct WorkspacesService {
     store: Arc<dyn WorkspacesStore>,
+    keys: Arc<dyn WorkspaceKeys>,
 }
 
 impl std::fmt::Debug for WorkspacesService {
@@ -70,9 +72,9 @@ fn residency(params: DataResidencyCreate) -> DataResidency {
 }
 
 impl WorkspacesService {
-    /// Build with a store.
-    pub fn new(store: Arc<dyn WorkspacesStore>) -> Self {
-        Self { store }
+    /// Build with a store, and the keys an archive revokes.
+    pub fn new(store: Arc<dyn WorkspacesStore>, keys: Arc<dyn WorkspaceKeys>) -> Self {
+        Self { store, keys }
     }
 
     /// `POST /v1/organizations/workspaces`.
@@ -109,6 +111,32 @@ impl WorkspacesService {
     /// `GET /v1/organizations/workspaces/{id}`.
     pub async fn get(&self, ctx: &AdminContext, id: &str) -> Result<Workspace, ApiError> {
         self.store.get(&ctx.org, id).await.map_err(store_error)
+    }
+
+    /// `POST /v1/organizations/workspaces/{id}`.
+    pub async fn update(
+        &self,
+        ctx: &AdminContext,
+        id: &str,
+        req: UpdateWorkspaceRequest,
+    ) -> Result<Workspace, ApiError> {
+        let workspace = self.get(ctx, id).await?.updated(req)?;
+        self.store.replace(&ctx.org, &workspace).await.map_err(store_error)?;
+        Ok(workspace)
+    }
+
+    /// `POST /v1/organizations/workspaces/{id}/archive`: one-way, and every
+    /// key of the workspace stops working. Archiving again returns the
+    /// workspace as archived and revokes any key a failed first try left.
+    pub async fn archive(&self, ctx: &AdminContext, id: &str) -> Result<Workspace, ApiError> {
+        let mut workspace = self.get(ctx, id).await?;
+        let now = Timestamp::now();
+        if workspace.archived_at.is_none() {
+            workspace.archived_at = Some(now);
+            self.store.replace(&ctx.org, &workspace).await.map_err(store_error)?;
+        }
+        self.keys.revoke_all(&ctx.org, &workspace.id, now).await?;
+        Ok(workspace)
     }
 
     /// `GET /v1/organizations/workspaces`: one page and whether more follow.

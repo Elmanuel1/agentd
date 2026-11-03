@@ -209,6 +209,18 @@ jobs:
           id=$(./target/debug/agentd keys list | awk -F '\t' '$3 == "wrkspc_sdk" && $4 == "active" { print $1 }')
           ./target/debug/agentd keys revoke "$id"
           test "$(call)" = 401
+      - name: Archiving a workspace revokes its keys
+        run: |
+          admin() { curl -sf http://127.0.0.1:8080/v1/organizations/workspaces"$1" -X POST \
+            -H "anthropic-version: 2023-06-01" -H "x-api-key: $AGENTD_TEST_ADMIN_KEY" -H "content-type: application/json" -d "$2"; }
+          ws=$(admin "" '{"name":"ci-archive"}' | jq -r .id)
+          key=$(./target/debug/agentd keys create --org org_sdk --workspace "$ws" --name archive)
+          echo "::add-mask::$key"
+          call() { curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/v1/agents \
+            -H "anthropic-version: 2023-06-01" -H "anthropic-beta: managed-agents-2026-04-01" -H "x-api-key: $key"; }
+          test "$(call)" = 200
+          admin "/$ws/archive" '' | jq -e '.archived_at != null'
+          test "$(call)" = 401
       - if: failure()
         run: |
           cat agentd.log egress.log
