@@ -3,7 +3,7 @@
 page, and a schedule line cited by its whole printed row. `cite.py check` reports both."""
 import re
 
-from cite import DOCS, load_blocks, normalise, rows
+from cite import DOCS, load_blocks, normalise, row_text, rows
 
 QUOTE_WINDOW = 8
 _PAGE_LINES = {}
@@ -19,7 +19,7 @@ def page_lines(doc_id):
         blocks = load_blocks(doc_id)
         pages = {}
         for row in rows(blocks):
-            text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
+            text = row_text(row)
             if text:
                 pages.setdefault(row["page"], []).append(text)
         _PAGE_LINES[doc_id] = pages

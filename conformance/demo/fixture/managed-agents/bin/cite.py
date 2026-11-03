@@ -32,7 +32,12 @@ UNRESOLVED = "__unresolved__"
 
 
 def normalise(s):
-    return " ".join("".join(c.lower() if c.isalnum() else " " for c in s).split())
+    return " ".join("".join(c.lower() if c.isalnum() else " " for c in str(s)).split())
+
+
+def row_text(row):
+    """A printed row as the pipeline reads it: its cells left to right, joined " | "."""
+    return " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
 
 
 def load_blocks(doc_id):
@@ -102,7 +107,7 @@ class Locator:
             if page is not None and run:
                 self.row_runs.append(run)
         for row in rows(blocks):
-            text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
+            text = row_text(row)
             line = {"cells": row["cells"], "page": row["page"], "text": normalise(text)}
             if self.row_runs and self.row_runs[-1][-1]["page"] == row["page"]:
                 self.row_runs[-1].append(line)
