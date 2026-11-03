@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
-use test_support::StaticKeySource;
+use test_support::{StaticAdminKeys, StaticKeySource};
 
 use api::edge;
 use axum::body::Body;
@@ -41,7 +41,11 @@ fn app() -> Router {
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });
     edge::wrap(
         routes,
-        api::edge::auth::Credentials { keys: Arc::new(keys), work: None },
+        api::edge::auth::Credentials {
+            keys: Arc::new(keys),
+            admin_keys: Arc::new(StaticAdminKeys::default()),
+            work: None,
+        },
         Arc::from(vec![BetaGate::managed(&["/v1/things"])]),
         Arc::new(api::telemetry::Metrics::global()),
     )

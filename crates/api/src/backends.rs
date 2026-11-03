@@ -15,18 +15,19 @@ use sandbox_docker::DockerRuntime;
 
 use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
+use api_keys::ApiKeysService;
 use scheduler_local::LocalScheduler;
-use secrets_aws::{AwsApiKeys, AwsSecretStore};
+use secrets_aws::{AwsAdminKeys, AwsSecretStore};
 use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
-use shared::ports::keys::KeySource;
+use shared::ports::keys::{AdminKeySource, KeySource};
 use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
-    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
-    PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
+    PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore,
+    PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
 };
 use vaults::VaultsStore;
 
@@ -90,8 +91,10 @@ impl Stores {
 pub struct Backends {
     /// The entity stores.
     pub stores: Stores,
-    /// API-key resolution.
+    /// Workspace key resolution.
     pub keys: Arc<dyn KeySource>,
+    /// Admin key resolution.
+    pub admin_keys: Arc<dyn AdminKeySource>,
     /// The durable timer.
     pub scheduler: Arc<dyn SchedulerPort>,
     /// Where the scheduler delivers fires; the modules register their handlers here.
@@ -140,19 +143,19 @@ impl Backends {
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
         let aws = AwsSecretStore::connect(&config.secrets).await?;
-        let keys: Arc<dyn KeySource> = match config.keys {
-            KeysConfig::Aws => {
-                let pepper = Arc::new(aws.api_key_pepper().await?);
-                Arc::new(Observed::new(Arc::new(AwsApiKeys::new(aws.clone(), pepper)), metrics.clone()))
-            }
-        };
+        let KeysConfig::Aws = config.keys;
+        let pepper = Arc::new(aws.api_key_pepper().await?);
+        let admin = Arc::new(AwsAdminKeys::new(aws.clone(), pepper.clone()));
+        let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
-        let stores = match &config.store {
+        let (stores, keys) = match &config.store {
             StoreConfig::Postgres { url, pool } => {
                 let observer = telemetry::db::observer(metrics.clone());
                 let pg = PgBackend::connect_observed(url, *pool, observer).await?;
                 telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
-                Stores::postgres(pg, blobs, secrets)
+                let keys = ApiKeysService::new(Arc::new(PgApiKeysStore::new(pg.clone())), pepper);
+                let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
+                (Stores::postgres(pg, blobs, secrets), keys)
             }
         };
         let fires = Arc::new(FireRegistry::new());
@@ -174,6 +177,6 @@ impl Backends {
         };
         let extra_models = config.extra_models.clone();
         let sandbox = runtime.as_ref().map(|_| config.sandbox.clone());
-        Ok(Self { stores, keys, scheduler, fires, runtime, sandbox, extra_models, metrics })
+        Ok(Self { stores, keys, admin_keys, scheduler, fires, runtime, sandbox, extra_models, metrics })
     }
 }

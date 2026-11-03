@@ -9,6 +9,7 @@ license.workspace = true
 tokio = { workspace = true }
 shared = { workspace = true }
 agents = { workspace = true }
+api-keys = { workspace = true }
 deployments = { workspace = true }
 files = { workspace = true }
 environments = { workspace = true }
@@ -31,6 +32,7 @@ deadpool = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+api-keys = { workspace = true }
 blobs-s3 = { workspace = true }
 test-support = { workspace = true }
 axum = { workspace = true }

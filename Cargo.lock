@@ -59,6 +59,7 @@ name = "api"
 version = "0.1.0"
 dependencies = [
  "agents",
+ "api-keys",
  "async-trait",
  "aws-common",
  "axum",
@@ -103,6 +104,17 @@ dependencies = [
  "tracing-subscriber",
  "vaults",
  "work",
+]
+
+[[package]]
+name = "api-keys"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "parking_lot",
+ "shared",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -3316,6 +3328,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "hex",
+ "hmac",
  "rand 0.8.6",
  "secrecy",
  "serde",
@@ -3324,6 +3337,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -3418,6 +3432,7 @@ name = "store-postgres"
 version = "0.1.0"
 dependencies = [
  "agents",
+ "api-keys",
  "async-trait",
  "axum",
  "blobs-s3",

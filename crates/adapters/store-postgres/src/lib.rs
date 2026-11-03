@@ -25,6 +25,7 @@ pub use checkout::{DieselPgPool, PooledConnection};
 pub use pool::{PgObserver, PoolSettings};
 
 pub use entities::agents::PgAgentsStore;
+pub use entities::api_keys::PgApiKeysStore;
 pub use entities::deployments::PgDeploymentsStore;
 pub use entities::dreams::PgDreamsStore;
 pub use entities::environments::PgEnvironmentsStore;
@@ -87,6 +88,7 @@ macro_rules! from_backend {
 
 from_backend!(
     agents::store::StoreError,
+    api_keys::StoreError,
     deployments::store::StoreError,
     files::store::StoreError,
     environments::store::StoreError,

@@ -35,6 +35,7 @@ pub fn build_router(state: AppState) -> Router {
     let routes = state.modules.into_iter().fold(Router::new(), |router, module| {
         router.merge(edge::limits::bounded(module.router, module.body_limit))
     });
-    let credentials = edge::auth::Credentials { keys: state.keys, work: state.work_tokens };
+    let credentials =
+        edge::auth::Credentials { keys: state.keys, admin_keys: state.admin_keys, work: state.work_tokens };
     edge::wrap(routes, credentials, gates, state.metrics)
 }

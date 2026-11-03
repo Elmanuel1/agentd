@@ -1,8 +1,12 @@
-//! API keys: where the caller's key is resolved to its tenant.
+//! API keys: where the caller's key is resolved to its tenant. Workspace keys
+//! and admin keys are separate stores; the route a request asks for decides
+//! which one is asked.
+
+pub mod material;
 
 use async_trait::async_trait;
 
-use crate::AuthContext;
+use crate::{AdminContext, AuthContext};
 
 /// The key store could not be read. It never carries the key.
 #[derive(Debug, thiserror::Error)]
@@ -14,6 +18,13 @@ pub struct KeyError(pub String);
 pub trait KeySource: Send + Sync {
     /// The tenant of `key`; `None` for a key that is unknown or revoked.
     async fn resolve(&self, key: &str) -> Result<Option<AuthContext>, KeyError>;
+}
+
+/// Resolves an admin key to its organization.
+#[async_trait]
+pub trait AdminKeySource: Send + Sync {
+    /// The organization of `key`; `None` for a key that is unknown or revoked.
+    async fn resolve(&self, key: &str) -> Result<Option<AdminContext>, KeyError>;
 }
 
 /// The server-side secret every stored API key digest is keyed with. Its

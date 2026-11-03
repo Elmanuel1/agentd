@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use shared::ports::keys::{KeyError, KeySource};
+use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
 use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
-use shared::{AuthContext, OrgId, WorkspaceId};
+use shared::{AdminContext, AuthContext, OrgId, WorkspaceId};
 
 /// Secrets held in memory, by key.
 #[derive(Debug, Default)]
@@ -67,6 +67,25 @@ impl StaticKeySource {
 #[async_trait]
 impl KeySource for StaticKeySource {
     async fn resolve(&self, key: &str) -> Result<Option<AuthContext>, KeyError> {
+        Ok(self.0.get(key).cloned())
+    }
+}
+
+/// Admin keys registered in memory.
+#[derive(Debug, Default)]
+pub struct StaticAdminKeys(HashMap<String, AdminContext>);
+
+impl StaticAdminKeys {
+    /// Accept `key` for `org`, as `admin_key_id`.
+    pub fn register(&mut self, key: &str, org: &str, admin_key_id: &str) {
+        let ctx = AdminContext { org: OrgId::new(org), admin_key_id: admin_key_id.to_owned() };
+        self.0.insert(key.to_owned(), ctx);
+    }
+}
+
+#[async_trait]
+impl AdminKeySource for StaticAdminKeys {
+    async fn resolve(&self, key: &str) -> Result<Option<AdminContext>, KeyError> {
         Ok(self.0.get(key).cloned())
     }
 }

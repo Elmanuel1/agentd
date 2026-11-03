@@ -13,6 +13,7 @@ path = "src/main.rs"
 shared = { workspace = true }
 agents = { workspace = true }
 environments = { workspace = true }
+api-keys = { workspace = true }
 vaults = { workspace = true }
 memory = { workspace = true }
 files = { workspace = true }
