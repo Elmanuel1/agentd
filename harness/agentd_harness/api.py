@@ -5,6 +5,7 @@ import httpx
 import anthropic
 
 BETA = "managed-agents-2026-04-01"
+SKILLS_BETA = "skills-2025-10-02"
 
 
 class Agentd:
@@ -50,6 +51,9 @@ class Agentd:
         return r.content
 
     def skill(self, skill_id, version):
+        """A skill version's archive. Under the skills beta, versions go by numeric timestamp."""
+        betas = [SKILLS_BETA]
         if version in (None, "", "latest"):
-            version = self.client.beta.skills.retrieve(skill_id).latest_version
-        return self.client.beta.skills.versions.download(str(version), skill_id=skill_id).read()
+            skill = self.client.beta.skills.retrieve(skill_id, betas=betas)
+            version = (skill.model_extra or {}).get("latest_version") or getattr(skill, "latest_version", None)
+        return self.client.beta.skills.versions.download(str(version), skill_id=skill_id, betas=betas).read()
