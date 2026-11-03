@@ -35,14 +35,19 @@ class Budget:
             if self.limit is not None and (self.unpriced or self.cents >= self.limit):
                 raise BudgetReached()
 
-    def add(self, cost):
-        """Add one request's cost in USD (None: its model has no list price); the session's list
-        cost so far as a wire amount, or None once it is not measurable."""
+    def report(self, cost, emit):
+        """Add one request's cost in USD (None: its model has no list price) and `emit` the session's
+        list cost so far (None once it is not measurable) as a `session.usage` event. Reports go out
+        one at a time, so agentd records them in order, and each answer carries the session's budget
+        as it is now, which a client may change while the session runs."""
         with self.lock:
             if cost is None:
                 self.unpriced = True
             else:
                 self.cents += Decimal(str(cost)) * 100
-            if self.unpriced:
-                return None
-            return {"amount": str(self.cents.quantize(Decimal(1), ROUND_HALF_UP)), "currency": "USD"}
+            spent = None if self.unpriced else {
+                "amount": str(self.cents.quantize(Decimal(1), ROUND_HALF_UP)), "currency": "USD"}
+            (recorded,) = emit([{"type": "session.usage", "usage": {"list_cost": spent}}])
+            if "budget" in recorded:
+                budget = recorded["budget"]
+                self.limit = int(budget["max_list_cost"]["amount"]) if budget else None

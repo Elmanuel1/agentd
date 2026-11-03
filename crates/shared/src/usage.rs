@@ -32,8 +32,8 @@ impl Usage {
     }
 
     /// Take the list cost the model caller reports: the larger of it and the
-    /// one recorded, since concurrent reports can arrive out of order; `None`
-    /// means a model with no list price ran, so the cost is not measurable.
+    /// one recorded, so a stale report never lowers it; `None` means a model
+    /// with no list price ran, so the cost is not measurable.
     pub fn record_list_cost(&mut self, reported: Option<MonetaryAmount>) -> Result<(), ApiError> {
         let Some(reported) = reported else {
             self.list_cost = None;

@@ -67,8 +67,7 @@ class Thread:
             if start:
                 end["model_request_start_id"] = start["id"]
             self.emit(end)
-            # The session's list cost, whichever thread spent it; agentd adds the totals and budget.
-            self.run.agentd.emit([{"type": "session.usage", "usage": {"list_cost": self.run.budget.add(cost(response))}}])
+            self.run.budget.report(cost(response), self.run.agentd.emit)
             said = message.get("content")
             if isinstance(said, str) and said.strip():
                 reply = said

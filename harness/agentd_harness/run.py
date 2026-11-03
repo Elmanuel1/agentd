@@ -34,6 +34,8 @@ class SessionRun:
         self.tools = ToolHosts({k: v for k, v in env.items() if k != MODEL_KEY})
         self.inbox = Inbox(agentd)
         self.budget = Budget()
+        # Client events a turn the budget stopped did not reach; they run with the next work.
+        self.pending = []
         policy = Policy(agent)
         functions = policy.functions(FUNCTIONS if members else ())
         system = system_prompt(agent, self.skills.get(agent["name"], []), members, self.credentials)
@@ -77,14 +79,17 @@ class SessionRun:
         while (work := self.inbox.next_work()) is not None:
             self.status({"type": "session.status_running"})
             stop = {"type": "end_turn"}
+            work, self.pending, done = self.pending + work, [], 0
             try:
                 self.budget.refresh(self.agentd.session())
                 for event in work:
                     self.handle(event)
+                    done += 1
             except Interrupted:
                 pass
             except BudgetReached:
                 stop = {"type": "budget_reached"}
+                self.pending = work[done + 1:]
             except Exception as e:  # noqa: BLE001 - a failed turn is reported on the session, not raised
                 self.status({"type": "session.error", "error": {"type": "harness_error", "message": str(e)[-1000:]}})
                 stop = {"type": "retries_exhausted"}

@@ -187,6 +187,57 @@ def test_a_model_with_no_list_price_stops_a_budgeted_session(scripted_model):
         seeded.check()
 
 
+def test_a_budget_changed_while_the_session_runs_applies_at_the_next_request(scripted_model):
+    class Agentd(Recorder):
+        def emit(self, events, thread=None):
+            return [{**e, "budget": limit(5)} if e["type"] == "session.usage" else e for e in super().emit(events, thread)]
+
+    Run = scripted_run(scripted_model, limit(1000))
+    Run.agentd = Agentd()
+    with pytest.raises(BudgetReached):
+        thread_for(Run, "worker").send("go")
+    assert [e["type"] for e in Run.agentd.events].count("span.model_request_start") == 1 and Run.budget.limit == 5
+
+
+def test_client_events_a_budget_stop_did_not_reach_run_with_the_next_work(monkeypatch):
+    from agentd_harness import mounts
+    from agentd_harness.run import SessionRun
+
+    class Agentd:
+        statuses = []
+
+        def session(self):
+            return {"budget": limit(10), "usage": {"list_cost": {"amount": "0", "currency": "USD"}}}
+
+        def emit(self, events):
+            self.statuses += events
+
+    class Work:
+        batches = [["a", "b", "c"], ["d"]]
+
+        def start(self):
+            pass
+
+        def next_work(self):
+            return self.batches.pop(0) if self.batches else None
+
+    handled = []
+
+    def handle(event):
+        handled.append(event)
+        if event == "a":
+            raise BudgetReached()
+
+    run = SessionRun.__new__(SessionRun)
+    run.agentd, run.inbox, run.budget, run.pending = Agentd(), Work(), Budget(), []
+    run.handle, run.tools = handle, type("T", (), {"close": lambda self: None})()
+    monkeypatch.setattr(mounts, "sync_outputs", lambda _agentd: 0)
+    run.serve()
+    assert handled == ["a", "b", "c", "d"]
+    stops = [e["stop_reason"]["type"] for e in run.agentd.statuses if e["type"] == "session.status_idle"]
+    assert stops == ["budget_reached", "end_turn"]
+
+
 def test_a_lost_lease_is_left_alone_and_a_stale_beat_recovers(monkeypatch):
     import anthropic
     import httpx
