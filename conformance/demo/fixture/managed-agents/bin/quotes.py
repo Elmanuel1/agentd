@@ -4,7 +4,7 @@ page, and a schedule line cited by its whole printed row. `cite.py check` report
 import json
 import re
 
-from cite import DOCS, normalise, rows
+from cite import DOCS, normalise, row_text, rows
 
 QUOTE_WINDOW = 8
 _PAGE_LINES = {}
@@ -20,7 +20,7 @@ def page_lines(doc_id):
         blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
         pages = {}
         for row in rows(blocks):
-            text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
+            text = row_text(row)
             if text:
                 pages.setdefault(row["page"], []).append(text)
         _PAGE_LINES[doc_id] = pages
