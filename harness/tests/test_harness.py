@@ -100,7 +100,7 @@ class Tools:
     def __init__(self):
         self.calls = []
 
-    def run(self, name, tool_input):
+    def run(self, name, tool_input, owner=None):
         self.calls.append((name, tool_input))
         return [{"type": "text", "text": "done"}], False
 

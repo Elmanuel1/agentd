@@ -90,3 +90,23 @@ class ToolHost:
 
     def close(self):
         self.proc.kill()
+
+
+class ToolHosts:
+    """A tool host per agent thread: threads run their tools at the same time, each in its own
+    process, so one thread's long command never holds up another's."""
+
+    def __init__(self, env):
+        self.env, self.hosts, self.lock = env, {}, threading.Lock()
+
+    def run(self, name, tool_input, owner=None):
+        with self.lock:
+            host = self.hosts.get(owner)
+            if host is None:
+                host = self.hosts[owner] = ToolHost(self.env)
+        return host.run(name, tool_input)
+
+    def close(self):
+        with self.lock:
+            for host in self.hosts.values():
+                host.close()

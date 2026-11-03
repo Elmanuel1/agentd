@@ -99,7 +99,7 @@ class Thread:
         else:
             (use,) = self.emit({"type": "agent.tool_use", "name": name, "input": tool_input,
                                 "evaluated_permission": "allow", "evaluation": ALLOW})
-        content, is_error = self.run.tools.run(name, tool_input)
+        content, is_error = self.run.tools.run(name, tool_input, owner=self)
         if use:
             self.emit({"type": "agent.tool_result", "tool_use_id": use["id"], "content": content, "is_error": is_error})
         return {"content": content, "is_error": is_error}

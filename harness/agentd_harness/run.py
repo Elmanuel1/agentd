@@ -9,7 +9,7 @@ from .outcome import run_outcome
 from .prompt import system_prompt
 from .team import FUNCTIONS, Team, roster
 from .thread import Thread
-from .tools import Policy, ToolHost
+from .tools import Policy, ToolHosts
 
 MODEL_KEY = "OPENROUTER_API_KEY"
 
@@ -30,7 +30,7 @@ class SessionRun:
         mounts.mount_files(agentd, session)
         self.skills = mounts.mount_skills(agentd, [agent, *members])
         # The agent's tools never see the model key, not even as its placeholder.
-        self.tools = ToolHost({k: v for k, v in env.items() if k != MODEL_KEY})
+        self.tools = ToolHosts({k: v for k, v in env.items() if k != MODEL_KEY})
         self.inbox = Inbox(agentd)
         policy = Policy(agent)
         functions = policy.functions(FUNCTIONS if members else ())
