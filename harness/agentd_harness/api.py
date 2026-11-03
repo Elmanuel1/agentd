@@ -47,7 +47,6 @@ class Agentd:
         return self.client.beta.files.download(file_id).read()
 
     def skill(self, skill_id, version):
-        return self.client.beta.skills.versions.download(version, skill_id=skill_id).read()
-
-    def work(self, environment_id, work_id):
-        return self.client.beta.environments.work, dict(environment_id=environment_id), work_id
+        if version in (None, "", "latest"):
+            version = self.client.beta.skills.retrieve(skill_id).latest_version
+        return self.client.beta.skills.versions.download(str(version), skill_id=skill_id).read()
