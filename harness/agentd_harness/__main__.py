@@ -8,6 +8,7 @@ settings agentd starts the sandbox with.
 import base64
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -62,6 +63,18 @@ def keep_lease(work, work_id, environment_id, ended):
         time.sleep(BEAT_EVERY)
 
 
+def on_stop(agentd):
+    """The SIGTERM handler: agentd is stopping the sandbox, so the outputs the agent wrote since
+    its last turn ended are saved as session files before the process exits."""
+    def handler(_signum, _frame):
+        try:
+            mounts.sync_outputs(agentd)
+        except Exception:  # noqa: BLE001 - the sandbox stops either way
+            pass
+        os._exit(0)
+    return handler
+
+
 def main(env=os.environ):
     # First: the sandbox's TLS settings name this bundle, and every HTTP client reads it when built.
     mounts.trust_ca(env.get("AGENTD_EGRESS_CA"))
@@ -85,7 +98,9 @@ def main(env=os.environ):
         done.set()
 
     threading.Thread(target=keep_lease, args=(beats, work_id, environment_id, ended), daemon=True).start()
-    runner = threading.Thread(target=SessionRun(Agentd(api, token, session_id), env).serve, daemon=True)
+    agentd = Agentd(api, token, session_id)
+    signal.signal(signal.SIGTERM, on_stop(agentd))
+    runner = threading.Thread(target=SessionRun(agentd, env).serve, daemon=True)
     runner.start()
     while runner.is_alive() and not done.is_set():
         runner.join(timeout=1)

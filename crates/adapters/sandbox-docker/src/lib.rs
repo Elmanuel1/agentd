@@ -14,6 +14,7 @@ use bollard::errors::Error as DockerError;
 use bollard::models::{ContainerCreateBody, ContainerStateStatusEnum, HostConfig};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
 };
 use bollard::Docker;
 use futures::TryStreamExt;
@@ -86,6 +87,9 @@ impl DockerRuntime {
 
 /// The most processes one sandbox may run.
 const PIDS_LIMIT: i64 = 1024;
+
+/// How long a stopping sandbox has to save its outputs before it is killed.
+const STOP_GRACE_SECONDS: i32 = 10;
 
 /// The sandbox's first process is the session's harness, as root so it can
 /// write the root-owned uploads and skills and keep its work token from the
@@ -175,6 +179,9 @@ impl Runtime for DockerRuntime {
     }
 
     async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
+        // SIGTERM first, so the harness saves the outputs written since its last turn ended.
+        let grace = StopContainerOptionsBuilder::default().t(STOP_GRACE_SECONDS).build();
+        let _ = self.docker.stop_container(&handle.id, Some(grace)).await;
         let options = RemoveContainerOptionsBuilder::default().force(true).build();
         let removed = match self.docker.remove_container(&handle.id, Some(options)).await {
             Ok(()) => Ok(()),

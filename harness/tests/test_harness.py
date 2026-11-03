@@ -3,6 +3,8 @@ the outcome verdict, and one thread turn against the scripted model with a recor
 
 import asyncio
 import json
+import os
+import signal
 import sys
 import threading
 from pathlib import Path
@@ -11,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "conformance"))
 
-from agentd_harness import prompt, toolhost
+from agentd_harness import __main__ as entry
+from agentd_harness import mounts, prompt, toolhost
 from agentd_harness.model import Model, text, usage
 from agentd_harness.outcome import explain
 from agentd_harness.thread import Thread, thread_id
@@ -224,3 +227,11 @@ def test_outputs_sync_skips_links_the_agent_made(tmp_path):
     agentd = Agentd()
     assert mounts.sync_outputs(agentd, root=root, state=tmp_path / "state.json") == 1
     assert agentd.saved == [("result.json", b"{}")]
+
+
+def test_a_stopped_sandbox_saves_its_outputs_before_it_exits(monkeypatch):
+    synced, exits = [], []
+    monkeypatch.setattr(mounts, "sync_outputs", synced.append)
+    monkeypatch.setattr(os, "_exit", exits.append)
+    entry.on_stop("agentd")(signal.SIGTERM, None)
+    assert synced == ["agentd"] and exits == [0]
