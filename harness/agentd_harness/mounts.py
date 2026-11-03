@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import threading
 import zipfile
 from pathlib import Path
 
@@ -18,6 +19,8 @@ CA_BUNDLE = Path("/tmp/agentd/ca-bundle.pem")
 SYSTEM_CAS = Path("/etc/ssl/certs/ca-certificates.crt")
 STATE = Path("/var/lib/agentd/outputs.json")
 NOBODY = 65534
+# A turn's end and the stop signal may both sync; one at a time, so no output is saved twice.
+SYNC = threading.Lock()
 
 
 def trust_ca(pem):
@@ -106,26 +109,27 @@ def prepare_dirs():
 
 def sync_outputs(agentd, root=OUTPUTS, state=STATE):
     """Save outputs that changed since the last sync as session files, one file per path."""
-    synced = json.loads(state.read_text()) if state.exists() else {}
-    count = 0
-    # The agent owns this directory: never follow a link it made (to /proc/1/environ, say).
-    files = []
-    for directory, _dirs, names in os.walk(root, followlinks=False):
-        for n in names:
-            p = Path(directory) / n
-            if not p.is_symlink() and p.is_file():
-                files.append(p)
-    for path in sorted(files):
-        rel = str(path.relative_to(root))
-        data = path.read_bytes()
-        digest = hashlib.sha256(data).hexdigest()
-        known = synced.get(rel)
-        if known and known["sha256"] == digest:
-            continue
-        # A session file is named by the file's own name; the path keys it here.
-        file_id = agentd.save_output(path.name, data, previous=known and known["file_id"])
-        synced[rel] = {"sha256": digest, "file_id": file_id}
-        count += 1
-    state.parent.mkdir(parents=True, exist_ok=True)
-    state.write_text(json.dumps(synced))
-    return count
+    with SYNC:
+        synced = json.loads(state.read_text()) if state.exists() else {}
+        count = 0
+        # The agent owns this directory: never follow a link it made (to /proc/1/environ, say).
+        files = []
+        for directory, _dirs, names in os.walk(root, followlinks=False):
+            for n in names:
+                p = Path(directory) / n
+                if not p.is_symlink() and p.is_file():
+                    files.append(p)
+        for path in sorted(files):
+            rel = str(path.relative_to(root))
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            known = synced.get(rel)
+            if known and known["sha256"] == digest:
+                continue
+            # A session file is named by the file's own name; the path keys it here.
+            file_id = agentd.save_output(path.name, data, previous=known and known["file_id"])
+            synced[rel] = {"sha256": digest, "file_id": file_id}
+            count += 1
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(synced))
+        return count
