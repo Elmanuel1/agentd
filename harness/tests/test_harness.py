@@ -141,3 +141,39 @@ def test_a_turn_records_model_requests_messages_and_tool_calls(scripted_model):
     assert use["name"] == "bash" and use["input"] == {"command": "ls"} and use["evaluated_permission"] == "allow"
     assert result["tool_use_id"] == use["id"] and Run.tools.calls == [("bash", {"command": "ls"})]
     assert Run.agentd.events[1]["model_request_start_id"] == Run.agentd.events[0]["id"]
+
+
+def test_a_lost_lease_is_left_alone_and_a_stale_beat_recovers(monkeypatch):
+    import anthropic
+    import httpx
+    from agentd_harness import __main__ as entry
+
+    monkeypatch.setattr(entry.time, "sleep", lambda _s: None)
+
+    def status(code, body=None):
+        request = httpx.Request("POST", "http://agentd/heartbeat")
+        return anthropic.APIStatusError("x", response=httpx.Response(code, request=request), body=body)
+
+    class Beat:
+        def __init__(self, state="active", last="h2"):
+            self.state, self.last_heartbeat, self.lease_extended = state, last, True
+
+    class Work:
+        def __init__(self, answers):
+            self.answers, self.sent = list(answers), []
+
+        def heartbeat(self, _id, *, expected_last_heartbeat, **_kw):
+            self.sent.append(expected_last_heartbeat)
+            answer = self.answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    got = []
+    entry.keep_lease(Work([status(412)]), "w", "e", got.append)
+    assert got == ["lost"]
+    stale = status(412, {"error": {"current_state": {"last_heartbeat": "h1"}}})
+    work = Work([anthropic.APIConnectionError(request=httpx.Request("POST", "http://agentd")), stale, Beat("stopping")])
+    got = []
+    entry.keep_lease(work, "w", "e", got.append)
+    assert got == ["stopping"] and work.sent == ["NO_HEARTBEAT", "NO_HEARTBEAT", "h1"]

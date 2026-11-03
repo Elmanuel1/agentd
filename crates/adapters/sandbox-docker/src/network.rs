@@ -76,7 +76,10 @@ impl DockerRuntime {
             match self.docker.connect_network(&name, connect).await {
                 // Already a member: a relaunch.
                 Ok(()) | Err(DockerError::DockerResponseServerError { status_code: 403 | 409, .. }) => {}
-                Err(e) => return Err(RuntimeError::Launch(format!("attach {member} to {name}: {e}"))),
+                Err(e) => {
+                    self.close_network(target_id).await;
+                    return Err(RuntimeError::Launch(format!("attach {member} to {name}: {e}")));
+                }
             }
         }
         Ok(name)

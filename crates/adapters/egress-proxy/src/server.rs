@@ -16,9 +16,10 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use crate::forward::{forward, reply};
+use crate::forward::forward;
 use crate::inject::Refusal;
 use crate::policy::{EgressPolicy, SessionEgress};
+use crate::response::reply;
 use crate::secret::SecretSource;
 
 /// The proxy user and password from `Proxy-Authorization: Basic …`.

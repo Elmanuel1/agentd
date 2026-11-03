@@ -19,6 +19,7 @@ use the key.
 | `KMS_KEY_ARN` | the ARN of the key in `AGENTD_SECRETS_KMS_KEY_ID` |
 | `AGENTD_ROLE_ARN` | the role agentd runs as (or assumes with `AGENTD_SECRETS_ROLE_ARN`) |
 | `EGRESS_ROLE_ARN` | the role the egress service, `agentd-egress`, runs as |
+| `REGION` | the region the secrets are in (the egress policy names it) |
 | `ACCOUNT_ID` | the account that owns the key and the secrets |
 
 The ARNs match every region and account (`*:*`). Pinning them to your
@@ -48,7 +49,7 @@ region and account is tighter and loses nothing.
     through Secrets Manager (`kms:ViaService`) and only for `PREFIX/` secrets
     (`kms:EncryptionContext:SecretARN`).
 - `egress-secrets-policy.json`, on the egress service's role: only
-  `GetSecretValue`, on `PREFIX/` secrets, and an explicit deny on
+  `GetSecretValue`, on `PREFIX/` secrets in `REGION` and `ACCOUNT_ID` only, and an explicit deny on
   `PREFIX/system/`, where the API key records and the pepper live. The
   service reads a credential's current value when a request needs it and
   makes no other AWS call.

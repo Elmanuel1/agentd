@@ -51,6 +51,10 @@ impl CaPem {
     }
 }
 
+/// Most leaf certificates one session keeps; past it the cache starts over,
+/// so a sandbox calling host after host cannot grow the shared service.
+const MAX_LEAVES: usize = 256;
+
 /// A CA ready to sign, with the server configs it made, by host.
 pub struct SessionCa {
     issuer_params: CertificateParams,
@@ -96,7 +100,11 @@ impl SessionCa {
             .with_single_cert(chain, private)?;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let config = Arc::new(config);
-        self.leaves.lock().insert(host.to_owned(), config.clone());
+        let mut leaves = self.leaves.lock();
+        if leaves.len() >= MAX_LEAVES {
+            leaves.clear();
+        }
+        leaves.insert(host.to_owned(), config.clone());
         Ok(config)
     }
 }
