@@ -52,7 +52,7 @@ ROW_VERDICTS = {"correct", "unit_mismatch", "quantity_mismatch", "description_mi
 def page_texts(doc_id):
     """Row-aware page text, as the pipeline gives Jev: the line blocks that share a row joined by
     " | " (cite.py rows), so a table row reads whole and its section heading sits above it."""
-    blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+    blocks = cite.load_blocks(doc_id)
     pages = {}
     for row in cite.rows(blocks):
         text = cite.row_text(row)
