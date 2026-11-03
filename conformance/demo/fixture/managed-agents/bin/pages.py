@@ -40,7 +40,7 @@ def keep(block):
 
 
 def filtered(doc_id):
-    blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+    blocks = cite.load_blocks(doc_id)
     absorbing = {b["block_id"] for b in blocks
                  if b.get("type") in ("table", "merged_cell") and (b.get("content") or "").strip()}
     return [b for b in blocks
@@ -98,7 +98,7 @@ def main():
     wanted = page_set(args.pages) if args.pages else None
     by_page = {}
     if args.rows:
-        raw = json.loads((DOCS / args.doc_id / "blocks.json").read_text())
+        raw = cite.load_blocks(args.doc_id)
         for row in cite.rows(raw):
             if wanted is not None and row["page"] not in wanted:
                 continue

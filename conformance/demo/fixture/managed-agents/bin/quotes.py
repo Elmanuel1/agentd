@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """The pipeline's checks of a quote as printed (score.rs): the quote's words in order on its own
 page, and a schedule line cited by its whole printed row. `cite.py check` reports both."""
-import json
 import re
 
-from cite import DOCS, normalise, rows
+from cite import DOCS, load_blocks, normalise, rows
 
 QUOTE_WINDOW = 8
 _PAGE_LINES = {}
@@ -17,7 +16,7 @@ def quote_words(text):
 def page_lines(doc_id):
     """Each page as the pipeline's checks read it: one line per printed row, cells joined " | "."""
     if doc_id not in _PAGE_LINES:
-        blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+        blocks = load_blocks(doc_id)
         pages = {}
         for row in rows(blocks):
             text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())

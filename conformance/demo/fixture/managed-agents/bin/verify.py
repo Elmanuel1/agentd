@@ -56,7 +56,7 @@ def norm(text):
 def page_texts(doc_id):
     """Row-aware page text, as the pipeline gives Jev: the line blocks that share a row joined by
     " | " (cite.py rows), so a table row reads whole and its section heading sits above it."""
-    blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+    blocks = cite.load_blocks(doc_id)
     pages = {}
     for row in cite.rows(blocks):
         text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
