@@ -1,5 +1,4 @@
-//! `/v1/environments/{id}/work`: the environments work API, plus the
-//! `ops` routes a hosted session's worker takes sandbox operations from.
+//! `/v1/environments/{id}/work`: the environments work API.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -9,7 +8,6 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use sandbox_protocol::Outcome;
 use serde::Deserialize;
 use shared::{ApiError, ApiJson, AuthContext, ListSpec, Page, RouteError};
 
@@ -27,8 +25,6 @@ pub(super) fn router() -> Router {
         .route("/v1/environments/{id}/work/{work_id}/ack", post(ack))
         .route("/v1/environments/{id}/work/{work_id}/heartbeat", post(heartbeat))
         .route("/v1/environments/{id}/work/{work_id}/stop", post(stop))
-        .route("/v1/environments/{id}/work/{work_id}/ops", get(next_op))
-        .route("/v1/environments/{id}/work/{work_id}/ops/{op}", post(complete_op))
 }
 
 type Scope = Option<Extension<WorkScope>>;
@@ -164,41 +160,4 @@ async fn stop(
         serde_json::from_slice::<StopBody>(&body).map_err(|e| ApiError::invalid_request(e.to_string()))?.force
     };
     Ok(Json(svc.stop(&ctx, scope(&s), &env, &id, force)?).into_response())
-}
-
-/// The next sandbox operation for this work's worker, or `null`.
-async fn next_op(
-    Extension(svc): Extension<Arc<WorkService>>,
-    Extension(ctx): Extension<AuthContext>,
-    s: Scope,
-    Path((env, id)): Path<(String, String)>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Response, RouteError> {
-    let work = svc.retrieve(
-        &ctx,
-        scope(&s).ok_or_else(|| ApiError::not_found("work not found"))?.into(),
-        &env,
-        &id,
-    )?;
-    Ok(Json(svc.board().next(&work.id, block(&params)?).await).into_response())
-}
-
-/// The outcome of a sandbox operation.
-async fn complete_op(
-    Extension(svc): Extension<Arc<WorkService>>,
-    Extension(ctx): Extension<AuthContext>,
-    s: Scope,
-    Path((env, id, op)): Path<(String, String, String)>,
-    ApiJson(outcome): ApiJson<Outcome>,
-) -> Result<Response, RouteError> {
-    let work = svc.retrieve(
-        &ctx,
-        scope(&s).ok_or_else(|| ApiError::not_found("work not found"))?.into(),
-        &env,
-        &id,
-    )?;
-    if !svc.board().complete(&work.id, &op, outcome) {
-        return Err(RouteError(ApiError::not_found("operation not found")));
-    }
-    Ok(Json(serde_json::json!({"type": "work_op_result"})).into_response())
 }

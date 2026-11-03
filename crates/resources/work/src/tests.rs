@@ -1,12 +1,9 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use sandbox_protocol::{encode, Op, Outcome};
-use shared::ports::sandbox::{ExecRequest, Sandbox};
 use shared::{AuthContext, OrgId, WorkspaceId};
 
 use crate::service::WorkScope;
-use crate::{RemoteSandbox, WorkService, WorkState, WorkTokens};
+use crate::{WorkService, WorkState, WorkTokens};
 
 fn ctx(ws: &str) -> AuthContext {
     AuthContext { org: OrgId::new("org_1"), workspace: WorkspaceId::new(ws), api_key_id: "apikey_1".into() }
@@ -74,23 +71,4 @@ async fn work_is_invisible_outside_its_workspace_and_to_other_tokens() {
 fn base64_decode(s: &str) -> Vec<u8> {
     use base64::Engine as _;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(s).unwrap()
-}
-
-#[tokio::test]
-async fn a_command_goes_to_the_worker_and_its_outcome_comes_back() {
-    let svc = Arc::new(WorkService::new(WorkTokens::new(b"k".to_vec())));
-    let (work, _) = svc.issue(&ctx("wrkspc_1"), "env_1", "sesn_1", true);
-    let board = svc.board();
-    let worker = tokio::spawn(async move {
-        let op = board.next(&work.id, Duration::from_secs(5)).await.unwrap();
-        assert!(matches!(&op.op, Op::Exec { argv, .. } if argv == &["echo", "hi"]));
-        let out =
-            Outcome::Exec { exit_code: 0, stdout: encode(b"hi\n"), stderr: String::new(), timed_out: false };
-        assert!(board.complete(&work.id, &op.id, out));
-    });
-    let sandbox = RemoteSandbox::new(svc.board());
-    let out = sandbox.exec("sesn_1", ExecRequest::new(["echo", "hi"], Duration::from_secs(5))).await.unwrap();
-    assert_eq!(out.stdout, b"hi\n");
-    worker.await.unwrap();
-    assert!(sandbox.exec("sesn_9", ExecRequest::new(["true"], Duration::from_secs(1))).await.is_err());
 }

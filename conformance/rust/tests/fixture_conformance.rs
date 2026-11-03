@@ -57,7 +57,7 @@ async fn app() -> Option<Router> {
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         runtime: Some(Arc::new(FakeRuntime::new())),
-        agent: None,
+        sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
     };

@@ -3,7 +3,7 @@
 
 use shared::{ApiError, AuthContext, Timestamp, Usage};
 
-use super::{map_store, parse_id, EngineContract, SessionsService};
+use super::{map_store, parse_id, HarnessContract, SessionsService};
 use crate::events::{Event, EventPayload, SessionEvent, SpanEvent};
 use crate::types::{
     primary_thread_id, Session, SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag,

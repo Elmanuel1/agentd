@@ -11,12 +11,10 @@ members = [
     "crates/resources/sessions",
     "crates/resources/deployments",
     "crates/resources/work",
-    "crates/sandbox-protocol",
     "crates/sandbox-worker",
     "crates/egress",
     "crates/resources/dreams",
     "crates/adapters/scheduler-local",
-    "crates/engine",
     "crates/api",
     "conformance/rust",
     "crates/adapters/store-postgres",
@@ -46,10 +44,8 @@ skills = { path = "crates/resources/skills" }
 sessions = { path = "crates/resources/sessions" }
 deployments = { path = "crates/resources/deployments" }
 work = { path = "crates/resources/work" }
-sandbox-protocol = { path = "crates/sandbox-protocol" }
 dreams = { path = "crates/resources/dreams" }
 scheduler-local = { path = "crates/adapters/scheduler-local" }
-engine = { path = "crates/engine" }
 api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }

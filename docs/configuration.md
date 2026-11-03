@@ -37,24 +37,15 @@ fakes in test code, never from configuration ([Security](#security)).
 | `RUST_LOG` | `info` | Log level |
 
 
-## Agent loop
+## Sandboxes
 
-The agent loop runs whenever the sandbox runtime is `docker`. It calls the
-model from agentd and runs each tool call in the session's sandbox, whose
-`agentd-worker` long-polls agentd for work; the sandbox takes no inbound
-connection.
+Each session's agent loop, its harness, runs in the session's sandbox. agentd
+keeps the API, the event log and the sandbox's lifecycle; the sandbox takes
+no inbound connection.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_ANTHROPIC_API_KEY` | unset | Key for `claude-*` models |
-| `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API base |
-| `AGENTD_OPENAI_API_KEY` | unset | Key for `vendor/model` ids, over the OpenAI-compatible API |
-| `AGENTD_OPENAI_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible API base |
-| `AGENTD_MOCK_MODEL` | unset | Path to a per-agent script that answers every model request instead (tests, demos) |
 | `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
-| `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | Output tokens per model call |
-| `AGENTD_BRAVE_API_KEY` | unset | Brave Search key for `web_search` |
-| `AGENTD_MAX_ACTIVE_SESSIONS` | `64` | Session loops one replica runs at once, each holding a lease connection |
 | `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>` | agentd's API as a sandbox's worker reaches it |
 | `AGENTD_SANDBOX_JOIN` | unset | agentd's container and the egress service's, comma-separated, which join each sandbox's network in place of the gateway |
 | `AGENTD_WORK_TOKEN_KEY` | random per process | Hex key that signs work tokens and egress proxy passwords; set it when more than one replica runs |
@@ -68,11 +59,11 @@ connection.
 Each `environment_variable` credential in the session's vaults is set in the
 sandbox under its own name, with a per-session placeholder
 (`agentd-ph-...`) as its value; the system prompt lists each name, its
-description and its hosts. agentd reads no credential value for this: it
-registers the session with the egress service (its proxy password digest,
-its environment's hosts, and each credential's name, placeholder and vault)
-and the service answers with the session's CA, which agentd writes into the
-sandbox on every run.
+description and its hosts. agentd reads no credential value for this: when
+it starts the sandbox, it registers the session with the egress service (its
+proxy password digest, its environment's hosts, and each credential's name,
+placeholder and vault), and the service answers with the session's CA, which
+the sandbox starts with (`AGENTD_EGRESS_CA`).
 
 Sandbox traffic leaves through the egress proxy, which the sandbox reaches
 through `HTTP_PROXY` and `HTTPS_PROXY` and trusts through the session CA,
@@ -109,8 +100,9 @@ credential secrets (`deploy/iam/egress-secrets-policy.json`).
 | `AGENTD_EGRESS_INTERNAL_HOSTS` | unset | Hosts sandboxes may reach at internal addresses, comma-separated |
 | `AGENTD_SECRETS_PREFIX`, `AGENTD_SECRETS_REGION`, `AGENTD_SECRETS_ENDPOINT`, `AGENTD_SECRETS_ROLE_ARN` | as for agentd | Where the credentials are |
 
-The service keeps its registrations in memory. After a restart, a session's
-next run registers it again and writes the new CA into its sandbox.
+The service keeps its registrations in memory: after it restarts, a sandbox
+it no longer knows is refused (407) until the session's sandbox is started
+again.
 
 ## S3 credentials
 

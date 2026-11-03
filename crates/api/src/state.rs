@@ -16,17 +16,15 @@ use shared::Module;
 use skills::SkillsService;
 use vaults::VaultsService;
 
-use crate::assets::RealSessionAssets;
-use crate::backends::{AgentBackends, Backends};
+use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
 use crate::egress::{EgressAdmin, SessionEgressPolicy};
 use crate::sandbox_work::WorkIssuer;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
-use engine::{Dispatcher, Engine, ModelRouter};
 use shared::hash::Signer;
 use vaults::egress::VaultCredentials;
-use work::{RemoteSandbox, WorkService, WorkTokens};
+use work::{WorkService, WorkTokens};
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
@@ -51,7 +49,7 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, BuildError> {
-        let Backends { stores, keys, scheduler, fires, runtime, agent, extra_models, metrics } = backends;
+        let Backends { stores, keys, scheduler, fires, runtime, sandbox, extra_models, metrics } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
@@ -62,14 +60,23 @@ impl AppState {
             catalog,
         );
         // One key signs work tokens and egress passwords, each under its own purpose.
-        let key = agent.as_ref().and_then(|a| a.config.work_token_key.clone());
+        let key = sandbox.as_ref().and_then(|s| s.work_token_key.clone());
         let key = key.unwrap_or_else(|| rand::random::<[u8; 32]>().to_vec());
         let work = Arc::new(WorkService::new(WorkTokens::new(key.clone())));
-        let egress_slot = Arc::new(std::sync::OnceLock::new());
-        let issuer = agent.as_ref().map(|a| {
-            let api_url = a.config.sandbox_api_url.clone();
-            Arc::new(WorkIssuer { work: work.clone(), api_url, egress: egress_slot.clone() })
-                as Arc<dyn sessions::SandboxWork>
+        let issuer = sandbox.map(|config| {
+            let egress = config.egress_admin.as_ref().map(|(url, token)| {
+                Arc::new(SessionEgressPolicy::new(
+                    Signer::new(key.clone()),
+                    VaultCredentials::new(stores.vaults.clone()),
+                    EgressAdmin::new(url, token),
+                ))
+            });
+            Arc::new(WorkIssuer {
+                work: work.clone(),
+                api_url: config.api_url,
+                egress,
+                egress_host: config.egress_host,
+            }) as Arc<dyn sessions::SandboxWork>
         });
         let sessions = Arc::new(match runtime {
             Some(runtime) => sessions.with_sandbox(runtime, issuer),
@@ -77,29 +84,6 @@ impl AppState {
         });
         let files = Arc::new(FilesService::new(stores.files));
         let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
-        if let Some(agent) = agent {
-            let policy = agent.config.egress_admin.as_ref().map(|(url, token)| {
-                Arc::new(SessionEgressPolicy::new(
-                    Signer::new(key),
-                    sessions.clone(),
-                    environments.clone(),
-                    VaultCredentials::new(stores.vaults.clone()),
-                    EgressAdmin::new(url, token),
-                ))
-            });
-            if let Some(policy) = &policy {
-                let _ = egress_slot.set(policy.clone());
-            }
-            let assets = RealSessionAssets {
-                files: files.clone(),
-                skills: skills.clone(),
-                environments: environments.clone(),
-                egress: policy,
-                egress_host: agent.config.sandbox_egress_host.clone(),
-            };
-            let sandbox = Arc::new(RemoteSandbox::new(work.board()));
-            sessions.set_trigger(Arc::new(dispatcher(agent, sessions.clone(), assets, sandbox)?));
-        }
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
             Arc::new(RealDeploymentDeps {
@@ -133,27 +117,4 @@ pub enum BuildError {
     /// Two modules claim one fire kind.
     #[error(transparent)]
     Fire(#[from] FireError),
-    /// The model providers could not be set up.
-    #[error("models: {0}")]
-    Models(String),
-}
-
-/// The agent loop over `sessions`, started by each session's client events.
-fn dispatcher(
-    agent: AgentBackends,
-    sessions: Arc<SessionsService>,
-    assets: RealSessionAssets,
-    sandbox: Arc<RemoteSandbox>,
-) -> Result<Dispatcher, BuildError> {
-    let models = ModelRouter::from_config(&agent.config.providers).map_err(BuildError::Models)?;
-    let engine = Engine {
-        contract: sessions,
-        models: Arc::new(models),
-        sandbox,
-        assets: Arc::new(assets),
-        http: engine::tools::web::client(),
-        search_key: agent.config.search_key.clone(),
-        max_tokens: agent.config.max_tokens,
-    };
-    Ok(Dispatcher::new(Arc::new(engine), agent.leases))
 }

@@ -4,12 +4,9 @@
 //! sandbox trusts. agentd reads no credential value for egress.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use egress_proxy::{BindingSpec, Registered, Registration};
-use environments::EnvironmentsService;
 use serde::Serialize;
-use sessions::SessionsService;
 use sha2::{Digest, Sha256};
 use shared::hash::Signer;
 use shared::{ApiError, AuthContext};
@@ -79,8 +76,6 @@ impl EgressAdmin {
 /// Registers sessions with the egress service.
 pub struct SessionEgressPolicy {
     signer: Signer,
-    sessions: Arc<SessionsService>,
-    environments: Arc<EnvironmentsService>,
     vaults: VaultCredentials,
     admin: EgressAdmin,
 }
@@ -92,16 +87,10 @@ impl std::fmt::Debug for SessionEgressPolicy {
 }
 
 impl SessionEgressPolicy {
-    /// Passwords and placeholders signed under `signer`, from the services
-    /// they read, registered through `admin`.
-    pub fn new(
-        signer: Signer,
-        sessions: Arc<SessionsService>,
-        environments: Arc<EnvironmentsService>,
-        vaults: VaultCredentials,
-        admin: EgressAdmin,
-    ) -> Self {
-        Self { signer: signer.derive("egress"), sessions, environments, vaults, admin }
+    /// Passwords and placeholders signed under `signer`, credentials listed
+    /// from `vaults`, registered through `admin`.
+    pub fn new(signer: Signer, vaults: VaultCredentials, admin: EgressAdmin) -> Self {
+        Self { signer: signer.derive("egress"), vaults, admin }
     }
 
     /// The proxy password of `session`: stable, so a registration again
@@ -116,17 +105,20 @@ impl SessionEgressPolicy {
         format!("agentd-ph-{}", mac.get(..32).unwrap_or(&mac))
     }
 
-    /// Register `session` with the egress service as it stands now: its
-    /// environment's hosts and its vaults' credentials.
-    pub async fn prepare(&self, ctx: &AuthContext, session: &str) -> Result<Prepared, ApiError> {
-        let s = self.sessions.get(ctx, session).await?;
-        let env = self.environments.get(ctx, &s.environment_id).await?;
-        let config = serde_json::to_value(&env.config).unwrap_or_default();
-        let credentials = self.vaults.environment_credentials(&ctx.workspace, &s.vault_ids).await?;
+    /// Register `session` with the egress service: its environment's hosts
+    /// (`environment` is its config) and the credentials of `vault_ids`.
+    pub async fn prepare(
+        &self,
+        ctx: &AuthContext,
+        session: &str,
+        vault_ids: &[String],
+        environment: &serde_json::Value,
+    ) -> Result<Prepared, ApiError> {
+        let credentials = self.vaults.environment_credentials(&ctx.workspace, vault_ids).await?;
         let password = self.password(ctx, session);
         let registration = Registration {
             password_sha256: hex::encode(Sha256::digest(password.as_bytes())),
-            allowed_hosts: environments::networking::allowed_hosts(&config),
+            allowed_hosts: environments::networking::allowed_hosts(environment),
             credentials: credentials
                 .iter()
                 .map(|c| BindingSpec {

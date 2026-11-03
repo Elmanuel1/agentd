@@ -21,18 +21,17 @@ use sessions::{SessionEventLog, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::KeySource;
-use shared::ports::lease::Leases;
 use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
-    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgLeases,
-    PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
+    PgAgentsStore, PgBackend, PgDeploymentsStore, PgEnvironmentsStore, PgError, PgFilesStore, PgMemoryStore,
+    PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
 };
 use vaults::VaultsStore;
 
 use crate::config::{
-    BlobsConfig, Config, EngineConfig, KeysConfig, RuntimeConfig, SchedulerConfig, StoreConfig,
+    BlobsConfig, Config, KeysConfig, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
 };
 
 /// How often the local scheduler checks for due fires (cron is minute-grained).
@@ -100,27 +99,12 @@ pub struct Backends {
     /// The sandbox runtime. Configuration always gives one; `None` is for tests
     /// that build their backends in code.
     pub runtime: Option<Arc<dyn Runtime>>,
-    /// What the agent loop runs on; `None` stores client events without
-    /// running the agent (no sandbox to run its tools in).
-    pub agent: Option<AgentBackends>,
+    /// How sandboxes reach agentd and the egress service; set with the runtime.
+    pub sandbox: Option<SandboxConfig>,
     /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
     pub extra_models: Vec<String>,
     /// The instruments every boundary records into.
     pub metrics: Arc<Metrics>,
-}
-
-/// The agent loop's backends.
-pub struct AgentBackends {
-    /// One loop per session across replicas.
-    pub leases: Arc<dyn Leases>,
-    /// Providers and limits.
-    pub config: EngineConfig,
-}
-
-impl std::fmt::Debug for AgentBackends {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentBackends").field("config", &self.config).finish_non_exhaustive()
-    }
 }
 
 impl std::fmt::Debug for Backends {
@@ -179,18 +163,17 @@ impl Backends {
                 local
             }
         };
-        let (runtime, agent): (Option<Arc<dyn Runtime>>, _) = match (&config.runtime, &config.store) {
-            (RuntimeConfig::Docker { image, limits, network }, StoreConfig::Postgres { url, .. }) => {
+        let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
+            RuntimeConfig::Docker { image, limits, network } => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let runtime = Arc::new(DockerRuntime::new(docker, image.clone(), *limits, network.clone()));
+                let runtime = DockerRuntime::new(docker, image.clone(), *limits, network.clone());
                 runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let leases = PgLeases::connect(url, config.engine.max_active_sessions).await?;
-                let agent = AgentBackends { leases: Arc::new(leases), config: config.engine.clone() };
-                (Some(Arc::new(Observed::new(runtime as Arc<dyn Runtime>, metrics.clone()))), Some(agent))
+                Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
             }
         };
-        let extra_models = config.engine.extra_models.clone();
-        Ok(Self { stores, keys, scheduler, fires, runtime, agent, extra_models, metrics })
+        let extra_models = config.extra_models.clone();
+        let sandbox = runtime.as_ref().map(|_| config.sandbox.clone());
+        Ok(Self { stores, keys, scheduler, fires, runtime, sandbox, extra_models, metrics })
     }
 }

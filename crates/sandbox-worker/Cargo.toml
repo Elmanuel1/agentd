@@ -4,14 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "agentd-worker: runs inside a session's sandbox, takes its work item's operations from agentd and runs them."
+description = "agentd-worker: runs inside a session's sandbox, acknowledges its work item and keeps its lease; also the gateway relay."
 
 [[bin]]
 name = "agentd-worker"
 path = "src/main.rs"
 
 [dependencies]
-sandbox-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }

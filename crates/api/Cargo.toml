@@ -21,7 +21,6 @@ sessions = { workspace = true }
 deployments = { workspace = true }
 dreams = { workspace = true }
 scheduler-local = { workspace = true }
-engine = { workspace = true }
 work = { workspace = true }
 egress-proxy = { workspace = true }
 hex = { workspace = true }

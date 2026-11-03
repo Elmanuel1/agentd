@@ -4,11 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "The environments work API: work items for sessions, their leases, and the operations the in-sandbox worker runs."
+description = "The environments work API: work items for sessions, and their leases."
 
 [dependencies]
 shared = { workspace = true }
-sandbox-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

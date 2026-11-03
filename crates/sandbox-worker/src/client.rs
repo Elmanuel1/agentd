@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use sandbox_protocol::{Envelope, Outcome};
 use serde_json::Value;
 
 /// The beta every work call names.
@@ -22,10 +21,6 @@ pub struct Config {
     pub work: String,
     /// The work token.
     pub token: String,
-    /// The agent's user id.
-    pub uid: u32,
-    /// The agent's group id.
-    pub gid: u32,
 }
 
 impl Config {
@@ -40,14 +35,11 @@ impl Config {
             .get("sessions_token")
             .and_then(Value::as_str)
             .ok_or("AGENTD_WORK_SECRET: no sessions_token")?;
-        let id = |k: &str| get(k).and_then(|v| v.parse().ok()).unwrap_or(65534);
         Ok(Self {
             api: need("AGENTD_API_URL")?.trim_end_matches('/').to_owned(),
             environment: need("AGENTD_ENVIRONMENT_ID")?,
             work: need("AGENTD_WORK_ID")?,
             token: token.to_owned(),
-            uid: id("AGENTD_AGENT_UID"),
-            gid: id("AGENTD_AGENT_GID"),
         })
     }
 }
@@ -137,28 +129,6 @@ impl Client {
         }
     }
 
-    /// The next operation, waiting up to a second for one.
-    pub async fn next_op(&self) -> Result<Option<Envelope>, String> {
-        let req = self.with_headers(self.http.get(self.url("/ops"))).query(&[("block_ms", "999")]);
-        let r = req.send().await.map_err(|e| e.to_string())?;
-        if !r.status().is_success() {
-            return Err(format!("HTTP {}", r.status()));
-        }
-        r.json::<Option<Envelope>>().await.map_err(|e| e.to_string())
-    }
-
-    /// Post an operation's outcome, retrying briefly.
-    pub async fn complete(&self, op: &str, outcome: &Outcome) {
-        for attempt in 0..5u32 {
-            match self.post(&format!("/ops/{op}")).json(outcome).send().await {
-                Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::NOT_FOUND => return,
-                Ok(r) => eprintln!("agentd-worker: result: HTTP {}", r.status()),
-                Err(e) => eprintln!("agentd-worker: result: {e}"),
-            }
-            tokio::time::sleep(Duration::from_millis(250 * 2u64.pow(attempt))).await;
-        }
-    }
-
     /// Force-stop the work on the way out.
     pub async fn stop(&self) {
         let _ = self.post("/stop").json(&serde_json::json!({"force": true})).send().await;
@@ -180,7 +150,7 @@ mod tests {
             _ => None,
         };
         let c = Config::from_env(env).unwrap();
-        assert_eq!((c.token.as_str(), c.api.as_str(), c.uid), ("agentd-wt-x.y", "http://agentd:8080", 65534));
+        assert_eq!((c.token.as_str(), c.api.as_str()), ("agentd-wt-x.y", "http://agentd:8080"));
         assert!(Config::from_env(|_| None).is_err());
     }
 }

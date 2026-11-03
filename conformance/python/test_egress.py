@@ -3,7 +3,7 @@ name and a placeholder, never the value; the proxy puts the value into
 requests to the hosts the credential allows, refuses it anywhere else, and
 masks it in responses.
 
-Runs with the agent loop (AGENTD_TEST_RUNTIME=1, the scripted model);
+Runs when sessions run their harness against the scripted model (AGENTD_TEST_HARNESS=1);
 `echo.agentd.test` must resolve to this machine and be in
 AGENTD_EGRESS_INTERNAL_HOSTS, so the proxy may reach the echo server this test
 starts.
@@ -19,7 +19,7 @@ import uuid
 import anthropic
 import pytest
 
-pytestmark = pytest.mark.skipif(os.environ.get("AGENTD_TEST_RUNTIME") != "1", reason="needs AGENTD_TEST_RUNTIME=1")
+pytestmark = pytest.mark.skipif(os.environ.get("AGENTD_TEST_HARNESS") != "1", reason="needs AGENTD_TEST_HARNESS=1")
 
 SECRET = f"s3cret-{uuid.uuid4().hex}"
 SEEN: list[str] = []

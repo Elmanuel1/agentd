@@ -52,7 +52,7 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         runtime: Some(runtime),
-        agent: None,
+        sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
     };

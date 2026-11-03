@@ -25,8 +25,8 @@ use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadI
 
 use agents::AgentSnapshot;
 
-mod engine;
 mod events;
+mod harness;
 mod lifecycle;
 mod resources;
 mod sandbox;
@@ -58,10 +58,10 @@ pub trait SessionDeps: Send + Sync {
     ) -> Result<serde_json::Value, ApiError>;
 }
 
-/// What the engine (the agent loop in agentd) may do to a session: the
-/// sessions to engine seam.
+/// What a session's harness, the agent loop in its sandbox, writes to the
+/// session: its events, status, usage and outcome evaluations.
 #[async_trait]
-pub trait EngineContract: Send + Sync {
+pub trait HarnessContract: Send + Sync {
     /// The session.
     async fn session(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Session, ApiError>;
     /// Every event of the session and its threads, oldest first.
@@ -85,8 +85,6 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
     /// Pull queued (unprocessed) user events, stamping them processed.
     async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError>;
-    /// Whether client events wait to be taken, without taking them.
-    async fn has_unprocessed(&self, ws: &WorkspaceId, session: &SessionId) -> Result<bool, ApiError>;
     /// Accumulate usage onto the session.
     async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError>;
     /// Record an outcome evaluation onto the session object.
@@ -98,20 +96,18 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
 }
 
-/// Starts the agent loop when a session has new client events. Waking a
-/// session whose loop already runs only nudges that loop.
-pub trait TurnTrigger: Send + Sync {
-    /// The session has unprocessed client events; `ctx` is the caller who
-    /// sent them, whose workspace and organization the loop acts in.
-    fn wake(&self, ctx: &AuthContext, session: &SessionId);
-}
-
-/// Issues the work item a session's sandbox worker runs.
+/// Issues the work item a session's sandbox runs, and registers the session
+/// with the egress service.
+#[async_trait]
 pub trait SandboxWork: Send + Sync {
-    /// The environment variables the sandbox starts with: where its worker
-    /// reports and the work it runs.
-    fn issue(&self, ctx: &AuthContext, environment_id: &str, session: &SessionId)
-        -> BTreeMap<String, String>;
+    /// The environment variables the sandbox starts with: where its harness
+    /// reports, the work it runs, and its egress settings.
+    async fn issue(
+        &self,
+        ctx: &AuthContext,
+        session: &Session,
+        environment: &serde_json::Value,
+    ) -> Result<BTreeMap<String, String>, ApiError>;
     /// The session's sandbox is gone.
     fn end(&self, session: &SessionId);
 }
@@ -130,10 +126,8 @@ pub struct SessionsService {
     catalog: ModelCatalog,
     /// Runs one sandbox per session; `None` runs no sandbox.
     sandbox: Option<Arc<dyn Runtime>>,
-    /// Issues each sandbox's work item, which its worker runs.
+    /// Issues each sandbox's work item, which its harness runs.
     work: Option<Arc<dyn SandboxWork>>,
-    /// Runs the agent loop; unset, the service only stores events.
-    trigger: std::sync::OnceLock<Arc<dyn TurnTrigger>>,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -151,16 +145,7 @@ impl SessionsService {
         deps: Arc<dyn SessionDeps>,
         catalog: ModelCatalog,
     ) -> Self {
-        Self {
-            store,
-            events,
-            deps,
-            catalog,
-            channels: Channels::default(),
-            sandbox: None,
-            work: None,
-            trigger: std::sync::OnceLock::new(),
-        }
+        Self { store, events, deps, catalog, channels: Channels::default(), sandbox: None, work: None }
     }
 
     /// Run each session's sandbox on `runtime`, its worker on a work item
@@ -170,13 +155,6 @@ impl SessionsService {
         self.sandbox = Some(runtime);
         self.work = work;
         self
-    }
-
-    /// Run the agent loop through `trigger` when client events arrive. Set
-    /// once, after construction, because the loop calls back into this
-    /// service.
-    pub fn set_trigger(&self, trigger: Arc<dyn TurnTrigger>) {
-        let _ = self.trigger.set(trigger);
     }
 }
 

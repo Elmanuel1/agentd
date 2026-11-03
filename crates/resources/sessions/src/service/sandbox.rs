@@ -17,17 +17,17 @@ impl SessionsService {
         let Some(runtime) = &self.sandbox else {
             return Ok(());
         };
+        let env = match &self.work {
+            Some(w) => w.issue(ctx, session, &environment).await?,
+            None => Default::default(),
+        };
         let job = JobSpec {
             kind: JobKind::Session,
             target_id: session.id.to_string(),
             workspace_id: ctx.workspace.as_str().to_owned(),
             environment_id: session.environment_id.clone(),
             environment,
-            env: self
-                .work
-                .as_ref()
-                .map(|w| w.issue(ctx, &session.environment_id, &session.id))
-                .unwrap_or_default(),
+            env,
         };
         let launched = runtime.launch(job).await;
         if launched.is_err() {
