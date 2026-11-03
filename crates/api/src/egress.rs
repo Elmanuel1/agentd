@@ -55,6 +55,8 @@ pub struct SessionEgressPolicy {
     signer: Signer,
     vaults: VaultCredentials,
     admin: EgressAdmin,
+    /// The host the harness calls the model at, reachable under any networking.
+    model_host: Option<String>,
 }
 
 impl std::fmt::Debug for SessionEgressPolicy {
@@ -65,9 +67,12 @@ impl std::fmt::Debug for SessionEgressPolicy {
 
 impl SessionEgressPolicy {
     /// Passwords and placeholders signed under `signer`, credentials listed
-    /// from `vaults`, registered through `admin`.
-    pub fn new(signer: Signer, vaults: VaultCredentials, admin: EgressAdmin) -> Self {
-        Self { signer: signer.derive("egress"), vaults, admin }
+    /// from `vaults`, registered through `admin`; the harness calls the model
+    /// at `model_base_url`.
+    pub fn new(signer: Signer, vaults: VaultCredentials, admin: EgressAdmin, model_base_url: &str) -> Self {
+        let model_host =
+            reqwest::Url::parse(model_base_url).ok().and_then(|u| u.host_str().map(str::to_owned));
+        Self { signer: signer.derive("egress"), vaults, admin, model_host }
     }
 
     /// The proxy password of `session`: stable, so a registration again
@@ -95,7 +100,9 @@ impl SessionEgressPolicy {
         let password = self.password(ctx, session);
         let registration = Registration {
             password_sha256: hex::encode(Sha256::digest(password.as_bytes())),
-            allowed_hosts: environments::networking::allowed_hosts(environment),
+            // The harness's own model calls leave whatever the agent may reach.
+            allowed_hosts: environments::networking::allowed_hosts(environment)
+                .map(|hosts| hosts.into_iter().chain(self.model_host.clone()).collect()),
             credentials: credentials
                 .iter()
                 .map(|c| BindingSpec {

@@ -4,21 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "agentd-worker: runs inside a session's sandbox, acknowledges its work item and keeps its lease; also the gateway relay."
+description = "agentd-worker: the gateway relay between each sandbox's network and agentd on the host."
 
 [[bin]]
 name = "agentd-worker"
 path = "src/main.rs"
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-base64 = { workspace = true }
 tokio = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true

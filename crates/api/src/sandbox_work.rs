@@ -52,8 +52,12 @@ impl WorkIssuer {
         for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"] {
             env.insert(name.to_owned(), proxy.clone());
         }
+        // agentd itself is reached directly, never through the proxy.
+        let api_host = reqwest::Url::parse(&self.api_url).ok().and_then(|u| u.host_str().map(str::to_owned));
+        let direct = ["localhost", "127.0.0.1"].into_iter().map(str::to_owned).chain(api_host);
+        let direct = direct.collect::<Vec<_>>().join(",");
         for name in ["NO_PROXY", "no_proxy"] {
-            env.insert(name.to_owned(), "localhost,127.0.0.1".to_owned());
+            env.insert(name.to_owned(), direct.clone());
         }
         for name in ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"] {
             env.insert(name.to_owned(), CA_BUNDLE.to_owned());

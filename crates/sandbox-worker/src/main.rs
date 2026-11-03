@@ -1,40 +1,23 @@
-//! agentd-worker: the process a session's sandbox runs. It acknowledges the
-//! session's work item and keeps its lease with heartbeats, as the SDK's
-//! environment worker does. It opens no port: every call goes out to agentd,
-//! with the work token from the work's secret.
+//! agentd-worker: the gateway relay. When agentd and the egress service run
+//! on the host, agentd starts one container of the sandbox image as
+//! `agentd-worker relay`, on the default bridge and on each sandbox's own
+//! network, relaying only agentd's API port and the egress proxy's port.
 //!
-//! Environment: `AGENTD_API_URL`, `AGENTD_ENVIRONMENT_ID`, `AGENTD_WORK_ID`,
-//! `AGENTD_WORK_SECRET`.
-//!
-//! `agentd-worker relay` runs the gateway instead (see `relay`).
+//! Environment: `AGENTD_RELAY` (`port=host:port,...`).
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
-mod client;
 mod relay;
-
-use client::{Client, Config};
 
 #[tokio::main]
 async fn main() {
-    if std::env::args().nth(1).as_deref() == Some("relay") {
-        match relay::parse(&std::env::var("AGENTD_RELAY").unwrap_or_default()) {
-            Ok(pairs) => relay::run(pairs).await,
-            Err(e) => eprintln!("agentd-worker: {e}"),
-        }
-        std::process::exit(1);
+    if std::env::args().nth(1).as_deref() != Some("relay") {
+        eprintln!("usage: agentd-worker relay");
+        std::process::exit(2);
     }
-    let config = match Config::from_env(|k| std::env::var(k).ok()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("agentd-worker: {e}");
-            std::process::exit(2);
-        }
-    };
-    let client = Client::new(config);
-    client.ack_until_done().await;
-    // The lease ends the worker: stopped work, a lost lease, or agentd gone.
-    let reason = client.keep_lease().await;
-    eprintln!("agentd-worker: stopping: {reason}");
-    client.stop().await;
+    match relay::parse(&std::env::var("AGENTD_RELAY").unwrap_or_default()) {
+        Ok(pairs) => relay::run(pairs).await,
+        Err(e) => eprintln!("agentd-worker: {e}"),
+    }
+    std::process::exit(1);
 }

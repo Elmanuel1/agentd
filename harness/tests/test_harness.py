@@ -1,0 +1,143 @@
+"""The harness's parts on their own: the prompt, the tool policy, the model adapter, the tool host,
+the outcome verdict, and one thread turn against the scripted model with a recording agentd."""
+
+import asyncio
+import json
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "conformance"))
+
+from agentd_harness import prompt, toolhost
+from agentd_harness.model import Model, text, usage
+from agentd_harness.outcome import explain
+from agentd_harness.thread import Thread, thread_id
+from agentd_harness.tools import Policy
+
+
+def test_skills_and_credentials_go_into_the_prompt():
+    assert prompt.skill_description("---\nname: x\ndescription: Does x.\n---\n# X") == "Does x."
+    assert prompt.skill_description("# none") == ""
+    text_ = prompt.system_prompt({"system": "Be brief."}, [("x", "Does x.")], [{"name": "w", "description": "Works."}],
+                                 [{"name": "GH", "description": "GitHub", "hosts": ["api.github.com"]},
+                                  {"name": "NONE", "description": "n", "hosts": None}])
+    assert text_.startswith("Be brief.") and "/workspace/skills/x/SKILL.md" in text_ and "`w`: Works." in text_
+    assert "`GH`: GitHub (sent to: api.github.com)" in text_ and "no host; it lists none" in text_
+
+
+def test_the_policy_follows_the_agent_config():
+    agent = {"tools": [
+        {"type": "agent_toolset_20260401", "default_config": {"permission_policy": {"type": "always_allow"}},
+         "configs": [{"name": "write", "permission_policy": {"type": "always_ask"}}, {"name": "grep", "enabled": False}]},
+        {"type": "custom", "name": "lookup", "description": "Look up.", "input_schema": {"type": "object"}}]}
+    p = Policy(agent)
+    assert p.allowed["write"] == "always_ask" and p.allowed["bash"] == "always_allow" and "grep" not in p.allowed
+    names = [f["function"]["name"] for f in p.functions()]
+    assert "bash" in names and "lookup" in names and "grep" not in names
+    assert Policy({}).functions() == []
+
+
+def test_tool_calls_and_usage_map_from_chat_completions():
+    m = Model(model_name="m", functions=[], base_url="http://x/v1", user="a")
+    response = {"choices": [{"message": {"tool_calls": [
+        {"id": "c1", "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"}}]}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 7, "prompt_tokens_details": {"cached_tokens": 40}}}
+    assert m._parse_actions(response) == [{"tool": "bash", "input": {"command": "ls"}, "tool_call_id": "c1"}]
+    assert usage(response) == {"input_tokens": 60, "cache_read_input_tokens": 40, "cache_creation_input_tokens": 0, "output_tokens": 7}
+    sent = m._prepare_messages_for_api([{"role": "assistant", "content": None, "tool_calls": [{"id": "c9"}]},
+                                       {"role": "exit", "content": "x"}])
+    assert sent[-1] == {"role": "tool", "tool_call_id": "c9", "content": "Not run."}
+    assert text({"content": [{"type": "text", "text": "boom"}], "is_error": True}) == "Error: boom"
+
+
+def test_the_tool_host_runs_the_sdk_toolset(tmp_path):
+    lines = [json.dumps({"id": 1, "name": "write", "input": {"file_path": str(tmp_path / "a.txt"), "content": "hi\n"}}),
+             json.dumps({"id": 2, "name": "read", "input": {"file_path": str(tmp_path / "a.txt")}}),
+             json.dumps({"id": 3, "name": "nope", "input": {}})]
+    out = []
+
+    async def feed():
+        for line in lines:
+            yield line
+
+    asyncio.run(toolhost.serve(feed(), out.append, workdir=tmp_path, roots=[tmp_path], read_only=[]))
+    replies = [json.loads(o) for o in out]
+    assert not replies[0]["is_error"] and "hi" in replies[1]["content"][0]["text"]
+    assert replies[2]["is_error"]
+
+
+def test_a_verdict_becomes_a_result_and_explanation():
+    assert explain({"result": "satisfied"}) == ("satisfied", "All criteria are met.")
+    result, why = explain({"result": "needs_revision", "findings": [{"criterion": "A", "finding": "wrong total"}]})
+    assert result == "needs_revision" and why == "- A: wrong total"
+    assert explain({"result": "garbage"})[0] == "needs_revision"
+
+
+def test_thread_ids_parse_as_agentd_ids():
+    tid = thread_id()
+    assert tid.startswith("sthr_01") and len(tid) == 29 and tid[5:].isalnum()
+
+
+class Recorder:
+    """agentd as a thread sees it: recorded events get ids."""
+
+    def __init__(self):
+        self.events = []
+
+    def emit(self, events, thread=None):
+        out = []
+        for e in events:
+            e = {**e, "id": f"sevt_{len(self.events)}", "session_thread_id": thread}
+            self.events.append(e)
+            out.append(e)
+        return out
+
+
+class Tools:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, name, tool_input):
+        self.calls.append((name, tool_input))
+        return [{"type": "text", "text": "done"}], False
+
+
+class Inbox:
+    def check(self):
+        pass
+
+
+@pytest.fixture
+def scripted_model():
+    from mock_model import Script, handler
+    from http.server import ThreadingHTTPServer
+    replies = {"worker": [
+        {"content": [{"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}],
+         "usage": {"input_tokens": 10, "output_tokens": 2}},
+        {"content": [{"type": "text", "text": "all done"}], "usage": {"input_tokens": 12, "output_tokens": 3}}]}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler(Script(replies)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_port}/v1"
+    server.shutdown()
+
+
+def test_a_turn_records_model_requests_messages_and_tool_calls(scripted_model):
+    class Run:
+        model_base_url = scripted_model
+        agentd = Recorder()
+        tools = Tools()
+        inbox = Inbox()
+    agent = {"name": "worker", "model": {"id": "m"}, "tools": [{"type": "agent_toolset_20260401"}]}
+    policy = Policy(agent)
+    reply = Thread(Run, agent, "sys", policy.functions(), policy).send("go")
+    assert reply == "all done"
+    kinds = [e["type"] for e in Run.agentd.events]
+    assert kinds == ["span.model_request_start", "span.model_request_end", "agent.tool_use", "agent.tool_result",
+                     "span.model_request_start", "span.model_request_end", "agent.message"]
+    use, result = Run.agentd.events[2], Run.agentd.events[3]
+    assert use["name"] == "bash" and use["input"] == {"command": "ls"} and use["evaluated_permission"] == "allow"
+    assert result["tool_use_id"] == use["id"] and Run.tools.calls == [("bash", {"command": "ls"})]
+    assert Run.agentd.events[1]["model_request_start_id"] == Run.agentd.events[0]["id"]

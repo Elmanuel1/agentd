@@ -87,11 +87,12 @@ impl DockerRuntime {
 /// The most processes one sandbox may run.
 const PIDS_LIMIT: i64 = 1024;
 
-/// The sandbox's first process is its worker, as root so it can write the
-/// root-owned uploads and skills; it runs every agent command as `nobody`.
+/// The sandbox's first process is the session's harness, as root so it can
+/// write the root-owned uploads and skills and keep its work token from the
+/// agent; it runs every agent tool as `nobody`.
 const WORKER_USER: &str = "0:0";
 
-/// What the worker needs beyond an unprivileged process: to run commands as
+/// What the harness needs beyond an unprivileged process: to run tools as
 /// the agent's user and to own files for it.
 const WORKER_CAPS: [&str; 5] = ["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "FOWNER"];
 
@@ -113,7 +114,7 @@ impl Runtime for DockerRuntime {
         ]);
         let body = ContainerCreateBody {
             image: Some(self.image.clone()),
-            cmd: Some(vec!["agentd-worker".into()]),
+            cmd: Some(vec!["python3".into(), "-m".into(), "agentd_harness".into()]),
             env: Some(env),
             labels: Some(labels),
             user: Some(WORKER_USER.into()),

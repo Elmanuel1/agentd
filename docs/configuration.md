@@ -39,14 +39,33 @@ fakes in test code, never from configuration ([Security](#security)).
 
 ## Sandboxes
 
-Each session's agent loop, its harness, runs in the session's sandbox. agentd
-keeps the API, the event log and the sandbox's lifecycle; the sandbox takes
-no inbound connection.
+Each session's agent loop, its harness (`harness/`), runs in the session's
+sandbox. It takes the session's work item with the work token agentd starts
+the sandbox with, mounts the session's files and its agents' skills, and runs
+the agent with harness-sim's mini-swe-agent loop. The agent's tools are the
+official SDK's `agent_toolset` (bash, read, write, edit, glob, grep), run as
+`nobody` in a child process that never sees the work token; each call is its
+own `agent.tool_use` and `agent.tool_result`. A coordinator delegates to its
+roster with `send_to_agent`, each delegation a session thread; outcomes are
+graded by an independent grader thread. The harness reads the session through
+the public API and writes its events, the client events it takes and its
+outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
+token reaches. agentd keeps the API, the event log and the sandbox's
+lifecycle, and runs no agent loop; the sandbox takes no inbound connection.
+
+The harness calls the model at an OpenAI-compatible API through the egress
+proxy. The key is an operator credential: `agentd model-key set [--host
+<host>]` reads it from stdin and stores it in Secrets Manager
+(`PREFIX/operator/models/openrouter`), bound to the model host; every
+session's registration with the egress service carries it, so the proxy puts
+it into the harness's model requests. The sandbox sees only its placeholder,
+and the agent's tools not even that.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
-| `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>` | agentd's API as a sandbox's worker reaches it |
+| `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the harness calls the model at; its host is reachable under any networking |
+| `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>` | agentd's API as a sandbox's harness reaches it |
 | `AGENTD_SANDBOX_JOIN` | unset | agentd's container and the egress service's, comma-separated, which join each sandbox's network in place of the gateway |
 | `AGENTD_WORK_TOKEN_KEY` | random per process | Hex key that signs work tokens and egress proxy passwords; set it when more than one replica runs |
 | `AGENTD_EGRESS_ADMIN_URL` | unset | The egress service's admin interface; unset, sandboxes reach nothing beyond agentd |

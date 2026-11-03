@@ -70,6 +70,7 @@ impl AppState {
                     Signer::new(key.clone()),
                     VaultCredentials::new(stores.vaults.clone()),
                     EgressAdmin::new(url, token),
+                    &config.model_base_url,
                 ))
             });
             Arc::new(WorkIssuer {

@@ -1,8 +1,8 @@
 """The scripted demo replay: the extraction agents run on the fixture slice of
 the demo data, with every model call answered by mock-model.json.
 
-Runs when AGENTD_TEST_DEMO=1 says agentd's sessions run their harness against
-that script.
+Runs when AGENTD_TEST_DEMO=1 says each session's harness calls that script
+(served by conformance/mock_model.py).
 """
 
 import json
