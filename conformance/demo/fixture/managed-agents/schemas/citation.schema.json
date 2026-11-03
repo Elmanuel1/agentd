@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "description": "Citation referencing a specific block in the source document.",
+  "required": ["page_number", "text_snippet"],
+  "additionalProperties": false,
+  "properties": {
+    "page_number": {
+      "type": "integer",
+      "description": "Page number from the '--- Page N ---' markers in the document"
+    },
+    "text_snippet": {
+      "type": "string",
+      "description": "Exact substring from the block's content that supports the extracted value"
+    }
+  }
+}

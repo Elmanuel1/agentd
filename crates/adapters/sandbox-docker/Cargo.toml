@@ -1,0 +1,21 @@
+[package]
+name = "sandbox-docker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "agentd's Docker sandbox runtime: one container per session."
+
+[dependencies]
+shared = { workspace = true }
+async-trait = { workspace = true }
+bollard = { workspace = true }
+rand = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

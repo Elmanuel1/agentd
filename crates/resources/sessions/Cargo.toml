@@ -16,6 +16,7 @@ parking_lot = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

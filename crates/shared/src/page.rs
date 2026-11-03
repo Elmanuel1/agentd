@@ -1,11 +1,11 @@
 //! List envelopes + cursor pagination.
 //!
-//! Live-probed (managed-agents-2026-04-01, 2026-07-05): list endpoints return
-//! `{"data":[…], "next_page":"page_…"}` where `next_page` is an opaque cursor
-//! present ONLY when more results exist (omitted otherwise). The next page is
-//! fetched with `?page=<cursor>&limit=N`; `limit` defaults to 20 and must be
-//! 1–100 (else 400). The cursor value is opaque to clients, so agentd mints its
-//! own `page_…` tokens.
+//! Live-probed: Managed Agents lists return `{"data":[…], "next_page":"page_…"}`,
+//! where `next_page` is an opaque cursor, omitted on the last page (the GA
+//! Files and Skills lists send `null` instead). The next page is fetched with
+//! `?page=<cursor>&limit=N`; `limit` defaults to 20, and each list's
+//! [`ListSpec`] sets its bounds and messages. The cursor value is opaque to
+//! clients, so agentd mints its own `page_…` tokens.
 
 use std::collections::HashMap;
 
@@ -15,16 +15,21 @@ use serde::Serialize;
 
 use crate::error::ApiError;
 
+pub mod filters;
 mod id_cursor;
+mod query;
+mod spec;
 
 pub use id_cursor::{IdCursor, IdPage};
+pub use query::ListQuery;
+pub use spec::{ListSpec, Messages, UnknownParams};
 
 /// Default page size when `limit` is omitted.
 pub const DEFAULT_LIMIT: usize = 20;
 /// Maximum allowed `limit`.
 pub const MAX_LIMIT: usize = 100;
 
-/// A paginated list response — `{data, next_page?}`.
+/// A paginated Managed Agents list response: `{data, next_page?}`.
 #[derive(Debug, Clone, Serialize)]
 pub struct Page<T> {
     /// The items on this page.
@@ -32,16 +37,13 @@ pub struct Page<T> {
     /// Opaque cursor for the next page; omitted when there are no more results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page: Option<String>,
+    /// Cursor for the previous page (bidirectional lists only); omitted on
+    /// the first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_page: Option<String>,
 }
 
 impl<T> Page<T> {
-    /// Bare `{"data":[…]}` (no pagination) — for non-list responses like the
-    /// echo of just-sent events.
-    #[must_use]
-    pub fn of(data: Vec<T>) -> Self {
-        Self { data, next_page: None }
-    }
-
     /// Slice `all` (a fully-ordered result set) to the requested page and set
     /// `next_page` when more remain.
     #[must_use]
@@ -51,7 +53,7 @@ impl<T> Page<T> {
         let end = start.saturating_add(page.limit).min(total);
         let data: Vec<T> = all.into_iter().skip(start).take(page.limit).collect();
         let next_page = (end < total).then(|| encode_cursor(end));
-        Self { data, next_page }
+        Self { data, next_page, prev_page: None }
     }
 
     /// Build a page from rows the store fetched DB-side with
@@ -64,7 +66,14 @@ impl<T> Page<T> {
         let has_more = rows.len() > page.limit;
         rows.truncate(page.limit);
         let next_page = has_more.then(|| encode_cursor(page.offset + page.limit));
-        Self { data: rows, next_page }
+        Self { data: rows, next_page, prev_page: None }
+    }
+
+    /// Add the cursor back to the previous page, for a bidirectional list.
+    #[must_use]
+    pub fn with_prev_page(mut self, page: &Pagination) -> Self {
+        self.prev_page = (page.offset > 0).then(|| encode_cursor(page.offset.saturating_sub(page.limit)));
+        self
     }
 }
 
@@ -101,14 +110,6 @@ impl Pagination {
             }
         };
         Ok(Self { limit, offset })
-    }
-
-    /// A plain list endpoint's controls: reject any param other than
-    /// `limit`/`page`, then parse. Collapses the `reject_unknown_params(…) +
-    /// from_params(…)` pair repeated at every simple list route.
-    pub fn from_list_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
-        reject_unknown_params(params, &["limit", "page"])?;
-        Self::from_params(params)
     }
 
     /// SQL `LIMIT` to fetch: `limit + 1`. The extra row (if present) signals
@@ -152,7 +153,7 @@ fn encode_cursor(offset: usize) -> String {
     format!("page_{}", URL_SAFE_NO_PAD.encode(offset.to_string()))
 }
 
-fn decode_cursor(cursor: &str) -> Option<usize> {
+pub(crate) fn decode_cursor(cursor: &str) -> Option<usize> {
     let b64 = cursor.strip_prefix("page_")?;
     let bytes = URL_SAFE_NO_PAD.decode(b64).ok()?;
     std::str::from_utf8(&bytes).ok()?.parse().ok()

@@ -7,10 +7,14 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use shared::{ApiJson, AuthContext, Page, Pagination, RouteError};
+use shared::page::filters::bool_param;
+use shared::{ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
 
 use crate::service::EnvironmentsService;
 use crate::types::{CreateEnvironmentRequest, UpdateEnvironmentRequest};
+
+/// The environments list.
+const LIST: ListSpec = ListSpec::managed(&["include_archived"]);
 
 /// Build the `/v1/environments` router.
 pub fn router() -> Router {
@@ -33,8 +37,9 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
-    Ok(Json(Page::from_fetched(svc.list(&ctx, &page).await?, &page)).into_response())
+    let page = LIST.parse(&params)?;
+    let include_archived = bool_param(&params, "include_archived")?;
+    Ok(Json(Page::from_fetched(svc.list(&ctx, include_archived, &page).await?, &page)).into_response())
 }
 
 async fn get_one(
@@ -68,5 +73,6 @@ async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
     // Live probe: DELETE returned 200 (docs claim 204). Follow reality.
-    Ok(Json(svc.delete(&ctx, &id).await?).into_response())
+    let env = svc.delete(&ctx, &id).await?;
+    Ok(Json(Deleted::new(env.id.as_str(), "environment_deleted")).into_response())
 }

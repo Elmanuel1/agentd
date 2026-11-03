@@ -13,10 +13,11 @@ use memory::service::MemoriesService;
 use memory::types::{CreateMemoryRequest, UpdateMemoryRequest};
 use shared::limits::required;
 use shared::metadata::MetadataPolicy;
-use shared::ports::{FireTarget, ScheduleSpec, SchedulerPort};
+use shared::ports::{ScheduleSpec, SchedulerPort, TenantRef};
 use shared::schedule::{CronKind, CronSchedule};
 use shared::{ApiError, AuthContext, Timestamp};
 
+use crate::fire::target;
 use crate::store::{DreamsStore, StoreError};
 use crate::types::{
     Candidate, CandidateOutcome, CreateDreamRequest, Dream, DreamId, DreamRun, DreamRunId, DreamRunTag,
@@ -105,11 +106,8 @@ impl DreamsService {
             .upsert(ScheduleSpec {
                 cron: dream.schedule.expression.clone(),
                 timezone: dream.schedule.timezone.clone(),
-                target: FireTarget::Dream { id: dream.id.as_str().to_owned() },
-                tenant: shared::ports::TenantRef {
-                    org_id: ctx.org.as_str().to_owned(),
-                    workspace_id: ctx.workspace.as_str().to_owned(),
-                },
+                target: target(&dream.id),
+                tenant: TenantRef::of(ctx),
             })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -133,7 +131,7 @@ impl DreamsService {
         self.store.runs(&ctx.workspace, &id).await.map_err(map_store)
     }
 
-    /// Fire one dream (scheduled via `/internal/dream/fire`, or manual).
+    /// Fire one dream (scheduled through [`crate::fire::DreamFire`], or manual).
     /// Paused/archived scheduled fires are dropped (None).
     pub async fn fire(
         &self,
@@ -233,7 +231,7 @@ impl DreamsService {
     /// `POST /v1/dreams/{id}/archive` — terminal.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Dream, ApiError> {
         let d = self.set_status(ctx, raw_id, DreamStatus::Archived, false).await?;
-        let _ = self.scheduler.delete(&FireTarget::Dream { id: d.id.as_str().to_owned() }).await;
+        let _ = self.scheduler.delete(&target(&d.id)).await;
         Ok(d)
     }
 
@@ -252,7 +250,7 @@ impl DreamsService {
         d.status = status;
         d.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-        let target = FireTarget::Dream { id: d.id.as_str().to_owned() };
+        let target = target(&d.id);
         match status {
             DreamStatus::Paused => {
                 let _ = self.scheduler.pause(&target).await;

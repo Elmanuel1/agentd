@@ -16,15 +16,13 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+mod checkout;
 pub mod entities;
+mod pool;
 pub mod schema;
 
-use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-use diesel_async::AsyncPgConnection;
-
-/// The diesel-async connection pool type (tokio-postgres under the hood).
-pub type DieselPgPool = DieselPool<AsyncPgConnection>;
+pub use checkout::{DieselPgPool, PooledConnection};
+pub use pool::{PgObserver, PoolSettings};
 
 pub use entities::agents::PgAgentsStore;
 pub use entities::deployments::PgDeploymentsStore;
@@ -32,7 +30,9 @@ pub use entities::dreams::PgDreamsStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
 pub use entities::memory::PgMemoryStore;
+pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
+pub use entities::skill_versions::PgSkillVersionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
 
@@ -56,16 +56,6 @@ pub enum PgError {
     /// Could not connect.
     #[error("connect: {0}")]
     Connect(String),
-}
-
-impl PgBackend {
-    /// Connect using `database_url` (or `DATABASE_URL`), pooled.
-    pub async fn connect(database_url: &str) -> Result<Self, PgError> {
-        let manager = AsyncDieselConnectionManager::<AsyncPgConnection>::new(database_url);
-        let diesel =
-            DieselPool::builder(manager).max_size(10).build().map_err(|e| PgError::Connect(e.to_string()))?;
-        Ok(Self { diesel })
-    }
 }
 
 /// Map a Diesel query error to a store `Backend` variant, preserving it as the
@@ -122,12 +112,25 @@ pub(crate) fn parse_doc<T: serde::de::DeserializeOwned, E: FromBackend>(
     serde_json::from_value(doc).map_err(|e| E::backend(shared::BackendError::new(e)))
 }
 
+/// One `doc` column read by a raw SQL query.
+#[derive(diesel::QueryableByName)]
+pub(crate) struct DocRow {
+    #[diesel(sql_type = diesel::sql_types::Jsonb)]
+    pub(crate) doc: serde_json::Value,
+}
+
 /// Serialize a wire type into a `doc` jsonb value.
 pub(crate) fn to_doc<T: serde::Serialize, E: FromBackend>(v: &T) -> Result<serde_json::Value, E> {
     serde_json::to_value(v).map_err(|e| E::backend(shared::BackendError::new(e)))
 }
 
 /// Map an object-store error into the entity `Backend` variant.
-pub(crate) fn blob_be<E: FromBackend>(e: blobs_s3::BlobError) -> E {
+pub(crate) fn blob_be<E: FromBackend>(e: shared::ports::blobs::BlobError) -> E {
+    E::backend(shared::BackendError::new(e))
+}
+
+/// Map a secret-store error, or unreadable secret material, into the entity
+/// `Backend` variant.
+pub(crate) fn secret_be<E: FromBackend, S: std::error::Error + Send + Sync + 'static>(e: S) -> E {
     E::backend(shared::BackendError::new(e))
 }

@@ -11,10 +11,17 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use shared::{reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RouteError};
+use shared::page::filters::{bool_param, CreatedRange};
+use shared::{reject_unknown_params, ApiError, ApiJson, AuthContext, ListSpec, Page, RouteError};
 
 use crate::service::AgentsService;
+use crate::store::AgentFilter;
 use crate::types::{CreateAgentRequest, UpdateAgentRequest};
+
+/// The agents list.
+const LIST: ListSpec = ListSpec::managed(&["include_archived", "created_at[gte]", "created_at[lte]"]);
+/// The versions list reads `limit` and `page` only.
+const VERSIONS: ListSpec = ListSpec::managed(&[]);
 
 /// Build the `/v1/agents` router. State is injected via Extensions so the
 /// composing crate (`api`) owns middleware ordering.
@@ -42,8 +49,12 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
-    let agents = svc.list(&ctx, &page).await?;
+    let page = LIST.parse(&params)?;
+    let filter = AgentFilter {
+        include_archived: bool_param(&params, "include_archived")?,
+        created: CreatedRange::from_query(&params)?,
+    };
+    let agents = svc.list(&ctx, &filter, &page).await?;
     Ok(Json(Page::from_fetched(agents, &page)).into_response())
 }
 
@@ -84,7 +95,7 @@ async fn versions(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = VERSIONS.parse(&params)?;
     let list = svc.versions(&ctx, &id).await?;
     Ok(Json(Page::paginate(list, &page)).into_response())
 }

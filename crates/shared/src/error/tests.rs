@@ -8,7 +8,7 @@ fn req() -> RequestId {
 fn envelope_matches_live_shape() {
     let e = ApiError::invalid_request("model: Field required");
     let rid = req();
-    let v = e.to_envelope(&rid);
+    let v = e.to_envelope(Some(&rid));
     assert_eq!(v["type"], "error");
     assert_eq!(v["error"]["type"], "invalid_request_error");
     assert_eq!(v["error"]["message"], "model: Field required");
@@ -25,7 +25,7 @@ fn memory_path_conflict_matches_live_shape() {
     //  "conflicting_path":"/a.md","conflicting_memory_id":"mem_019f…"}, …}
     let e = ApiError::memory_path_conflict("/a.md", "mem_019fjZBeerJmg5Smuyy2mCS5");
     assert_eq!(e.status, 409);
-    let v = e.to_envelope(&req());
+    let v = e.to_envelope(Some(&req()));
     assert_eq!(v["error"]["type"], "memory_path_conflict_error");
     assert_eq!(
         v["error"]["message"],

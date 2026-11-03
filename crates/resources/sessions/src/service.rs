@@ -9,22 +9,33 @@
 //! - `terminated` is absorbing; archived sessions are read-only,
 //! - `session.status_idle` carries a `stop_reason`; `requires_action` is
 //!   NOT terminal for drain loops.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use shared::limits::ModelCatalog;
+use shared::ports::Runtime;
 use shared::{ApiError, AuthContext, Usage, WorkspaceId};
 use tokio::sync::broadcast;
 
 use crate::events::{Event, EventPayload, StopReason};
-use crate::store::{SessionsStore, StoreError};
-use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus};
+use crate::store::{SessionEventLog, SessionsStore, StoreError};
+use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadId};
 
 use agents::AgentSnapshot;
 
 mod events;
+mod harness;
 mod lifecycle;
+mod record;
+mod resources;
+mod sandbox;
+mod threads;
+
+pub use threads::threads_projection;
+
+pub use events::Subscription;
 
 /// Resolution + validation dependencies the sessions service needs from
 /// other entities — a port, so tests fake it and `api` wires it to
@@ -39,19 +50,30 @@ pub trait SessionDeps: Send + Sync {
         agent_id: &str,
         version: Option<u64>,
     ) -> Result<AgentSnapshot, ApiError>;
-    /// Verify the environment exists (org-scoped) and is not archived.
-    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError>;
+    /// The environment's `config`, after checking it exists (org-scoped) and
+    /// is not archived.
+    async fn resolve_environment(
+        &self,
+        ctx: &AuthContext,
+        env_id: &str,
+    ) -> Result<serde_json::Value, ApiError>;
 }
 
-/// What the engine (task-side loop) is allowed to do to a session — the
-/// sessions↔engine seam.
+/// What a session's harness, the agent loop in its sandbox, writes to the
+/// session: its events, status, usage and outcome evaluations.
 #[async_trait]
-pub trait EngineContract: Send + Sync {
-    /// Append an agent/span event and broadcast it.
+pub trait HarnessContract: Send + Sync {
+    /// The session.
+    async fn session(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Session, ApiError>;
+    /// Every event of the session and its threads, oldest first.
+    async fn events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError>;
+    /// Append an agent, span or session event and broadcast it; `thread`
+    /// names a secondary thread or the thread a lifecycle event is about.
     async fn emit(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
+        thread: Option<&ThreadId>,
         payload: EventPayload,
     ) -> Result<Event, ApiError>;
     /// Transition status (emits the matching `session.status_*` event).
@@ -75,12 +97,38 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
 }
 
+/// Issues the work item a session's sandbox runs, and registers the session
+/// with the egress service.
+#[async_trait]
+pub trait SandboxWork: Send + Sync {
+    /// The environment variables the sandbox starts with: where its harness
+    /// reports, the work it runs, and its egress settings.
+    async fn issue(
+        &self,
+        ctx: &AuthContext,
+        session: &Session,
+        environment: &serde_json::Value,
+    ) -> Result<BTreeMap<String, String>, ApiError>;
+    /// The session's sandbox is gone.
+    fn end(&self, session: &SessionId);
+}
+
+/// The live fan-out: one broadcast channel per session that has a listener.
+type Channels = Arc<Mutex<HashMap<SessionId, broadcast::Sender<Event>>>>;
+
 /// Sessions service.
 pub struct SessionsService {
     store: Arc<dyn SessionsStore>,
+    events: Arc<dyn SessionEventLog>,
     deps: Arc<dyn SessionDeps>,
     /// Live SSE fan-out. Stream has NO replay — reconnect = list + dedupe.
-    channels: Mutex<HashMap<SessionId, broadcast::Sender<Event>>>,
+    channels: Channels,
+    /// The models an `agent_with_overrides` may name.
+    catalog: ModelCatalog,
+    /// Runs one sandbox per session; `None` runs no sandbox.
+    sandbox: Option<Arc<dyn Runtime>>,
+    /// Issues each sandbox's work item, which its harness runs.
+    work: Option<Arc<dyn SandboxWork>>,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -90,9 +138,24 @@ impl std::fmt::Debug for SessionsService {
 }
 
 impl SessionsService {
-    /// Build with a store and dependency port.
-    pub fn new(store: Arc<dyn SessionsStore>, deps: Arc<dyn SessionDeps>) -> Self {
-        Self { store, deps, channels: Mutex::new(HashMap::new()) }
+    /// Build with the session rows, their event log, the dependency port and
+    /// the model catalog.
+    pub fn new(
+        store: Arc<dyn SessionsStore>,
+        events: Arc<dyn SessionEventLog>,
+        deps: Arc<dyn SessionDeps>,
+        catalog: ModelCatalog,
+    ) -> Self {
+        Self { store, events, deps, catalog, channels: Channels::default(), sandbox: None, work: None }
+    }
+
+    /// Run each session's sandbox on `runtime`, its worker on a work item
+    /// from `work`.
+    #[must_use]
+    pub fn with_sandbox(mut self, runtime: Arc<dyn Runtime>, work: Option<Arc<dyn SandboxWork>>) -> Self {
+        self.sandbox = Some(runtime);
+        self.work = work;
+        self
     }
 }
 
@@ -110,6 +173,9 @@ fn parse_id(raw: &str) -> Result<SessionId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("session not found"),
+        StoreError::Conflict => {
+            ApiError::conflict_invalid_request("the session changed while this request ran; retry it")
+        }
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

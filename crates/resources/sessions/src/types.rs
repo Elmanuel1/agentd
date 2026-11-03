@@ -4,8 +4,16 @@ use agents::AgentSnapshot;
 use serde::{Deserialize, Serialize};
 use shared::{Id, Metadata, Resource, Timestamp, Usage};
 
+mod budget;
 mod outcomes;
+mod requests;
 mod resources;
+mod threads;
+
+pub use budget::{Budget, MonetaryAmount};
+pub use requests::{AgentOverrides, AgentRefInput, AgentUpdate, CreateSessionRequest, UpdateSessionRequest};
+
+pub use threads::{primary_thread_id, SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag};
 
 pub use outcomes::{OutcomeEvaluation, OutcomeId, OutcomeResource_, OutcomeResult};
 pub use resources::{
@@ -61,6 +69,9 @@ pub struct Session {
     pub agent: AgentSnapshot,
     /// Archive stamp.
     pub archived_at: Option<Timestamp>,
+    /// The spending limit, `null` when unset.
+    #[serde(default)]
+    pub budget: Option<Budget>,
     /// Created.
     pub created_at: Timestamp,
     /// The environment.
@@ -88,76 +99,9 @@ pub struct Session {
     pub usage: Usage,
     /// Attached vaults.
     pub vault_ids: Vec<String>,
-}
-
-/// Agent reference accepted on session create: bare id string or
-/// `{type:"agent", id, version?}`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum AgentRefInput {
-    /// `"agent_abc"` → latest version.
-    Shorthand(String),
-    /// Tagged form.
-    Tagged {
-        /// Must be `"agent"`.
-        #[serde(rename = "type")]
-        tag: String,
-        /// Agent id.
-        id: String,
-        /// Pinned version (latest when absent).
-        #[serde(default)]
-        version: Option<u64>,
-    },
-}
-
-impl AgentRefInput {
-    /// The referenced agent id.
-    pub fn id(&self) -> &str {
-        match self {
-            Self::Shorthand(id) => id,
-            Self::Tagged { id, .. } => id,
-        }
-    }
-
-    /// The pinned version, if any.
-    pub fn version(&self) -> Option<u64> {
-        match self {
-            Self::Shorthand(_) => None,
-            Self::Tagged { version, .. } => *version,
-        }
-    }
-}
-
-/// `POST /v1/sessions` body.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateSessionRequest {
-    /// Required agent reference.
-    pub agent: Option<AgentRefInput>,
-    /// Required environment.
-    pub environment_id: Option<String>,
-    /// Optional title.
-    pub title: Option<String>,
-    /// Resources.
-    #[serde(default)]
-    pub resources: Vec<SessionResourceInput>,
-    /// Vaults.
-    #[serde(default)]
-    pub vault_ids: Vec<String>,
-    /// Metadata (no entry cap — live divergence).
-    #[serde(default)]
-    pub metadata: Metadata,
-}
-
-/// `POST /v1/sessions/{id}` body — only `title`/`metadata` here (agent-config
-/// overrides are a later surface).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateSessionRequest {
-    /// Replace title.
-    pub title: Option<String>,
-    /// Replace metadata.
-    pub metadata: Option<Metadata>,
+    /// The deployment whose fire created the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
 }
 
 #[cfg(test)]

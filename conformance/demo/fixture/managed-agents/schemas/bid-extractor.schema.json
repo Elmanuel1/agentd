@@ -1,0 +1,1127 @@
+{
+  "$defs": {
+    "IntegerValueWithCitations": {
+      "type": "object",
+      "required": [
+        "value",
+        "citations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "citation.schema.json"
+          }
+        },
+        "review_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+        }
+      }
+    },
+    "Taxes": {
+      "type": "object",
+      "required": [
+        "treatment",
+        "taxes",
+        "description"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "treatment": {
+          "type": "string",
+          "enum": [
+            "included",
+            "excluded",
+            "partly_included"
+          ],
+          "description": "Whether bid prices include the taxes: included, excluded, or some included and others not."
+        },
+        "taxes": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The taxes named, as the document names them: GST, HST, PST, sales tax."
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "TaxesValueWithCitations": {
+      "type": "object",
+      "required": [
+        "value",
+        "citations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Taxes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "citation.schema.json"
+          }
+        },
+        "review_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+        }
+      }
+    },
+    "LiquidatedDamages": {
+      "type": "object",
+      "required": [
+        "amount",
+        "currency",
+        "unit",
+        "description"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Penalty amount per unit"
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "per_day",
+            "per_week",
+            "per_month",
+            null
+          ],
+          "description": "Frequency of the penalty"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Full clause text as written in the tender"
+        }
+      }
+    },
+    "Address": {
+      "type": "object",
+      "required": [
+        "address",
+        "city",
+        "state_or_province",
+        "postal_code",
+        "country"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state_or_province": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "postal_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "country": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "StringValueWithCitations": {
+      "type": "object",
+      "required": [
+        "value",
+        "citations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "citation.schema.json"
+          }
+        },
+        "review_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+        }
+      }
+    },
+    "LocationValueWithCitations": {
+      "type": "object",
+      "required": [
+        "value",
+        "citations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "citation.schema.json"
+          }
+        },
+        "review_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+        }
+      }
+    },
+    "LiquidatedDamagesValueWithCitations": {
+      "type": "object",
+      "required": [
+        "value",
+        "citations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LiquidatedDamages"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "$ref": "citation.schema.json"
+          }
+        },
+        "review_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+        }
+      }
+    }
+  },
+  "type": "object",
+  "required": [
+    "source_agent",
+    "name",
+    "reference_number",
+    "location",
+    "scope_of_work",
+    "delivery_method",
+    "currency",
+    "timezone",
+    "closing_date",
+    "events",
+    "start_date",
+    "completion_date",
+    "inquiry_deadline",
+    "submission_method",
+    "submission_url",
+    "conditions",
+    "parties",
+    "liquidated_damages",
+    "bonds",
+    "insurance",
+    "requirements",
+    "bid_validity_days",
+    "taxes",
+    "contract_form",
+    "prevailing_wage",
+    "substitution_deadline",
+    "alternates",
+    "price_adjustments",
+    "separate_contracts",
+    "participation_goals",
+    "obligations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "source_agent": {
+      "type": "string",
+      "enum": [
+        "bid-extractor"
+      ]
+    },
+    "name": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/StringValueWithCitations"
+        }
+      ],
+      "description": "Name of the PROJECT, not of the document. A document heading is a document type (\"SCHEDULE OF APPROXIMATE QUANTITIES\", \"FORM OF TENDER\", \"ADDENDUM NO. 2\") and is never a project name. Prefer a stated project or contract title; failing that the site address; failing that null. Never compose a name from parts the document does not present together \u2014 the citation must point at a block containing the returned value."
+    },
+    "reference_number": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "scope_of_work": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "delivery_method": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "value",
+            "citations"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "lump_sum",
+                "unit_price",
+                "stipulated_price",
+                "design_build",
+                "construction_management",
+                "cost_plus",
+                "time_and_materials",
+                "mixed",
+                null
+              ],
+              "description": "Contract delivery method. ALWAYS use exact snake_case value. NEVER output human-readable labels like 'Unit Price Contract' or 'Lump Sum'."
+            },
+            "citations": {
+              "type": "array",
+              "items": {
+                "$ref": "citation.schema.json"
+              }
+            },
+            "review_reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currency": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "timezone": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "closing_date": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "start_date": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "completion_date": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "inquiry_deadline": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "submission_method": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "submission_url": {
+      "$ref": "#/$defs/StringValueWithCitations"
+    },
+    "liquidated_damages": {
+      "$ref": "#/$defs/LiquidatedDamagesValueWithCitations"
+    },
+    "location": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/LocationValueWithCitations"
+        }
+      ],
+      "description": "Where the work is built: the site's address, road, intersection or area. Never the address of the owner's, consultant's or bidders' office, even when it is the only street address in the document."
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "mandatory",
+          "date",
+          "location",
+          "details",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "site_visit",
+              "pre_bid_meeting"
+            ],
+            "description": "pre_bid_meeting: any meeting held for bidders before close, on site or not. site_visit: only an unaccompanied or self-guided visit of the site."
+          },
+          "mandatory": {
+            "type": "boolean"
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "conditions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "topic",
+          "applies_at",
+          "description",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "type": "string",
+            "enum": [
+              "registration",
+              "prequalification",
+              "licence_registration",
+              "experience_references",
+              "single_entity",
+              "conduct",
+              "questions",
+              "site_visit_meeting",
+              "addenda",
+              "irrevocability",
+              "closing_late_bids",
+              "submission_method",
+              "forms_declarations",
+              "pricing_rules",
+              "subcontractors",
+              "schedule_workplan",
+              "key_personnel",
+              "source_of_material",
+              "award_basis",
+              "contract_execution",
+              "award_approval"
+            ],
+            "description": "What the entry is about: one of the extracting-tender-checklists skill's topics for this list."
+          },
+          "applies_at": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "eligibility",
+                "bid_submission",
+                "bidding_period",
+                "award"
+              ]
+            },
+            "description": "Every stage the condition applies at, at least one. eligibility: what the bidder must be or hold before bidding (prequalification, an invited list, plan-taker registration, a licence, experience, bonding capacity, a certificate held at closing, obtaining the standard documents the tender relies on). bid_submission: what must be in the bid (signed form, bid security, forms, declarations, subcontractor list, schedule or work plan) and how it is priced (currency, every item priced, optional work priced, whether taxes are included in the bid prices; tax registration and invoicing after award are payment terms). bidding_period: a rule the bidder follows before closing (attend a mandatory meeting or site visit, keep the bid open for the stated days). award: what the successful bidder delivers or does after award and before the contract is signed (the bonds, insurance proof, clearance letter, baseline schedule, signing). Anything after signing, including starting work, is an obligation, not a condition. Select every stage that applies."
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "parties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "name",
+          "contact_person",
+          "phone",
+          "email",
+          "address",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "consultant",
+              "designer",
+              "contractor",
+              "subcontractor",
+              "surety",
+              "legal"
+            ],
+            "description": "owner: entity commissioning and funding the work. consultant: engineering/architectural firm administering the contract on the owner's behalf (issues addenda, certifies payment). designer: firm that produced the design drawings and specifications \u2014 may be the same as consultant. contractor: prime or general contractor bidding or awarded the work. subcontractor: specialty trade contractor named in the tender. surety: bond or insurance provider. legal: legal counsel listed in the tender documents."
+          },
+          "name": {
+            "type": "string"
+          },
+          "contact_person": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "address": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Address"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "bonds": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "percentage",
+          "amount",
+          "currency",
+          "description",
+          "conditions",
+          "explanation",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "bid_bond",
+              "performance_bond",
+              "labour_material_bond",
+              "maintenance_bond"
+            ]
+          },
+          "percentage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "insurance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "minimum_coverage",
+          "currency",
+          "description",
+          "certificate_required",
+          "conditions",
+          "explanation",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "cgl",
+              "auto_liability",
+              "non_owned_auto",
+              "umbrella",
+              "wrap_up_liability",
+              "professional_liability",
+              "errors_omissions",
+              "pollution_liability",
+              "builders_risk",
+              "installation_floater",
+              "equipment_floater",
+              "boiler_machinery",
+              "aircraft_watercraft",
+              "unmanned_aircraft",
+              "crane_liability",
+              "railway_protective",
+              "owners_contractors_protective",
+              "property",
+              "cyber_liability",
+              "workers_comp",
+              "other"
+            ],
+            "description": "The policy's type, by its own name. `other` when no type fits: name the policy in description and set review_reason."
+          },
+          "minimum_coverage": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "currency": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "certificate_required": {
+            "type": "boolean"
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "bid_validity_days": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/IntegerValueWithCitations"
+        }
+      ],
+      "description": "How many days a bid stays irrevocable and open for acceptance after closing, as a number of days. Null when the document does not state it."
+    },
+    "taxes": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/TaxesValueWithCitations"
+        }
+      ],
+      "description": "Whether bid prices include sales taxes (GST, HST, PST, sales tax). Null when the document does not say."
+    },
+    "contract_form": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/StringValueWithCitations"
+        }
+      ],
+      "description": "The standard form of contract or general conditions the work is let under, with its edition, as the document names it: CCDC 2 2020, MMCD 2009 Platinum Edition, AIA A101, EJCDC C-520, OPSS. Mention supplementary conditions when the document says they amend it."
+    },
+    "prevailing_wage": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/StringValueWithCitations"
+        }
+      ],
+      "description": "A wage schedule the contractor must pay, as the document states it: prevailing wage, Davis-Bacon, a fair wage policy, a union rate schedule."
+    },
+    "substitution_deadline": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/StringValueWithCitations"
+        }
+      ],
+      "description": "When requests to use a substitute or equal product must be in: a date, or the document's own wording (\"10 days before closing\")."
+    },
+    "alternates": {
+      "type": "array",
+      "description": "Prices asked for beside the base bid. Not a line of the price schedule that is part of the base bid, and not an owner allowance.",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "description",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "alternate",
+              "separate_price"
+            ],
+            "description": "alternate: an add or deduct option the owner may accept or not. separate_price: a price for part of the work asked for separately."
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "price_adjustments": {
+      "type": "array",
+      "description": "Clauses that adjust the contract price with a cost index.",
+      "items": {
+        "type": "object",
+        "required": [
+          "material",
+          "description",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "material": {
+            "type": "string",
+            "description": "What the index tracks, as the document names it: fuel, asphalt cement, steel."
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "separate_contracts": {
+      "type": "array",
+      "description": "Separate contracts, lots or parts of the work that are bid or awarded on their own. Empty when the tender is one contract.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "participation_goals": {
+      "type": "array",
+      "description": "Participation goals the bidder must meet or report: DBE, MBE, WBE, local hiring, Indigenous or social procurement.",
+      "items": {
+        "type": "object",
+        "required": [
+          "program",
+          "percent",
+          "description",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "program": {
+            "type": "string",
+            "description": "The program as the document names it: DBE, MBE, WBE, local, Indigenous, social procurement."
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "obligations": {
+      "type": "array",
+      "description": "What the contractor must do after the contract is signed: before work starts, during the work, or at closeout. Actions, not how materials or dimensions are specified.",
+      "items": {
+        "type": "object",
+        "required": [
+          "topic",
+          "applies_at",
+          "kind",
+          "description",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "type": "string",
+            "enum": [
+              "permit_approval",
+              "submittal",
+              "notice",
+              "coordination",
+              "site_constraint",
+              "public_protection",
+              "site_facilities",
+              "testing_inspection",
+              "reporting_records",
+              "schedule_progress",
+              "cleanup_restoration",
+              "closeout"
+            ],
+            "description": "What the entry is about: one of the extracting-tender-checklists skill's topics for this list."
+          },
+          "applies_at": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "before_start",
+                "during_work",
+                "closeout"
+              ]
+            },
+            "description": "Every stage it applies at, at least one. before_start: after signing and before work starts (notice to proceed, permits, plans and submittals due before starting). during_work: while the work goes on (coordination, site constraints, testing, reporting, notices). closeout: at completion (as-built records, final documents, holdback release conditions)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "permit",
+              "submittal",
+              "notice",
+              "coordination",
+              "site_constraint",
+              "testing",
+              "reporting",
+              "closeout_document"
+            ],
+            "description": "permit: a permit or approval to obtain. submittal: a plan, schedule, data or document to submit. notice: a notice to give or act on (notice to proceed). coordination: work to coordinate with a third party (railway, utility, ministry). site_constraint: when or where work may happen (hours, seasons, access). testing: tests or inspections the contractor arranges or pays for. reporting: records or reports during the work. closeout_document: a document due at completion."
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "description": "Contract terms that bind the contractor for the whole contract and affect price or risk: warranty or maintenance period, safety programme and duties, laws, regulations, permit regimes or named standards the contract makes the contractor comply with, holdback and its release, how and when the contractor is paid. Not a technical specification of materials, dimensions, methods, tests or markings; an action the specification requires (arrange testing, submit data) is an obligation.",
+      "items": {
+        "type": "object",
+        "required": [
+          "topic",
+          "category",
+          "description",
+          "explanation",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "type": "string",
+            "enum": [
+              "wsib",
+              "health_safety",
+              "accessibility",
+              "excess_soil",
+              "drinking_water",
+              "hazardous_materials",
+              "waste_disposal",
+              "traffic_control",
+              "hauling",
+              "environmental",
+              "winter_maintenance",
+              "bylaws",
+              "all_laws",
+              "labour",
+              "non_resident",
+              "tax_remittance",
+              "privacy",
+              "utilities_standards",
+              "holdback_lien",
+              "warranty",
+              "payment_terms",
+              "construction_standard"
+            ],
+            "description": "What the entry is about: one of the extracting-tender-checklists skill's topics for this list."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "warranty",
+              "safety",
+              "compliance",
+              "holdback",
+              "payment_terms"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "description": "One plain sentence in sentence case saying who must do what, and by when: written for a reader, not copied from the page (no ALL CAPS, clause numbers or cut-off text). The citation carries the exact words."
+          },
+          "explanation": {
+            "type": "string"
+          },
+          "citations": {
+            "type": "array",
+            "items": {
+              "$ref": "citation.schema.json"
+            }
+          },
+          "review_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a person should check this value, in one sentence; null when the page states it plainly. Set it when the document is ambiguous, the OCR is garbled, two pages disagree, the value is inferred, or the printed value fits none of the allowed values (for example a unit cell printed as 'cup', '-' or blank). Never change a value to fit an allowed option: leave it null and say what is printed here."
+          }
+        }
+      }
+    }
+  }
+}

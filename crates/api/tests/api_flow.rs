@@ -4,14 +4,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use test_support::{MemorySecretStore, StaticKeySource};
 
-use api::{build_router, AppState};
+use api::{build_router, AppState, Backends, Stores};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
-use shared::ports::FakeScheduler;
+use shared::ports::fire::FireRegistry;
+use shared::ports::{FakeRuntime, FakeScheduler};
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -27,20 +29,44 @@ fn enabled() -> bool {
 /// the integration env isn't configured (test skips). Unique tenants per call
 /// isolate the shared DB.
 async fn app() -> Option<Router> {
+    app_with(Arc::new(FakeRuntime::new())).await
+}
+
+async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
     if !enabled() {
         return None;
     }
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let backend = PgBackend::connect(&url).await.unwrap();
-    let bucket = format!("agentdapi{}", Timestamp::now().as_datetime().timestamp_micros());
-    let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(bucket).await.unwrap());
-    let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
-    let stamp = Timestamp::now().as_datetime().timestamp_micros();
+    let bucket = format!("agentdapi{}", unique_stamp());
+    let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(&s3_config(bucket)).await.unwrap());
+    let stamp = unique_stamp();
     let org = format!("org_t{stamp}");
-    state.keys.register(KEY, &org, format!("wrkspc_a{stamp}"), "apikey_01a");
-    state.keys.register(KEY_B, &org, format!("wrkspc_b{stamp}"), "apikey_01b");
-    Some(build_router(state))
+    let mut keys = StaticKeySource::default();
+    keys.register(KEY, &org, &format!("wrkspc_a{stamp}"), "apikey_01a");
+    keys.register(KEY_B, &org, &format!("wrkspc_b{stamp}"), "apikey_01b");
+    let backends = Backends {
+        stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
+        keys: Arc::new(keys),
+        scheduler: Arc::new(FakeScheduler::new()),
+        fires: Arc::new(FireRegistry::new()),
+        runtime: Some(runtime),
+        sandbox: None,
+        extra_models: Vec::new(),
+        metrics: Arc::new(api::telemetry::Metrics::global()),
+    };
+    Some(build_router(AppState::build(backends).unwrap()))
+}
+
+/// A test bucket on the emulator at `AGENTD_AWS_ENDPOINT`, created on connect.
+fn s3_config(bucket: String) -> S3Config {
+    S3Config {
+        endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+        path_style: true,
+        create_bucket: true,
+        ..S3Config::new(bucket)
+    }
 }
 
 /// Call with full header control.
@@ -52,12 +78,16 @@ async fn call_raw(
     api_key: Option<&str>,
     beta: bool,
 ) -> (StatusCode, serde_json::Value) {
-    let mut b = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01");
     if let Some(k) = api_key {
         b = b.header("x-api-key", k);
     }
     if beta {
-        b = b.header("anthropic-beta", "managed-agents-2026-04-01");
+        b = b.header("anthropic-beta", beta_for(uri));
     }
     let req = b
         .body(match body {
@@ -70,6 +100,15 @@ async fn call_raw(
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, v)
+}
+
+/// The beta the official SDK sends for `uri`.
+fn beta_for(uri: &str) -> &'static str {
+    if uri.starts_with("/v1/memory_stores") {
+        "agent-memory-2026-07-22"
+    } else {
+        "managed-agents-2026-04-01"
+    }
 }
 
 /// Standard authenticated + beta call.
@@ -348,4 +387,36 @@ async fn exact_live_error_strings_survive_the_full_stack() {
         call(&app, "POST", "/v1/agents", Some(r#"{"name":"x","model":"claude-sonnet-4-6","bogus":1}"#)).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["message"], "Failed to parse request body: unknown field \"bogus\"");
+}
+
+#[tokio::test]
+async fn a_session_launches_its_sandbox_with_the_resolved_environment() {
+    let runtime = Arc::new(FakeRuntime::new());
+    let Some(app) = app_with(runtime.clone()).await else {
+        return;
+    };
+    let env_body = r#"{"name":"sbx","config":{"type":"cloud","networking":{"type":"limited"}}}"#;
+    let (_, env) = call(&app, "POST", "/v1/environments", Some(env_body)).await;
+    let (_, agent) =
+        call(&app, "POST", "/v1/agents", Some(r#"{"name":"sbx","model":"claude-sonnet-4-6"}"#)).await;
+    let body = format!(
+        r#"{{"agent":"{}","environment_id":"{}"}}"#,
+        agent["id"].as_str().unwrap(),
+        env["id"].as_str().unwrap()
+    );
+    let (st, session) = call(&app, "POST", "/v1/sessions", Some(&body)).await;
+    assert_eq!(st, StatusCode::OK);
+    let jobs = runtime.launched();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].target_id, session["id"].as_str().unwrap());
+    assert_eq!(jobs[0].environment_id, env["id"].as_str().unwrap());
+    assert_eq!(jobs[0].environment["networking"]["type"], "limited");
+}
+
+/// A stamp no other app in this test binary shares: tests run in parallel, and
+/// two apps built in the same microsecond would share a workspace.
+fn unique_stamp() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}x{n}", Timestamp::now().as_datetime().timestamp_micros())
 }

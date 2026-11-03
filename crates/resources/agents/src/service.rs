@@ -1,16 +1,15 @@
-//! Agent business logic: validation (exact live error strings),
-//! canonicalization, integer versioning, and the archive lifecycle.
+//! Agent business logic: integer versioning and the archive lifecycle. The
+//! configuration rules live on the request types (`types::validate`).
 
 use std::sync::Arc;
 
-use shared::limits::{
-    required, validate_array_max, validate_model_supported, validate_string_len, values, ModelCatalog,
-};
-use shared::metadata::MetadataPolicy;
+use shared::limits::ModelCatalog;
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
-use crate::store::{AgentsStore, StoreError};
-use crate::types::{Agent, AgentConfig, AgentId, AgentTag, CreateAgentRequest, UpdateAgentRequest};
+use crate::store::{AgentFilter, AgentsStore, StoreError};
+use crate::types::{Agent, AgentConfig, AgentId, AgentRef, AgentTag, CreateAgentRequest, UpdateAgentRequest};
+
+mod multiagent;
 
 /// Agent service — all handlers delegate here.
 pub struct AgentsService {
@@ -24,6 +23,9 @@ impl std::fmt::Debug for AgentsService {
     }
 }
 
+/// Live 400 for a stale `version`, verbatim; also the answer to a lost race.
+const CONCURRENT: &str = "Concurrent modification detected. Please fetch the latest version and retry.";
+
 impl AgentsService {
     /// Build with a store and model catalog.
     pub fn new(store: Arc<dyn AgentsStore>, catalog: ModelCatalog) -> Self {
@@ -32,22 +34,17 @@ impl AgentsService {
 
     /// `POST /v1/agents`.
     pub async fn create(&self, ctx: &AuthContext, req: CreateAgentRequest) -> Result<Agent, ApiError> {
-        let metadata = req.metadata.clone();
-        let config = self.validate_config(req)?;
+        let draft = req.into_draft(&self.catalog)?;
+        let id = AgentId::generate();
+        let this = AgentRef { id: id.clone(), tag: AgentTag::Agent, version: 1 };
+        let multiagent = self.resolve_multiagent(ctx, &this, None, draft.multiagent).await?;
         let now = Timestamp::now();
         let agent = Agent {
+            id,
+            config: AgentConfig { multiagent, ..draft.config },
             archived_at: None,
             created_at: now,
-            description: config.description,
-            id: AgentId::generate(),
-            mcp_servers: config.mcp_servers,
-            metadata,
-            model: config.model,
-            multiagent: config.multiagent,
-            name: config.name,
-            skills: config.skills,
-            system: config.system,
-            tools: config.tools,
+            metadata: draft.metadata,
             tag: AgentTag::Agent,
             updated_at: now,
             version: 1,
@@ -73,9 +70,14 @@ impl AgentsService {
         .map_err(map_store)
     }
 
-    /// `GET /v1/agents` — latest version of each agent.
-    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Agent>, ApiError> {
-        self.store.list(&ctx.workspace, page).await.map_err(map_store)
+    /// `GET /v1/agents`: the latest version of each agent, newest first.
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        filter: &AgentFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Agent>, ApiError> {
+        self.store.list(&ctx.workspace, filter, page).await.map_err(map_store)
     }
 
     /// `GET /v1/agents/{id}/versions` — ascending.
@@ -84,7 +86,9 @@ impl AgentsService {
         self.store.versions(&ctx.workspace, &id).await.map_err(map_store)
     }
 
-    /// `POST /v1/agents/{id}` — every update mints version latest+1.
+    /// `POST /v1/agents/{id}`. A change mints version latest+1; an update that
+    /// changes nothing returns the agent as it is. `version`, when sent, must
+    /// be the latest.
     pub async fn update(
         &self,
         ctx: &AuthContext,
@@ -92,58 +96,39 @@ impl AgentsService {
         req: UpdateAgentRequest,
     ) -> Result<Agent, ApiError> {
         let id = parse_id(raw_id)?;
-        // Live: `version` is required (optimistic lock) — a missing one fails
-        // body validation with "version: Field required".
-        let expected = required("version", req.version)?;
         let current = self.store.latest(&ctx.workspace, &id).await.map_err(map_store)?;
         if current.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request("cannot update an archived agent"));
         }
-        if expected != current.version {
-            // Live 400 message, verbatim.
-            return Err(ApiError::invalid_request(
-                "Concurrent modification detected. Please fetch the latest version and retry.",
-            ));
+        if req.version.is_some_and(|v| v != current.version) {
+            return Err(ApiError::invalid_request(CONCURRENT));
         }
-        // Merge: present fields replace, absent fields carry over.
-        let merged = CreateAgentRequest {
-            name: Some(req.name.unwrap_or_else(|| current.name.clone())),
-            model: Some(match req.model {
-                Some(m) => m,
-                None => crate::types::ModelInput::Full {
-                    id: current.model.id.clone(),
-                    speed: Some(current.model.speed),
-                },
-            }),
-            description: req.description.or_else(|| current.description.clone()),
-            system: req.system.or_else(|| current.system.clone()),
-            tools: req.tools.unwrap_or_else(|| current.tools.clone()),
-            mcp_servers: req.mcp_servers.unwrap_or_else(|| current.mcp_servers.clone()),
-            skills: req.skills.unwrap_or_else(|| current.skills.clone()),
-            multiagent: req.multiagent.or_else(|| current.multiagent.clone()),
-            metadata: req.metadata.unwrap_or_else(|| current.metadata.clone()),
-        };
-        let metadata = merged.metadata.clone();
-        let config = self.validate_config(merged)?;
+        let draft = req.apply_to(&current, &self.catalog)?;
+        let stored = current.config.multiagent.as_ref();
+        // `self` names the version being written. Resolved against the current
+        // version first, an unchanged configuration is recognised as a no-op.
+        let unchanged = current.reference();
+        let same = self.resolve_multiagent(ctx, &unchanged, stored, draft.multiagent.clone()).await?;
+        if (AgentConfig { multiagent: same, ..draft.config.clone() }) == current.config
+            && draft.metadata == current.metadata
+        {
+            return Ok(current);
+        }
+        let this = AgentRef { version: current.version + 1, ..unchanged };
+        let multiagent = self.resolve_multiagent(ctx, &this, stored, draft.multiagent).await?;
+        let config = AgentConfig { multiagent, ..draft.config };
         let next = Agent {
-            archived_at: None,
-            created_at: current.created_at,
-            description: config.description,
-            id: current.id.clone(),
-            mcp_servers: config.mcp_servers,
-            metadata,
-            model: config.model,
-            multiagent: config.multiagent,
-            name: config.name,
-            skills: config.skills,
-            system: config.system,
-            tools: config.tools,
-            tag: AgentTag::Agent,
+            config,
+            metadata: draft.metadata,
             updated_at: Timestamp::now(),
-            version: current.version + 1,
+            version: this.version,
+            ..current
         };
-        self.store.append_version(&ctx.workspace, next.clone()).await.map_err(map_store)?;
-        Ok(next)
+        match self.store.append_version(&ctx.workspace, next.clone()).await {
+            Ok(()) => Ok(next),
+            Err(StoreError::Conflict) => Err(ApiError::invalid_request(CONCURRENT)),
+            Err(e) => Err(map_store(e)),
+        }
     }
 
     /// `POST /v1/agents/{id}/archive` — permanent, idempotent stamp.
@@ -157,45 +142,6 @@ impl AgentsService {
         }
         Ok(current)
     }
-
-    /// Shared validation + canonicalization with exact live error strings.
-    fn validate_config(&self, req: CreateAgentRequest) -> Result<AgentConfig, ApiError> {
-        let name = required("name", req.name)?;
-        validate_string_len("name", &name, values::NAME_MIN, values::NAME_MAX)?;
-        if let Some(d) = &req.description {
-            validate_string_len("description", d, 0, values::DESCRIPTION_MAX)?;
-        }
-        if let Some(s) = &req.system {
-            validate_string_len("system", s, 0, values::SYSTEM_MAX)?;
-        }
-        validate_array_max("tools", req.tools.len(), values::TOOLS_MAX)?;
-        validate_array_max("mcp_servers", req.mcp_servers.len(), values::MCP_SERVERS_MAX)?;
-        // Live: duplicate skill_id → "Agent has invalid configuration: duplicate skill_id "pdf""
-        let mut seen = std::collections::BTreeSet::new();
-        for s in &req.skills {
-            if !seen.insert(s.skill_id().to_owned()) {
-                return Err(ApiError::invalid_request(format!(
-                    "Agent has invalid configuration: duplicate skill_id \"{}\"",
-                    s.skill_id()
-                )));
-            }
-        }
-        validate_array_max("skills", req.skills.len(), values::SKILLS_MAX)?;
-        req.metadata.validate(MetadataPolicy::capped())?;
-        let model_input = required("model", req.model)?;
-        let model = model_input.canonicalize();
-        validate_model_supported(&model.id, &self.catalog)?;
-        Ok(AgentConfig {
-            name,
-            model,
-            description: req.description,
-            system: req.system,
-            tools: req.tools,
-            mcp_servers: req.mcp_servers,
-            skills: req.skills,
-            multiagent: req.multiagent,
-        })
-    }
 }
 
 fn parse_id(raw: &str) -> Result<AgentId, ApiError> {
@@ -205,6 +151,7 @@ fn parse_id(raw: &str) -> Result<AgentId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("agent not found"),
+        StoreError::Conflict => ApiError::invalid_request(CONCURRENT),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

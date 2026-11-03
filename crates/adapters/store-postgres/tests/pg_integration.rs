@@ -11,10 +11,11 @@
 
 use std::sync::Arc;
 
+use agents::store::AgentFilter;
 use agents::store::AgentsStore;
-use agents::types::{AgentId, AgentTag, ModelSpec, ModelSpeed};
+use agents::types::{AgentConfig, AgentId, AgentTag, ExecutionIdentity, ModelSpec};
 use agents::{Agent, AgentsService};
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use deployments::store::DeploymentsStore;
 use deployments::types::DeploymentId;
 use files::store::{FilesStore, StoredFile};
@@ -43,18 +44,21 @@ fn ctx(ws: &WorkspaceId) -> AuthContext {
 
 fn agent(version: u64, id: AgentId, name: &str) -> Agent {
     Agent {
+        id,
+        config: AgentConfig {
+            name: name.into(),
+            model: ModelSpec::standard("claude-sonnet-4-6"),
+            description: None,
+            system: None,
+            tools: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            multiagent: None,
+            execution_identity: ExecutionIdentity::ServiceAccount,
+        },
         archived_at: None,
         created_at: Timestamp::now(),
-        description: None,
-        id,
-        mcp_servers: vec![],
         metadata: Metadata::new(),
-        model: ModelSpec { id: "claude-sonnet-4-6".into(), speed: ModelSpeed::Standard },
-        multiagent: None,
-        name: name.into(),
-        skills: vec![],
-        system: None,
-        tools: vec![],
         tag: AgentTag::Agent,
         updated_at: Timestamp::now(),
         version,
@@ -80,6 +84,10 @@ async fn pg_agents_versioned_roundtrip() {
     assert_eq!(versions.iter().map(|a| a.version).collect::<Vec<_>>(), vec![1, 2]);
     // workspace isolation
     assert!(store.latest(&uniq_ws("other"), &id).await.is_err());
+    // An archive that read version 1 cannot stamp it once version 2 exists.
+    let stale = store.version(&ws, &id, 1).await.unwrap();
+    assert!(matches!(store.replace_latest(&ws, stale).await, Err(agents::store::StoreError::Conflict)));
+    store.replace_latest(&ws, store.latest(&ws, &id).await.unwrap()).await.unwrap();
 }
 
 #[tokio::test]
@@ -146,20 +154,27 @@ async fn pg_files_roundtrip() {
         return;
     }
     let blobs: Arc<dyn BlobStore> = Arc::new(
-        S3BlobStore::connect(format!("agentdpgtest{}", Timestamp::now().as_datetime().timestamp_micros()))
-            .await
-            .unwrap(),
+        S3BlobStore::connect(&S3Config {
+            endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+            path_style: true,
+            create_bucket: true,
+            ..S3Config::new(format!("agentdpgtest{}", Timestamp::now().as_datetime().timestamp_micros()))
+        })
+        .await
+        .unwrap(),
     );
     let store = PgFilesStore::new(backend().await, blobs);
     let ws = uniq_ws("files");
     let meta = files::types::FileMetadata {
         created_at: Timestamp::now(),
         downloadable: true,
+        expires_at: None,
         filename: "data.csv".into(),
         id: files::types::FileId::generate(),
         mime_type: "text/csv".into(),
         size_bytes: 8,
         tag: files::types::FileTag::File,
+        scope: None,
     };
     let id = meta.id.clone();
     store
@@ -174,11 +189,12 @@ async fn pg_files_roundtrip() {
         .await
         .unwrap();
     let got = store.get(&ws, &id).await.unwrap();
-    assert_eq!(&got.bytes[..], b"a,b\n1,2\n");
+    assert!(got.bytes.is_empty(), "metadata reads leave the blob alone");
+    assert_eq!(&store.content(&ws, &id).await.unwrap()[..], b"a,b\n1,2\n");
     let scoped = store
         .list(
             &ws,
-            Some("sesn_01A"),
+            &files::FileFilter { scope_id: Some("sesn_01A".into()), ids: vec![] },
             &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap(),
         )
         .await
@@ -188,7 +204,7 @@ async fn pg_files_roundtrip() {
     assert!(store
         .list(
             &ws,
-            Some("sesn_01Z"),
+            &files::FileFilter { scope_id: Some("sesn_01Z".into()), ids: vec![] },
             &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()
         )
         .await
@@ -218,10 +234,14 @@ async fn dashboard_queries_are_native_sql() {
     agents.insert(&ws, agent(1, AgentId::generate(), "report-bot")).await.unwrap();
 
     let listed = agents
-        .list(&ws, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+        .list(
+            &ws,
+            &AgentFilter::default(),
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(listed.len(), 3, "DISTINCT ON returns latest of each agent");
+    assert_eq!(listed.len(), 3, "the list returns the latest of each agent");
     assert!(listed.iter().any(|a| a.id == a1 && a.version == 2));
 
     // Deployments with mixed status → count + status filter in SQL.

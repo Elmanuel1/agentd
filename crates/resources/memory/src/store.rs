@@ -13,16 +13,13 @@
 use async_trait::async_trait;
 use shared::{Pagination, WorkspaceId};
 
-use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
+mod filters;
+mod records;
 
-/// How a reader resolves a memory to a concrete version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VersionSelector {
-    /// The current head — re-resolved at each session-create.
-    Latest,
-    /// A pinned version.
-    Pinned(MemoryVersionId),
-}
+pub use filters::{StoreFilter, VersionFilter};
+pub use records::{MemoryRecord, VersionRecord, VersionSelector};
+
+use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersionId};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -44,44 +41,12 @@ pub enum StoreError {
         /// Who occupies it.
         memory_id: MemoryId,
     },
+    /// The head moved after the caller read it.
+    #[error("memory head moved")]
+    HeadMoved,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
-}
-
-/// One version's full record: wire metadata + content blob.
-#[derive(Debug, Clone)]
-pub struct VersionRecord {
-    /// Wire metadata (content field unset; populated on full view).
-    pub version: MemoryVersion,
-    /// The content blob — `None` after redact.
-    pub blob: Option<String>,
-}
-
-/// A memory's full state: head pointer + chain.
-#[derive(Debug, Clone)]
-pub struct MemoryRecord {
-    /// Wire head (its `memory_version_id` IS the `latest` ref).
-    pub head: Memory,
-    /// Whether the memory is deleted (chain retained for audit).
-    pub deleted: bool,
-    /// The append-only chain, oldest first.
-    pub chain: Vec<VersionRecord>,
-}
-
-impl MemoryRecord {
-    /// Find a version in the chain.
-    fn find(&self, id: &MemoryVersionId) -> Option<&VersionRecord> {
-        self.chain.iter().find(|v| &v.version.id == id)
-    }
-
-    /// Resolve a selector to a version record.
-    pub fn resolve(&self, sel: &VersionSelector) -> Option<&VersionRecord> {
-        match sel {
-            VersionSelector::Latest => self.find(&self.head.memory_version_id),
-            VersionSelector::Pinned(id) => self.find(id),
-        }
-    }
 }
 
 /// Persistence port for stores/memories/versions.
@@ -114,6 +79,7 @@ pub trait MemoryStorePersistence: Send + Sync {
     async fn list_stores(
         &self,
         ws: &WorkspaceId,
+        filter: &StoreFilter,
         page: &Pagination,
     ) -> Result<Vec<MemoryStoreEntity>, StoreError>;
 }
@@ -128,19 +94,24 @@ pub trait MemoryRecordPersistence: Send + Sync {
         store: &MemoryStoreId,
         record: MemoryRecord,
     ) -> Result<(), StoreError>;
-    /// Fetch a memory record (head + chain).
+    /// A live memory's head with its current version as the only chain entry.
     async fn get_memory(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
         id: &MemoryId,
     ) -> Result<MemoryRecord, StoreError>;
-    /// Replace a memory record (append version / advance head / delete mark).
-    async fn replace_memory(
+    /// Write `version` and move the head to it (with the new head fields and
+    /// deleted mark), only while the head is still `expected`: a head another
+    /// writer moved first is [`StoreError::HeadMoved`] and writes nothing.
+    async fn append_version(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        record: MemoryRecord,
+        head: &Memory,
+        deleted: bool,
+        expected: &MemoryVersionId,
+        version: &VersionRecord,
     ) -> Result<(), StoreError>;
     /// Live (non-deleted) memories in a store, path order.
     async fn list_memories(
@@ -161,13 +132,23 @@ pub trait MemoryRecordPersistence: Send + Sync {
 /// Persistence port for memory versions.
 #[async_trait]
 pub trait MemoryVersionPersistence: Send + Sync {
-    /// All versions across the store, newest first, optionally filtered.
+    /// One page of the store's versions that pass `filter`, newest first,
+    /// without content.
     async fn list_versions(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        memory_id: Option<&MemoryId>,
+        filter: &VersionFilter,
+        page: &Pagination,
     ) -> Result<Vec<VersionRecord>, StoreError>;
+    /// Rewrite one stored version in place (redact).
+    async fn replace_version(
+        &self,
+        ws: &WorkspaceId,
+        store: &MemoryStoreId,
+        memory_id: &MemoryId,
+        version: &VersionRecord,
+    ) -> Result<(), StoreError>;
     /// Fetch one version (searches all memories incl. deleted).
     async fn get_version(
         &self,

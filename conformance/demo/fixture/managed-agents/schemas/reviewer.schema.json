@@ -1,0 +1,96 @@
+{
+  "$id": "reviewer",
+  "description": "Two variants: field-keyed (bid/addenda/bonds) and item-keyed (vendor)",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["source_agent", "reviewed_agent", "review_type", "reviews", "summary"],
+      "properties": {
+        "source_agent": { "type": "string", "const": "extraction-reviewer" },
+        "reviewed_agent": { "type": "string" },
+        "review_type": { "type": "string", "const": "field" },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["field_name", "verdict", "score_extractor", "score_reviewer"],
+            "properties": {
+              "field_name": { "type": "string" },
+              "addendum_number": { "type": ["integer", "null"] },
+              "verdict": { "type": "string", "enum": ["verified", "disproved", "uncertain"] },
+              "reason": { "type": ["string", "null"] },
+              "evidence": {
+                "type": ["object", "null"],
+                "properties": {
+                  "document_id": { "type": "string" },
+                  "page_number": { "type": "integer" },
+                  "text_snippet": { "type": "string" }
+                }
+              },
+              "corrected_value": {},
+              "score_extractor": { "type": "integer" },
+              "score_reviewer": { "type": "integer" }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["total_fields", "verified", "disproved", "uncertain", "extractor_score", "reviewer_score"],
+          "properties": {
+            "total_fields": { "type": "integer" },
+            "verified": { "type": "integer" },
+            "disproved": { "type": "integer" },
+            "uncertain": { "type": "integer" },
+            "extractor_score": { "type": "integer" },
+            "reviewer_score": { "type": "integer" }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": ["source_agent", "reviewed_agent", "review_type", "reviews", "summary"],
+      "properties": {
+        "source_agent": { "type": "string", "const": "extraction-reviewer" },
+        "reviewed_agent": { "type": "string", "const": "vendor-grouper" },
+        "review_type": { "type": "string", "const": "item" },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["group_name", "item_id", "verdict", "score_extractor", "score_reviewer"],
+            "properties": {
+              "group_name": { "type": "string" },
+              "item_id": { "type": "string" },
+              "verdict": { "type": "string", "enum": ["verified", "disproved", "uncertain"] },
+              "reason": { "type": ["string", "null"] },
+              "evidence": {
+                "type": ["object", "null"],
+                "properties": {
+                  "document_id": { "type": "string" },
+                  "page_number": { "type": "integer" },
+                  "text_snippet": { "type": "string" }
+                }
+              },
+              "corrected_group": { "type": ["string", "null"] },
+              "score_extractor": { "type": "integer" },
+              "score_reviewer": { "type": "integer" }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["total_items", "verified", "disproved", "uncertain", "extractor_score", "reviewer_score"],
+          "properties": {
+            "total_items": { "type": "integer" },
+            "verified": { "type": "integer" },
+            "disproved": { "type": "integer" },
+            "uncertain": { "type": "integer" },
+            "extractor_score": { "type": "integer" },
+            "reviewer_score": { "type": "integer" }
+          }
+        }
+      }
+    }
+  ]
+}

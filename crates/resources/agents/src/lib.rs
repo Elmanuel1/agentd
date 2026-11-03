@@ -12,6 +12,16 @@ pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::beta::BetaGate;
+use shared::Module;
+
 pub use service::AgentsService;
 pub use store::AgentsStore;
 pub use types::{Agent, AgentConfig, AgentRef, AgentSnapshot, ModelSpec};
+
+/// The agents module: its routes, behind the Managed Agents beta.
+pub fn module(service: Arc<AgentsService>) -> Module {
+    Module::new(routes::router(), service).with_beta(BetaGate::managed(&["/v1/agents"]))
+}

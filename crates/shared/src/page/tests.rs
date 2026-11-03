@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn empty_page_matches_live_shape() {
-    // Live: an empty list is {"data":[]} (next_page omitted).
-    let p: Page<u8> = Page::of(vec![]);
+    // Live (July capture): an empty Managed Agents list is {"data":[]}.
+    let p: Page<u8> = Page::paginate(vec![], &Pagination { limit: 20, offset: 0 });
     assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"data":[]}"#);
 }
 
@@ -17,19 +17,20 @@ fn id_cursor_window_bounds_and_has_more() {
     let all: Vec<String> = (0..10).map(|n| n.to_string()).collect();
 
     // after_id excludes everything up to and including it; limit caps + flags more.
-    let c = IdCursor { after_id: Some("2".into()), before_id: None, limit: 3 };
+    let c = IdCursor { after_id: Some("2".into()), after_created: None, before_id: None, limit: 3 };
     let (data, more) = c.window(all.clone(), key);
     assert_eq!(data, vec!["3", "4", "5"]);
     assert!(more);
 
     // before_id is an exclusive upper bound.
-    let c = IdCursor { after_id: Some("2".into()), before_id: Some("6".into()), limit: 10 };
+    let c =
+        IdCursor { after_id: Some("2".into()), after_created: None, before_id: Some("6".into()), limit: 10 };
     let (data, more) = c.window(all.clone(), key);
     assert_eq!(data, vec!["3", "4", "5"]);
     assert!(!more);
 
     // Unknown cursor id is a no-op bound (whole set, from the start).
-    let c = IdCursor { after_id: Some("nope".into()), before_id: None, limit: 100 };
+    let c = IdCursor { after_id: Some("nope".into()), after_created: None, before_id: None, limit: 100 };
     let (data, more) = c.window(all, key);
     assert_eq!(data.len(), 10);
     assert!(!more);

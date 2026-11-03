@@ -8,9 +8,10 @@ use async_trait::async_trait;
 use chrono::Utc;
 use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
-use shared::ports::{FireTarget, ScheduleSpec, SchedulerPort};
+use shared::ports::{ScheduleSpec, SchedulerPort, TenantRef};
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
+use crate::fire::target;
 use crate::store::{DeploymentsStore, StoreError};
 use crate::types::{
     CreateDeploymentRequest, Deployment, DeploymentId, DeploymentRun, DeploymentRunId, DeploymentRunTag,
@@ -112,11 +113,8 @@ impl DeploymentsService {
             .upsert(ScheduleSpec {
                 cron: d.schedule.expression.clone(),
                 timezone: d.schedule.timezone.clone(),
-                target: FireTarget::Deployment { id: d.id.as_str().to_owned() },
-                tenant: shared::ports::TenantRef {
-                    org_id: ctx.org.as_str().to_owned(),
-                    workspace_id: ctx.workspace.as_str().to_owned(),
-                },
+                target: target(&d.id),
+                tenant: TenantRef::of(ctx),
             })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -143,10 +141,7 @@ impl DeploymentsService {
         d.paused_reason = Some(PausedReason::Manual);
         d.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-        self.scheduler
-            .pause(&FireTarget::Deployment { id: d.id.as_str().to_owned() })
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+        self.scheduler.pause(&target(&d.id)).await.map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(d)
     }
 
@@ -161,10 +156,7 @@ impl DeploymentsService {
         d.updated_at = Timestamp::now();
         d.schedule.refresh_upcoming(Utc::now())?;
         self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-        self.scheduler
-            .unpause(&FireTarget::Deployment { id: d.id.as_str().to_owned() })
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+        self.scheduler.unpause(&target(&d.id)).await.map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(d)
     }
 
@@ -178,7 +170,7 @@ impl DeploymentsService {
             d.updated_at = Timestamp::now();
             self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
             // Best-effort: the timer may already be gone.
-            let _ = self.scheduler.delete(&FireTarget::Deployment { id: d.id.as_str().to_owned() }).await;
+            let _ = self.scheduler.delete(&target(&d.id)).await;
         }
         Ok(d)
     }
@@ -193,7 +185,7 @@ impl DeploymentsService {
         self.fire(ctx, d, TriggerContext::Manual {}).await
     }
 
-    /// The `/internal/fire` path — called by the scheduler backend.
+    /// The scheduled fire path: [`crate::fire::DeploymentFire`] and `/internal/fire`.
     ///
     /// Contract: business failures are RECORDED (error run) and returned as
     /// success; the scheduler never retries. Paused/archived scheduled ticks
@@ -272,7 +264,7 @@ impl DeploymentsService {
         if matches!(error, Some(RunError { kind: RunErrorKind::AgentArchived, .. })) {
             d.status = DeploymentStatus::Archived;
             d.archived_at = Some(Timestamp::now());
-            let _ = self.scheduler.delete(&FireTarget::Deployment { id: d.id.as_str().to_owned() }).await;
+            let _ = self.scheduler.delete(&target(&d.id)).await;
         }
         d.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, d).await.map_err(map_store)?;

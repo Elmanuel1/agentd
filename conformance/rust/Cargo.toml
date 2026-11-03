@@ -17,6 +17,7 @@ http-body-util = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+test-support = { workspace = true }
 store-postgres = { workspace = true }
 blobs-s3 = { workspace = true }
 

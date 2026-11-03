@@ -3,16 +3,17 @@
 //! Version CONTENT is a blob in object storage, keyed by version id.
 use std::sync::Arc;
 
-use blobs_s3::BlobStore;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use memory::store::StoreError;
 use memory::types::{MemoryStoreId, MemoryVersionId};
+use shared::ports::blobs::BlobStore;
 use shared::WorkspaceId;
 
 use crate::schema::memory_stores;
 use crate::{diesel_be, pool_be, PgBackend};
 
+mod heads;
 mod memories;
 mod stores;
 mod versions;

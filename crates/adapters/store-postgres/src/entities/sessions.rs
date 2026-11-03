@@ -1,17 +1,17 @@
-//! `SessionsStore` on Postgres via Diesel — session rows + the shared
-//! append-only event log (SSE tails `session_events` by `seq`).
+//! `SessionsStore` on Postgres via Diesel: the session rows.
 
-use ::sessions::events::Event;
-use ::sessions::store::{SessionsStore, StoreError};
+use ::sessions::store::{Order, SessionFilter, SessionsStore, StoreError};
 use ::sessions::types::{Session, SessionId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::RunQueryDsl;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Pagination, WorkspaceId};
 
-use crate::schema::{session_events, sessions};
-use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, PgBackend};
+use crate::schema::sessions;
+use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
 /// Postgres-backed sessions store (Diesel).
 #[derive(Debug, Clone)]
@@ -23,19 +23,6 @@ impl PgSessionsStore {
     /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
-    }
-
-    async fn require_session(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let exists: Option<String> = sessions::table
-            .filter(sessions::workspace_id.eq(ws.as_str()))
-            .filter(sessions::session_id.eq(id.as_str()))
-            .select(sessions::session_id)
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?;
-        exists.map(|_| ()).ok_or(StoreError::NotFound)
     }
 }
 
@@ -80,34 +67,48 @@ impl SessionsStore for PgSessionsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn replace(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
+    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let affected = diesel::update(
-            sessions::table
-                .filter(sessions::workspace_id.eq(ws.as_str()))
-                .filter(sessions::session_id.eq(s.id.as_str())),
-        )
-        .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(to_doc(&s)?)))
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
+        let doc = to_doc(&s)?;
+        // The row is locked and compared as a Session, not as raw JSON: a doc
+        // written before a field existed re-serializes differently but holds
+        // the same session.
+        let outcome = conn
+            .transaction::<_, diesel::result::Error, _>(|c| {
+                async move {
+                    let stored: Option<serde_json::Value> = sessions::table
+                        .filter(sessions::workspace_id.eq(ws.as_str()))
+                        .filter(sessions::session_id.eq(s.id.as_str()))
+                        .select(sessions::doc)
+                        .for_update()
+                        .first(c)
+                        .await
+                        .optional()?;
+                    let Some(stored) = stored else {
+                        return Ok(Err(StoreError::NotFound));
+                    };
+                    if serde_json::from_value::<Session>(stored).ok().as_ref() != Some(read) {
+                        return Ok(Err(StoreError::Conflict));
+                    }
+                    diesel::update(
+                        sessions::table
+                            .filter(sessions::workspace_id.eq(ws.as_str()))
+                            .filter(sessions::session_id.eq(s.id.as_str())),
+                    )
+                    .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
+                    .execute(c)
+                    .await?;
+                    Ok(Ok(()))
+                }
+                .scope_boxed()
+            })
+            .await
+            .map_err(diesel_be)?;
+        outcome
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // Log rows first so a crash never orphans events.
-        diesel::delete(
-            session_events::table
-                .filter(session_events::workspace_id.eq(ws.as_str()))
-                .filter(session_events::session_id.eq(id.as_str())),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
         // Delete + return the row in one statement (no separate get).
         let doc: Option<serde_json::Value> = diesel::delete(
             sessions::table
@@ -122,67 +123,52 @@ impl SessionsStore for PgSessionsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Session>, StoreError> {
+    async fn list(
+        &self,
+        ws: &WorkspaceId,
+        filter: &SessionFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Session>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = sessions::table
-            .filter(sessions::workspace_id.eq(ws.as_str()))
-            .order(sessions::created_at.asc())
-            .select(sessions::doc)
-            .limit(page.fetch_limit())
-            .offset(page.sql_offset())
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter().map(parse_doc).collect()
-    }
-
-    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        self.require_session(ws, id).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // DB stamps the log time (authoritative ordering is `seq` bigserial).
-        diesel::insert_into(session_events::table)
-            .values((
-                session_events::workspace_id.eq(ws.as_str()),
-                session_events::session_id.eq(id.as_str()),
-                session_events::event_id.eq(event.id.as_str()),
-                session_events::created_at.eq(diesel::dsl::now),
-                session_events::doc.eq(to_doc(&event)?),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        Ok(())
-    }
-
-    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let affected = diesel::update(
-            session_events::table
-                .filter(session_events::workspace_id.eq(ws.as_str()))
-                .filter(session_events::session_id.eq(id.as_str()))
-                .filter(session_events::event_id.eq(event.id.as_str())),
-        )
-        .set(session_events::doc.eq(to_doc(&event)?))
-        .execute(&mut conn)
+        let c = &filter.created;
+        let statuses: Vec<String> = filter.statuses.iter().map(enum_str).collect();
+        let memory = filter
+            .memory_store_id
+            .as_ref()
+            .map(|id| serde_json::json!([{"type": "memory_store", "memory_store_id": id}]));
+        let order = if filter.order == Order::Asc { "ASC" } else { "DESC" };
+        let rows: Vec<DocRow> = diesel::sql_query(format!(
+            "SELECT doc FROM sessions
+             WHERE workspace_id = $1
+               AND ($2 OR doc->>'archived_at' IS NULL)
+               AND (cardinality($3::text[]) = 0 OR status = ANY($3))
+               AND ($4::text IS NULL OR doc->'agent'->>'id' = $4)
+               AND ($5::bigint IS NULL OR (doc->'agent'->>'version')::bigint = $5)
+               AND ($6::text IS NULL OR doc->>'deployment_id' = $6)
+               AND ($7::jsonb IS NULL OR doc->'resources' @> $7)
+               AND ($8::timestamptz IS NULL OR created_at > $8)
+               AND ($9::timestamptz IS NULL OR created_at >= $9)
+               AND ($10::timestamptz IS NULL OR created_at < $10)
+               AND ($11::timestamptz IS NULL OR created_at <= $11)
+             ORDER BY created_at {order}, session_id {order}
+             LIMIT $12 OFFSET $13"
+        ))
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Bool, _>(filter.include_archived)
+        .bind::<Array<Text>, _>(statuses)
+        .bind::<Nullable<Text>, _>(filter.agent_id.as_deref())
+        .bind::<Nullable<BigInt>, _>(filter.agent_version.map(|v| v as i64))
+        .bind::<Nullable<Text>, _>(filter.deployment_id.as_deref())
+        .bind::<Nullable<Jsonb>, _>(memory)
+        .bind::<Nullable<Timestamptz>, _>(c.gt.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(c.gte.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(c.lt.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(c.lte.map(|t| t.as_datetime()))
+        .bind::<BigInt, _>(page.fetch_limit())
+        .bind::<BigInt, _>(page.sql_offset())
+        .load(&mut conn)
         .await
         .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
-    }
-
-    async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
-        self.require_session(ws, id).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = session_events::table
-            .filter(session_events::workspace_id.eq(ws.as_str()))
-            .filter(session_events::session_id.eq(id.as_str()))
-            .order(session_events::seq.asc())
-            .select(session_events::doc)
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter().map(parse_doc).collect()
+        rows.into_iter().map(|r| parse_doc(r.doc)).collect()
     }
 }

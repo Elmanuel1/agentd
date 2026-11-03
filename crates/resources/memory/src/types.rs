@@ -10,7 +10,7 @@ pub use memories::{
     CreateMemoryRequest, Memory, MemoryListItem, MemoryListPage, MemoryPrefix, MemoryPrefixTag, MemoryTag,
     Precondition, UpdateMemoryRequest,
 };
-pub use stores::{CreateStoreRequest, MemoryStoreEntity, MemoryStoreTag};
+pub use stores::{CreateStoreRequest, MemoryStoreEntity, MemoryStoreTag, UpdateStoreRequest};
 pub use versions::{MemoryVersion, MemoryVersionTag, VersionOperation};
 
 /// Marker for `memstore_…`.

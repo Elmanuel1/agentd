@@ -1,0 +1,68 @@
+{
+  "type": "object",
+  "description": "Addenda processor output containing changes from addendum documents.",
+  "required": ["source_agent", "addenda"],
+  "additionalProperties": false,
+  "properties": {
+    "source_agent": {
+      "type": "string",
+      "enum": ["addenda-processor"]
+    },
+    "addenda": {
+      "type": "array",
+      "description": "List of addenda found in this document. Empty array if not an addendum document.",
+      "items": {
+        "type": "object",
+        "required": ["addendum_number", "addendum_date", "changes"],
+        "additionalProperties": false,
+        "properties": {
+          "addendum_number": {
+            "type": "integer",
+            "description": "Addendum number (1, 2, 3, etc.)"
+          },
+          "addendum_date": {
+            "type": "string",
+            "description": "ISO 8601 date of the addendum"
+          },
+          "changes": {
+            "type": "array",
+            "description": "List of changes introduced by this addendum",
+            "items": {
+              "type": "object",
+              "required": ["field_name", "addenda_reference", "field_type", "original_value", "revised_value", "explanation", "citations"],
+              "additionalProperties": false,
+              "properties": {
+                "field_name": {
+                  "type": "string",
+                  "description": "For line_item: the EXACT item_id from the schedule of quantities (e.g., 'RC-4.6', not '4.6'). For bid fields: a TenderFieldName enum value. For bonds/insurance/requirements: the type or category."
+                },
+                "addenda_reference": {
+                  "type": "string",
+                  "description": "How the addendum refers to this item (e.g., 'Tender Item 4.6', 'Section 3.2'). Preserved for audit — the field_name must be the resolved schedule item_id."
+                },
+                "field_type": {
+                  "type": "string",
+                  "description": "Discriminator that routes change to correct merge target",
+                  "enum": ["string", "date_time", "number", "boolean", "enum", "object", "array", "line_item", "bond", "insurance", "requirement"]
+                },
+                "original_value": {
+                  "description": "Original value being changed, or null if new addition",
+                  "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "object", "additionalProperties": true}, {"type": "array"}, {"type": "null"}]
+                },
+                "revised_value": {
+                  "description": "New value from the addendum",
+                  "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "boolean"}, {"type": "object", "additionalProperties": true}, {"type": "array"}, {"type": "null"}]
+                },
+                "explanation": { "type": "string" },
+                "citations": {
+                  "type": "array",
+                  "items": { "$ref": "citation.schema.json" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

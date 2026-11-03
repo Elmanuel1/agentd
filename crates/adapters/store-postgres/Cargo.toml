@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+tokio = { workspace = true }
 shared = { workspace = true }
 agents = { workspace = true }
 deployments = { workspace = true }
@@ -16,7 +17,6 @@ skills = { workspace = true }
 sessions = { workspace = true }
 dreams = { workspace = true }
 memory = { workspace = true }
-blobs-s3 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -27,10 +27,12 @@ tracing = { workspace = true }
 futures = { workspace = true }
 diesel = { workspace = true }
 diesel-async = { workspace = true }
+deadpool = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 blobs-s3 = { workspace = true }
+test-support = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true }
 http = { workspace = true }

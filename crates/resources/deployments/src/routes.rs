@@ -9,9 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
-use shared::{
-    reject_unknown_params, ApiError, ApiJson, AuthContext, Page, Pagination, RouteError, Timestamp,
-};
+use shared::{ApiError, ApiJson, AuthContext, ListSpec, Page, RouteError, Timestamp};
 
 use crate::service::DeploymentsService;
 use crate::types::CreateDeploymentRequest;
@@ -25,6 +23,11 @@ pub struct FireBody {
     /// The tick instant (idempotency key with the id).
     pub scheduled_at: Timestamp,
 }
+
+/// The deployments list.
+const LIST: ListSpec = ListSpec::managed(&[]);
+/// The deployment-runs list.
+const RUNS: ListSpec = ListSpec::managed(&["deployment_id", "has_error"]);
 
 /// Build the deployments router.
 pub fn router() -> Router {
@@ -52,7 +55,7 @@ async fn list(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::from_fetched(svc.list(&ctx, &page).await?, &page)).into_response())
 }
 
@@ -101,13 +104,12 @@ async fn list_runs(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["deployment_id", "has_error", "limit", "page"])?;
     let deployment_id = params
         .get("deployment_id")
         .cloned()
         .ok_or_else(|| ApiError::invalid_request("deployment_id: Field required"))?;
     let has_error = params.get("has_error").and_then(|v| v.parse::<bool>().ok());
-    let page = Pagination::from_params(&params)?;
+    let page = RUNS.parse(&params)?;
     Ok(Json(Page::paginate(svc.runs(&ctx, &deployment_id, has_error).await?, &page)).into_response())
 }
 

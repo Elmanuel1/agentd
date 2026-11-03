@@ -51,7 +51,40 @@ pub struct MemoryVersion {
     pub path: Option<String>,
     /// Who redacted, if redacted.
     pub redacted_by: Option<Actor>,
+    /// When the version was redacted, `null` otherwise.
+    #[serde(default)]
+    pub redacted_at: Option<Timestamp>,
     /// Always `"memory_version"`.
     #[serde(rename = "type")]
     pub tag: MemoryVersionTag,
+}
+
+impl MemoryVersion {
+    /// A new version of `memory_id` in `store`: `content` and `path` are what
+    /// the version records (`None` for a delete).
+    pub fn record(
+        by: Actor,
+        memory_id: MemoryId,
+        store: MemoryStoreId,
+        operation: VersionOperation,
+        path: String,
+        content: Option<&str>,
+        now: Timestamp,
+    ) -> Self {
+        Self {
+            content: None,
+            content_sha256: content.map(|c| shared::hash::content_sha256(c.as_bytes())),
+            content_size_bytes: content.map(|c| c.len() as u64),
+            created_at: now,
+            created_by: by,
+            id: MemoryVersionId::generate(),
+            memory_id,
+            memory_store_id: store,
+            operation,
+            path: Some(path),
+            redacted_by: None,
+            redacted_at: None,
+            tag: MemoryVersionTag::MemoryVersion,
+        }
+    }
 }

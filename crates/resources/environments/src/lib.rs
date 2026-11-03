@@ -11,11 +11,22 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod networking;
 pub mod routes;
 pub mod service;
 pub mod store;
 pub mod types;
 
+use std::sync::Arc;
+
+use shared::beta::BetaGate;
+use shared::Module;
+
 pub use service::EnvironmentsService;
 pub use store::EnvironmentsStore;
 pub use types::{Environment, EnvironmentConfig, EnvironmentId};
+
+/// The environments module: its routes, behind the Managed Agents beta.
+pub fn module(service: Arc<EnvironmentsService>) -> Module {
+    Module::new(routes::router(), service).with_beta(BetaGate::managed(&["/v1/environments"]))
+}

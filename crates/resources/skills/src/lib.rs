@@ -17,10 +17,20 @@ mod service;
 mod store;
 mod types;
 
-pub use bundle::{parse_bundle, Bundle};
+use std::sync::Arc;
+
+use shared::module::BodyLimit;
+use shared::Module;
+
+pub use bundle::{parse_bundle, unpack, Bundle, Unpacked, UploadFile};
 pub use service::SkillsService;
-pub use store::{SkillsStore, StoreError};
+pub use store::{SkillVersionsStore, SkillsStore, StoreError};
 pub use types::{
-    Skill, SkillId, SkillListPage, SkillResource, SkillSource, SkillTag, SkillVersion, SkillVersionId,
-    SkillVersionResource, SkillVersionTag,
+    beta_version_id, Skill, SkillId, SkillListPage, SkillResource, SkillSource, SkillTag, SkillVersion,
+    SkillVersionId, SkillVersionResource, SkillVersionTag, VersionRef,
 };
+
+/// The skills module: its routes, with the Skills API's 30 MB body cap.
+pub fn module(service: Arc<SkillsService>) -> Module {
+    Module::new(routes::router(), service).with_body_limit(BodyLimit { api: "Skills", max_mb: 30 })
+}

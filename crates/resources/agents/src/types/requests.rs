@@ -1,10 +1,11 @@
 use serde::Deserialize;
-use shared::Metadata;
+use shared::{Metadata, MetadataPatch, Patch};
 
-use super::{McpServer, ModelInput, Multiagent, SkillRef, Tool};
+use super::{ExecutionIdentity, McpServer, ModelInput, MultiagentParams, SkillParams, ToolParams};
 
-/// `POST /v1/agents` body (validation happens in the service so error strings
-/// match the live API exactly; unknown fields are rejected like live).
+/// `POST /v1/agents` body (validation happens in [`super::AgentConfig`] so
+/// error strings match the live API exactly; unknown fields are rejected like
+/// live).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAgentRequest {
@@ -18,42 +19,56 @@ pub struct CreateAgentRequest {
     pub system: Option<String>,
     /// Optional.
     #[serde(default)]
-    pub tools: Vec<Tool>,
+    pub tools: Vec<ToolParams>,
     /// Optional.
     #[serde(default)]
     pub mcp_servers: Vec<McpServer>,
     /// Optional.
     #[serde(default)]
-    pub skills: Vec<SkillRef>,
+    pub skills: Vec<SkillParams>,
     /// Optional.
-    pub multiagent: Option<Multiagent>,
+    pub multiagent: Option<MultiagentParams>,
+    /// Optional; `null` is the default service account.
+    #[serde(default)]
+    pub execution_identity: Option<ExecutionIdentity>,
     /// Optional.
     #[serde(default)]
     pub metadata: Metadata,
 }
 
-/// `POST /v1/agents/{id}` body — partial update; every present field replaces.
+/// `POST /v1/agents/{id}` body. A field left out keeps its value; `null`
+/// clears it (lists to `[]`, `execution_identity` to the service account).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateAgentRequest {
-    /// Optimistic lock: must equal the current version when present.
+    /// Optimistic lock: must equal the current version when sent.
     pub version: Option<u64>,
     /// Replace name.
     pub name: Option<String>,
     /// Replace model.
     pub model: Option<ModelInput>,
-    /// Replace description.
-    pub description: Option<String>,
-    /// Replace system prompt.
-    pub system: Option<String>,
-    /// Replace tools.
-    pub tools: Option<Vec<Tool>>,
-    /// Replace MCP servers.
-    pub mcp_servers: Option<Vec<McpServer>>,
-    /// Replace skills.
-    pub skills: Option<Vec<SkillRef>>,
-    /// Replace multiagent roster.
-    pub multiagent: Option<Multiagent>,
-    /// Replace metadata.
-    pub metadata: Option<Metadata>,
+    /// Replace or clear the description.
+    #[serde(default)]
+    pub description: Patch<String>,
+    /// Replace or clear the system prompt.
+    #[serde(default)]
+    pub system: Patch<String>,
+    /// Replace or clear tools.
+    #[serde(default)]
+    pub tools: Patch<Vec<ToolParams>>,
+    /// Replace or clear MCP servers.
+    #[serde(default)]
+    pub mcp_servers: Patch<Vec<McpServer>>,
+    /// Replace or clear skills.
+    #[serde(default)]
+    pub skills: Patch<Vec<SkillParams>>,
+    /// Replace, merge (`multiagent_20261001` onto the same type) or clear.
+    #[serde(default)]
+    pub multiagent: Patch<MultiagentParams>,
+    /// Replace or restore the default.
+    #[serde(default)]
+    pub execution_identity: Patch<ExecutionIdentity>,
+    /// Merge: strings upsert, `null` removes.
+    #[serde(default)]
+    pub metadata: Patch<MetadataPatch>,
 }

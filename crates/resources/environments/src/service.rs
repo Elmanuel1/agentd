@@ -2,7 +2,7 @@
 //!
 //! Live-verified behaviors enforced here:
 //! - names are **not unique** (duplicate create succeeds with a new id),
-//! - `description` canonicalizes to `""`,
+//! - a create without `description` stores `""`,
 //! - environments are org-scoped (every workspace of the org sees them).
 
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use shared::{ApiError, AuthContext, Pagination, Scope, Timestamp};
 use crate::store::{EnvironmentsStore, StoreError};
 use crate::types::{
     CreateEnvironmentRequest, Environment, EnvironmentConfig, EnvironmentId, EnvironmentState,
-    EnvironmentTag, UpdateEnvironmentRequest,
+    EnvironmentTag, ScopeParam, UpdateEnvironmentRequest,
 };
 
 /// Environment service.
@@ -42,21 +42,25 @@ impl EnvironmentsService {
     ) -> Result<Environment, ApiError> {
         let name = required("name", req.name)?;
         validate_string_len("name", &name, values::NAME_MIN, values::NAME_MAX)?;
-        let config = required("config", req.config)?;
+        let config = match req.config {
+            Some(params) => params.apply(None)?,
+            None => EnvironmentConfig::default(),
+        };
         req.metadata.validate(MetadataPolicy::capped())?;
+        let scope = scope(req.scope)?;
         let now = Timestamp::now();
         let env = Environment {
             id: EnvironmentId::generate(),
             tag: EnvironmentTag::Environment,
             name,
-            description: req.description.unwrap_or_default(),
+            description: req.description.apply_to_option(Some(String::new())),
             created_at: now,
             updated_at: now,
             archived_at: None,
             state: EnvironmentState::Active,
-            config: canonicalize(config),
+            config,
             metadata: req.metadata,
-            scope: Scope::Organization,
+            scope,
         };
         self.store.insert(&ctx.org, env.clone()).await.map_err(map_store)?;
         Ok(env)
@@ -68,9 +72,15 @@ impl EnvironmentsService {
         self.store.get(&ctx.org, &id).await.map_err(map_store)
     }
 
-    /// `GET /v1/environments`.
-    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Environment>, ApiError> {
-        self.store.list(&ctx.org, page).await.map_err(map_store)
+    /// `GET /v1/environments`: active ones, newest first; archived ones too
+    /// with `include_archived`.
+    pub async fn list(
+        &self,
+        ctx: &AuthContext,
+        include_archived: bool,
+        page: &Pagination,
+    ) -> Result<Vec<Environment>, ApiError> {
+        self.store.list(&ctx.org, include_archived, page).await.map_err(map_store)
     }
 
     /// `POST /v1/environments/{id}` — changes apply to new containers only.
@@ -89,15 +99,14 @@ impl EnvironmentsService {
             validate_string_len("name", &name, values::NAME_MIN, values::NAME_MAX)?;
             env.name = name;
         }
-        if let Some(d) = req.description {
-            env.description = d;
-        }
+        env.description = req.description.apply_to_option(env.description);
         if let Some(c) = req.config {
-            env.config = canonicalize(c);
+            env.config = c.apply(Some(&env.config))?;
         }
-        if let Some(m) = req.metadata {
-            m.validate(MetadataPolicy::capped())?;
-            env.metadata = m;
+        env.metadata = env.metadata.merged(req.metadata);
+        env.metadata.validate(MetadataPolicy::capped())?;
+        if req.scope.is_some() {
+            env.scope = scope(req.scope)?;
         }
         env.updated_at = Timestamp::now();
         self.store.replace(&ctx.org, env.clone()).await.map_err(map_store)?;
@@ -124,10 +133,14 @@ impl EnvironmentsService {
     }
 }
 
-/// Round-trip through the canonical enum guarantees defaults are populated —
-/// deserialization already expands them, so serialization is canonical.
-fn canonicalize(c: EnvironmentConfig) -> EnvironmentConfig {
-    c
+/// API organizations support only the `organization` scope (SDK docs).
+fn scope(requested: Option<ScopeParam>) -> Result<Scope, ApiError> {
+    match requested {
+        None | Some(ScopeParam::Organization) => Ok(Scope::Organization),
+        Some(ScopeParam::Account) => {
+            Err(ApiError::invalid_request("scope: 'account' is not supported for API organizations"))
+        }
+    }
 }
 
 fn parse_id(raw: &str) -> Result<EnvironmentId, ApiError> {

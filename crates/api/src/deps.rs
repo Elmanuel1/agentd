@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use agents::types::{Multiagent, RosterMember};
 use agents::{AgentRef, AgentSnapshot, AgentsService};
 use async_trait::async_trait;
 use deployments::service::DeploymentDeps;
@@ -35,32 +36,43 @@ impl SessionDeps for RealSessionDeps {
         agent_id: &str,
         version: Option<u64>,
     ) -> Result<AgentSnapshot, ApiError> {
-        let agent = match version {
-            Some(v) => {
-                let versions = self.agents.versions(ctx, agent_id).await?;
-                versions
-                    .into_iter()
-                    .find(|a| a.version == v)
-                    .ok_or_else(|| ApiError::not_found("agent version not found"))?
-            }
-            None => self.agents.get(ctx, agent_id, None).await?,
-        };
-        if agent.archived_at.is_some() {
+        // Archive stamps the latest version, so it decides for every version.
+        let latest = self.agents.get(ctx, agent_id, None).await?;
+        if latest.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request(
                 "agent is archived; new sessions cannot reference it",
             ));
         }
-        Ok(agent.snapshot())
+        let agent = match version {
+            Some(v) if v != latest.version => self.agents.get(ctx, agent_id, Some(v)).await?,
+            _ => latest,
+        };
+        let mut snapshot = agent.snapshot();
+        // A session's snapshot carries each roster agent in full, as live
+        // serves it, so the session runs the versions it started with.
+        if let Some(Multiagent::Coordinator { agents }) = &mut snapshot.config.multiagent {
+            for member in agents.iter_mut() {
+                if let RosterMember::Agent(r) = member {
+                    let full = self.agents.get(ctx, r.id.as_str(), Some(r.version)).await?;
+                    *member = RosterMember::Snapshot(Box::new(full.snapshot()));
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
-    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError> {
+    async fn resolve_environment(
+        &self,
+        ctx: &AuthContext,
+        env_id: &str,
+    ) -> Result<serde_json::Value, ApiError> {
         let env = self.environments.get(ctx, env_id).await?;
         if env.archived_at.is_some() {
             return Err(ApiError::conflict_invalid_request(
                 "environment is archived; new sessions cannot reference it",
             ));
         }
-        Ok(())
+        serde_json::to_value(&env.config).map_err(|e| ApiError::internal(e.to_string()))
     }
 }
 
@@ -111,7 +123,7 @@ impl DeploymentDeps for RealDeploymentDeps {
 
     async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError> {
         // Build the session create from the frozen deployment config.
-        let req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
+        let mut req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "agent": {
                 "type": "agent",
                 "id": deployment.agent.id.as_str(),
@@ -122,6 +134,7 @@ impl DeploymentDeps for RealDeploymentDeps {
             "vault_ids": deployment.vault_ids,
         }))
         .map_err(|e| ApiError::internal(e.to_string()))?;
+        req.deployment_id = Some(deployment.id.as_str().to_owned());
         let session = self.sessions.create(ctx, req).await?;
         // Queue the deployment's initial events as the kickoff.
         let payloads: Vec<sessions::events::EventPayload> = deployment
@@ -129,7 +142,9 @@ impl DeploymentDeps for RealDeploymentDeps {
             .iter()
             .map(|e| match e {
                 InitialEvent::UserMessage { content } => {
-                    sessions::events::EventPayload::UserMessage { content: content.clone() }
+                    sessions::events::EventPayload::User(sessions::events::UserEvent::Message {
+                        content: content.clone(),
+                    })
                 }
             })
             .collect();

@@ -9,6 +9,8 @@ use crate::types::{MemoryId, MemoryStoreId};
 
 mod memories;
 mod memory_reads;
+
+pub use memory_reads::MemoryListQuery;
 mod stores;
 mod versions;
 
@@ -58,6 +60,9 @@ fn map_store(e: StoreError) -> ApiError {
         StoreError::VersionNotFound => ApiError::not_found("memory version not found"),
         StoreError::PathConflict { path, memory_id } => {
             ApiError::memory_path_conflict(&path, memory_id.as_str())
+        }
+        StoreError::HeadMoved => {
+            ApiError::conflict_invalid_request("the memory changed while this request ran; retry it")
         }
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }

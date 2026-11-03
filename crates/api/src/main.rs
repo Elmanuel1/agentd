@@ -1,161 +1,113 @@
 //! agentd — the Managed-Agents-compatible control plane.
 //!
-//! Boot: connect Postgres (records) + the object store (blobs/secrets), build
-//! the durable stack (no in-memory state — replicas are interchangeable),
-//! register API keys from `AGENTD_API_KEYS`
-//! (`key:org:workspace[,key:org:workspace…]`), start the local scheduler,
-//! and serve.
+//! Boot: read [`Config`] from the environment, connect the backends it
+//! selects, assemble the app, and serve. `agentd keys …` manages API keys
+//! instead ([`api::cli`]). Records and blobs live in Postgres and
+//! object storage; event streams and the local scheduler live in the process,
+//! so run one replica until a shared event bus and scheduler replace them.
 
-use std::sync::Arc;
+use std::process::ExitCode;
 
-use api::{build_router, AppState};
-use async_trait::async_trait;
-use blobs_s3::{BlobStore, S3BlobStore};
-use chrono::{DateTime, Utc};
-use scheduler_local::{FireError, FireSink, LocalScheduler};
-use shared::ports::FireTarget;
-use store_postgres::PgBackend;
-
-/// In-process fire sink: scheduled ticks call the deployments service
-/// directly (same fire contract as the HTTP `/internal/fire`). `state` is set
-/// once at boot to break the sink↔state init cycle — `OnceLock` is lock-free
-/// after set and hands back a reference (no per-fire clone).
-struct InProcessSink {
-    state: std::sync::OnceLock<AppState>,
-}
-
-#[async_trait]
-impl FireSink for InProcessSink {
-    async fn fire(&self, target: &FireTarget, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
-        let Some(state) = self.state.get() else {
-            return Err(FireError("state not initialized".into()));
-        };
-        // The scheduler fires under the service identity; the deployment's
-        // tenant travels in the schedule spec → resolved by the registry.
-        // (In-process: fire under every registered tenant is wrong — the
-        // deployments service is workspace-scoped, so use the spec tenant
-        // when LocalScheduler grows tenant plumbing; for now dev mode uses
-        // the default tenant.)
-        let Some(ctx) = state.keys.resolve("agentd-dev-key") else {
-            return Err(FireError("no dev tenant".into()));
-        };
-        match target {
-            FireTarget::Deployment { id } => state
-                .deployments
-                .fire_scheduled(&ctx, id, shared::Timestamp::from_datetime(scheduled_at))
-                .await
-                .map(|_| ())
-                .map_err(|e| FireError(e.to_string())),
-            FireTarget::Dream { .. } => Ok(()), // dreams service wiring: next phase
-        }
-    }
-}
+use api::{build_router, AppState, Backends, Config};
 
 #[tokio::main]
-async fn main() {
-    tracing_subscriber_init();
-    let sink = Arc::new(InProcessSink { state: std::sync::OnceLock::new() });
-    let scheduler = Arc::new(LocalScheduler::new(sink.clone()));
-
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
-    let backend = match PgBackend::connect(&database_url).await {
+async fn main() -> ExitCode {
+    // No subscriber exists before the config is read, so a bad config goes
+    // to stderr.
+    let config = match Config::from_lookup(|var| std::env::var(var).ok()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("invalid configuration: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.split_first() {
+        None => {}
+        Some((cmd, rest)) if cmd == "keys" => return api::cli::keys(&config, rest).await,
+        Some((cmd, rest)) if cmd == "model-key" => return api::model_key::model_key(&config, rest).await,
+        Some(_) => {
+            eprintln!("{}\n{}", api::cli::USAGE, api::model_key::USAGE);
+            return ExitCode::FAILURE;
+        }
+    }
+    let _telemetry = match api::telemetry::init(config.telemetry.otlp, config.telemetry.json_logs) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("telemetry: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let backends = match Backends::from_config(&config).await {
         Ok(b) => b,
         Err(e) => {
-            tracing::error!(error = %e, "postgres connect failed");
-            return;
+            tracing::error!(error = %e, "backend connect failed");
+            return ExitCode::FAILURE;
         }
     };
-    let bucket = std::env::var("AGENTD_BLOB_BUCKET").unwrap_or_else(|_| "agentd-artifacts".into());
-    let blobs: Arc<dyn BlobStore> = match S3BlobStore::connect(bucket).await {
-        Ok(s) => Arc::new(s),
+    let app = match AppState::build(backends) {
+        Ok(state) => build_router(state),
         Err(e) => {
-            tracing::error!(error = %e, "object store connect failed");
-            return;
+            tracing::error!(error = %e, "module assembly failed");
+            return ExitCode::FAILURE;
         }
     };
-    let state = AppState::from_postgres(backend, blobs, scheduler.clone());
-
-    // Keys from env: AGENTD_API_KEYS="key:org:workspace,key2:org2:ws2"
-    let keys_env =
-        std::env::var("AGENTD_API_KEYS").unwrap_or_else(|_| "agentd-dev-key:org_dev:wrkspc_01dev".into());
-    for (i, triple) in keys_env.split(',').enumerate() {
-        let mut parts = triple.splitn(3, ':');
-        if let (Some(key), Some(org), Some(ws)) = (parts.next(), parts.next(), parts.next()) {
-            state.keys.register(key, org, ws, format!("apikey_01local{i:010}"));
+    let listener = match tokio::net::TcpListener::bind(&config.addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!(error = %e, addr = %config.addr, "bind failed");
+            return ExitCode::FAILURE;
         }
-    }
-    let _ = sink.state.set(state.clone());
-
-    // Background cron ticker (10s resolution; cron is minute-granular).
-    let _ticker = scheduler.spawn(std::time::Duration::from_secs(10));
-
-    let addr = std::env::var("AGENTD_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".into());
-    let app = build_router(state);
-    tracing::info!(%addr, "agentd listening");
-    match tokio::net::TcpListener::bind(&addr).await {
-        Ok(listener) => {
-            if let Err(e) = axum::serve(listener, app).await {
+    };
+    tracing::info!(addr = %config.addr, "agentd listening");
+    let stopping = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signal = stopping.clone();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown().await;
+        signal.notify_one();
+    });
+    // An open event stream never ends on its own, so draining is capped;
+    // past it the streams are dropped and the telemetry still flushes.
+    let drained = async {
+        stopping.notified().await;
+        tokio::time::sleep(DRAIN).await;
+        tracing::warn!(seconds = DRAIN.as_secs(), "drain timed out; closing open streams");
+    };
+    tokio::select! {
+        served = server => {
+            if let Err(e) = served {
                 tracing::error!(error = %e, "server error");
+                return ExitCode::FAILURE;
             }
         }
-        Err(e) => tracing::error!(error = %e, %addr, "bind failed"),
+        () = drained => {}
     }
+    ExitCode::SUCCESS
 }
 
-fn tracing_subscriber_init() {
-    // Minimal env-filter logging without extra deps.
-    let level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
-    let _ = tracing::subscriber::set_global_default(tracing_subscriber_stub::Subscriber::new(level));
-}
+/// How long in-flight requests get to finish after a shutdown signal.
+const DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Tiny stdout subscriber (avoids pulling tracing-subscriber; swap freely).
-mod tracing_subscriber_stub {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use tracing::span;
-
-    /// Minimal subscriber printing events to stdout.
-    pub struct Subscriber {
-        level: tracing::Level,
-        ids: AtomicU64,
-    }
-
-    impl Subscriber {
-        /// Build with a level string.
-        pub fn new(level: String) -> Self {
-            let level = match level.to_ascii_lowercase().as_str() {
-                "trace" => tracing::Level::TRACE,
-                "debug" => tracing::Level::DEBUG,
-                "warn" => tracing::Level::WARN,
-                "error" => tracing::Level::ERROR,
-                _ => tracing::Level::INFO,
-            };
-            Self { level, ids: AtomicU64::new(1) }
-        }
-    }
-
-    impl tracing::Subscriber for Subscriber {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            *metadata.level() <= self.level
-        }
-        fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(self.ids.fetch_add(1, Ordering::Relaxed))
-        }
-        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct V(String);
-            impl tracing::field::Visit for V {
-                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                    use std::fmt::Write;
-                    let _ = write!(self.0, " {}={value:?}", field.name());
-                }
+/// SIGTERM or Ctrl-C: stop accepting, finish in-flight requests, then return
+/// so the telemetry guard flushes the last spans, logs and metrics.
+async fn shutdown() {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
             }
-            let mut v = V(String::new());
-            event.record(&mut v);
-            println!("[{}] {}{}", event.metadata().level(), event.metadata().target(), v.0);
+            Err(_) => std::future::pending().await,
         }
-        fn enter(&self, _span: &span::Id) {}
-        fn exit(&self, _span: &span::Id) {}
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = interrupt => {}
+        () = terminate => {}
     }
+    tracing::info!("agentd shutting down");
 }

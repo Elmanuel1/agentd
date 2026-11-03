@@ -14,10 +14,13 @@
 
 use std::sync::Arc;
 
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
-use store_postgres::{PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgVaultsStore};
+use store_postgres::{
+    PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgVaultsStore,
+};
+use test_support::MemorySecretStore;
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -33,7 +36,17 @@ async fn backend() -> PgBackend {
 async fn s3(tag: &str) -> Option<Arc<dyn BlobStore>> {
     std::env::var("AGENTD_AWS_ENDPOINT").ok()?;
     let bucket = format!("agentdent{tag}{}", stamp());
-    Some(Arc::new(S3BlobStore::connect(bucket).await.unwrap()))
+    Some(Arc::new(S3BlobStore::connect(&s3_config(bucket)).await.unwrap()))
+}
+
+/// A test bucket on the emulator at `AGENTD_AWS_ENDPOINT`, created on connect.
+fn s3_config(bucket: String) -> S3Config {
+    S3Config {
+        endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+        path_style: true,
+        create_bucket: true,
+        ..S3Config::new(bucket)
+    }
 }
 
 fn stamp() -> i64 {
@@ -84,7 +97,7 @@ async fn pg_environments_service_roundtrip() {
     assert_eq!(env.name, "prod");
     assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap().id, env.id);
     assert_eq!(
-        svc.list(&ctx, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+        svc.list(&ctx, false, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
             .await
             .unwrap()
             .len(),
@@ -97,18 +110,15 @@ async fn pg_environments_service_roundtrip() {
 }
 
 #[tokio::test]
-async fn pg_vaults_secret_sealed_to_object_store() {
+async fn pg_vaults_secret_sealed_to_the_secret_store() {
     if !enabled() {
         return;
     }
-    let Some(secrets) = s3("vaults").await else {
-        eprintln!("skipping vaults (needs AGENTD_AWS_ENDPOINT)");
-        return;
-    };
     use vaults::store::VaultsStore;
     use vaults::types::CredentialAuthInput;
     use vaults::VaultsService;
-    let store = Arc::new(PgVaultsStore::new(backend().await, secrets));
+    let secrets = Arc::new(MemorySecretStore::default());
+    let store = Arc::new(PgVaultsStore::new(backend().await, secrets.clone()));
     let svc = VaultsService::new(store.clone());
     let ctx = ctx_ws(&uniq_ws("vaults"));
     let vault =
@@ -140,6 +150,12 @@ async fn pg_vaults_secret_sealed_to_object_store() {
         }
         other => panic!("expected sealed env-var secret, got {other:?}"),
     }
+    let key =
+        shared::ports::secrets::SecretKey::new(ctx.workspace.as_str(), vault.id.as_str(), cred.id.as_str())
+            .unwrap();
+    assert!(secrets.exposed(&key).unwrap().contains("s3cr3t"), "sealed under its workspace, vault and id");
+    svc.delete_vault(&ctx, vault.id.as_str()).await.unwrap();
+    assert!(secrets.exposed(&key).is_none(), "a vault delete deletes its secrets");
 }
 
 #[tokio::test]
@@ -169,7 +185,20 @@ async fn pg_memory_list_directory_browse_matches_live() {
 
     // depth=1, order_by=path → leaf /a.md + collapsed /notes/ and /rules/,
     // exactly as the live API returns (probed 2026-07-05).
-    let page = svc.list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(1)).await.unwrap();
+    let page = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: Some("/"),
+                order_by: Some("path"),
+                depth: 1,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     let v = serde_json::to_value(&page).unwrap();
     let shapes: Vec<(&str, &str)> = v["data"]
         .as_array()
@@ -182,7 +211,20 @@ async fn pg_memory_list_directory_browse_matches_live() {
     assert!(v["data"][0].get("content").is_none(), "list omits content");
 
     // depth=2 expands one more level, collapsing /notes/sub/.
-    let page2 = svc.list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(2)).await.unwrap();
+    let page2 = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: Some("/"),
+                order_by: Some("path"),
+                depth: 2,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     let v2 = serde_json::to_value(&page2).unwrap();
     let shapes2: Vec<(&str, &str)> = v2["data"]
         .as_array()
@@ -201,11 +243,37 @@ async fn pg_memory_list_directory_browse_matches_live() {
     );
 
     // invalid order_by → the exact live 400 message.
-    let err = svc.list_memories(&ctx, ms.id.as_str(), None, Some("bogus"), None).await.unwrap_err();
+    let err = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: None,
+                order_by: Some("bogus"),
+                depth: 0,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.message, "order_by must be one of: created_at, path");
 
     // no depth → flat list of all memories (no prefixes).
-    let flat = svc.list_memories(&ctx, ms.id.as_str(), None, None, None).await.unwrap();
+    let flat = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: None,
+                order_by: None,
+                depth: 0,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(flat.data.len(), 4);
 }
 
@@ -257,10 +325,11 @@ async fn pg_sessions_shared_event_log() {
     if !enabled() {
         return;
     }
-    use sessions::events::{Event, EventPayload};
-    use sessions::store::SessionsStore;
+    use sessions::events::{Event, EventPayload, UserEvent};
+    use sessions::store::{SessionEventLog, SessionsStore};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
+    let log = PgSessionEventLog::new(backend().await);
     let ws = uniq_ws("sessions");
     let session: Session =
         serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
@@ -268,23 +337,179 @@ async fn pg_sessions_shared_event_log() {
     store.insert(&ws, session.clone()).await.unwrap();
     assert_eq!(store.get(&ws, &session.id).await.unwrap().id, session.id);
 
-    let e1 = Event::new(EventPayload::UserInterrupt {});
-    let e2 = Event::new(EventPayload::UserInterrupt {});
-    store.append_event(&ws, &session.id, e1.clone()).await.unwrap();
-    store.append_event(&ws, &session.id, e2.clone()).await.unwrap();
+    let e1 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
+    let e2 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
+    log.append_event(&ws, &session.id, e1.clone()).await.unwrap();
+    log.append_event(&ws, &session.id, e2.clone()).await.unwrap();
 
-    let events = store.events(&ws, &session.id).await.unwrap();
+    let events = log.events(&ws, &session.id).await.unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].id, e1.id, "log returns append order (by seq)");
 
     // replace stamps processed_at in place — no new row.
     let mut e1p = e1.clone();
     e1p.processed_at = Some(Timestamp::now());
-    store.replace_event(&ws, &session.id, e1p).await.unwrap();
-    let events = store.events(&ws, &session.id).await.unwrap();
+    log.replace_event(&ws, &session.id, e1p).await.unwrap();
+    let events = log.events(&ws, &session.id).await.unwrap();
     assert_eq!(events.len(), 2);
     assert!(events[0].processed_at.is_some());
 
     store.delete(&ws, &session.id).await.unwrap();
     assert!(store.get(&ws, &session.id).await.is_err());
+}
+
+#[tokio::test]
+async fn pg_memory_overlapping_paths_written_at_once_admit_one() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memrace").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs))));
+    let ctx = ctx_ws(&uniq_ws("memrace"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    for round in 0..10 {
+        let (dir, file) = (format!("/r{round}"), format!("/r{round}/a.md"));
+        let writes = [dir, file].map(|path| {
+            let (svc, ctx, id) = (svc.clone(), ctx.clone(), ms.id.to_string());
+            tokio::spawn(async move {
+                let req = serde_json::from_value(json!({"path": path, "content": "x"})).unwrap();
+                svc.create_memory(&ctx, &id, req).await
+            })
+        });
+        let mut ok = 0;
+        for w in writes {
+            ok += usize::from(w.await.unwrap().is_ok());
+        }
+        assert_eq!(ok, 1, "round {round}: exactly one of a path and its child is admitted");
+    }
+}
+
+#[tokio::test]
+async fn pg_memory_concurrent_updates_never_lose_a_version() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memupd").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs))));
+    let ctx = ctx_ws(&uniq_ws("memupd"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    let req = serde_json::from_value(json!({"path": "/c.md", "content": "0"})).unwrap();
+    let m = svc.create_memory(&ctx, ms.id.as_str(), req).await.unwrap();
+    let writes = (1..=8).map(|i| {
+        let (svc, ctx, sid, mid) = (svc.clone(), ctx.clone(), ms.id.to_string(), m.id.to_string());
+        tokio::spawn(async move {
+            let req = serde_json::from_value(json!({"content": format!("{i}")})).unwrap();
+            svc.update_memory(&ctx, &sid, &mid, req).await
+        })
+    });
+    let mut applied = 0;
+    for w in writes.collect::<Vec<_>>() {
+        match w.await.unwrap() {
+            Ok(_) => applied += 1,
+            Err(e) => assert_eq!(e.status, 409, "a lost race is a 409: {e:?}"),
+        }
+    }
+    assert!(applied >= 1);
+    let filter = memory::store::VersionFilter { memory_id: Some(m.id.to_string()), ..Default::default() };
+    let page = shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap();
+    let view = memory::service::View::Full;
+    let versions = svc.list_versions(&ctx, ms.id.as_str(), &filter, view, &page).await.unwrap();
+    assert_eq!(versions.len(), applied + 1, "one version per applied update, plus the create");
+    let head = svc.get_memory(&ctx, ms.id.as_str(), m.id.as_str(), view).await.unwrap();
+    assert_eq!(head.memory_version_id, versions[0].id, "the head is the newest version");
+    assert_eq!(head.content, versions[0].content);
+}
+
+#[tokio::test]
+async fn pg_memory_rollback_to_an_occupied_path_conflicts() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memroll").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs)));
+    let ctx = ctx_ws(&uniq_ws("memroll"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    let sid = ms.id.as_str();
+    let create = |path: &str| serde_json::from_value(json!({"path": path, "content": "x"})).unwrap();
+    let m1 = svc.create_memory(&ctx, sid, create("/a.md")).await.unwrap();
+    let rename = serde_json::from_value(json!({"path": "/b.md"})).unwrap();
+    svc.update_memory(&ctx, sid, m1.id.as_str(), rename).await.unwrap();
+    svc.create_memory(&ctx, sid, create("/a.md")).await.unwrap();
+    let err = svc.rollback(&ctx, sid, m1.id.as_str(), m1.memory_version_id.as_str()).await.unwrap_err();
+    assert_eq!(err.status, 409, "{err:?}");
+}
+
+#[tokio::test]
+async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
+    if !enabled() {
+        return;
+    }
+    use sessions::events::{Event, EventPayload, UserEvent};
+    use sessions::store::{SessionEventLog, SessionsStore, StoreError};
+    use sessions::types::Session;
+    let store = PgSessionsStore::new(backend().await);
+    let log = PgSessionEventLog::new(backend().await);
+    let ws = uniq_ws("sessstale");
+    let read: Session =
+        serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
+    store.insert(&ws, read.clone()).await.unwrap();
+
+    let mut first = read.clone();
+    first.title = Some("first".into());
+    store.replace(&ws, &read, first.clone()).await.unwrap();
+    let mut second = read.clone();
+    second.title = Some("second".into());
+    assert!(matches!(store.replace(&ws, &read, second).await, Err(StoreError::Conflict)));
+    assert_eq!(store.get(&ws, &read.id).await.unwrap().title.as_deref(), Some("first"));
+
+    store.delete(&ws, &read.id).await.unwrap();
+    let late = Event::new(EventPayload::User(UserEvent::Interrupt {}));
+    assert!(matches!(log.append_event(&ws, &read.id, late).await, Err(StoreError::NotFound)));
+}
+
+#[tokio::test]
+async fn pg_memory_an_update_that_read_before_a_delete_cannot_revive_it() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memrevive").await else {
+        return;
+    };
+    use memory::store::{MemoryRecordPersistence, StoreError, VersionRecord};
+    use memory::types::{MemoryVersion, VersionOperation};
+    use memory::MemoriesService;
+    let store = Arc::new(PgMemoryStore::new(backend().await, blobs));
+    let svc = MemoriesService::new(store.clone());
+    let ctx = ctx_ws(&uniq_ws("memrevive"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    let req = serde_json::from_value(json!({"path": "/r.md", "content": "one"})).unwrap();
+    let m = svc.create_memory(&ctx, ms.id.as_str(), req).await.unwrap();
+    // The writer read the head, then the delete lands.
+    let read = m.clone();
+    svc.delete_memory(&ctx, ms.id.as_str(), m.id.as_str(), None).await.unwrap();
+    let version = MemoryVersion::record(
+        ctx.actor(),
+        m.id.clone(),
+        ms.id.clone(),
+        VersionOperation::Modified,
+        read.path.clone(),
+        Some("two"),
+        shared::Timestamp::now(),
+    );
+    let mut head = read.clone();
+    head.memory_version_id = version.id.clone();
+    let late = VersionRecord { version, blob: Some("two".into()) };
+    let result =
+        store.append_version(&ctx.workspace, &ms.id, &head, false, &read.memory_version_id, &late).await;
+    assert!(matches!(result, Err(StoreError::HeadMoved)), "{result:?}");
+    assert!(svc.get_memory(&ctx, ms.id.as_str(), m.id.as_str(), memory::service::View::Basic).await.is_err());
 }

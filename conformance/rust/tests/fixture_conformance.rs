@@ -8,15 +8,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
+use test_support::{MemorySecretStore, StaticKeySource};
 
-use api::{build_router, AppState};
+use api::{build_router, AppState, Backends, Stores};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use blobs_s3::{BlobStore, S3BlobStore};
+use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
-use shared::ports::FakeScheduler;
+use shared::ports::fire::FireRegistry;
+use shared::ports::{FakeRuntime, FakeScheduler};
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -36,12 +38,30 @@ async fn app() -> Option<Router> {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let backend = PgBackend::connect(&url).await.unwrap();
-    let stamp = Timestamp::now().as_datetime().timestamp_micros();
-    let blobs: Arc<dyn BlobStore> =
-        Arc::new(S3BlobStore::connect(format!("agentdconf{stamp}")).await.unwrap());
-    let state = AppState::from_postgres(backend, blobs, Arc::new(FakeScheduler::new()));
-    state.keys.register(KEY, format!("org_c{stamp}"), format!("wrkspc_c{stamp}"), "apikey_01conf");
-    Some(build_router(state))
+    let stamp = unique_stamp();
+    let blobs: Arc<dyn BlobStore> = Arc::new(
+        S3BlobStore::connect(&S3Config {
+            endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
+            path_style: true,
+            create_bucket: true,
+            ..S3Config::new(format!("agentdconf{stamp}"))
+        })
+        .await
+        .unwrap(),
+    );
+    let mut keys = StaticKeySource::default();
+    keys.register(KEY, &format!("org_c{stamp}"), &format!("wrkspc_c{stamp}"), "apikey_01conf");
+    let backends = Backends {
+        stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
+        keys: Arc::new(keys),
+        scheduler: Arc::new(FakeScheduler::new()),
+        fires: Arc::new(FireRegistry::new()),
+        runtime: Some(Arc::new(FakeRuntime::new())),
+        sandbox: None,
+        extra_models: Vec::new(),
+        metrics: Arc::new(api::telemetry::Metrics::global()),
+    };
+    Some(build_router(AppState::build(backends).unwrap()))
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (StatusCode, serde_json::Value) {
@@ -50,7 +70,15 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (Sta
         .uri(uri)
         .header("content-type", "application/json")
         .header("x-api-key", KEY)
-        .header("anthropic-beta", "managed-agents-2026-04-01")
+        .header("anthropic-version", "2023-06-01")
+        .header(
+            "anthropic-beta",
+            if uri.starts_with("/v1/memory_stores") {
+                "agent-memory-2026-07-22"
+            } else {
+                "managed-agents-2026-04-01"
+            },
+        )
         .body(match body {
             Some(s) => Body::from(s.to_owned()),
             None => Body::empty(),
@@ -71,7 +99,19 @@ fn fixture(name: &str) -> serde_json::Value {
         "session.create" => include_str!("../../fixtures/session.create.json"),
         other => panic!("unknown fixture {other}"),
     };
-    serde_json::from_str(raw).unwrap()
+    let mut v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    // The July captures predate `execution_identity` and a session's
+    // `budget`, which the current API serves (SDK 1.3.0 types both as required).
+    let identity = serde_json::json!({"type": "service_account"});
+    match name {
+        "agent.create" => v["execution_identity"] = identity,
+        "session.create" => {
+            v["agent"]["execution_identity"] = identity;
+            v["budget"] = serde_json::Value::Null;
+        }
+        _ => {}
+    }
+    v
 }
 
 fn assert_conformant(name: &str, expected: &serde_json::Value, actual: &serde_json::Value) {
@@ -259,4 +299,12 @@ async fn empty_list_shape_matches_live() {
     let (st, v) = call(&app, "GET", "/v1/agents", None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(v, serde_json::json!({"data":[]}));
+}
+
+/// A stamp no other app in this test binary shares: tests run in parallel, and
+/// two apps built in the same microsecond would share a workspace.
+fn unique_stamp() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}x{n}", Timestamp::now().as_datetime().timestamp_micros())
 }

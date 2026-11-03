@@ -7,12 +7,15 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use shared::{ApiJson, AuthContext, Page, Pagination, RouteError};
+use shared::{ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
 
 use crate::service::VaultsService;
 use crate::types::{
     CreateCredentialRequest, CreateVaultRequest, UpdateCredentialRequest, UpdateVaultRequest,
 };
+
+/// Every list here reads `limit` and `page` only.
+const LIST: ListSpec = ListSpec::managed(&[]);
 
 /// Build the vaults router.
 pub fn router() -> Router {
@@ -41,7 +44,7 @@ async fn list_vaults(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::from_fetched(svc.list_vaults(&ctx, &page).await?, &page)).into_response())
 }
 
@@ -75,7 +78,8 @@ async fn delete_vault(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.delete_vault(&ctx, &id).await?).into_response())
+    let vault = svc.delete_vault(&ctx, &id).await?;
+    Ok(Json(Deleted::new(vault.id.as_str(), "vault_deleted")).into_response())
 }
 
 async fn create_credential(
@@ -93,7 +97,7 @@ async fn list_credentials(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    let page = Pagination::from_list_params(&params)?;
+    let page = LIST.parse(&params)?;
     Ok(Json(Page::paginate(svc.list_credentials(&ctx, &id).await?, &page)).into_response())
 }
 
@@ -127,5 +131,6 @@ async fn delete_credential(
     Extension(ctx): Extension<AuthContext>,
     Path((id, cid)): Path<(String, String)>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.delete_credential(&ctx, &id, &cid).await?).into_response())
+    let credential = svc.delete_credential(&ctx, &id, &cid).await?;
+    Ok(Json(Deleted::new(credential.id.as_str(), "vault_credential_deleted")).into_response())
 }
