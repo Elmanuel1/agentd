@@ -19,6 +19,8 @@ import json
 import os
 import re
 import sys
+import tempfile
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
@@ -34,6 +36,41 @@ def normalise(s):
     return " ".join("".join(c.lower() if c.isalnum() else " " for c in s).split())
 
 
+def load_blocks(doc_id):
+    """The document's blocks without Textract's single-word blocks, which nothing here reads: four
+    fifths of a large document. The first load keeps them in a cache file, so later calls skip them."""
+    source = DOCS / doc_id / "blocks.json"
+    stat = source.stat()
+    cache = Path(tempfile.gettempdir()) / "extraction-blocks" / f"{doc_id}-{stat.st_size}-{int(stat.st_mtime)}.json"
+    try:
+        return json.loads(cache.read_text())
+    except (OSError, ValueError):
+        pass
+    blocks = [b for b in json.loads(source.read_text()) if b.get("type") != "word"]
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        part = cache.with_suffix(f".{os.getpid()}.part")
+        part.write_text(json.dumps(blocks))
+        part.replace(cache)
+    except OSError:
+        pass
+    return blocks
+
+
+class Run:
+    """Consecutive lines with their text joined by single spaces, so a quote is searched once per
+    run rather than once per window of lines."""
+
+    def __init__(self, lines):
+        self.lines, self.starts, parts, at = lines, [], [], 0
+        for line in lines:
+            self.starts.append(at)
+            parts.append(line["text"])
+            at += len(line["text"]) + 1
+        self.text = " ".join(parts)
+        self.page = lines[0]["page"]
+
+
 def page_of(block):
     bbox = block.get("bbox") or {}
     return bbox.get("page") or bbox.get("original_page")
@@ -41,7 +78,7 @@ def page_of(block):
 
 class Locator:
     def __init__(self, doc_id):
-        blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+        blocks = load_blocks(doc_id)
         self.runs, self.row_runs = [], []
         for b in blocks:
             if b.get("type") != "line" or not b.get("bbox") or b.get("content") is None:
@@ -72,6 +109,8 @@ class Locator:
                 self.row_runs[-1].append(line)
             else:
                 self.row_runs.append([line])
+        self.runs = [Run(r) for r in self.runs]
+        self.row_runs = [Run(r) for r in self.row_runs]
 
     def locate(self, page, snippet, exact=False):
         needle = normalise(snippet)
@@ -91,7 +130,7 @@ class Locator:
 
     @staticmethod
     def on(runs, page):
-        return [r for r in runs if r[0]["page"] == page]
+        return [r for r in runs if r.page == page]
 
 
 def rows(blocks):
@@ -114,18 +153,25 @@ def rows(blocks):
 
 
 def shortest_window(runs, needle, max_window):
-    for size in range(1, max_window + 1):
-        for run in runs:
-            for i in range(len(run) - size + 1):
-                window = run[i:i + size]
-                if needle in " ".join(l["text"] for l in window):
-                    return window
-    return None
+    """The fewest consecutive lines of one run holding `needle`, the first run's on a tie. Matches
+    may overlap: a later one can sit on fewer lines."""
+    best = None
+    for run in runs:
+        at = run.text.find(needle)
+        while at != -1:
+            first = bisect_right(run.starts, at) - 1
+            last = bisect_left(run.starts, at + len(needle)) - 1
+            if last - first < max_window and (best is None or last - first + 1 < len(best)):
+                best = run.lines[first:last + 1]
+            if best is not None and len(best) == 1:
+                return best
+            at = run.text.find(needle, at + 1)
+    return best
 
 
 def partial_span(runs, needle):
     best = None
-    for run in runs:
+    for run in (r.lines for r in runs):
         start = 0
         for end in range(len(run) + 1):
             inside = end < len(run) and len(run[end]["text"]) >= MIN_PARTIAL_LINE_LEN and run[end]["text"] in needle
@@ -240,7 +286,7 @@ def quote_words(text):
 def page_lines(doc_id):
     """Each page as the pipeline's checks read it: one line per printed row, cells joined " | "."""
     if doc_id not in _PAGE_LINES:
-        blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+        blocks = load_blocks(doc_id)
         pages = {}
         for row in rows(blocks):
             text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
