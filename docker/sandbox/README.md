@@ -1,9 +1,9 @@
 # Session sandbox image
 
 Each session runs in one container of this image (`AGENTD_RUNTIME=docker`,
-`AGENTD_SANDBOX_IMAGE=agentd-sandbox`). The agent loop runs in agentd and
-reaches the container only through `docker exec` and the archive API, so no
-model key or vault secret enters it.
+`AGENTD_SANDBOX_IMAGE=agentd-sandbox`). The session's agent loop, its
+harness, runs inside the container; agentd keeps the API, the event log and
+the container's lifecycle.
 
 ```bash
 docker build -t agentd-sandbox docker/sandbox

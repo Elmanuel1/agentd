@@ -25,8 +25,9 @@ pub struct Config {
     pub runtime: RuntimeConfig,
     /// Where logs, traces and metrics go.
     pub telemetry: TelemetryConfig,
-    /// The agent loop.
-    pub engine: EngineConfig,
+    /// `AGENTD_MODELS`: model ids agents may name beyond the built-in
+    /// Anthropic ones, comma-separated.
+    pub extra_models: Vec<String>,
 }
 
 /// `AGENTD_STORE`.
@@ -122,8 +123,14 @@ impl Config {
         let runtime = RuntimeConfig::from_lookup(&get)?;
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         let telemetry = TelemetryConfig::from_lookup(&get)?;
-        let engine = EngineConfig::from_lookup(&get)?;
-        Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime, telemetry, engine })
+        let extra_models = get("AGENTD_MODELS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned)
+            .collect();
+        Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime, telemetry, extra_models })
     }
 }
 
@@ -191,12 +198,10 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
     })
 }
 
-mod engine;
 mod runtime;
 mod secrets;
 mod telemetry;
 
-pub use engine::EngineConfig;
 pub use runtime::{RuntimeConfig, DEFAULT_SANDBOX_IMAGE};
 pub use telemetry::TelemetryConfig;
 

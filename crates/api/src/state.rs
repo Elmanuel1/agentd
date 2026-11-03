@@ -16,12 +16,10 @@ use shared::Module;
 use skills::SkillsService;
 use vaults::VaultsService;
 
-use crate::assets::RealSessionAssets;
-use crate::backends::{AgentBackends, Backends};
+use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
-use engine::{Dispatcher, Engine, ModelRouter};
 
 /// The assembled app: the key source and every resource's module.
 pub struct AppState {
@@ -44,7 +42,7 @@ impl AppState {
     /// their fire handlers with the scheduler's registry. Two modules claiming
     /// one fire kind is an error.
     pub fn build(backends: Backends) -> Result<Self, BuildError> {
-        let Backends { stores, keys, scheduler, fires, runtime, agent, extra_models, metrics } = backends;
+        let Backends { stores, keys, scheduler, fires, runtime, extra_models, metrics } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
@@ -60,14 +58,6 @@ impl AppState {
         });
         let files = Arc::new(FilesService::new(stores.files));
         let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
-        if let Some(agent) = agent {
-            let assets = RealSessionAssets {
-                files: files.clone(),
-                skills: skills.clone(),
-                environments: environments.clone(),
-            };
-            sessions.set_trigger(Arc::new(dispatcher(agent, sessions.clone(), assets)?));
-        }
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
             Arc::new(RealDeploymentDeps {
@@ -100,26 +90,4 @@ pub enum BuildError {
     /// Two modules claim one fire kind.
     #[error(transparent)]
     Fire(#[from] FireError),
-    /// The model providers could not be set up.
-    #[error("models: {0}")]
-    Models(String),
-}
-
-/// The agent loop over `sessions`, started by each session's client events.
-fn dispatcher(
-    agent: AgentBackends,
-    sessions: Arc<SessionsService>,
-    assets: RealSessionAssets,
-) -> Result<Dispatcher, BuildError> {
-    let models = ModelRouter::from_config(&agent.config.providers).map_err(BuildError::Models)?;
-    let engine = Engine {
-        contract: sessions,
-        models: Arc::new(models),
-        sandbox: agent.sandbox,
-        assets: Arc::new(assets),
-        http: engine::tools::web::client(),
-        search_key: agent.config.search_key.clone(),
-        max_tokens: agent.config.max_tokens,
-    };
-    Ok(Dispatcher::new(Arc::new(engine), agent.leases))
 }

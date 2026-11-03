@@ -1,17 +1,17 @@
-//! The engine's side of a session: emit, status, drain, usage, outcomes.
+//! The harness's side of a session: emit, status, drain, usage, outcomes.
 
 use async_trait::async_trait;
 use shared::{ApiError, Timestamp, Usage, WorkspaceId};
 
-use super::{map_store, EngineContract, SessionsService};
+use super::{map_store, HarnessContract, SessionsService};
 use crate::events::{Event, EventPayload, SessionEvent, StopReason};
 use crate::store::StoreError;
 use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadId};
 
-/// The engine contract is implemented by the same service (single source of
-/// truth for the event log + broadcast), consumed by `engine`.
+/// The same service implements it, so the event log and its broadcast have
+/// one source.
 #[async_trait]
-impl EngineContract for SessionsService {
+impl HarnessContract for SessionsService {
     async fn session(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Session, ApiError> {
         self.store.get(ws, session).await.map_err(map_store)
     }
@@ -81,10 +81,6 @@ impl EngineContract for SessionsService {
         Ok(drained)
     }
 
-    async fn has_unprocessed(&self, ws: &WorkspaceId, session: &SessionId) -> Result<bool, ApiError> {
-        Ok(!self.events.unprocessed_events(ws, session).await.map_err(map_store)?.is_empty())
-    }
-
     async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError> {
         self.mutate(ws, session, |s| {
             s.usage.add(usage);
@@ -111,7 +107,7 @@ impl EngineContract for SessionsService {
     }
 }
 
-/// How often a loop's write of the session row is retried after a
+/// How often a harness write of the session row is retried after a
 /// concurrent one changed it first (threads of one session write usage at
 /// once).
 const WRITE_ATTEMPTS: usize = 8;

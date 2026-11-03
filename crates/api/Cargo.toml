@@ -21,7 +21,6 @@ sessions = { workspace = true }
 deployments = { workspace = true }
 dreams = { workspace = true }
 scheduler-local = { workspace = true }
-engine = { workspace = true }
 store-postgres = { workspace = true }
 diesel = { workspace = true }
 bytes = { workspace = true }
