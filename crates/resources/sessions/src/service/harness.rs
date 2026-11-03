@@ -115,7 +115,7 @@ const WRITE_ATTEMPTS: usize = 8;
 impl SessionsService {
     /// Read the session, apply `f`, and write it back, again from a fresh
     /// read whenever another write got there first.
-    async fn mutate(
+    pub(super) async fn mutate(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,

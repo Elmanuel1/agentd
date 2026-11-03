@@ -29,6 +29,8 @@ pub struct WorkIssuer {
     pub egress: Option<Arc<SessionEgressPolicy>>,
     /// The egress proxy as the sandbox reaches it (`host:port`).
     pub egress_host: String,
+    /// The model API the harness calls (`AGENTD_MODEL_BASE_URL`).
+    pub model_base_url: String,
 }
 
 impl WorkIssuer {
@@ -83,6 +85,7 @@ impl SandboxWork for WorkIssuer {
             ("AGENTD_ENVIRONMENT_ID".to_owned(), session.environment_id.clone()),
             ("AGENTD_WORK_ID".to_owned(), work.id.as_str().to_owned()),
             ("AGENTD_WORK_SECRET".to_owned(), secret),
+            ("AGENTD_MODEL_BASE_URL".to_owned(), self.model_base_url.clone()),
         ]);
         Ok(env)
     }

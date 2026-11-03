@@ -28,6 +28,7 @@ use agents::AgentSnapshot;
 mod events;
 mod harness;
 mod lifecycle;
+mod record;
 mod resources;
 mod sandbox;
 mod threads;

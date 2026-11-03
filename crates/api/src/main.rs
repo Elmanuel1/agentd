@@ -25,8 +25,9 @@ async fn main() -> ExitCode {
     match args.split_first() {
         None => {}
         Some((cmd, rest)) if cmd == "keys" => return api::cli::keys(&config, rest).await,
+        Some((cmd, rest)) if cmd == "model-key" => return api::model_key::model_key(&config, rest).await,
         Some(_) => {
-            eprintln!("{}", api::cli::USAGE);
+            eprintln!("{}\n{}", api::cli::USAGE, api::model_key::USAGE);
             return ExitCode::FAILURE;
         }
     }

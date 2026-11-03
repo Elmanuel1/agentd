@@ -19,6 +19,7 @@ use vaults::VaultsService;
 use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps};
 use crate::egress::{EgressAdmin, SessionEgressPolicy};
+use crate::harness::{self, Harness};
 use crate::sandbox_work::WorkIssuer;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
@@ -76,6 +77,7 @@ impl AppState {
                 api_url: config.api_url,
                 egress,
                 egress_host: config.egress_host,
+                model_base_url: config.model_base_url,
             }) as Arc<dyn sessions::SandboxWork>
         });
         let sessions = Arc::new(match runtime {
@@ -98,8 +100,9 @@ impl AppState {
             environments::module(environments),
             vaults::module(Arc::new(VaultsService::new(stores.vaults))),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
-            files::module(files),
+            files::module(files.clone()),
             skills::module(skills),
+            harness::module(Harness { sessions: sessions.clone(), files: files.clone() }),
             sessions::module(sessions),
             deployments::module(deployments),
             work::module(work.clone()),

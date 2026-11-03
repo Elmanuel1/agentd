@@ -5,12 +5,18 @@
 
 use std::collections::BTreeMap;
 
-use egress_proxy::{BindingSpec, Registered, Registration};
+use egress_proxy::{BindingSpec, Registration};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use shared::hash::Signer;
 use shared::{ApiError, AuthContext};
 use vaults::egress::VaultCredentials;
+
+use crate::model_key;
+
+mod admin;
+
+pub use admin::EgressAdmin;
 
 /// Every proxy password starts with this.
 const PASSWORD: &str = "agentd-px-";
@@ -42,35 +48,6 @@ pub struct Prepared {
     pub disclosed: Vec<Disclosed>,
     /// The session CA's certificate, PEM.
     pub ca_cert: String,
-}
-
-/// The egress service's admin interface.
-#[derive(Clone)]
-pub struct EgressAdmin {
-    http: reqwest::Client,
-    url: String,
-    token: String,
-}
-
-impl std::fmt::Debug for EgressAdmin {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EgressAdmin").field("url", &self.url).finish_non_exhaustive()
-    }
-}
-
-impl EgressAdmin {
-    /// The admin interface at `url`, called with `token`.
-    pub fn new(url: &str, token: &str) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
-        Self { http, url: url.trim_end_matches('/').to_owned(), token: token.to_owned() }
-    }
-
-    fn session_url(&self, session: &str) -> String {
-        format!("{}/v1/sessions/{session}", self.url)
-    }
 }
 
 /// Registers sessions with the egress service.
@@ -128,26 +105,16 @@ impl SessionEgressPolicy {
                     workspace: ctx.workspace.as_str().to_owned(),
                     vault: c.vault_id.clone(),
                 })
+                .chain([self.model_key(session)])
                 .collect(),
         };
-        let sent = self
-            .admin
-            .http
-            .put(self.admin.session_url(session))
-            .bearer_auth(&self.admin.token)
-            .json(&registration)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status);
-        let registered: Registered = match sent {
-            Ok(r) => r.json().await.map_err(|e| ApiError::internal(format!("egress service: {e}")))?,
-            Err(e) => return Err(ApiError::internal(format!("egress service: {e}"))),
-        };
+        let registered = self.admin.register(session, &registration).await?;
         Ok(Prepared {
             password,
             env: credentials
                 .iter()
                 .map(|c| (c.name.clone(), self.placeholder(session, &c.credential_id)))
+                .chain([(model_key::VARIABLE.to_owned(), self.placeholder(session, model_key::KEY.2))])
                 .collect(),
             disclosed: credentials
                 .into_iter()
@@ -157,15 +124,21 @@ impl SessionEgressPolicy {
         })
     }
 
+    /// The operator's model key, which every session's harness calls the
+    /// model with; the agent's prompt does not list it.
+    fn model_key(&self, session: &str) -> BindingSpec {
+        let (workspace, vault, id) = model_key::KEY;
+        BindingSpec {
+            id: id.to_owned(),
+            name: model_key::VARIABLE.to_owned(),
+            placeholder: self.placeholder(session, id),
+            workspace: workspace.to_owned(),
+            vault: vault.to_owned(),
+        }
+    }
+
     /// Tell the egress service `session`'s sandbox is gone.
     pub fn forget(&self, session: &str) {
-        let Ok(rt) = tokio::runtime::Handle::try_current() else { return };
-        let req = self.admin.http.delete(self.admin.session_url(session)).bearer_auth(&self.admin.token);
-        let session = session.to_owned();
-        rt.spawn(async move {
-            if let Err(e) = req.send().await.and_then(reqwest::Response::error_for_status) {
-                tracing::warn!(%session, error = %e, "the egress service did not drop the session");
-            }
-        });
+        self.admin.forget(session);
     }
 }

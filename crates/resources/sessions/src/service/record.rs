@@ -1,0 +1,80 @@
+//! What a session's harness reports, recorded with its effects: a status
+//! event moves the session's status, a model request's usage adds to the
+//! session's usage, and a grader verdict updates its outcome evaluations.
+
+use shared::{ApiError, Usage, WorkspaceId};
+
+use super::{HarnessContract, SessionsService};
+use crate::events::{Event, EventPayload, ModelUsage, SessionEvent, SpanEvent};
+use crate::types::{OutcomeEvaluation, SessionId, SessionStatus, ThreadId};
+
+fn usage(u: &ModelUsage) -> Usage {
+    Usage {
+        cache_creation: None,
+        cache_read_input_tokens: u.cache_read_input_tokens,
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+    }
+}
+
+impl SessionsService {
+    /// Record `payload`, which the session's harness sent for `thread` (the
+    /// primary thread when `None`). Client events are not the harness's to send.
+    pub async fn record(
+        &self,
+        ws: &WorkspaceId,
+        session: &SessionId,
+        thread: Option<&ThreadId>,
+        payload: EventPayload,
+    ) -> Result<Event, ApiError> {
+        let status = match (&payload, thread) {
+            (EventPayload::User(_), _) => {
+                return Err(ApiError::invalid_request("a harness sends agent, span and session events only"))
+            }
+            (EventPayload::Session(SessionEvent::StatusRunning {}), None) => Some(SessionStatus::Running),
+            (EventPayload::Session(SessionEvent::StatusIdle { .. }), None) => Some(SessionStatus::Idle),
+            (EventPayload::Session(SessionEvent::StatusTerminated {}), None) => {
+                Some(SessionStatus::Terminated)
+            }
+            _ => None,
+        };
+        if let Some(status) = status {
+            self.mutate(ws, session, |s| {
+                if s.status == SessionStatus::Terminated {
+                    return Err(ApiError::conflict_invalid_request("session is terminated"));
+                }
+                s.status = status;
+                Ok(())
+            })
+            .await?;
+        }
+        match &payload {
+            EventPayload::Span(SpanEvent::ModelRequestEnd { model_usage, .. }) => {
+                self.add_usage(ws, session, &usage(model_usage)).await?;
+            }
+            EventPayload::Span(SpanEvent::OutcomeEvaluationEnd {
+                outcome_id,
+                result,
+                explanation,
+                iteration,
+                usage: grader,
+                ..
+            }) => {
+                self.add_usage(ws, session, &usage(grader)).await?;
+                let eval = OutcomeEvaluation {
+                    outcome_id: outcome_id.clone(),
+                    result: *result,
+                    explanation: explanation.clone(),
+                    iteration: *iteration,
+                };
+                self.record_outcome(ws, session, eval).await?;
+            }
+            _ => {}
+        }
+        let event = self.emit(ws, session, thread, payload).await?;
+        if status == Some(SessionStatus::Terminated) {
+            self.stop_sandbox(session).await;
+        }
+        Ok(event)
+    }
+}

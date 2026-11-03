@@ -20,6 +20,10 @@ pub struct SandboxConfig {
     /// `AGENTD_SANDBOX_EGRESS_HOST`: the egress proxy as a sandbox reaches it
     /// (default `<agentd-gateway or the second AGENTD_SANDBOX_JOIN container>:<AGENTD_EGRESS_ADDR port>`).
     pub egress_host: String,
+    /// `AGENTD_MODEL_BASE_URL` (default `https://openrouter.ai/api/v1`): the
+    /// OpenAI-compatible API a sandbox's harness calls the model at, through
+    /// the egress proxy.
+    pub model_base_url: String,
 }
 
 impl std::fmt::Debug for SandboxConfig {
@@ -28,6 +32,7 @@ impl std::fmt::Debug for SandboxConfig {
             .field("api_url", &self.api_url)
             .field("egress_admin_url", &self.egress_admin.as_ref().map(|(url, _)| url))
             .field("egress_host", &self.egress_host)
+            .field("model_base_url", &self.model_base_url)
             .finish_non_exhaustive()
     }
 }
@@ -52,6 +57,8 @@ impl SandboxConfig {
             egress_host: get("AGENTD_SANDBOX_EGRESS_HOST").unwrap_or_else(|| {
                 format!("{}:{}", sandbox_reach(get, 1), port(get("AGENTD_EGRESS_ADDR"), 8890))
             }),
+            model_base_url: get("AGENTD_MODEL_BASE_URL")
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
             work_token_key: match key("AGENTD_WORK_TOKEN_KEY") {
                 Some(hex) => Some(decode_hex(&hex).ok_or_else(|| ConfigError {
                     var: "AGENTD_WORK_TOKEN_KEY",
