@@ -29,6 +29,11 @@ pub enum Refusal {
         /// The credential's name.
         name: String,
     },
+    /// The request would carry the credential to a public host in cleartext.
+    Cleartext {
+        /// The credential's name.
+        name: String,
+    },
     /// The store could not be read, or the value could not be held safely.
     Unavailable {
         /// The credential's name.
@@ -49,18 +54,19 @@ pub struct Injection {
 }
 
 /// Put into `headers` the credentials of `bindings` that a request to `host`
-/// with `path` and `body` carries. On a refusal `headers` is cleared, so the
-/// values already put in are zeroed.
+/// with `path` and `body` carries; `cleartext` when the request would go out
+/// unencrypted to a public host, where no value is sent. On a refusal
+/// `headers` is cleared, so the values already put in are zeroed.
 pub async fn inject(
     headers: &mut HeaderMap,
-    path: &str,
-    body: &[u8],
+    (path, body): (&str, &[u8]),
     bindings: &[Binding],
     source: &dyn SecretSource,
     host: &str,
+    cleartext: bool,
 ) -> Result<Injection, Refusal> {
     let mut injection = Injection::default();
-    match fill(headers, (path, body), bindings, source, host, &mut injection).await {
+    match fill(headers, (path, body), bindings, source, (host, cleartext), &mut injection).await {
         Ok(()) => Ok(injection),
         Err(why) => {
             headers.clear();
@@ -75,7 +81,7 @@ async fn fill(
     (path, body): (&str, &[u8]),
     bindings: &[Binding],
     source: &dyn SecretSource,
-    host: &str,
+    (host, cleartext): (&str, bool),
     injection: &mut Injection,
 ) -> Result<(), Refusal> {
     for b in bindings {
@@ -97,6 +103,9 @@ async fn fill(
         }
         if !in_headers || !current.header {
             continue;
+        }
+        if cleartext {
+            return Err(Refusal::Cleartext { name });
         }
         for value in headers.values_mut() {
             let Some(swapped) = replace(value.as_bytes(), b.placeholder.as_bytes(), current.value.expose())

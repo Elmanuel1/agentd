@@ -44,6 +44,22 @@ impl Config {
     }
 }
 
+/// Why the worker stopped holding its work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaseEnd {
+    /// agentd is stopping the work: the worker stops it in turn.
+    Stopping,
+    /// The lease is gone, so another holder may own the work now: the worker
+    /// leaves it alone.
+    Lost(String),
+}
+
+/// The lease's current heartbeat from a 412 answer.
+fn current_heartbeat(body: &Value) -> Option<String> {
+    let state = body.pointer("/error/current_state").or_else(|| body.pointer("/current_state"))?;
+    state.get("last_heartbeat").and_then(Value::as_str).filter(|h| !h.is_empty()).map(str::to_owned)
+}
+
 /// Calls the work API.
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -88,30 +104,42 @@ impl Client {
     }
 
     /// Heartbeat until the lease ends; why it ended.
-    pub async fn keep_lease(&self) -> String {
+    pub async fn keep_lease(&self) -> LeaseEnd {
         let mut expected = "NO_HEARTBEAT".to_owned();
         let (mut interval, mut ttl) = (Duration::from_secs(30), Duration::from_secs(90));
         let mut last_ok = tokio::time::Instant::now();
+        // Whether the last beat may have reached agentd without its answer
+        // reaching us: then a 412 is our own stale `expected`, not a takeover.
+        let mut unknown = false;
         loop {
             let sent =
                 self.post("/heartbeat").query(&[("expected_last_heartbeat", expected.as_str())]).send().await;
             match sent {
                 Ok(r) if r.status() == reqwest::StatusCode::PRECONDITION_FAILED => {
-                    return "the lease was lost".into()
+                    let current = r.json::<Value>().await.ok().and_then(|v| current_heartbeat(&v));
+                    match current {
+                        Some(current) if unknown => {
+                            (expected, unknown) = (current, false);
+                            continue;
+                        }
+                        _ => return LeaseEnd::Lost("the lease was lost".into()),
+                    }
                 }
                 Ok(r)
                     if r.status().is_client_error()
                         && r.status() != reqwest::StatusCode::TOO_MANY_REQUESTS =>
                 {
-                    return format!("heartbeat refused: HTTP {}", r.status());
+                    return LeaseEnd::Lost(format!("heartbeat refused: HTTP {}", r.status()));
                 }
                 Ok(r) if r.status().is_success() => {
+                    unknown = false;
                     let v: Value = r.json().await.unwrap_or_default();
                     let state = v.get("state").and_then(Value::as_str).unwrap_or_default();
-                    if matches!(state, "stopping" | "stopped")
-                        || v.get("lease_extended") == Some(&Value::Bool(false))
-                    {
-                        return format!("work is {state}");
+                    if matches!(state, "stopping" | "stopped") {
+                        return LeaseEnd::Stopping;
+                    }
+                    if v.get("lease_extended") == Some(&Value::Bool(false)) {
+                        return LeaseEnd::Lost("the lease was not extended".into());
                     }
                     expected = v.get("last_heartbeat").and_then(Value::as_str).unwrap_or_default().to_owned();
                     let secs = v.get("ttl_seconds").and_then(Value::as_u64).unwrap_or(90).max(1);
@@ -119,11 +147,17 @@ impl Client {
                     interval = Duration::from_secs_f64((secs as f64 / 2.0).clamp(1.0, 30.0));
                     last_ok = tokio::time::Instant::now();
                 }
-                Ok(r) => eprintln!("agentd-worker: heartbeat: HTTP {}", r.status()),
-                Err(e) => eprintln!("agentd-worker: heartbeat: {e}"),
+                Ok(r) => {
+                    unknown = true;
+                    eprintln!("agentd-worker: heartbeat: HTTP {}", r.status());
+                }
+                Err(e) => {
+                    unknown = true;
+                    eprintln!("agentd-worker: heartbeat: {e}");
+                }
             }
             if last_ok.elapsed() > ttl {
-                return "the lease ran out".into();
+                return LeaseEnd::Lost("the lease ran out".into());
             }
             tokio::time::sleep(interval).await;
         }

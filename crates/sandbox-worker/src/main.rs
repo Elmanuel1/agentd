@@ -33,8 +33,10 @@ async fn main() {
     };
     let client = Client::new(config);
     client.ack_until_done().await;
-    // The lease ends the worker: stopped work, a lost lease, or agentd gone.
-    let reason = client.keep_lease().await;
-    eprintln!("agentd-worker: stopping: {reason}");
-    client.stop().await;
+    // The lease ends the worker. Work agentd is stopping is stopped; a lost
+    // lease is left alone, since another holder may own the work now.
+    match client.keep_lease().await {
+        client::LeaseEnd::Stopping => client.stop().await,
+        client::LeaseEnd::Lost(reason) => eprintln!("agentd-worker: stopping: {reason}"),
+    }
 }

@@ -33,11 +33,17 @@ impl Networking {
     }
 }
 
-/// [`Networking::allowed_hosts`] of an environment `config` as JSON; a
-/// config without a readable policy is unrestricted, as its default is.
+/// [`Networking::allowed_hosts`] of an environment `config` as JSON. A
+/// config with no policy is unrestricted, as its default is; one whose policy
+/// does not read allows no host (fail closed).
 pub fn allowed_hosts(config: &serde_json::Value) -> Option<Vec<String>> {
-    let policy = config.get("networking").cloned().unwrap_or_default();
-    serde_json::from_value::<Networking>(policy).unwrap_or_default().allowed_hosts()
+    match config.get("networking") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(policy) => match serde_json::from_value::<Networking>(policy.clone()) {
+            Ok(networking) => networking.allowed_hosts(),
+            Err(_) => Some(Vec::new()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -54,5 +60,7 @@ mod tests {
         assert_eq!(allowed_hosts(&only), Some(vec!["api.example.com".to_owned()]));
         let registries = json!({"networking": {"type": "limited", "allow_package_managers": true}});
         assert!(allowed_hosts(&registries).unwrap().contains(&"pypi.org".to_owned()));
+        let unreadable = json!({"networking": {"type": "limited", "allowed_hosts": "everything"}});
+        assert_eq!(allowed_hosts(&unreadable), Some(vec![]));
     }
 }

@@ -131,10 +131,18 @@ impl Runtime for DockerRuntime {
             ..Default::default()
         };
         let options = CreateContainerOptionsBuilder::default().name(&name).build();
-        self.docker
-            .create_container(Some(options), body)
-            .await
-            .map_err(|e| RuntimeError::Launch(e.to_string()))?;
+        let created = self.docker.create_container(Some(options), body).await;
+        match created {
+            Ok(_) => {}
+            // The name is taken: that container may be live on this network.
+            Err(e @ DockerError::DockerResponseServerError { status_code: 409, .. }) => {
+                return Err(RuntimeError::Launch(e.to_string()))
+            }
+            Err(e) => {
+                self.close_network(&job.target_id).await;
+                return Err(RuntimeError::Launch(e.to_string()));
+            }
+        }
         if let Err(e) = self.docker.start_container(&name, None).await {
             let _ = self.stop(&RuntimeHandle { id: name }).await;
             return Err(RuntimeError::Launch(e.to_string()));
