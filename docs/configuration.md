@@ -53,6 +53,18 @@ outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
 token reaches. agentd keeps the API, the event log and the sandbox's
 lifecycle, and runs no agent loop; the sandbox takes no inbound connection.
 
+A session's `budget` is enforced by the harness. It adds up each model
+request's list cost (OpenRouter's `usage.cost`) across every thread, starting
+from the session's `usage.list_cost`, and reports it to agentd as a
+`session.usage` event. Once the cost reaches `budget.max_list_cost`, or a model
+with no list price ran, the harness starts no further model request and the
+session and its threads go idle with `stop_reason` `budget_reached`. A budget
+change a client makes while the session runs applies at the next request.
+
+agentd stops a sandbox with SIGTERM and a 10 second grace before it removes
+the container. On SIGTERM the harness saves the files under
+`/mnt/session/outputs/` that changed since its last turn ended, then exits.
+
 The harness calls the model at an OpenAI-compatible API through the egress
 proxy. The key is an operator credential: `agentd model-key set [--host
 <host>]` reads it from stdin and stores it in Secrets Manager
