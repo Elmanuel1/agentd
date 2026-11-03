@@ -143,3 +143,17 @@ def _try_delete(client: anthropic.Anthropic, skill_id: str, version_id: str) -> 
         return 200
     except anthropic.BadRequestError:
         return 400
+
+
+def test_a_version_downloads_by_its_id_and_by_its_timestamp_under_the_beta(client: anthropic.Anthropic) -> None:
+    import zipfile
+
+    skill = client.skills.create(files=skill_files("sdk-skill"), display_name=f"dl {uuid.uuid4().hex[:6]}")
+    version_id = client.beta.skills.retrieve(skill.id).latest_version_id
+    archive = client.beta.skills.versions.download(version_id, skill_id=skill.id).read()
+    assert "sdk-skill/SKILL.md" in zipfile.ZipFile(io.BytesIO(archive)).namelist()
+    beta = ["skills-2025-10-02"]
+    number = client.beta.skills.retrieve(skill.id, betas=beta).model_extra["latest_version"]
+    assert client.beta.skills.versions.download(number, skill_id=skill.id, betas=beta).read() == archive
+    with pytest.raises(anthropic.BadRequestError, match="numeric timestamp"):
+        client.beta.skills.versions.download(version_id, skill_id=skill.id, betas=beta)

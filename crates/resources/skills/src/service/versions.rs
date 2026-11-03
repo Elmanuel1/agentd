@@ -56,14 +56,16 @@ impl SkillsService {
     }
 
     /// `GET /v1/skills/{id}/versions/{version}/content`: the version's zip.
-    /// Live (skills/28) names the version by its numeric timestamp here.
+    /// Under the skills beta (`beta`), live (skills/28) names the version by
+    /// its numeric timestamp only; without it, by its id, as the SDK does.
     pub async fn version_bundle(
         &self,
         ctx: &AuthContext,
         raw_id: &str,
         raw_version: &str,
+        beta: bool,
     ) -> Result<Bytes, ApiError> {
-        if let VersionRef::Id(_) = VersionRef::parse(raw_version)? {
+        if let (true, VersionRef::Id(_)) = (beta, VersionRef::parse(raw_version)?) {
             return Err(ApiError::invalid_request(format!(
                 "Invalid version format: '{raw_version}'. Version must be a numeric timestamp (e.g., '1759178010641129')."
             )));

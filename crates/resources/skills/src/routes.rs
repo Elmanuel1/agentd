@@ -147,9 +147,10 @@ async fn get_version(
 async fn download_version(
     Extension(svc): Extension<Arc<SkillsService>>,
     Extension(ctx): Extension<AuthContext>,
+    Extension(betas): Extension<BetaSet>,
     Path((id, version)): Path<(String, String)>,
 ) -> Result<Response, RouteError> {
-    let zip = svc.version_bundle(&ctx, &id, &version).await?;
+    let zip = svc.version_bundle(&ctx, &id, &version, betas.has(SKILLS)).await?;
     Ok(([(axum::http::header::CONTENT_TYPE, "application/zip")], zip).into_response())
 }
 
