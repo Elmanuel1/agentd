@@ -79,6 +79,6 @@ AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
 
 Implemented + tested against live Postgres: **agents** (versioned, `DISTINCT
 ON` list), **deployments** (+ runs + claim), **files** (metadata in Postgres,
-bytes in object storage via the shared `blobs-s3` `BlobStore` — never in
-the DB). Remaining entities reuse the same hybrid pattern — one module + a
+bytes in object storage through the `BlobStore` port
+(`shared::ports::blobs`), which `blobs-s3` implements, never in the DB). Remaining entities reuse the same hybrid pattern — one module + a
 `V2__*.sql` (or extend `V1`) each.
