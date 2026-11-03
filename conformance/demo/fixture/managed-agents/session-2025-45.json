@@ -30,6 +30,10 @@
   },
   {
    "type": "file",
+   "mount_path": "/extraction/bin/quotes.py"
+  },
+  {
+   "type": "file",
    "file_id": "file_011zw5Hpmxr5HPZR6XYrT11L",
    "mount_path": "/extraction/schemas/addenda-processor.schema.json"
   },
