@@ -102,7 +102,7 @@ def main():
         for row in cite.rows(raw):
             if wanted is not None and row["page"] not in wanted:
                 continue
-            text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
+            text = cite.row_text(row)
             if text:
                 by_page.setdefault(row["page"], []).append(text)
         blocks = []
