@@ -82,6 +82,7 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "organizations",
  "parking_lot",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -2435,6 +2436,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "organizations"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "shared",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

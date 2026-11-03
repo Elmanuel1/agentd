@@ -1,7 +1,8 @@
 """The official Python SDK against a running agentd, with only the base URL changed.
 
-AGENTD_BASE_URL (default http://127.0.0.1:8080) and AGENTD_TEST_KEY name the
-server and a key it accepts.
+AGENTD_BASE_URL (default http://127.0.0.1:8080) names the server,
+AGENTD_TEST_KEY a workspace key it accepts and AGENTD_TEST_ADMIN_KEY an admin
+key for the same organization.
 """
 
 import os
@@ -23,6 +24,11 @@ def key() -> str:
 @pytest.fixture
 def client(base_url: str, key: str) -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=key, base_url=base_url)
+
+
+@pytest.fixture
+def admin(base_url: str) -> anthropic.Anthropic:
+    return anthropic.Anthropic(api_key=os.environ["AGENTD_TEST_ADMIN_KEY"], base_url=base_url)
 
 
 class Counter:

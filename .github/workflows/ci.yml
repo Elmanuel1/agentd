@@ -168,6 +168,11 @@ jobs:
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)
           echo "::add-mask::$key"
           echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
+      - name: Create the SDK admin key with the CLI
+        run: |
+          key=$(./target/debug/agentd admin-keys create --org org_sdk --name sdk)
+          echo "::add-mask::$key"
+          echo "AGENTD_TEST_ADMIN_KEY=$key" >> "$GITHUB_ENV"
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
