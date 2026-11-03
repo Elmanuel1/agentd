@@ -18,12 +18,10 @@
 
 mod checkout;
 pub mod entities;
-mod lease;
 mod pool;
 pub mod schema;
 
 pub use checkout::{DieselPgPool, PooledConnection};
-pub use lease::PgLeases;
 pub use pool::{PgObserver, PoolSettings};
 
 pub use entities::agents::PgAgentsStore;
