@@ -27,7 +27,6 @@ class SessionRun:
         agent = session["agent"]
         members = roster(agent)
         mounts.prepare_dirs()
-        mounts.trust_ca(env.get("AGENTD_EGRESS_CA"))
         mounts.mount_files(agentd, session)
         self.skills = mounts.mount_skills(agentd, [agent, *members])
         # The agent's tools never see the model key, not even as its placeholder.

@@ -14,6 +14,7 @@ import time
 
 import anthropic
 
+from . import mounts
 from .api import Agentd
 from .run import SessionRun
 
@@ -62,6 +63,8 @@ def keep_lease(work, work_id, environment_id, ended):
 
 
 def main(env=os.environ):
+    # First: the sandbox's TLS settings name this bundle, and every HTTP client reads it when built.
+    mounts.trust_ca(env.get("AGENTD_EGRESS_CA"))
     api, environment_id, work_id = env["AGENTD_API_URL"], env["AGENTD_ENVIRONMENT_ID"], env["AGENTD_WORK_ID"]
     token = sessions_token(env["AGENTD_WORK_SECRET"])
     work = anthropic.Anthropic(base_url=api, auth_token=token, max_retries=5).beta.environments.work
