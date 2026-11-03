@@ -122,7 +122,8 @@ def sync_outputs(agentd, root=OUTPUTS, state=STATE):
         known = synced.get(rel)
         if known and known["sha256"] == digest:
             continue
-        file_id = agentd.save_output(rel, data, previous=known and known["file_id"])
+        # A session file is named by the file's own name; the path keys it here.
+        file_id = agentd.save_output(path.name, data, previous=known and known["file_id"])
         synced[rel] = {"sha256": digest, "file_id": file_id}
         count += 1
     state.parent.mkdir(parents=True, exist_ok=True)

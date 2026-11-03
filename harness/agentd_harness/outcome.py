@@ -40,6 +40,7 @@ def grade(run, agent, rubric, description):
 
     def submit(tool_input):
         verdict.update(tool_input)
+        grader.finished = True
         return [{"type": "text", "text": "Verdict recorded."}], False
 
     grader.handlers["submit_verdict"] = submit
@@ -57,7 +58,7 @@ def run_outcome(run, primary, event):
     max_iterations = event.get("max_iterations") or DEFAULT_MAX_ITERATIONS
     prompt = outcome_prompt(description, rubric)
     for iteration in range(max_iterations):
-        primary.send(prompt)
+        run.turn(prompt)
         (start,) = run.agentd.emit([{"type": "span.outcome_evaluation_start", "outcome_id": outcome_id, "iteration": iteration}])
         result, explanation, used = grade(run, primary.agent, rubric, description)
         if result == "needs_revision" and iteration + 1 >= max_iterations:
@@ -69,6 +70,6 @@ def run_outcome(run, primary, event):
             return result
         prompt = feedback_prompt(result, explanation)
         if result == "max_iterations_reached":
-            primary.send(prompt)
+            run.turn(prompt)
             return result
     return "max_iterations_reached"

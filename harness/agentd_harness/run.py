@@ -36,8 +36,15 @@ class SessionRun:
         functions = policy.functions(FUNCTIONS if members else ())
         system = system_prompt(agent, self.skills.get(agent["name"], []), members, self.credentials)
         self.primary = Thread(self, agent, system, functions, policy)
-        if members:
-            Team(self, agent, members).bind(self.primary)
+        self.team = Team(self, agent, members) if members else None
+        if self.team:
+            self.team.bind(self.primary)
+
+    def turn(self, prompt):
+        """The agent's turn on `prompt`, until it and every thread it delegated to are done."""
+        self.primary.send(prompt)
+        if self.team:
+            self.team.settle(self.primary)
 
     def status(self, event):
         self.agentd.emit([event])
@@ -52,7 +59,7 @@ class SessionRun:
     def handle(self, event):
         kind = event["type"]
         if kind == "user.message":
-            self.primary.send(text_of(event.get("content")))
+            self.turn(text_of(event.get("content")))
         elif kind == "user.define_outcome":
             run_outcome(self, self.primary, event)
         elif kind == "system.message":

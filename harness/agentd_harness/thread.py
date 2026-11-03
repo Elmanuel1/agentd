@@ -39,6 +39,8 @@ class Thread:
                                  step_limit=0, cost_limit=0)
         self.system = system
         self.handlers = {}
+        # Set by a handler whose call ends the thread's work (the grader's verdict).
+        self.finished = False
         self.usage = {"input_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 0}
 
     def emit(self, *events):
@@ -72,6 +74,8 @@ class Thread:
                 return reply
             outputs = [self.act(action) for action in actions]
             a.add_messages(*self.model.format_observation_messages(message, outputs))
+            if self.finished:
+                return reply
         return reply
 
     def act(self, action):
