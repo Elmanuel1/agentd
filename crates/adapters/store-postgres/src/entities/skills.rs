@@ -94,7 +94,7 @@ impl SkillsStore for PgSkillsStore {
             doc: to_doc(&version)?,
         };
         // A skill and its first version land together or not at all.
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
                 diesel::insert_into(skills::table).values(new_skill).execute(c).await?;
@@ -135,7 +135,7 @@ impl SkillsStore for PgSkillsStore {
     }
 
     async fn replace(&self, ws: &WorkspaceId, skill: Skill) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             skills::table
                 .filter(skills::workspace_id.eq(ws.as_str()))
@@ -152,7 +152,7 @@ impl SkillsStore for PgSkillsStore {
     }
 
     async fn delete_skill(&self, ws: &WorkspaceId, id: &SkillId) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         // Every version's blob key must be removed — fetch the full set, not a page.
         let version_docs: Vec<serde_json::Value> = skill_versions::table
             .filter(skill_versions::workspace_id.eq(ws.as_str()))

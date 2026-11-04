@@ -42,7 +42,7 @@ impl PgSessionEventLog {
 #[async_trait]
 impl SessionEventLog for PgSessionEventLog {
     async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         // One statement: the event lands only while its session exists, so a
         // delete that removed the session first leaves no orphan behind.
         let inserted = diesel::sql_query(
@@ -64,7 +64,7 @@ impl SessionEventLog for PgSessionEventLog {
     }
 
     async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             session_events::table
                 .filter(session_events::workspace_id.eq(ws.as_str()))
@@ -155,7 +155,7 @@ impl SessionEventLog for PgSessionEventLog {
     }
 
     async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::delete(
             session_events::table
                 .filter(session_events::workspace_id.eq(ws.as_str()))

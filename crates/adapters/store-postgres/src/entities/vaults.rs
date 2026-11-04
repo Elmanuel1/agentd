@@ -97,7 +97,7 @@ struct NewCredential {
 #[async_trait]
 impl VaultsStore for PgVaultsStore {
     async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(vaults::table)
             .values(NewVault {
                 workspace_id: ws.as_str().to_owned(),
@@ -126,7 +126,7 @@ impl VaultsStore for PgVaultsStore {
     }
 
     async fn replace_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             vaults::table
                 .filter(vaults::workspace_id.eq(ws.as_str()))
@@ -150,7 +150,7 @@ impl VaultsStore for PgVaultsStore {
         for c in creds {
             self.put_secret(ws, id, &c.wire.id, &None).await?;
         }
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::delete(
             credentials::table
                 .filter(credentials::workspace_id.eq(ws.as_str()))
@@ -204,7 +204,7 @@ impl VaultsStore for PgVaultsStore {
         // The connection is taken after the secret write and released before
         // any cleanup, so no call to the secret store holds one.
         let inserted: Result<usize, StoreError> = async {
-            let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+            let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
             diesel::insert_into(credentials::table).values(row).execute(&mut conn).await.map_err(diesel_be)
         }
         .await;
@@ -243,7 +243,7 @@ impl VaultsStore for PgVaultsStore {
             credentials::has_secret.eq(cred.auth.is_some()),
             credentials::doc.eq(to_doc(&cred.wire)?),
         ))
-        .execute(&mut *self.backend.diesel.get().await.map_err(pool_be)?)
+        .execute(&mut *self.backend.diesel.write().await.map_err(pool_be)?)
         .await
         .map_err(diesel_be)?;
         if affected == 0 {
@@ -267,7 +267,7 @@ impl VaultsStore for PgVaultsStore {
                 .filter(credentials::vault_id.eq(vault.as_str()))
                 .filter(credentials::credential_id.eq(id.as_str())),
         )
-        .execute(&mut *self.backend.diesel.get().await.map_err(pool_be)?)
+        .execute(&mut *self.backend.diesel.write().await.map_err(pool_be)?)
         .await
         .map_err(diesel_be)?;
         self.put_secret(ws, vault, id, &None).await?;

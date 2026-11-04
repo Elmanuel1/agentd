@@ -71,7 +71,7 @@ fn record((id, org, workspace, name, hint, created_at, revoked_at): Row) -> ApiK
 #[async_trait]
 impl ApiKeysStore for PgApiKeysStore {
     async fn insert(&self, key: &ApiKey, digest: &[u8]) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(api_keys::table)
             .values(NewApiKey {
                 api_key_id: &key.id,
@@ -113,7 +113,7 @@ impl ApiKeysStore for PgApiKeysStore {
     }
 
     async fn revoke(&self, id: &str, at: Timestamp) -> Result<bool, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             api_keys::table.filter(api_keys::api_key_id.eq(id)).filter(api_keys::revoked_at.is_null()),
         )
@@ -130,7 +130,7 @@ impl ApiKeysStore for PgApiKeysStore {
         workspace: &WorkspaceId,
         at: Timestamp,
     ) -> Result<usize, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::update(
             api_keys::table
                 .filter(api_keys::org_id.eq(org.as_str()))

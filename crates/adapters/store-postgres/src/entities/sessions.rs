@@ -39,7 +39,7 @@ struct NewSession {
 #[async_trait]
 impl SessionsStore for PgSessionsStore {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(sessions::table)
             .values(NewSession {
                 workspace_id: ws.as_str().to_owned(),
@@ -68,7 +68,7 @@ impl SessionsStore for PgSessionsStore {
     }
 
     async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc = to_doc(&s)?;
         // The row is locked and compared as a Session, not as raw JSON: a doc
         // written before a field existed re-serializes differently but holds
@@ -108,7 +108,7 @@ impl SessionsStore for PgSessionsStore {
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         // Delete + return the row in one statement (no separate get).
         let doc: Option<serde_json::Value> = diesel::delete(
             sessions::table

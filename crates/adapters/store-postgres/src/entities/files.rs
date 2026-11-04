@@ -66,7 +66,7 @@ impl FilesStore for PgFilesStore {
         // Bytes → S3 first, then metadata → Postgres.
         self.blobs.put(&Self::key(ws, &f.meta.id), f.bytes.clone()).await.map_err(blob_be)?;
         let doc = FileDoc { meta: f.meta.clone(), scope_id: f.scope_id.clone() };
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(files::table)
             .values(NewFile {
                 workspace_id: ws.as_str().to_owned(),
@@ -104,7 +104,7 @@ impl FilesStore for PgFilesStore {
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
         let existing = self.get(ws, id).await?;
         {
-            let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+            let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
             diesel::delete(
                 files::table
                     .filter(files::workspace_id.eq(ws.as_str()))

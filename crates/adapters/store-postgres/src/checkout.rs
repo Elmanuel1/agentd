@@ -1,7 +1,9 @@
 //! Taking a connection from the pool, under one deadline.
 
+use diesel::sql_types::Text;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
-use diesel_async::AsyncPgConnection;
+use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use shared::Writer;
 
 /// The connection pool (diesel-async over tokio-postgres), with one deadline
 /// on a whole checkout: deadpool bounds the wait, the create and the recycle
@@ -29,6 +31,25 @@ impl DieselPgPool {
         tokio::time::timeout(self.deadline, self.inner.get())
             .await
             .unwrap_or(Err(PoolError::Timeout(deadpool::managed::TimeoutType::Wait)))
+    }
+
+    /// A connection for a write, carrying the current [`Writer`] so every row
+    /// the write adds records who wrote it.
+    pub async fn write(&self) -> Result<PooledConnection, PoolError> {
+        let mut conn = self.get().await?;
+        let writer = Writer::current();
+        // Session-level (`false`): most writes run outside an explicit
+        // transaction, where a transaction-local setting would be gone before
+        // the write's own statement ran. Every write checkout sets both again.
+        diesel::sql_query(
+            "SELECT set_config('agentd.actor', $1, false), set_config('agentd.request_id', $2, false)",
+        )
+        .bind::<Text, _>(&writer.actor)
+        .bind::<Text, _>(&writer.request_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| PoolError::Backend(diesel_async::pooled_connection::PoolError::QueryError(e)))?;
+        Ok(conn)
     }
 
     /// Connections open, idle and waited for.
