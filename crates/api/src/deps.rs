@@ -6,13 +6,15 @@ use std::sync::Arc;
 
 use agents::types::{Multiagent, RosterMember};
 use agents::{AgentRef, AgentSnapshot, AgentsService};
+use api_keys::ApiKeysStore;
 use async_trait::async_trait;
 use deployments::service::DeploymentDeps;
 use deployments::types::{Deployment, InitialEvent};
 use environments::EnvironmentsService;
+use organizations::workspaces::WorkspaceKeys;
 use sessions::service::SessionDeps;
 use sessions::SessionsService;
-use shared::{ApiError, AuthContext};
+use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
 
 /// SessionDeps over the real agents + environments services.
 pub struct RealSessionDeps {
@@ -150,5 +152,30 @@ impl DeploymentDeps for RealDeploymentDeps {
             .collect();
         self.sessions.send_events(ctx, session.id.as_str(), payloads).await?;
         Ok(session.id.as_str().to_owned())
+    }
+}
+
+/// WorkspaceKeys over the api-keys store: an archive revokes the workspace's
+/// keys in one statement.
+pub struct RealWorkspaceKeys {
+    /// Workspace API keys.
+    pub keys: Arc<dyn ApiKeysStore>,
+}
+
+impl std::fmt::Debug for RealWorkspaceKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealWorkspaceKeys").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl WorkspaceKeys for RealWorkspaceKeys {
+    async fn revoke_all(&self, org: &OrgId, workspace: &str, at: Timestamp) -> Result<(), ApiError> {
+        let workspace = WorkspaceId::new(workspace);
+        self.keys
+            .revoke_workspace(org, &workspace, at)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok(())
     }
 }

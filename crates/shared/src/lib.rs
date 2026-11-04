@@ -50,6 +50,6 @@ pub use page::{
 };
 pub use patch::{MetadataPatch, Patch};
 pub use scope::Scope;
-pub use tenancy::{AuthContext, OrgId, WorkspaceId};
+pub use tenancy::{AdminContext, AuthContext, OrgId, WorkspaceId};
 pub use time::Timestamp;
 pub use usage::Usage;

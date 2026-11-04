@@ -15,7 +15,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | Record store | `AGENTD_STORE` | `postgres` |
 | Blob store | `AGENTD_BLOBS` | `s3` |
 | Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
-| API keys | `AGENTD_KEYS` | `aws`: the keys `agentd keys create` issued, in Secrets Manager (see [API keys](#api-keys)) |
+| API keys | `AGENTD_KEYS` | `aws`: workspace keys in Postgres and admin keys in Secrets Manager, digested with a pepper in Secrets Manager (see [API keys](#api-keys)) |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
 | Sandbox runtime | `AGENTD_RUNTIME` | `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Each sandbox sits on an internal network of its own, `agentd-net-<session id>` on a /28 of 10.213.0.0/16, with no route out: only agentd and the egress service share it, so its only way out is the egress proxy and no other sandbox is reachable. agentd and the egress service join each one when `AGENTD_SANDBOX_JOIN` names their containers; otherwise the `agentd-gateway` container joins it and relays only agentd's API port and the egress proxy's port to the host. The sandbox's first process is the session's harness (`python3 -m agentd_harness`), which runs the agent's tools as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
 
@@ -192,9 +192,7 @@ cached, so a revoke holds from the next request.
   workspace. Each is a row in the Postgres `api_keys` table: its digest under
   a unique index, its id, org, workspace, name, partial key hint, and the time
   it was created and revoked. A request computes its key's digest and reads
-  the unrevoked row with that digest. Archiving a workspace
-  (`POST /v1/organizations/workspaces/{id}/archive`) revokes every unrevoked
-  key of that workspace, so each gets a 401 from its next request. Secrets under
+  the unrevoked row with that digest. Secrets under
   `<prefix>/system/api_keys/` are never read: reissue each of those keys with
   `agentd keys create`, and switch callers to the new keys before deploying.
 - **Admin keys** (`sk-ant-admin01-…`, `adminkey_…`) act for one org. Each is a
@@ -207,11 +205,16 @@ cached, so a revoke holds from the next request.
 agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]   # prints the key once, on stdout
 agentd keys list                                                              # id, org, workspace, status, hint, created, name
 agentd keys revoke <apikey_id>
+agentd admin-keys create --org <org_id> [--name <name>]                       # prints the key once, on stdout
+agentd admin-keys list                                                        # id, org, status, hint, created, name
+agentd admin-keys revoke <adminkey_id>
 ```
 
-The command reads the same configuration as the server and talks only to
-Secrets Manager. The key is printed once and never stored; lose it and create
-another. No environment variable holds a key.
+The commands read the same configuration as the server, so `DATABASE_URL` is
+required for both when `AGENTD_STORE` is unset or `postgres`. `agentd keys`
+uses Postgres (migrated) and Secrets Manager for the pepper; `agentd
+admin-keys` uses only Secrets Manager. A key is printed once and never stored;
+lose it and create another. No environment variable holds a key.
 
 ## Security
 
@@ -219,8 +222,9 @@ There is no switch that weakens any of these; each is the only behaviour.
 
 - Vault credentials are in Secrets Manager under a customer-managed KMS key.
   There is no plain store.
-- API keys are peppered digests in Secrets Manager, made by `agentd keys`. No
-  key is read from the environment and there is no default key.
+- API keys are peppered digests, workspace keys in Postgres and admin keys in
+  Secrets Manager, made by `agentd keys` and `agentd admin-keys`. No key is
+  read from the environment and there is no default key.
 - Every session runs in a Docker sandbox; there is no mode without one. Give
   agentd a Docker API that allows only networks, images and containers (the
   dev stack uses `tecnativa/docker-socket-proxy`), never the raw socket. The

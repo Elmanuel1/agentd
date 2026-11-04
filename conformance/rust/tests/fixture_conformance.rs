@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
-use test_support::{MemorySecretStore, StaticKeySource};
+use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
 
 use api::{build_router, AppState, Backends, Stores};
 use axum::body::Body;
@@ -54,6 +54,7 @@ async fn app() -> Option<Router> {
     let backends = Backends {
         stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
+        admin_keys: Arc::new(StaticAdminKeys::default()),
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         runtime: Some(Arc::new(FakeRuntime::new())),
