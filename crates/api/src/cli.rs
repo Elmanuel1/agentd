@@ -12,6 +12,7 @@ use std::sync::Arc;
 use api_keys::{ApiKey, ApiKeysService};
 use secrets_aws::AwsSecretStore;
 use shared::ports::secrets::ExposeSecret;
+use shared::{with_writer, Writer};
 use store_postgres::{PgApiKeysStore, PgBackend};
 
 use crate::config::{Config, StoreConfig};
@@ -84,13 +85,18 @@ pub async fn keys(config: &Config, args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run(config, command).await {
+    match as_operator(run(config, command)).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("agentd keys: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Run `fut` as the CLI's writer, `operator`, in a request of its own.
+async fn as_operator<F: std::future::Future>(fut: F) -> F::Output {
+    with_writer(Writer::fresh("operator"), fut).await
 }
 
 async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {

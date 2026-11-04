@@ -9,7 +9,9 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use shared::ports::keys::{AdminKeySource, KeySource};
-use shared::{wire_response, ApiError, AuthContext, OrgId, WorkspaceId};
+use shared::{
+    current_request_id, wire_response, with_writer, ApiError, AuthContext, OrgId, WorkspaceId, Writer,
+};
 use work::{WorkClaims, WorkScope, WorkTokens};
 
 /// What a request may authenticate with: a workspace key, an admin key, or
@@ -56,7 +58,8 @@ fn admin_route(path: &str) -> bool {
 /// Resolve the caller's key or work token to its tenant. Live (auth/03, 04): no key is
 /// `x-api-key header is required`, an unknown one `invalid x-api-key`, both
 /// 401 `authentication_error`. A key store that cannot be read is a 500, so a
-/// client retries instead of taking its key for revoked.
+/// client retries instead of taking its key for revoked. The request then
+/// runs as its writer: the key's id, or a work token's session.
 pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next) -> Response {
     let Some(key) = api_key(req.headers()) else {
         return wire_response(&ApiError::authentication("x-api-key header is required"));
@@ -68,10 +71,11 @@ pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next
             Err(e) => return wire_response(&ApiError::internal(e.to_string())),
         };
         let tenant = [("anthropic-organization-id", HeaderValue::from_str(ctx.org.as_str()).ok())];
+        let actor = ctx.admin_key_id.clone();
         req.extensions_mut().insert(ctx);
-        return with_tenant(next.run(req).await, tenant);
+        return with_tenant(run_as(actor, req, next).await, tenant);
     }
-    let ctx = if key.starts_with(work::tokens::PREFIX) {
+    let (ctx, actor) = if key.starts_with(work::tokens::PREFIX) {
         let claims = creds.work.as_ref().and_then(|w| w.verify(&key));
         let Some(claims) = claims.filter(|c| work_route(req.method(), req.uri().path(), c)) else {
             return wire_response(&ApiError::authentication("invalid work token"));
@@ -81,11 +85,15 @@ pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next
             workspace: WorkspaceId::new(claims.ws.clone()),
             api_key_id: format!("work:{}", claims.work),
         };
+        let session = claims.session.clone();
         req.extensions_mut().insert(WorkScope(claims));
-        ctx
+        (ctx, session)
     } else {
         match creds.keys.resolve(&key).await {
-            Ok(Some(ctx)) => ctx,
+            Ok(Some(ctx)) => {
+                let actor = ctx.api_key_id.clone();
+                (ctx, actor)
+            }
             Ok(None) => return wire_response(&ApiError::authentication("invalid x-api-key")),
             Err(e) => return wire_response(&ApiError::internal(e.to_string())),
         }
@@ -95,7 +103,11 @@ pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next
         ("anthropic-workspace-id", HeaderValue::from_str(ctx.workspace.as_str()).ok()),
     ];
     req.extensions_mut().insert::<AuthContext>(ctx);
-    with_tenant(next.run(req).await, tenant)
+    with_tenant(run_as(actor, req, next).await, tenant)
+}
+
+async fn run_as(actor: String, req: Request, next: Next) -> Response {
+    with_writer(Writer::new(actor, &current_request_id()), next.run(req)).await
 }
 
 fn with_tenant<const N: usize>(

@@ -12,6 +12,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod actor;
+pub mod audit;
 pub mod beta;
 pub mod charset;
 pub mod content;
@@ -34,12 +35,13 @@ pub mod time;
 pub mod usage;
 
 pub use actor::Actor;
+pub use audit::{with_writer, Writer};
 pub use content::ContentBlock;
 pub use deleted::Deleted;
 pub use error::{ApiError, BackendError, ErrorType};
 pub use extract::{
-    multipart_error, request_too_large_response, unknown_route_response, wire_response, with_request_id,
-    ApiJson, ApiJsonError, ErrorCause, NoRequestId, RouteError,
+    current_request_id, multipart_error, request_too_large_response, unknown_route_response, wire_response,
+    with_request_id, ApiJson, ApiJsonError, ErrorCause, NoRequestId, RouteError,
 };
 pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;
