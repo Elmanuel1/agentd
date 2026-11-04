@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use super::{ScheduleSpec, TenantRef};
-use crate::{AuthContext, OrgId, WorkspaceId};
+use crate::{with_writer, AuthContext, OrgId, WorkspaceId, Writer};
 
 /// A fire that did not run.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -69,7 +69,8 @@ impl FireRegistry {
         Ok(())
     }
 
-    /// Deliver one tick of `spec` to the handler of its target's kind.
+    /// Deliver one tick of `spec` to the handler of its target's kind, as
+    /// the schedule's key writing a request of its own.
     pub async fn fire(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
         let handler = self
             .handlers
@@ -78,7 +79,9 @@ impl FireRegistry {
             .get(spec.target.kind.as_str())
             .cloned()
             .ok_or_else(|| FireError::NoHandler(spec.target.kind.clone()))?;
-        handler.fire(&spec.tenant.auth_context(), &spec.target.id, scheduled_at).await
+        let writer = Writer::fresh(&spec.tenant.api_key_id);
+        let tenant = spec.tenant.auth_context();
+        with_writer(writer, handler.fire(&tenant, &spec.target.id, scheduled_at)).await
     }
 }
 
@@ -112,6 +115,7 @@ mod tests {
     #[derive(Default)]
     struct Recording {
         fires: Mutex<Vec<(AuthContext, String, DateTime<Utc>)>>,
+        writers: Mutex<Vec<Writer>>,
     }
 
     #[async_trait]
@@ -121,6 +125,7 @@ mod tests {
         }
         async fn fire(&self, tenant: &AuthContext, id: &str, at: DateTime<Utc>) -> Result<(), FireError> {
             self.fires.lock().unwrap().push((tenant.clone(), id.to_owned(), at));
+            self.writers.lock().unwrap().push(Writer::current());
             Ok(())
         }
     }
@@ -139,7 +144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fire_runs_the_kinds_handler_under_the_schedules_tenant() {
+    async fn fire_runs_the_kinds_handler_under_the_schedules_tenant_as_its_key() {
         let registry = FireRegistry::new();
         let handler = Arc::new(Recording::default());
         registry.register(handler.clone()).unwrap();
@@ -151,6 +156,9 @@ mod tests {
         assert_eq!(tenant.workspace.as_str(), "wrkspc_a");
         assert_eq!(tenant.api_key_id, "apikey_a");
         assert_eq!((id.as_str(), *fired_at), ("id_1", at));
+        let writer = handler.writers.lock().unwrap().first().cloned().unwrap();
+        assert_eq!(writer.actor, "apikey_a");
+        assert!(writer.request_id.starts_with("req_"), "{}", writer.request_id);
     }
 
     #[tokio::test]
