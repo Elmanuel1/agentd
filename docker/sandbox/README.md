@@ -19,4 +19,5 @@ Layout inside the container:
   unpacked under `/workspace/skills/<name>/`.
 - `/mnt/session/uploads/`: session file resources, read-only.
 - `/mnt/session/outputs/`: files written here come back as session-scoped
-  files (`GET /v1/files?scope_id=<session id>`).
+  files (`GET /v1/files?scope_id=<session id>`). A stopping sandbox saves
+  the files that changed since its last turn before it exits.

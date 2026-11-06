@@ -17,7 +17,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
 | API keys | `AGENTD_KEYS` | `aws`: workspace keys in Postgres and admin keys in Secrets Manager, digested with a pepper in Secrets Manager (see [API keys](#api-keys)) |
 | Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
-| Sandbox runtime | `AGENTD_RUNTIME` | `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Each sandbox sits on an internal network of its own, `agentd-net-<session id>` on a /28 of 10.213.0.0/16, with no route out: only agentd and the egress service share it, so its only way out is the egress proxy and no other sandbox is reachable. agentd and the egress service join each one when `AGENTD_SANDBOX_JOIN` names their containers; otherwise the `agentd-gateway` container joins it and relays only agentd's API port and the egress proxy's port to the host. The sandbox's first process is `agentd-worker`, which runs each command as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
+| Sandbox runtime | `AGENTD_RUNTIME` | `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Each sandbox sits on an internal network of its own, `agentd-net-<session id>` on a /28 of 10.213.0.0/16, with no route out: only agentd and the egress service share it, so its only way out is the egress proxy and no other sandbox is reachable. agentd and the egress service join each one when `AGENTD_SANDBOX_JOIN` names their containers; otherwise the `agentd-gateway` container joins it and relays only agentd's API port and the egress proxy's port to the host. The sandbox's first process is the session's harness (`python3 -m agentd_harness`), which runs the agent's tools as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
 
 ## Settings
 
@@ -52,6 +52,21 @@ the public API and writes its events, the client events it takes and its
 outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
 token reaches. agentd keeps the API, the event log and the sandbox's
 lifecycle, and runs no agent loop; the sandbox takes no inbound connection.
+agentd stops a sandbox with SIGTERM and a 10 second grace before it removes
+the container; the harness saves the files under `/mnt/session/outputs` that
+changed since its last turn ended, then exits.
+
+A session's `budget` is enforced by the harness. It adds up each model
+request's list cost (OpenRouter's `usage.cost`) across every thread, starting
+from the session's `usage.list_cost`, and reports it to agentd as a
+`session.usage` event. Once the cost reaches `budget.max_list_cost`, or a model
+with no list price ran, the harness starts no further model request and the
+session and its threads go idle with `stop_reason` `budget_reached`. A budget
+change a client makes while the session runs applies at the next request.
+
+agentd stops a sandbox with SIGTERM and a 10 second grace before it removes
+the container. On SIGTERM the harness saves the files under
+`/mnt/session/outputs/` that changed since its last turn ended, then exits.
 
 The harness calls the model at an OpenAI-compatible API through the egress
 proxy. The key is an operator credential: `agentd model-key set [--host
