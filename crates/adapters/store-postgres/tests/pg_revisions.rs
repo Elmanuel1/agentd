@@ -91,6 +91,12 @@ async fn exec(backend: &PgBackend, sql: &str) -> Result<usize, diesel::result::E
     diesel::sql_query(sql).execute(&mut *conn).await
 }
 
+// The environment as stored: the doc keeps microseconds, so a value the service built in
+// memory can differ from it in the nanoseconds on a clock that has them.
+async fn stored(svc: &EnvironmentsService, ctx: &AuthContext, env: Environment) -> Environment {
+    svc.get(ctx, env.id.as_str()).await.unwrap()
+}
+
 fn page() -> Pagination {
     Pagination::from_params(&std::collections::HashMap::new()).unwrap()
 }
@@ -118,8 +124,7 @@ async fn create_update_and_archive_each_add_one_row_by_their_writer() {
     let first_body = rows[0].body.clone();
 
     let updater = Writer::fresh("apikey_update");
-    let updated =
-        with_writer(updater.clone(), svc.update(&ctx, env.id.as_str(), rename("two"))).await.unwrap();
+    with_writer(updater.clone(), svc.update(&ctx, env.id.as_str(), rename("two"))).await.unwrap();
     let rows = revisions(&backend, &ctx, &env).await;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].superseded_by, Some(rows[1].revision));
@@ -127,15 +132,16 @@ async fn create_update_and_archive_each_add_one_row_by_their_writer() {
     assert_written_by(&rows[0], &creator);
     assert_written_by(&rows[1], &updater);
     assert_eq!(rows[1].superseded_by, None);
-    assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap(), updated);
+    assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap().name, "two");
 
     let archiver = Writer::fresh("apikey_archive");
-    let archived = with_writer(archiver.clone(), svc.archive(&ctx, env.id.as_str())).await.unwrap();
+    with_writer(archiver.clone(), svc.archive(&ctx, env.id.as_str())).await.unwrap();
     let rows = revisions(&backend, &ctx, &env).await;
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1].superseded_by, Some(rows[2].revision));
     assert_written_by(&rows[2], &archiver);
-    assert_eq!(svc.get(&ctx, env.id.as_str()).await.unwrap(), archived);
+    let archived = svc.get(&ctx, env.id.as_str()).await.unwrap();
+    assert!(archived.archived_at.is_some());
     assert_eq!(svc.list(&ctx, true, &page()).await.unwrap(), vec![archived]);
 }
 
@@ -147,8 +153,8 @@ async fn delete_stamps_the_live_row_adds_none_and_hides_the_environment() {
     let backend = backend().await;
     let svc = svc(&backend);
     let ctx = ctx();
-    let env = svc.create(&ctx, create_req("gone")).await.unwrap();
-    let kept = svc.create(&ctx, create_req("kept")).await.unwrap();
+    let env = stored(&svc, &ctx, svc.create(&ctx, create_req("gone")).await.unwrap()).await;
+    let kept = stored(&svc, &ctx, svc.create(&ctx, create_req("kept")).await.unwrap()).await;
     let before = revisions(&backend, &ctx, &env).await;
 
     let deleter = Writer::fresh("apikey_delete");
@@ -210,42 +216,122 @@ async fn the_revisions_table_refuses_changes_except_the_stamps_once() {
     assert_eq!(revisions(&backend, &ctx, &env).await.len(), 1);
 }
 
-#[tokio::test]
-async fn two_concurrent_updates_never_leave_two_live_rows() {
-    if !enabled() {
-        return;
-    }
-    let first = backend().await;
-    let second = backend().await;
-    let ctx = ctx();
-    let env = svc(&first).create(&ctx, create_req("race")).await.unwrap();
-
-    // The first update holds its transaction open while the second one runs.
-    let mut conn = first.diesel.write().await.unwrap();
+// Runs `held` in an open transaction on its own connection, starts `racing` on another one,
+// checks it waits on the held row, then commits and answers what `racing` returned.
+async fn race<T: Send + 'static>(
+    held: String,
+    racing: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    let holder = backend().await;
+    let mut conn = holder.diesel.write().await.unwrap();
     diesel::sql_query("BEGIN").execute(&mut *conn).await.unwrap();
-    let held = format!(
-        "UPDATE environments SET name = 'first', doc = doc || '{{\"name\": \"first\"}}'
+    assert_eq!(diesel::sql_query(held).execute(&mut *conn).await.unwrap(), 1);
+    let racing = tokio::spawn(racing);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!racing.is_finished(), "the racing write waits on the held live row");
+    diesel::sql_query("COMMIT").execute(&mut *conn).await.unwrap();
+    racing.await.unwrap()
+}
+
+fn held_rename(ctx: &AuthContext, env: &Environment, name: &str) -> String {
+    format!(
+        "UPDATE environments SET name = '{name}', doc = doc || '{{\"name\": \"{name}\"}}'
           WHERE org_id = '{}' AND environment_id = '{}'",
         ctx.org.as_str(),
         env.id.as_str()
-    );
-    assert_eq!(diesel::sql_query(&held).execute(&mut *conn).await.unwrap(), 1);
+    )
+}
 
-    let store = PgEnvironmentsStore::new(second.clone());
-    let (org, mut racer) = (ctx.org.clone(), env.clone());
-    racer.name = "second".into();
-    let racing = tokio::spawn(async move { store.replace(&org, racer).await });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(!racing.is_finished(), "the second update waits on the first's live row");
+fn held_delete(ctx: &AuthContext, env: &Environment) -> String {
+    format!(
+        "DELETE FROM environments WHERE org_id = '{}' AND environment_id = '{}'",
+        ctx.org.as_str(),
+        env.id.as_str()
+    )
+}
 
-    diesel::sql_query("COMMIT").execute(&mut *conn).await.unwrap();
-    drop(conn);
-    assert!(racing.await.unwrap().is_err(), "the second update fails on the live-row index");
+fn live(rows: &[Revision]) -> usize {
+    rows.iter().filter(|r| r.superseded_by.is_none() && !r.deleted).count()
+}
 
-    let rows = revisions(&first, &ctx, &env).await;
-    assert_eq!(rows.iter().filter(|r| r.superseded_by.is_none() && !r.deleted).count(), 1);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(svc(&first).get(&ctx, env.id.as_str()).await.unwrap().name, "first");
+#[tokio::test]
+async fn two_concurrent_updates_keep_both_revisions_and_the_later_one_live() {
+    if !enabled() {
+        return;
+    }
+    let backend = backend().await;
+    let ctx = ctx();
+    let env = svc(&backend).create(&ctx, create_req("race")).await.unwrap();
+    let store = PgEnvironmentsStore::new(backend.clone());
+    let (org, mut later) = (ctx.org.clone(), env.clone());
+    later.name = "second".into();
+
+    let result =
+        race(held_rename(&ctx, &env, "first"), async move { store.replace(&org, later).await }).await;
+    result.unwrap();
+
+    let rows = revisions(&backend, &ctx, &env).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(live(&rows), 1);
+    assert_eq!(rows[1].superseded_by, Some(rows[2].revision));
+    assert!(rows[1].doc.contains("\"first\""));
+    assert_eq!(svc(&backend).get(&ctx, env.id.as_str()).await.unwrap().name, "second");
+}
+
+#[tokio::test]
+async fn an_update_racing_a_delete_finds_nothing_and_leaves_it_deleted() {
+    if !enabled() {
+        return;
+    }
+    let backend = backend().await;
+    let ctx = ctx();
+    let env = svc(&backend).create(&ctx, create_req("race")).await.unwrap();
+    let store = PgEnvironmentsStore::new(backend.clone());
+    let (org, mut later) = (ctx.org.clone(), env.clone());
+    later.name = "revived".into();
+
+    let result = race(held_delete(&ctx, &env), async move { store.replace(&org, later).await }).await;
+    assert!(matches!(result, Err(environments::store::StoreError::NotFound)), "{result:?}");
+
+    let rows = revisions(&backend, &ctx, &env).await;
+    assert_eq!((rows.len(), live(&rows)), (1, 0));
+    assert_eq!(svc(&backend).get(&ctx, env.id.as_str()).await.unwrap_err().status, 404);
+}
+
+#[tokio::test]
+async fn a_delete_racing_a_delete_finds_nothing() {
+    if !enabled() {
+        return;
+    }
+    let backend = backend().await;
+    let ctx = ctx();
+    let env = svc(&backend).create(&ctx, create_req("race")).await.unwrap();
+    let store = PgEnvironmentsStore::new(backend.clone());
+    let (org, id) = (ctx.org.clone(), env.id.clone());
+
+    let result = race(held_delete(&ctx, &env), async move { store.delete(&org, &id).await }).await;
+    assert!(matches!(result, Err(environments::store::StoreError::NotFound)), "{result:?}");
+    let rows = revisions(&backend, &ctx, &env).await;
+    assert_eq!((rows.len(), live(&rows)), (1, 0));
+}
+
+#[tokio::test]
+async fn a_delete_racing_an_update_deletes_the_new_live_row() {
+    if !enabled() {
+        return;
+    }
+    let backend = backend().await;
+    let ctx = ctx();
+    let env = svc(&backend).create(&ctx, create_req("race")).await.unwrap();
+    let store = PgEnvironmentsStore::new(backend.clone());
+    let (org, id) = (ctx.org.clone(), env.id.clone());
+
+    let result = race(held_rename(&ctx, &env, "first"), async move { store.delete(&org, &id).await }).await;
+    result.unwrap();
+    let rows = revisions(&backend, &ctx, &env).await;
+    assert_eq!((rows.len(), live(&rows)), (2, 0));
+    assert!(rows[1].deleted, "the revision the update added is the one deleted");
+    assert_eq!(svc(&backend).get(&ctx, env.id.as_str()).await.unwrap_err().status, 404);
 }
 
 // The restore runbook: revision n comes back as a new live row written by `operator`,
@@ -285,8 +371,9 @@ async fn the_runbook_restores_a_deleted_environment_with_its_original_body() {
     let backend = backend().await;
     let svc = svc(&backend);
     let ctx = ctx();
-    let original = svc.create(&ctx, create_req("original")).await.unwrap();
-    let renamed = svc.update(&ctx, original.id.as_str(), rename("renamed")).await.unwrap();
+    let original = stored(&svc, &ctx, svc.create(&ctx, create_req("original")).await.unwrap()).await;
+    let renamed =
+        stored(&svc, &ctx, svc.update(&ctx, original.id.as_str(), rename("renamed")).await.unwrap()).await;
     svc.delete(&ctx, original.id.as_str()).await.unwrap();
     let first = revisions(&backend, &ctx, &original).await[0].revision;
 
@@ -302,7 +389,7 @@ async fn the_runbook_restores_a_deleted_environment_with_its_original_body() {
     assert_eq!(svc.get(&ctx, original.id.as_str()).await.unwrap(), renamed);
     let rows = revisions(&backend, &ctx, &original).await;
     assert_eq!(rows[2].superseded_by, Some(rows[3].revision), "the live row is superseded");
-    assert_eq!(rows.iter().filter(|r| r.superseded_by.is_none() && !r.deleted).count(), 1);
+    assert_eq!(live(&rows), 1);
 }
 
 #[tokio::test]

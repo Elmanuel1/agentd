@@ -31,10 +31,20 @@ create function environments_revise() returns trigger language plpgsql as $$
 declare
     next_rev bigint := nextval(pg_get_serial_sequence('environment_revisions', 'revision'));
 begin
-    update environment_revisions
-       set superseded_by = next_rev
-     where org_id = old.org_id and environment_id = old.environment_id
-       and superseded_by is null and deleted_at is null;
+    -- A concurrent write may have replaced or deleted the live row after this statement's
+    -- snapshot. Each pass reads the newest live row, as an UPDATE of a plain table would;
+    -- with none left the update affects nothing.
+    loop
+        update environment_revisions
+           set superseded_by = next_rev
+         where org_id = old.org_id and environment_id = old.environment_id
+           and superseded_by is null and deleted_at is null;
+        exit when found;
+        if not exists (select 1 from environments
+                        where org_id = old.org_id and environment_id = old.environment_id) then
+            return null;
+        end if;
+    end loop;
     insert into environment_revisions (org_id, environment_id, name, state, created_at, doc, revision)
     values (new.org_id, new.environment_id, new.name, new.state, new.created_at, new.doc, next_rev);
     return new;
@@ -43,11 +53,19 @@ end $$;
 -- DELETE FROM environments: stamp the live row deleted; nothing is removed.
 create function environments_soft_delete() returns trigger language plpgsql as $$
 begin
-    update environment_revisions
-       set deleted_at = now(),
-           deleted_by = coalesce(nullif(current_setting('agentd.actor', true), ''), 'unattributed')
-     where org_id = old.org_id and environment_id = old.environment_id
-       and superseded_by is null and deleted_at is null;
+    -- Same retry as environments_revise().
+    loop
+        update environment_revisions
+           set deleted_at = now(),
+               deleted_by = coalesce(nullif(current_setting('agentd.actor', true), ''), 'unattributed')
+         where org_id = old.org_id and environment_id = old.environment_id
+           and superseded_by is null and deleted_at is null;
+        exit when found;
+        if not exists (select 1 from environments
+                        where org_id = old.org_id and environment_id = old.environment_id) then
+            return null;
+        end if;
+    end loop;
     return old;
 end $$;
 
