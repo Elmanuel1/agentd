@@ -79,7 +79,7 @@ impl PgMemoryStore {
         head_doc: serde_json::Value,
         docs: Vec<serde_json::Value>,
     ) -> Result<Outcome, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
                 let stored_path = match w.expected {

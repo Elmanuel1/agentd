@@ -14,7 +14,7 @@ use crate::{diesel_be, parse_doc, pool_be, to_doc};
 #[async_trait]
 impl MemoryStorePersistence for PgMemoryStore {
     async fn insert_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(memory_stores::table)
             .values((
                 memory_stores::workspace_id.eq(ws.as_str()),
@@ -43,7 +43,7 @@ impl MemoryStorePersistence for PgMemoryStore {
     }
 
     async fn replace_store(&self, ws: &WorkspaceId, s: MemoryStoreEntity) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             memory_stores::table
                 .filter(memory_stores::workspace_id.eq(ws.as_str()))
@@ -65,7 +65,7 @@ impl MemoryStorePersistence for PgMemoryStore {
         id: &MemoryStoreId,
     ) -> Result<MemoryStoreEntity, StoreError> {
         let store = self.get_store(ws, id).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         // The rows go together; the blobs follow once the connection is back.
         let version_ids = conn
             .transaction::<_, diesel::result::Error, _>(|c| {

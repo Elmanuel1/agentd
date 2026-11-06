@@ -48,7 +48,7 @@ struct NewRun {
 #[async_trait]
 impl DreamsStore for PgDreamsStore {
     async fn insert(&self, ws: &WorkspaceId, d: Dream) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(dreams::table)
             .values(NewDream {
                 workspace_id: ws.as_str().to_owned(),
@@ -78,7 +78,7 @@ impl DreamsStore for PgDreamsStore {
     }
 
     async fn replace(&self, ws: &WorkspaceId, d: Dream) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             dreams::table
                 .filter(dreams::workspace_id.eq(ws.as_str()))
@@ -107,7 +107,7 @@ impl DreamsStore for PgDreamsStore {
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DreamRun) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let exists: Option<String> = dreams::table
             .filter(dreams::workspace_id.eq(ws.as_str()))
             .filter(dreams::dream_id.eq(run.dream_id.as_str()))

@@ -68,7 +68,7 @@ struct NewClaim {
 #[async_trait]
 impl DeploymentsStore for PgDeploymentsStore {
     async fn insert(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(deployments::table)
             .values(NewDeployment {
                 workspace_id: ws.as_str().to_owned(),
@@ -99,7 +99,7 @@ impl DeploymentsStore for PgDeploymentsStore {
     }
 
     async fn replace(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::update(
             deployments::table
                 .filter(deployments::workspace_id.eq(ws.as_str()))
@@ -146,7 +146,7 @@ impl DeploymentsStore for PgDeploymentsStore {
     }
 
     async fn push_run(&self, ws: &WorkspaceId, run: DeploymentRun) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(deployment_runs::table)
             .values(NewRun {
                 workspace_id: ws.as_str().to_owned(),
@@ -191,7 +191,7 @@ impl DeploymentsStore for PgDeploymentsStore {
         deployment: &DeploymentId,
         scheduled_at: &str,
     ) -> Result<bool, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         // The PK conflict is the exactly-once boundary: exactly one replica's
         // insert affects a row; the rest do nothing.
         let affected = diesel::insert_into(deployment_claims::table)

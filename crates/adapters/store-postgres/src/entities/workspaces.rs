@@ -54,7 +54,7 @@ async fn sort_key(
 #[async_trait]
 impl WorkspacesStore for PgWorkspacesStore {
     async fn insert(&self, org: &OrgId, workspace: &Workspace) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(workspaces::table)
             .values(NewWorkspace {
                 org_id: org.as_str(),
@@ -83,7 +83,7 @@ impl WorkspacesStore for PgWorkspacesStore {
     }
 
     async fn replace(&self, org: &OrgId, workspace: &Workspace) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc = to_doc(workspace)?;
         let affected = diesel::update(
             workspaces::table

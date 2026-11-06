@@ -123,7 +123,7 @@ impl MemoryVersionPersistence for PgMemoryStore {
     ) -> Result<(), StoreError> {
         let doc = version_doc(version)?;
         self.put_blob(ws, store, version).await?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         version_row(&mut conn, ws, store, memory_id, version, doc).await.map_err(diesel_be)
     }
 
