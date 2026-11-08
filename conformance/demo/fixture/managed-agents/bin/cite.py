@@ -16,68 +16,17 @@ usage:
 """
 import argparse
 import json
-import os
 import sys
-import tempfile
-from bisect import bisect_left, bisect_right
 from pathlib import Path
 
-DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
+import quotes
+from blocks import DOCS, load_blocks, normalise, page_of, row_text, rows
+from runs import Run, shortest_window
+
 MAX_WINDOW = 8
 MAX_EXACT_WINDOW = 40
 MIN_PARTIAL_LINE_LEN = 4
-ROW_TOLERANCE = 0.5
-DEFAULT_LINE_HEIGHT = 0.01
 UNRESOLVED = "__unresolved__"
-
-
-def normalise(s):
-    return " ".join("".join(c.lower() if c.isalnum() else " " for c in str(s)).split())
-
-
-def row_text(row):
-    """A printed row as the pipeline reads it: its cells left to right, joined " | "."""
-    return " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
-
-
-def load_blocks(doc_id):
-    """The document's blocks without Textract's single-word blocks, which nothing here reads: four
-    fifths of a large document. The first load keeps them in a cache file, so later calls skip them."""
-    source = DOCS / doc_id / "blocks.json"
-    stat = source.stat()
-    cache = Path(tempfile.gettempdir()) / "extraction-blocks" / f"{doc_id}-{stat.st_size}-{int(stat.st_mtime)}.json"
-    try:
-        return json.loads(cache.read_text())
-    except (OSError, ValueError):
-        pass
-    blocks = [b for b in json.loads(source.read_text()) if b.get("type") != "word"]
-    try:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        part = cache.with_suffix(f".{os.getpid()}.part")
-        part.write_text(json.dumps(blocks))
-        part.replace(cache)
-    except OSError:
-        pass
-    return blocks
-
-
-class Run:
-    """Consecutive lines with their text joined by single spaces, so a quote is searched once per
-    run rather than once per window of lines."""
-
-    def __init__(self, lines):
-        self.lines, self.starts, parts, at = lines, [], [], 0
-        for line in lines:
-            self.starts.append(at)
-            parts.append(line["text"])
-            at += len(line["text"]) + 1
-        self.text = " ".join(parts)
-        self.page = lines[0]["page"]
-
-
-def page_of(block):
-    bbox = block.get("bbox") or {}
-    return bbox.get("page") or bbox.get("original_page")
 
 
 class Locator:
@@ -135,42 +84,6 @@ class Locator:
     @staticmethod
     def on(runs, page):
         return [r for r in runs if r.page == page]
-
-
-def rows(blocks):
-    placed = []
-    for b in blocks:
-        if b.get("type") != "line" or not (b.get("content") or "").strip() or not b.get("bbox"):
-            continue
-        bbox, page = b["bbox"], page_of(b)
-        if page is None:
-            continue
-        placed.append((page, bbox.get("top") or 0.0, bbox.get("left") or 0.0, bbox.get("height") or DEFAULT_LINE_HEIGHT, b))
-    placed.sort(key=lambda x: (x[0], x[1]))
-    built = []
-    for page, top, left, height, b in placed:
-        if built and built[-1]["page"] == page and top - built[-1]["top"] <= ROW_TOLERANCE * built[-1]["height"]:
-            built[-1]["cells"].append((left, b))
-        else:
-            built.append({"page": page, "top": top, "height": max(height, 1e-12), "cells": [(left, b)]})
-    return [{"page": r["page"], "cells": [b for _, b in sorted(r["cells"], key=lambda x: x[0])]} for r in built]
-
-
-def shortest_window(runs, needle, max_window):
-    """The fewest consecutive lines of one run holding `needle`, the first run's on a tie. Matches
-    may overlap: a later one can sit on fewer lines."""
-    best = None
-    for run in runs:
-        at = run.text.find(needle)
-        while at != -1:
-            first = bisect_right(run.starts, at) - 1
-            last = bisect_left(run.starts, at + len(needle)) - 1
-            if last - first < max_window and (best is None or last - first + 1 < len(best)):
-                best = run.lines[first:last + 1]
-            if best is not None and len(best) == 1:
-                return best
-            at = run.text.find(needle, at + 1)
-    return best
 
 
 def partial_span(runs, needle):
@@ -265,9 +178,6 @@ def check(args):
             moved += 1
         c.update(loc)
         c["document_id"] = doc
-    # quotes imports this module, so it is imported here rather than at the top.
-    import quotes
-
     rows_bad = quotes.row_quote_problems(data) + quotes.off_page_quotes(citations, args.doc)
     if args.write:
         path.write_text(json.dumps(data, indent=1))

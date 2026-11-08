@@ -13,19 +13,16 @@ Each call prints at most --max-chars (default 20000) characters, stopping at a p
 says how to read the rest: read a long document in parts, not in one call.
 """
 import argparse
-import json
-import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import cite  # noqa: E402
+from blocks import load_blocks, page_lines, page_of  # noqa: E402
 
-DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
 MIN_CONTENT_LENGTH = 5
 TEXT_BLOCK_TYPES = {
-    "line", "word", "cell", "title", "section_header", "paragraph", "list_item", "header", "footer",
+    "line", "cell", "title", "section_header", "paragraph", "list_item", "header", "footer",
     "key_value", "table", "table_cell", "table_row", "page_header", "page_footer", "page_number",
     "layout_text", "layout_section_header", "layout_header", "layout_footer", "layout_title", "layout_list",
     "layout_key_value", "layout_page_number", "table_title", "table_footer", "merged_cell", "layout_table",
@@ -33,23 +30,18 @@ TEXT_BLOCK_TYPES = {
 
 
 def keep(block):
-    if block.get("type") == "word" or block.get("type") not in TEXT_BLOCK_TYPES:
+    if block.get("type") not in TEXT_BLOCK_TYPES:
         return False
     content = (block.get("content") or "").strip()
     return len(content) >= MIN_CONTENT_LENGTH and sum(c.isalpha() for c in content) >= 2
 
 
 def filtered(doc_id):
-    blocks = cite.load_blocks(doc_id)
+    blocks = load_blocks(doc_id)
     absorbing = {b["block_id"] for b in blocks
                  if b.get("type") in ("table", "merged_cell") and (b.get("content") or "").strip()}
     return [b for b in blocks
             if not (b.get("type") == "cell" and b.get("parent") in absorbing) and keep(b)]
-
-
-def page_of(block):
-    bbox = block.get("bbox") or {}
-    return bbox.get("page") or bbox.get("original_page")
 
 
 def page_set(spec):
@@ -98,13 +90,7 @@ def main():
     wanted = page_set(args.pages) if args.pages else None
     by_page = {}
     if args.rows:
-        raw = cite.load_blocks(args.doc_id)
-        for row in cite.rows(raw):
-            if wanted is not None and row["page"] not in wanted:
-                continue
-            text = cite.row_text(row)
-            if text:
-                by_page.setdefault(row["page"], []).append(text)
+        by_page = {p: lines for p, lines in page_lines(args.doc_id).items() if wanted is None or p in wanted}
         blocks = []
     for b in blocks:
         page = page_of(b)

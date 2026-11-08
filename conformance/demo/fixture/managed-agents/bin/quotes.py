@@ -3,27 +3,13 @@
 page, and a schedule line cited by its whole printed row. `cite.py check` reports both."""
 import re
 
-from cite import DOCS, load_blocks, normalise, row_text, rows
+from blocks import DOCS, normalise, page_lines
 
 QUOTE_WINDOW = 8
-_PAGE_LINES = {}
 
 
 def quote_words(text):
     return [w for w in re.split(r"[^0-9a-zA-Z\u00C0-\uFFFF]+", text.lower()) if w]
-
-
-def page_lines(doc_id):
-    """Each page as the pipeline's checks read it: one line per printed row, cells joined " | "."""
-    if doc_id not in _PAGE_LINES:
-        blocks = load_blocks(doc_id)
-        pages = {}
-        for row in rows(blocks):
-            text = row_text(row)
-            if text:
-                pages.setdefault(row["page"], []).append(text)
-        _PAGE_LINES[doc_id] = pages
-    return _PAGE_LINES[doc_id]
 
 
 def quote_on_page(lines, quote):
@@ -44,11 +30,12 @@ def quote_on_page(lines, quote):
                     nxt += 1
             if nxt == len(words):
                 return True
-    if "|" in quote:
-        for start in range(len(line_words)):
-            window = {w for lw in line_words[start:start + QUOTE_WINDOW] for w in lw}
-            if all(w in window for w in words):
-                return True
+    if "|" not in quote:
+        return False
+    for start in range(len(line_words)):
+        window = {w for lw in line_words[start:start + QUOTE_WINDOW] for w in lw}
+        if all(w in window for w in words):
+            return True
     return False
 
 
@@ -83,6 +70,7 @@ def row_quote_problems(data):
             own = item_id.split(" ", 1)[1] if " " in item_id else item_id
             if snippet.count("|") < 2:
                 bad.append((where, snippet, "quote the whole row from pages.py --rows, cells joined by ' | '"))
-            elif normalise(own) not in normalise(snippet) and normalise(item_id) not in normalise(snippet):
+                continue
+            if normalise(own) not in normalise(snippet) and normalise(item_id) not in normalise(snippet):
                 bad.append((where, snippet, f"the row quote does not include the line's own mark {own!r}"))
     return bad
