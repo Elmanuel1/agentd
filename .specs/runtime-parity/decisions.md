@@ -13,7 +13,7 @@ Anthropic's hosted Managed Agents API. Each row names who decided and when.
 | D3 | agentd serves only the endpoints and event types live serves; no agentd-only route and no endpoint live does not have. | User, 2026-11-06 and 2026-11-08 |
 | D4 | Custom tools are answered by the sessions API caller (`user.custom_tool_result`); workers run the built-in toolset only, as they do by default. | User, 2026-11-04 |
 | D5 | agentd is the API, the loop and the work queue. It holds no container code: no launcher, no runtime adapter, no sidecars, no dispatcher, no file staging, no snapshots, no egress proxy. | User, 2026-11-08 ("This self container implementation is not for agentd ... don't mix it together") |
-| D6 | The worker image, its Docker and Fargate launchers, the file sidecar and the egress proxy with placeholders are a separate container project in its own repository, speaking only the public API, so it runs against live as well as agentd. | User, 2026-11-08 |
+| D6 | The worker image, its Docker and Fargate launchers, the file sidecar and the egress proxy with placeholders are a separate container project, `agentd-worker`, in its own repository, speaking only the public API, so it runs against live as well as agentd. | User, 2026-11-08 (name chosen the same day) |
 | D7 | `cloud` environments are served by our own deployment of the container project: its workers poll agentd's runtime queue with our environment key, as a customer's workers poll their environment. `cloud` and `self_hosted` differ only in who runs the workers and holds the key. | User, 2026-11-08 ("We can reuse our self host as the cloud right": yes) |
 
 ## The loop at scale
@@ -23,7 +23,7 @@ Anthropic's hosted Managed Agents API. Each row names who decided and when.
 | D8 | No session state in a replica's memory. The event log in Postgres is the state; a step reads it, builds the prompt, calls the model, and appends its events in one commit. A crash repeats at most one step, which is safe to repeat. | User, 2026-11-08 ("okay. lets do that") |
 | D9 | Steps come from a queue. A session joins it when a client event, `user.tool_result` or `user.custom_tool_result` arrives; a loop worker claims it with `FOR UPDATE SKIP LOCKED` under a lease with an expiry, runs one step and releases it. Nothing is held while a tool runs. No subqueries. | User, 2026-11-08 |
 | D10 | One binary, two roles: the API (requests and streams) and loop workers (steps). The role is a setting; each scales on its own, loop workers on queue depth. | User, 2026-11-08 |
-| D11 | Model provider limits: a per-workspace concurrency limit, retries with backoff on 429 and 5xx in the model client only, prompt caching where the provider supports it; each value a setting per deployment environment. | User, 2026-11-08 |
+| D11 | Model provider limits: a per-workspace concurrency limit, retries with backoff on 408, 409, 429 and 5xx in the model client only, prompt caching where the provider supports it; each value a setting per deployment environment. | User, 2026-11-08 |
 | D12 | Scheduled jobs work with more than one replica: schedules live in Postgres and one replica claims each due fire. | User, 2026-11-08 |
 | D13 | Model limit defaults: 32 concurrent model calls per workspace, 5 attempts from 2 s with jitter inside a 10 min deadline, `cache_control` on the system prompt and tool list for Anthropic models. | User, 2026-11-08 (plan approved) |
 

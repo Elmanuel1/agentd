@@ -1,6 +1,9 @@
 # ADR 0001: The agent loop runs in agentd; workers run Anthropic's worker outside agentd
 
-Status: Accepted (2026-11-08)
+Status: Accepted
+Date: 2026-11-08
+Deciders: the user (Elmanuel1)
+Scope: agentd (the API, the loop and the work queue); the container project `agentd-worker` is out of scope
 
 ## Context
 
@@ -10,7 +13,7 @@ only the base URL changed. "Live" below means Anthropic's hosted Managed Agents 
 - The **agent loop** calls the model, decides which tools to run, and writes the session's `agent.*`, `span.*` and
   thread events.
 - A **worker** is the process that runs a session's tools: the official SDK's `EnvironmentWorker` (SDK 2.3.0). It
-  takes a work item with the item's sessions token, downloads skills, mounts and syncs memory stores, runs each
+  takes a work item with its **work token** (the item's `sessions_token`, the only credential a worker holds), downloads skills, mounts and syncs memory stores, runs each
   built-in `agent.tool_use`, and posts `user.tool_result`. It never writes an agent-side event.
 - A **work item** is the queue entry that tells a worker a session needs it.
 
@@ -23,8 +26,9 @@ customer; a `cloud` environment's workers belong to Anthropic.
 2. agentd is the API, the loop and the work queue. It holds no container code: no sandbox launcher, no runtime
    adapter, no file staging, no snapshots, no egress proxy.
 3. For `cloud` and `self_hosted` environments alike, agentd queues work items and serves exactly the work,
-   session, events, files, skills and memory store endpoints the official worker calls, with live's behaviour.
-4. Workers run outside agentd, in a separate container project that speaks only the public API. A customer runs it
+   session, events, skills and memory store endpoints the official worker calls, and the files endpoints
+   `agentd-worker`'s sidecar calls, with live's behaviour.
+4. Workers run outside agentd, in a separate container project, `agentd-worker`, that speaks only the public API. A customer runs it
    for `self_hosted` environments; we run it for `cloud` environments, polling agentd's runtime queue with our own
    environment key. `cloud` and `self_hosted` differ only in who runs the workers and holds the key.
 5. The loop keeps no session state in a replica's memory. The event log in Postgres is the state; a step reads it,
@@ -36,7 +40,7 @@ customer; a `cloud` environment's workers belong to Anthropic.
 | Alternative | Why not |
 |---|---|
 | The loop in a harness inside each sandbox, writing agent events through agentd-only routes | Not live's architecture; needs routes live does not have; the conversation lives in the sandbox's memory and dies with it. |
-| The loop in the sandbox, posting agent events through `events.send` from the session's token | Live's `events.send` takes client events only; agentd would accept a request live refuses, so agentd stops being a drop-in. |
+| The loop in the sandbox, posting agent events through `events.send` from the work token | Live's `events.send` takes client events only; agentd would accept a request live refuses, so agentd stops being a drop-in. |
 | agentd launches sandboxes itself (Docker, Fargate) | Ties agentd to one container platform and puts container code in the API; the worker contract already lets any runner serve `cloud` work. |
 
 ## Consequences

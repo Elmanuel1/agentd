@@ -3,7 +3,7 @@
 ## Summary
 
 agentd serves Anthropic's Managed Agents API and runs the agent loop on the server, as Anthropic does: it calls the
-model, records every event, and queues a work item when a tool has to run. A separate container project runs
+model, records every event, and queues a work item when a tool has to run. A separate container project, `agentd-worker`, runs
 Anthropic's own worker, unchanged, which picks up work items and runs the tools. Our `cloud` environments reuse that
 container project: we run it ourselves and point it at agentd, exactly as a customer runs it for a `self_hosted`
 environment.
@@ -16,7 +16,7 @@ sequenceDiagram
     participant A as agentd: API and work queue
     participant L as agentd: loop worker
     participant M as Model
-    participant W as Worker (container project)
+    participant W as Worker (agentd-worker)
     C->>A: user.message
     A->>L: wakes the session's loop step
     L->>M: prompt built from the event log
@@ -63,42 +63,41 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 7. Add the `environment_keys` table.
 8. Environment keys: create them with a command; poll only with one; live's 401 and 403 answers.
 9. A session waiting on a tool result refuses other messages, as live does.
-10. Add an ordered sequence number and a processed time to the event log.
-11. Mark events processed in one statement; read the log in order without repeats.
-12. Events reach every stream on every replica, through Valkey signals.
-13. Move the storage settings into their own config file.
-14. DynamoDB event log: writes.
-15. DynamoDB event log: reads.
-16. DynamoDB event log for the workspaces you list.
-17. Add the `loop_steps` table.
-18. Bring the model client back: one retry layer, prompt caching.
-19. Bring back the event history and the prompt.
-20. Bring back the turn: a tool call waits for a worker.
-21. Bring back threads, delegation and interrupts.
-22. Bring back outcome grading and the budget.
-23. The step queue: claim a step, commit it, take over a dead one.
-24. Loop workers run steps; the `api` and `loop` roles; a model-call limit per workspace.
-25. Work tokens can only answer their own session's open tool calls and read its own files and memory.
-26. Workers read the session's mounted files and save its outputs with the work token.
-27. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
-28. Add the `schedules` table.
-29. Scheduled deployments fire on any replica, once.
-30. Add the webhook tables.
-31. Session status webhooks, signed and retried as live does.
-32. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
-33. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to the container project).
-34. ✔ Remove the egress proxy crates from agentd (they move to the container project).
-35. Docs and runbook.
+10. Mark events processed in one statement; read the log in order without repeats.
+11. Events reach every stream on every replica, through Valkey signals.
+12. Move the storage settings into their own config file.
+13. DynamoDB event log: writes.
+14. DynamoDB event log: reads.
+15. DynamoDB event log for the workspaces you list.
+16. Add the `loop_steps` table.
+17. Bring the model client back: one retry layer, prompt caching.
+18. Bring back the event history and the prompt.
+19. Bring back the turn: a tool call waits for a worker.
+20. Bring back threads, delegation and interrupts.
+21. Bring back outcome grading and the budget.
+22. The step queue: claim a step, commit it, take over a dead one.
+23. Loop workers run steps; the `api` and `loop` roles; a model-call limit per workspace.
+24. Work tokens can only answer their own session's open tool calls and read its own files and memory.
+25. Workers read the session's mounted files and save its outputs with the work token.
+26. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
+27. Add the `schedules` table.
+28. Scheduled deployments fire on any replica, once.
+29. Add the webhook deliveries table.
+30. Session status webhooks, signed and retried as live does.
+31. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
+32. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to `agentd-worker`).
+33. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`), once its credential source is settled.
+34. Docs and runbook.
 
-The container project (its own repository):
+`agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created once you agree this plan):
 
 1. The worker image: the official `anthropic` SDK only, running `EnvironmentWorker` per work item.
 2. The command `ant beta:worker poll --on-work` runs: start one task per work item.
 3. The Docker launcher, for development.
 4. The Fargate launcher, for production.
-5. The file sidecar: copy the session's files in before the worker starts.
-6. The file sidecar: save outputs and a `/workspace` snapshot when the session finishes a turn and at exit, with no
-   AWS credentials in the task (presigned S3 URLs only).
+5. The file sidecar: copy the session's files in through the public files endpoints, before the worker starts.
+6. The file sidecar: save outputs through the files endpoints, and a `/workspace` snapshot to its own bucket
+   (presigned URLs from the launcher, no AWS credentials in the task), when the session finishes a turn and at exit.
 7. The egress proxy with credential placeholders (moved from agentd).
 8. Our `cloud` deployment: workers polling agentd's runtime queue with our key.
 
@@ -108,6 +107,7 @@ The container project (its own repository):
 - agentd must match Anthropic feature for feature (2026-11-08).
 - No container code in agentd; the container work is a separate project you will also use elsewhere (2026-11-08).
 - `cloud` reuses that container project, run by us (2026-11-08).
+- The container project is called `agentd-worker` (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
 - Environment keys in their own table (2026-11-08).
 - No endpoint Anthropic does not have (2026-11-06).
@@ -118,10 +118,13 @@ The container project (its own repository):
 
 ## Open questions
 
-- **The container project's repository name.** Yours to choose.
+- **Files for `agentd-worker`.** Live has no endpoint a worker can use to fetch a session's files or save its
+  outputs; Anthropic does it inside its own sandboxes. Recommendation: let a session's work token download the files
+  its session mounts and upload its outputs through the existing files endpoints, the one departure from live,
+  limited to that session's own files.
 - **Where the egress proxy gets real credential values.** Live has no public API that returns vault secrets.
   Recommendation: our `cloud` deployment reads them from Secrets Manager with its own IAM role; a customer's
-  `self_hosted` deployment is given its own.
+  `self_hosted` deployment is given its own. Removing the egress crates from agentd waits on this.
 
 ## Appendix
 
@@ -133,4 +136,4 @@ The full detail lives beside this page:
 - [dependencies.md](dependencies.md): what the design rests on, with evidence.
 - [ADR 0001](adr/0001-agent-loop-in-agentd.md): the decision record and the alternatives.
 
-Review findings on this spec: round 1 found 16 (all fixed); round 2 is under way.
+Review findings on this spec: round 1 found 16, round 2 found 13; all fixed. Round 3 is under way.

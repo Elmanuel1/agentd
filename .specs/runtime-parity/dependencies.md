@@ -1,7 +1,8 @@
 # Runtime parity: dependencies
 
-Each fact the design rests on, with its evidence. "Live" means Anthropic's hosted Managed Agents API. Every row is
-`VERIFIED`: read in the official SDK's source, measured on live, or given by the user.
+Each fact the design rests on, with its evidence. "Live" means Anthropic's hosted Managed Agents API. `VERIFIED`
+rows were read in the official SDK's source or measured on live. `ACCEPTED-RISK` rows are the user's numbers, signed
+off with the plan, each with the signal that reopens it. `GATE` rows are conditions a rollout step waits on.
 
 ## What Anthropic's worker uses (official SDK 2.3.0)
 
@@ -31,9 +32,15 @@ Each fact the design rests on, with its evidence. "Live" means Anthropic's hoste
 
 | # | Fact | Status | Evidence |
 |---|---|---|---|
-| N1 | 10^4 sessions active at once at the peak. | VERIFIED | user, 2026-11-06 |
-| N2 | About one loop step every 20 s per active session. | VERIFIED | user, 2026-11-08 |
+| N1 | 10^4 sessions active at once at the peak. | ACCEPTED-RISK | user, 2026-11-06: "10,000 sessions at once"; signed off with the plan, 2026-11-08. Reopens when stage or prod shows more than 5×10^3 active sessions. |
+| N2 | About one loop step every 20 s per active session. | ACCEPTED-RISK | user, 2026-11-08 ("about one step every 20 seconds per session"); signed off with the plan. Reopens when the load test or stage measures more than one step per 10 s per session. |
 | N3 | About 10 events and 2 status changes per built-in call; 2 KB per event. | VERIFIED | live capture, Haiku with fast tools |
+
+## Gates
+
+| # | Condition | Status | Where |
+|---|---|---|---|
+| G1 | `agentd-worker` polls the runtime queue in a deployment environment before L7 lists a workspace there. | GATE | requirements.md, Rollout |
 
 Measured, not assumed: the log size a step reads and the model's latency per call. The design does not rest on
 either; the load test plan in [requirements](requirements.md) measures both and the loop workers' autoscaler
