@@ -41,7 +41,7 @@ customer; a `cloud` environment's workers belong to Anthropic.
 | Alternative | Why not |
 |---|---|
 | The loop in a harness inside each sandbox, writing agent events through agentd-only routes | Not live's architecture; needs routes live does not have; the conversation lives in the sandbox's memory and dies with it. |
-| The loop in the sandbox, posting agent events through `events.send` from the work token | Live's `events.send` takes client events only; agentd would accept a request live refuses, so agentd stops being a drop-in. |
+| The loop in the sandbox, posting agent events through `events.send` from the work token | Workers would write agent-side events, so the loop and the conversation move into the sandbox and Anthropic's `EnvironmentWorker` could no longer run unchanged. |
 | agentd launches sandboxes itself (Docker, Fargate) | Ties agentd to one container platform and puts container code in the API; the worker contract already lets any runner serve `cloud` work. |
 
 ## Consequences
@@ -50,6 +50,8 @@ customer; a `cloud` environment's workers belong to Anthropic.
 - agentd's sandbox launch, the `sandbox-docker` and `sandbox-worker` crates, and the egress proxy move to the
   container project.
 - agentd holds the model key and calls the model through its own client.
+- agentd serves the agent's MCP servers from the loop, with credentials from the session's vaults; no secret
+  reaches a worker.
 - Every built-in tool call round-trips through the event log: the loop parks it as `agent.tool_use`, a worker answers
   with `user.tool_result`, and the result queues the session's next step.
 - agentd runs two roles from one binary, the API and loop workers, each scaled on its own.

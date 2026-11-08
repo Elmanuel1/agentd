@@ -37,6 +37,11 @@ sequenceDiagram
 
 - **Live**: Anthropic's hosted Managed Agents API, the behaviour agentd copies.
 - **Sandbox**: the container a session's tools run in.
+- **Harness**: agentd's current Python loop that runs inside each sandbox and writes the agent's events through
+  agentd-only `/harness/*` routes; this plan removes it.
+- **Outcome grading**: a second model pass that checks the agent's work against a rubric the caller gave.
+- **MCP server**: an outside tool server the agent can call; agentd connects to it with the credential stored in
+  the session's vaults.
 - **Loop worker**: an agentd server whose job is running loop steps; the **step queue** is the list of sessions
   with a step to run.
 - **Work token**: the credential a worker gets with a work item; it reaches only that session.
@@ -84,15 +89,17 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 23. Loop workers run steps; the `api` and `loop` roles; a model-call limit per workspace.
 24. Work tokens can only answer their own session's open tool calls and read its own files and memory.
 25. Workers read the session's mounted files and save its outputs with the work token.
-26. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
-27. Add the `schedules` table.
-28. Scheduled deployments fire on any replica, once.
-29. Add the webhook deliveries table.
-30. Session status webhooks, signed and retried as live does.
-31. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
-32. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to `agentd-worker`).
-33. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`), once its credential source is settled.
-34. Docs and runbook.
+26. MCP in the loop: connect to the agent's MCP servers, call their tools, record Anthropic's MCP events.
+27. MCP credentials from the session's vaults, read fresh on every call, with OAuth refresh.
+28. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
+29. Add the `schedules` table.
+30. Scheduled deployments fire on any replica, once.
+31. Add the webhook deliveries table.
+32. Session status webhooks, signed and retried as live does.
+33. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
+34. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to `agentd-worker`).
+35. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`).
+36. Docs and runbook.
 
 `agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created on your go-ahead):
 
@@ -103,7 +110,8 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 5. The file sidecar: copy the session's files in through the public files endpoints, before the worker starts.
 6. The file sidecar: save outputs through the files endpoints, and a `/workspace` snapshot to its own bucket
    (presigned URLs from the launcher, no AWS credentials in the task), when the session finishes a turn and at exit.
-7. The egress proxy with credential placeholders (moved from agentd).
+7. The egress proxy (moved from agentd): it enforces the environment's networking by default; secret injection
+   with placeholders is optional, off by default, with the operator's own secret source.
 8. Our `cloud` deployment: workers polling agentd's runtime queue with our key.
 
 ## Your decisions
@@ -113,6 +121,9 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 - No container code in agentd; the container work is a separate project you will also use elsewhere (2026-11-08).
 - `cloud` reuses that container project, run by us (2026-11-08).
 - The container project is called `agentd-worker` (2026-11-08).
+- agentd has no part in egress secrets; `agentd-worker`'s operator decides, and our `cloud` deployment injects
+  none (2026-11-08).
+- agentd serves MCP servers from the loop with the session's vault credentials, read fresh each call (2026-11-08).
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
   the one departure from live (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
@@ -122,12 +133,6 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 - Fan-out signals over Valkey; the event log moves to DynamoDB for listed workspaces (2026-11-06).
 - Model limits: 32 model calls at once per workspace, 5 attempts, prompt caching (2026-11-08).
 - Webhook endpoints configured per organization (2026-11-08).
-
-## Open questions
-
-- **Where the egress proxy gets real credential values.** Live has no public API that returns vault secrets.
-  Recommendation: our `cloud` deployment reads them from Secrets Manager with its own IAM role; a customer's
-  `self_hosted` deployment is given its own. Removing the egress crates from agentd waits on this.
 
 ## Appendix
 

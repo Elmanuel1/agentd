@@ -32,8 +32,8 @@ project (see Out of scope).
 - **Step queue:** the Postgres table of sessions with a step to run; a **loop worker** is an agentd replica in the
   `loop` role, which claims and runs steps.
 
-**Build order:** work API (W) → event log (F, E) → steps and the loop (S, L) → files for workers (FO) → scheduler
-(K) → webhooks (H) → removals (RM) → docs (DOC).
+**Build order:** work API (W) → event log (F, E) → steps and the loop (S, L) → files for workers (FO) → MCP (MC)
+→ scheduler (K) → webhooks (H) → removals (RM) → docs (DOC).
 
 Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
 [ADR 0001](adr/0001-agent-loop-in-agentd.md).
@@ -111,7 +111,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 | ID | Requirement |
 |---|---|
-| FO-1 | When a session's work token downloads a file its session mounts or names as an outcome rubric, the API shall serve its content, which no API key can download. |
+| FO-1 | When a session's work token downloads a file its session mounts, the API shall serve its content, which no API key can download. |
 | FO-2 | When a session's work token uploads a file with `scope_id` set to its session, the API shall keep it as that session's downloadable output, listed by `files.list(scope_id=...)`. |
 | FO-3 | If a session's work token deletes a file other than its session's outputs, then the API shall answer 404. |
 
@@ -122,7 +122,22 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | K-1 | The scheduler shall keep deployment schedules in Postgres, so that a schedule registered on one replica fires on any. |
 | K-2 | When a schedule is due, the scheduler shall claim it and set its next fire in one transaction, keeping the fire contract: one attempt, no backfill, exactly once per target and time. |
 
-## 6. Webhooks
+## 6. MCP servers
+
+| ID | Requirement |
+|---|---|
+| MC-1 | When a session's agent lists an MCP server (`mcp_servers`, `type: "url"`), the loop shall connect to its `url` from agentd, never from a worker. |
+| MC-2 | The loop shall authenticate to an MCP server with the `mcp_oauth` or `static_bearer` credential whose `mcp_server_url` equals the server's `url`, taken from the first vault in the session's `vault_ids` that holds one. |
+| MC-3 | If no credential in the session's vaults matches a server, then the loop shall connect unauthenticated. |
+| MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. |
+| MC-5 | If the loop cannot connect to an MCP server, then the loop shall record `session.error` with `mcp_connection_failed_error` and let the session continue. |
+| MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` on every MCP request, with no cache, so that a rotated, archived or deleted credential applies on the next call. |
+| MC-7 | When an `mcp_oauth` credential's access token has expired and it carries a `refresh` block, the loop shall refresh it at the block's `token_endpoint` and store the new token in its vault. |
+| MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
+| MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
+| H-5 | If an `mcp_oauth` refresh fails, then the API shall send the `vault_credential.refresh_failed` webhook to the organization's configured endpoints. |
+
+## 7. Webhooks
 
 | ID | Requirement |
 |---|---|
@@ -143,7 +158,8 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 Departures: a session's work token reads its session's mounted files and saves its outputs through the existing
 files endpoints (FO-1, FO-2; decision D24). Live refuses this; Anthropic stages files inside its own `cloud`
-sandboxes.
+sandboxes. Why: agentd holds no container code (D5) and `agentd-worker` speaks only the public API (D6), so its
+sidecar can stage a session's files only through the files endpoints.
 
 ## Plan of PRs
 
@@ -172,17 +188,19 @@ work already written on local branches.
 | S2 | Loop workers: one step per claim; `AGENTD_ROLE`; model concurrency per workspace (unused) | code | 3 | S-3, S-7, R-1, M-1 | |
 | L6 | Work tokens: answers for open calls only, reads and writes scoped, die with the work | code | 3 | L-9 to L-12 | memory guard (branch `harness-memory-stores`), token scoping tests (PR #44) |
 | FO1 | Workers' file reads and output uploads with the work token | code | 2 | FO-1 to FO-3 | files session paths (PR #44) |
+| MC1 | MCP in the loop: connect, list tools, call, `agent.mcp_tool_*` events, MCP session errors (unused) | code | 4 | MC-1, MC-3 to MC-5, MC-8 | |
+| MC2 | MCP credentials from the session's vaults, read per request; OAuth refresh (unused) | code | 3 | MC-2, MC-6, MC-7, MC-9 | |
 | L7 | Sessions run on agentd's loop; their work is queued and agentd launches nothing (flagged per workspace) | code | 3 | L-2 to L-4, L-8 | branch `self-hosted-work` |
 | Km | `schedules` table | migration | 1 | K-1 | |
 | K1 | Postgres scheduler | code | 3 | K-1, K-2 | |
 | Hm | `webhook_deliveries` | migration | 1 | H-4 | |
-| H1 | Session status webhooks, signed, retried from Postgres | code | 3 | H-1 to H-4 | |
+| H1 | Session status webhooks and `vault_credential.refresh_failed`, signed, retried from Postgres | code | 3 | H-1 to H-5 | |
 | RM1 | Remove the harness, the `/harness/*` routes and the harness CI job | code | 2 | ADR consequences | |
 | RM2 | Remove agentd's sandbox launch: `launch_sandbox`, the `Runtime` wiring, `sandbox-docker`, `sandbox-worker` | code | 3 | ADR consequences | |
-| RM3 | Remove the egress proxy (`egress`, `egress-proxy`) and the model-key egress binding, once `agentd-worker`'s proxy has its credential source (Open, below) | code | 2 | ADR consequences | |
+| RM3 | Remove the egress proxy (`egress`, `egress-proxy`), the vaults' egress credential hand-off and the model-key egress binding | code | 2 | ADR consequences, D25 | |
 | DOC1 | Docs and runbook | docs | 1 | all | |
 
-34 PRs including the spec.
+36 PRs including the spec.
 
 ### Per-PR detail
 
@@ -192,7 +210,8 @@ are gated by `AGENTD_PG_TESTS`, as today.
 - **W1.** `secrets-aws/src/system_secret.rs` (new, about 55 lines) holds the read-or-create body that `pepper.rs`
   has today; `work_token_key()` and `api_key_pepper()` call it. Boot: 1 `GetSecretValue`, 1 `CreateSecret` the first
   time; per request none. Tests (LocalStack): the second read returns the first's bytes; a token minted under one
-  boot verifies under the next.
+  boot verifies under the next; with `AGENTD_WORK_TOKEN_KEY` set, tokens are signed with it and Secrets Manager is
+  not read (W-20).
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
   stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
@@ -208,7 +227,9 @@ are gated by `AGENTD_PG_TESTS`, as today.
   `stopping` past its lease reads `stopped`, `active` stays `active`.
 - **W4.** `work/src/board.rs` removed; `service.rs` and `lifecycle.rs` call the store; `Work.id` is the session id.
   Tests: a new `AppState` on the same database serves the item (restart); `"actor":null`; `started_at` while
-  queued; an archived session's item reads `stopping`.
+  queued; an archived session's item reads `stopping`; a heartbeat with no TTL is granted 300 s (W-7), with
+  `desired_ttl_seconds: 45` is granted and echoed as 45 (W-21), and with `"x"` gets live's 400 (W-8); an
+  `active` item with no heartbeats still reads `active` (W-10).
 - **W5.** `work/src/tokens.rs` `secret()` writes live's nine keys in live's order. Test: the decoded secret's keys,
   order and types.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
@@ -251,11 +272,24 @@ are gated by `AGENTD_PG_TESTS`, as today.
   `loop` replicas share the queue; a workspace at its limit leaves its next step for later and others run.
 - **L6.** `api/src/edge/reach.rs` (token routes); the memory routes' guard asks sessions which stores a session
   attaches and how; every token request reads its item (1 SELECT by primary key). Tests: one per L-9 to L-12.
-- **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files), `SessionsService::reads_file`
-  on `Session::mounts` and `UserEvent::rubric_file`. Download: 1 SELECT of the session, 1 SELECT of its events when
-  the file is not mounted, 1 SELECT of the file, 1 object GET. Tests (`api/tests/session_token.rs`): its own
-  mounted file is served; another session's file is refused; a file not mounted in its session is refused; an
-  upload is scoped to its session and absent from another session's `files.list(scope_id=...)`.
+- **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files) asking `Session::mounts`.
+  Download: 1 SELECT of the session, 1 SELECT of the file, 1 object GET. The grader reads a rubric file in the loop,
+  server side, so no worker downloads it. Tests (`api/tests/session_token.rs`): its own mounted file is served;
+  another session's file is refused; a file not mounted in its session is refused; an upload is scoped to its
+  session and absent from another session's `files.list(scope_id=...)`; deleting another session's file or a
+  mounted input answers 404 (FO-3).
+- **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP, tool listing per server, calls with the
+  step's deadline); the turn treats an MCP tool call like any tool run in the loop: no work item, no worker. The
+  permission evaluation follows the agent's `mcp_toolset` configs. Tests against a scripted MCP server: tools are
+  listed and called with `agent.mcp_tool_use` and `agent.mcp_tool_result`; an unreachable server records
+  `mcp_connection_failed_error` and the session continues.
+- **MC2.** `crates/engine/src/mcp/credentials.rs`: per request, 1 SELECT of the session's vault credentials
+  matching the server URL (by `mcp_server_url`, through the vaults store) and 1 `GetSecretValue` through
+  `SecretStore`; an expired `mcp_oauth` token with a `refresh` block is refreshed at its `token_endpoint` and the
+  new token stored (1 `PutSecretValue`). Tests: the credential comes from the first of the session's vaults that
+  holds one; with none, the connection is unauthenticated and a refusing server records
+  `mcp_authentication_failed_error`; a rotated secret is used on the next call and an archived credential is not;
+  no secret appears in any event, log line or output (a test sink scans them all).
 - **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
   environment or the runtime queue; the flag lists workspaces. Tests: the live poll-path cases replayed with `ant`
   pollers and the scripted model.
@@ -273,7 +307,7 @@ are gated by `AGENTD_PG_TESTS`, as today.
   per status change in its commit; a task per replica claims due rows 100 at a time `FOR UPDATE SKIP LOCKED`, signs,
   POSTs with a 10 s timeout, and marks them in one UPDATE per batch. Tests: signature verified with the SDK's
   `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a due delivery
-  survives a restart.
+  survives a restart; a failed OAuth refresh sends `vault_credential.refresh_failed`.
 - **RM1.** Removes `harness/`, `api/src/harness.rs`, `HarnessContract` writes used only by the harness, the harness
   CI job. CI's `sdk` and `demo` jobs run agentd's loop with the scripted model and the container project's worker.
 - **RM2, RM3.** Remove the crates and wiring named in the table once L7 is on everywhere; they move to the container
@@ -305,23 +339,17 @@ are gated by `AGENTD_PG_TESTS`, as today.
 
 ## Out of scope
 
+- Egress secrets: agentd has no part in them (D25); `agentd-worker`'s proxy enforces the environment's networking
+  and, when its operator turns it on, injects secrets from the operator's own source.
 - **`agentd-worker`**, the container project (its own repository, D6): the image running the official `EnvironmentWorker`
   unchanged; the Docker launcher for development and the Fargate launcher for production; the file sidecar (files
-  staged in, outputs and `/workspace` snapshots out, with no AWS credentials in the task); the egress proxy with credential placeholders; the
+  staged in, outputs and `/workspace` snapshots out, with no AWS credentials in the task); the egress proxy (networking enforced by default; secret injection optional, off by default, with its operator's own source, D25); the
   `--on-work` command; our `cloud` deployment polling the runtime queue. It speaks only the public API, so it runs
   against live as well. It stages files in and saves outputs through the public files endpoints with the work token
   (FO-1, FO-2); snapshots go to its own bucket through presigned URLs its launcher makes. Its plan is a separate
   document. `sandbox-docker`, `sandbox-worker` and the egress crates
   move there (RM2, RM3). (The relay binary in `sandbox-worker`, also named `agentd-worker`, moves with it.)
 - Session webhook registration through an API: live has none (B8).
-
-## Open
-
-This needs the user's answer before the PR it names starts.
-
-- **Credentials for the egress proxy (RM3).** Live has no public API that returns vault credential values.
-  Recommendation: our `cloud` deployment of `agentd-worker` reads them from Secrets Manager with its own IAM role; a
-  customer's `self_hosted` deployment is given its own. RM3 waits on this.
 
 ## SRE
 
@@ -345,6 +373,7 @@ This needs the user's answer before the PR it names starts.
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
 | Log reads | 500 steps/s × the log size a step reads | measured in the load test; a read replica serves them when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13) | bounded by M-1 |
+| MCP credential reads | 1 `GetSecretValue` per MCP request (MC-6); at one MCP call in ten steps, 50/s | far under Secrets Manager's request quota |
 | Loop workers | steps in flight = 500/s × model latency; each worker runs up to 64 steps at once (a setting) | about 240 workers at a 30 s latency; the autoscaler follows queue depth |
 
 ### Load test plan
@@ -374,7 +403,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | `api/src/config/sandbox.rs`, `config/runtime.rs` (14) | sandbox and runtime settings | RM2 |
 | `api/src/state.rs`, `backends.rs` (15) | wire the runtime, the issuer and egress | RM2, RM3 |
 | `sessions/src/service.rs`, `service/sandbox.rs`, `service/lifecycle.rs`, `lib.rs`, `record.rs`, `harness.rs` (13) | launch and stop sandboxes; `SandboxWork` | L7 replaces launch with queueing; RM2 removes the rest |
-| `vaults/src/egress.rs` (4) | hands vault credentials to the egress service | RM3, after the open question below |
+| `vaults/src/egress.rs` (4) | hands vault credentials to the egress service | RM3 (D25: agentd keeps no egress credential path) |
 | `crates/egress/` (14), `crates/adapters/egress-proxy/` (2) | the egress service and proxy | move to `agentd-worker` (RM3) |
 | `crates/adapters/sandbox-docker/` (9), `crates/sandbox-worker/` | the Docker runtime and relay | move to `agentd-worker` (RM2) |
 | `Cargo.toml` members and deps, `api/Cargo.toml`, `docker/sandbox/Dockerfile` | build them | RM2, RM3 |
@@ -390,8 +419,8 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | Repo `CLAUDE.md` | Not applicable: agentd has none. |
 | Memory: agentd parity, no SDK of our own, harness in sandbox | PASS: the loop in agentd, workers outside, no agentd-only route. |
 | `grill-me` ledger | PASS: no `ASSUMED` row. |
-| `industry-practice` | PASS: section above; no departure. |
-| `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`, `UserEvent::rubric_file`), no `else`, files at most 200 lines. |
+| `industry-practice` | PASS: section above; one departure (D24), with its reason. |
+| `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`), no `else`, files at most 200 lines. |
 | `review/references/sql-transactions.md` | PASS: statements per operation; no subqueries; claims with `SKIP LOCKED`; a commit checks its claim first. |
 | `review/references/architecture.md`, `system-design.md` | PASS: one path for `cloud` and `self_hosted`; no parallel route. |
 | `review/references/checks.md`, script checks | PASS on this text; each PR runs them. |
