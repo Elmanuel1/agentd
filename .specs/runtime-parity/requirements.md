@@ -1,168 +1,302 @@
-# Runtime parity: requirements and plan
+# Requirements: runtime parity
 
-agentd's runtime matches Anthropic Managed Agents: the agent loop runs in agentd and each sandbox runs Anthropic's
-worker unchanged ([ADR 0001](adr/0001-agent-loop-in-agentd.md), [decisions](decisions.md),
-[dependencies](dependencies.md)).
+**Date:** 2026-11-08
+**Format:** EARS (Easy Approach to Requirements Syntax). Each requirement uses one pattern:
 
-Systems: **agentd** (its API role and its loop-worker role, one binary), **the dispatcher** (`agentd-dispatch`, the
-`--on-work` command agentd's poller runs), **the worker** (Anthropic's SDK `EnvironmentWorker`, never changed).
+| Pattern | Template |
+|---|---|
+| Ubiquitous | The `<system>` shall `<response>`. |
+| Event-driven | When `<trigger>`, the `<system>` shall `<response>`. |
+| State-driven | While `<state>`, the `<system>` shall `<response>`. |
+| Unwanted behaviour | If `<condition>`, then the `<system>` shall `<response>`. |
+| Optional feature | Where `<feature>`, the `<system>` shall `<response>`. |
 
-Terms:
-- A **step** is one pass of a session's loop: read the session's event log, build the prompt, call the model,
-  append the resulting events. A step ends when the model's reply is recorded; a tool call ends the step.
-- The **step queue** is the Postgres table of sessions with a step to run.
-- A **loop worker** is an agentd replica in the `loop` role, which claims and runs steps.
-- The **runtime queue** is the work queue `cloud` sessions wait on, polled by agentd's own poller.
+**Systems:** *the API* (agentd in its `api` role: requests, streams, the work queue), *the loop* (agentd in its
+`loop` role: steps), *the scheduler* (agentd's schedule claims). Workers are not agentd: they run in the container
+project (see Out of scope).
 
-Build order: W, then F and E, then L and S, then K, then C, then H, then D (the plan below).
+**Terms:**
+- **Live:** Anthropic's hosted Managed Agents API, the behaviour agentd matches.
+- **Worker:** the official SDK's `EnvironmentWorker`, which runs a session's tools and answers with
+  `user.tool_result`.
+- **Work item:** the queue entry that tells a worker a session needs it; its id is the session id.
+- **Runtime queue:** the work queue of `cloud` sessions, polled with our runtime environment key.
+- **Step:** one pass of a session's loop: read the session's event log, build the prompt, call the model, append the
+  resulting events. A tool call ends a step.
+- **Step queue:** the Postgres table of sessions with a step to run; a **loop worker** is an agentd replica in the
+  `loop` role, which claims and runs steps.
 
-## Requirements (EARS)
+**Build order:** work API (W) → event log (F, E) → steps and the loop (S, L) → files for workers (FO) → scheduler
+(K) → webhooks (H) → removals (RM) → docs (DOC).
 
-Work API (W):
+Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
+[ADR 0001](adr/0001-agent-loop-in-agentd.md).
+
+## 1. Work API
 
 | ID | Requirement |
 |---|---|
-| W-1 | agentd shall sign work tokens with one key held in Secrets Manager (`<prefix>/system/work_token_key`), created on first boot; `AGENTD_WORK_TOKEN_KEY` keeps priority when set. |
-| W-2 | agentd shall keep work items, leases and hand-outs in Postgres, so that a restart or another replica loses no item and invalidates no token. |
-| W-3 | When a session's work is queued, agentd shall use the session id as the work item id, one item per session, reused for every run. |
-| W-4 | agentd shall serve the work object with `actor: null` and set `started_at` when the item is queued. |
-| W-5 | When a poller polls, agentd shall hand each queued item to one poller (`FOR UPDATE SKIP LOCKED`), and hand it out again when it is not acknowledged within 5 s. |
-| W-6 | When a heartbeat's `expected_last_heartbeat` does not match the stored one, agentd shall answer 412 as today. |
-| W-7 | When a heartbeat has no `desired_ttl_seconds`, or 0, agentd shall grant 300 s; any other integer shall be granted and echoed as given; a non-integer shall get 400 `invalid_request_error` "desired_ttl_seconds: Input should be a valid integer, unable to parse string as an integer". |
-| W-8 | When a `stopping` item's lease runs out, agentd shall read it as `stopped`; an `active` item whose heartbeats stop shall stay `active`. |
-| W-9 | When a session is archived, deleted or terminated, agentd shall move its item to `stopping` (`stopped` when no worker holds it), never delete it. |
-| W-10 | agentd shall issue the work secret with live's keys and values: `version`, `session_ingress_token`, `api_base_url`, `sources`, `auth`, `sessions_token`, `claude_code_args`, `environment_variables`, `use_code_sessions`. |
-| W-11 | When `agentd environment-keys create` runs, agentd shall store only the key's peppered digest in `environment_keys`, bound to one organization, workspace and environment, and print the `sk-ant-oat01-` key once; agentd shall mint its own runtime key at boot into Secrets Manager. |
-| W-12 | When an environment key arrives as `x-api-key`, agentd shall answer 401 `authentication_error` "invalid x-api-key". |
-| W-13 | When an environment key calls a route other than its environment's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or a session's `GET`, events, stream and `POST …/events`, agentd shall answer 403 `permission_error` with live's scope message; another environment's session shall be 404. |
-| W-14 | When a workspace API key calls `work/poll`, agentd shall answer 401 `authentication_error` "Invalid bearer token". |
-| W-15 | While a session is idle with `requires_action`, agentd shall refuse every event but `user.tool_confirmation`, `user.custom_tool_result`, `user.tool_result` and `user.interrupt`, with live's 400 text naming the waiting ids. |
+| W-1 | The API shall sign work tokens with one key held in Secrets Manager (`<prefix>/system/work_token_key`), created on first boot; when `AGENTD_WORK_TOKEN_KEY` is set, the API shall use it instead. |
+| W-2 | The API shall keep work items, leases and hand-outs in Postgres. |
+| W-3 | When a session's work is queued, the API shall use the session id as the work item id, one item per session, reused for every run. |
+| W-4 | The API shall serve the work object with `actor: null` and set `started_at` when the item is queued. |
+| W-5 | When a poller polls, the API shall hand each queued item to one poller. |
+| W-6 | If an item handed out is not acknowledged within 5 s, then the API shall hand it out again. |
+| W-7 | When a heartbeat has no `desired_ttl_seconds`, or 0, the API shall grant 300 s; any other integer shall be granted and echoed as given. |
+| W-8 | If `desired_ttl_seconds` is not an integer, then the API shall answer 400 `invalid_request_error` "desired_ttl_seconds: Input should be a valid integer, unable to parse string as an integer". |
+| W-9 | When a `stopping` item's lease runs out, the API shall serve it as `stopped`. |
+| W-10 | While an `active` item gets no heartbeats, the API shall keep serving it as `active`. |
+| W-11 | When a session is archived, deleted or terminated, the API shall move its item to `stopping`, or `stopped` when no worker holds it, and keep the item. |
+| W-12 | The API shall issue the work secret with live's keys and values: `version`, `session_ingress_token`, `api_base_url`, `sources`, `auth`, `sessions_token`, `claude_code_args`, `environment_variables`, `use_code_sessions`. |
+| W-13 | When `agentd environment-keys create` runs, the API shall store only the key's peppered digest in `environment_keys`, bound to one organization, workspace and environment, and print the `sk-ant-oat01-` key once. |
+| W-14 | When the API boots with no runtime key in Secrets Manager, the API shall mint one, bound to the runtime queue. |
+| W-15 | If an environment key arrives as `x-api-key`, then the API shall answer 401 `authentication_error` "invalid x-api-key". |
+| W-16 | If an environment key calls a route other than its queue's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or a session's `GET`, events, stream and `POST …/events`, then the API shall answer 403 `permission_error` with live's scope message. |
+| W-17 | If an environment key reads a session of another environment, then the API shall answer 404. |
+| W-18 | If a workspace API key calls `work/poll`, then the API shall answer 401 `authentication_error` "Invalid bearer token". |
+| W-19 | While a session is idle with `requires_action`, the API shall refuse every event but `user.tool_confirmation`, `user.custom_tool_result`, `user.tool_result` and `user.interrupt`, with live's 400 text naming the waiting ids. |
 
-Session events (F, E):
-
-| ID | Requirement |
-|---|---|
-| F-1 | When an event is appended or stamped processed on any replica, agentd shall send it to every open stream of its session on every replica, in log order. |
-| F-2 | When a step takes a session's client events, agentd shall stamp `processed_at` in the same statement that selects them, so that one step takes each event once. |
-| F-3 | When a session is deleted, agentd shall end its streams on every replica with `session.deleted`; archiving shall end them. |
-| E-1 | Where a workspace is listed for DynamoDB, agentd shall keep its new sessions' events in DynamoDB behind the same port, with the same order, take and read semantics; a session's store is fixed at create. |
-
-The loop (L) and its steps (S):
+## 2. Event log
 
 | ID | Requirement |
 |---|---|
-| L-1 | agentd shall run each session's loop: model calls, history from the event log, permission policies, custom tools, threads and delegation, outcomes and grading, budget and `session.usage`, `agent.thinking`, `span.model_request_*` and thread status events. |
-| L-2 | On a `self_hosted` session, when the model asks for a built-in tool, agentd shall write `agent.tool_use` and idle the thread and the session `requires_action` (`event_ids`), in the order `session.thread_status_idle`, `session.usage`, `session.status_idle`, until the `user.tool_result` arrives; then `session.status_running` and `session.thread_status_running`. |
-| L-3 | On a `cloud` session, agentd shall keep the session `running` through built-in calls and record the worker's `user.tool_result` as `agent.tool_result`. |
-| L-4 | agentd shall run the outcome grader on a thread of its own between `span.outcome_evaluation_start` and `_end`, its built-in calls answered by the worker without idling the session, and take one more primary turn after the evaluation. |
-| L-5 | When the first `user.interrupt` arrives with an unanswered built-in call, agentd shall post `agent.tool_result` `is_error: true` "Tool execution was interrupted before completion. Please retry." and idle `end_turn`; a second shall force-stop the session's work. |
-| L-6 | When a run needs the worker, agentd shall queue the session's work only when its item is `stopped` or not yet queued. |
-| L-7 | A work token shall post only `user.tool_result` and `user.custom_tool_result` for its session's unanswered calls, read only its session's files, its agent's skills and its session's memory stores, write only stores attached `read_write`, and stop working once its item is `stopped`. |
-| L-8 | When a session is in a `self_hosted` environment, agentd shall start no sandbox; its work shall wait on the environment's queue for the customer's pollers. |
-| S-1 | When a client event, `user.tool_result` or `user.custom_tool_result` is appended, agentd shall put the session on the step queue in the same commit. |
-| S-2 | A loop worker shall claim a due step with `FOR UPDATE SKIP LOCKED` under a lease with an expiry, so that two workers never run the same session's step at once. |
-| S-3 | A step shall read the session's log, build the prompt, call the model and append its events and release its claim in one commit; agentd shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
-| S-4 | When a claim's lease expires before its commit, another loop worker shall take the step over and run it again; a step shall be safe to repeat (it derives its action from the log). |
-| S-5 | When a session is woken while its step runs, agentd shall run another step after the commit, so that no wake is lost. |
-| R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api` (requests and streams), `loop` (steps), or `all`. |
+| F-1 | When an event is appended or stamped processed on any replica, the API shall send it to every open stream of its session on every replica, in log order. |
+| F-2 | When a session is deleted, the API shall end its streams on every replica with `session.deleted`. |
+| F-3 | When a session is archived, the API shall end its streams on every replica. |
+| E-1 | Where a workspace is listed for DynamoDB, the API shall keep its new sessions' events in DynamoDB behind the same port, with the same order, take and read semantics, and keep each session in the store it was created in. |
 
-Model provider limits (M):
+## 3. Steps and the loop
 
 | ID | Requirement |
 |---|---|
-| M-1 | agentd shall run at most the configured number of model calls at once per workspace (`AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`); a step over the limit waits on the queue. |
-| M-2 | When the model provider answers 408, 409, 429 or 5xx, the model client shall retry with backoff and jitter, honouring `retry-after`, up to the configured attempts inside the step's deadline; no other layer retries a model call. |
-| M-3 | Where the provider supports prompt caching, agentd shall mark the system prompt and the tool list cacheable. |
+| S-1 | When a client event, `user.tool_result` or `user.custom_tool_result` is appended, the API shall put the session on the step queue in the same commit. |
+| S-2 | The loop shall claim a due step with `FOR UPDATE SKIP LOCKED` under a lease of 12 min, longer than the step's 10 min model deadline, so that two loop workers never run one session's step at once. |
+| S-3 | The loop shall read the session's log, build the prompt and call the model with no transaction open, then in one commit release its claim, stamp the client events it read processed, and append its events. |
+| S-4 | If a loop worker's commit finds its claim gone (a takeover), then the loop shall roll the commit back. |
+| S-5 | When a claim's lease runs out before its commit, the loop shall let another loop worker take the step over and run it again from the log. |
+| S-6 | When a session is woken while its step runs, the loop shall run another step after the commit. |
+| S-7 | The loop shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
+| R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api`, `loop`, or `all`. |
+| M-1 | The loop shall run at most `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` model calls at once per workspace. |
+| M-2 | When the model provider answers 408, 409, 429 or 5xx, the loop's model client shall retry with backoff and jitter, waiting at least the `retry-after` header when present, up to `AGENTD_MODEL_ATTEMPTS` inside the step's deadline. |
+| M-3 | Where the provider supports prompt caching, the loop shall mark the system prompt and the tool list cacheable. |
+| L-1 | The loop shall run each session's agent: model calls, history from the event log, permission policies, custom tools, threads and delegation, outcomes and grading, budget and `session.usage`, `agent.thinking`, `span.model_request_*` and thread status events. |
+| L-2 | When the model asks for a built-in tool on a `self_hosted` session, the loop shall write `agent.tool_use` and idle the thread and the session `requires_action` (`event_ids`), in the order `session.thread_status_idle`, `session.usage`, `session.status_idle`. |
+| L-3 | When a `self_hosted` session's `user.tool_result` arrives, the loop shall write `session.status_running` and `session.thread_status_running` and continue. |
+| L-4 | While a `cloud` session waits on built-in calls, the loop shall keep it `running` and record each `user.tool_result` as `agent.tool_result`. |
+| L-5 | The loop shall run the outcome grader on a thread of its own between `span.outcome_evaluation_start` and `_end`, its built-in calls answered by a worker without idling the session, and take one more primary turn after the evaluation. |
+| L-6 | When the first `user.interrupt` arrives with an unanswered built-in call, the loop shall post `agent.tool_result` `is_error: true` "Tool execution was interrupted before completion. Please retry." and idle `end_turn`. |
+| L-7 | When a second `user.interrupt` arrives, the loop shall force-stop the session's work. |
+| L-8 | When a step needs a worker, the loop shall queue the session's work only when its item is `stopped` or not yet queued: `self_hosted` work on its environment's queue, `cloud` work on the runtime queue. |
+| L-9 | If a work token posts anything but `user.tool_result` or `user.custom_tool_result` for its session's unanswered calls, then the API shall refuse it. |
+| L-10 | If a work token reads a file, skill or memory store other than its session's files, its agent's skills and its session's memory stores, then the API shall refuse it. |
+| L-11 | If a work token writes a memory store its session attaches `read_only`, then the API shall answer 403. |
+| L-12 | If a work token calls after its item is `stopped`, then the API shall answer 401. |
 
-Scheduled work (K):
+## 4. Files for workers
 
 | ID | Requirement |
 |---|---|
-| K-1 | agentd shall keep deployment schedules in Postgres, so that a schedule registered on one replica fires on any. |
-| K-2 | When a schedule is due, one replica shall claim it and advance its next fire in one statement, keeping the fire contract (attempts 1, no backfill, exactly once per `(target, scheduled_at)`). |
+| FO-1 | When a session's work token downloads a file its session mounts or names as an outcome rubric, the API shall serve its content, which no API key can download. |
+| FO-2 | When a session's work token uploads a file with `scope_id` set to its session, the API shall keep it as that session's downloadable output, listed by `files.list(scope_id=...)`. |
+| FO-3 | If a session's work token deletes a file other than its session's outputs, then the API shall answer 404. |
 
-The cloud runtime (C):
-
-| ID | Requirement |
-|---|---|
-| C-1 | `cloud` sessions' work shall wait on the runtime queue, polled by agentd's `ant beta:worker poll --on-work agentd-dispatch` with the runtime key. |
-| C-2 | The dispatcher shall start one sandbox per session through the `Runtime` port whose entry is the SDK's `worker(workdir="/workspace").handle_item()`, with the work secret as a 0600 file, the environment's variables and init script, its image when it has one, and today's limits. |
-| C-3 | The dispatcher shall stage the session's `file` resources read-only at `/mnt/session/uploads/<mount_path>` before the worker starts. |
-| C-4 | When the session idles `end_turn` or `budget_reached`, and at exit, the dispatcher shall upload new or changed files under `/mnt/session/outputs/` as session-scoped outputs. |
-| C-5 | The dispatcher shall restore `/workspace` from the session's last snapshot before the worker starts, and snapshot it when the session idles `end_turn` or `budget_reached` and at exit. |
-| C-6 | The sandbox's traffic shall leave only through agentd's egress pool, whose proxy password carries the session's signed policy; the sandbox reaches only the egress pool and agentd. |
-| C-7 | The dispatcher shall stop sandboxes it no longer has work for, including after its own crash. |
-
-Webhooks (H):
+## 5. Scheduled work
 
 | ID | Requirement |
 |---|---|
-| H-1 | When a session's status changes to running, idle or terminated, agentd shall send each enabled endpoint of its organization the live body (`whe_<32 hex>`, six-digit `created_at`, `data: {type, id, organization_id, workspace_id}`). |
-| H-2 | agentd shall sign deliveries with Standard Webhooks and send `user-agent: Claude-Platform`. |
-| H-3 | When a delivery is not answered 2xx, agentd shall retry it twice about 31 s apart, re-signed, then drop it; pending deliveries survive a restart. |
+| K-1 | The scheduler shall keep deployment schedules in Postgres, so that a schedule registered on one replica fires on any. |
+| K-2 | When a schedule is due, the scheduler shall claim it and set its next fire in one statement, keeping the fire contract: one attempt, no backfill, exactly once per target and time. |
+
+## 6. Webhooks
+
+| ID | Requirement |
+|---|---|
+| H-1 | When a session's status changes to running, idle or terminated, the API shall send each enabled endpoint configured for its organization live's body (`whe_<32 hex>`, six-digit `created_at`, `data: {type, id, organization_id, workspace_id}`). |
+| H-2 | The API shall sign deliveries with Standard Webhooks and send `user-agent: Claude-Platform`. |
+| H-3 | If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
+| H-4 | The API shall keep pending deliveries in Postgres, so that they survive a restart. |
+
+## Industry practice
+
+| Pattern | Source | Here |
+|---|---|---|
+| A server-side agent loop with remote tool execution | Anthropic Managed Agents: the loop on the server, `EnvironmentWorker` runs tools and posts results | Followed exactly. |
+| A job queue in Postgres claimed with `FOR UPDATE SKIP LOCKED` | Postgres docs (`SELECT … FOR UPDATE SKIP LOCKED`); queues built on it: Que, GoodJob, Oban, pg-boss, River | Followed for the step queue, the work queue and schedules. |
+| Durable execution: state in a log, each step replayable | Temporal (workflow history replayed by any worker), AWS Step Functions | Followed: the event log is the history; a step derives its action from it, so a rerun is safe. |
+| A lease with an expiry instead of a held connection or lock | The SRE review of 2026-11-06; Temporal activity timeouts | Followed; a commit checks its claim is still its own. |
+| Fan-out by signal, data from the source of truth | Common pub/sub notify-then-read designs | Followed with Valkey signals and log reads. |
+
+Departures: none.
 
 ## Plan of PRs
 
-One stack with `gh stack`; spec, migration and code are separate PRs; each deploys alone with no change to stage or
-prod until its switch PR. Migration numbers are taken at merge time. "Reuses" names work already written on local
-branches (not pushed).
+One stack with `gh stack`; spec, migration and code are separate PRs; each deploys alone and changes nothing on
+stage or prod until its switch PR. Points at most 4. Migration numbers are taken at merge time. "Reuses" names
+work already written on local branches.
 
-| # | PR | Kind | Requirements | Reuses |
-|---|---|---|---|---|
-| P0 | This spec | spec | all | |
-| W1 | The work-token key lives in Secrets Manager | code | W-1 | |
-| W2 | `work_items` table | migration | W-2 | |
-| W3 | Postgres work store, unused | code | W-2, W-5, W-7, W-8 | |
-| W4 | Work items live in Postgres; id = session id; `actor`; `started_at` | code | W-2 to W-4, W-6, W-9 | |
-| W5 | The work secret carries live's fields | code | W-10 | |
-| W6 | `environment_keys` table | migration | W-11 | branch `environment-keys` (V9) |
-| W7 | Environment keys: store, CLI, edge, poll by environment key only, live's 403 text | code | W-11 to W-14 | branch `environment-keys` |
-| W8 | A session waiting on a tool refuses other events | code | W-15 | |
-| F1m | `session_seq`, `processed_at` column, lz4 | migration | F-2 | |
-| F1 | Take stamps in one statement; keyset reads | code | F-2 | `update_processed_at` (PR #44) |
-| F2 | Valkey signals; each replica relays its sessions' streams | code | F-1, F-3 | |
-| X1, E1 to E3 | Store config split; DynamoDB event log (flagged) | code | E-1 | |
-| Sm | `loop_steps` table | migration | S-1, S-2 | |
-| L1 to L5 | Engine restored from `16805c8^`: model client, history, turn with parked built-in calls, threads, grading, budget (unused) | code | L-1 to L-5, M-2, M-3 | |
-| S1 | Step queue store: enqueue, claim, release, takeover (unused) | code | S-1 to S-5 | |
-| S2 | Loop workers: one step per claim over the engine; `AGENTD_ROLE`; model concurrency per workspace (unused) | code | S-3, R-1, M-1 | |
-| L6 | Work tokens: results for open calls, attached memory, read-only stores, die with the work | code | L-7 | memory guard (branch `harness-memory-stores`), session-token scoping tests (PR #44) |
-| L7 | `self_hosted` sessions run on agentd's loop and the customer's pollers (flagged) | code | L-2, L-5, L-6, L-8 | branch `self-hosted-work` |
-| Km | `schedules` table | migration | K-1 | |
-| K1 | Postgres scheduler: claim due fires per tick | code | K-1, K-2 | |
-| C1 | The work secret carries the sandbox's settings; signed egress policy | code | C-6 | |
-| C2 | Worker image (official `anthropic` only) and `agentd-dispatch`, Docker adapter | code | C-2, C-3, C-7 | |
-| C2b | ECS Fargate adapter | code | C-2, C-7 | |
-| C3 | Dispatcher syncs outputs and snapshots | code | C-4, C-5 | |
-| C4 | agentd's poller pool | code | C-1 | |
-| C5 | `cloud` sessions run on agentd's loop and the runtime queue (flagged) | code | C-1, L-3 | |
-| C6 | Remove the harness, `/harness/*` routes, agentd's Docker launch, the harness CI job | code | L-1 | |
-| Hm | `webhook_deliveries` and the configured endpoints (D20) | migration | H-3 | |
-| H1 | Session status webhooks, signed, retried from Postgres | code | H-1 to H-3 | |
-| D1 | Docs and runbook | docs | all | |
+| # | PR | Kind | Pts | Requirements | Reuses |
+|---|---|---|---|---|---|
+| P0 | This spec | spec | 1 | all | |
+| W1 | The work-token key lives in Secrets Manager | code | 2 | W-1 | |
+| W2m | `work_items` table | migration | 1 | W-2 | |
+| W3 | Postgres work store, unused | code | 3 | W-2, W-5, W-6, W-9 | |
+| W4 | Work items live in Postgres; id = session id; `actor`; `started_at` | code | 3 | W-2 to W-4, W-7, W-8, W-10, W-11 | |
+| W5 | The work secret carries live's fields | code | 1 | W-12 | |
+| W6m | `environment_keys` table | migration | 1 | W-13 | branch `environment-keys` |
+| W7 | Environment keys: store, CLI, runtime key, edge rules, poll by environment key only | code | 4 | W-13 to W-18 | branch `environment-keys` |
+| W8 | A session waiting on a tool refuses other events | code | 1 | W-19 | |
+| F1m | `session_seq`, a `processed_at` column, lz4 | migration | 1 | S-3 | |
+| F1 | Stamping in one statement; keyset reads | code | 2 | S-3 | `update_processed_at` (PR #44) |
+| F2 | Valkey signals; each replica relays its sessions' streams | code | 3 | F-1 to F-3 | |
+| X1 | Store config moves to `config/store.rs` | code | 1 | none (makes room) | |
+| E1 to E3 | DynamoDB event log: writes, reads, the flag | code | 3 each | E-1 | |
+| Sm | `loop_steps` table | migration | 1 | S-1, S-2 | |
+| L1 to L5 | Engine restored from `16805c8^`: model client, history, turn with parked built-in calls, threads, grading, budget (unused) | code | 3 to 4 each | L-1 to L-7, M-2, M-3 | |
+| S1 | Step queue store: enqueue, claim, commit, takeover (unused) | code | 3 | S-1 to S-6 | |
+| S2 | Loop workers: one step per claim; `AGENTD_ROLE`; model concurrency per workspace (unused) | code | 3 | S-3, S-7, R-1, M-1 | |
+| L6 | Work tokens: answers for open calls only, reads and writes scoped, die with the work | code | 3 | L-9 to L-12 | memory guard (branch `harness-memory-stores`), token scoping tests (PR #44) |
+| FO1 | Workers' file reads and output uploads with the work token | code | 2 | FO-1 to FO-3 | files session paths (PR #44) |
+| L7 | Sessions run on agentd's loop; their work is queued and agentd launches nothing (flagged per workspace) | code | 3 | L-2 to L-4, L-8 | branch `self-hosted-work` |
+| Km | `schedules` table | migration | 1 | K-1 | |
+| K1 | Postgres scheduler | code | 3 | K-1, K-2 | |
+| Hm | `webhook_endpoints` and `webhook_deliveries` | migration | 1 | H-4 | |
+| H1 | Session status webhooks, signed, retried from Postgres | code | 3 | H-1 to H-4 | |
+| RM1 | Remove the harness, the `/harness/*` routes and the harness CI job | code | 2 | ADR consequences | |
+| RM2 | Remove agentd's sandbox launch: `launch_sandbox`, the `Runtime` wiring, `sandbox-docker`, `sandbox-worker` | code | 3 | ADR consequences | |
+| RM3 | Remove the egress proxy (`egress`, `egress-proxy`) and the model-key egress binding | code | 2 | ADR consequences | |
+| DOC1 | Docs and runbook | docs | 1 | all | |
 
-PR Elmanuel1/agentd#44 is superseded by this plan.
+35 PRs including the spec.
 
-### Step queue: statements per operation (S1, S2)
+### Per-PR detail
 
-`loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts)`, primary key
-`(workspace_id, session_id)`, a partial index on `due_at` where `lease_until IS NULL`, and one on `lease_until`.
+Each code PR lists its files, its statements per operation (sql-transactions rule 1), and its tests. Database tests
+are gated by `AGENTD_PG_TESTS`, as today.
+
+- **W1.** `secrets-aws/src/system_secret.rs` (new, about 55 lines) holds the read-or-create body that `pepper.rs`
+  has today; `work_token_key()` and `api_key_pepper()` call it. Boot: 1 `GetSecretValue`, 1 `CreateSecret` the first
+  time; per request none. Tests (LocalStack): the second read returns the first's bytes; a token minted under one
+  boot verifies under the next.
+- **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
+  created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
+  stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
+  `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
+  `request_id` default from the connection settings, as every table since history PR #41.
+- **W3.** `work/src/store.rs` (port, about 60 lines); `store-postgres/src/entities/work_items.rs` (about 180).
+  Statements: queue 1 INSERT; claim, one transaction, 1 SELECT of the oldest queued item of the queue not handed out
+  in 5 s `FOR UPDATE SKIP LOCKED LIMIT 1` and 1 UPDATE of `handed_out_at`; ack 1 `UPDATE … WHERE state = 'queued'
+  RETURNING *`, else 1 SELECT; heartbeat 1 `UPDATE … WHERE state NOT IN ('stopping','stopped') AND
+  coalesce(last_heartbeat, 'NO_HEARTBEAT') = $expected RETURNING *`, else 1 SELECT; stop 1 UPDATE; reaper, a task per
+  replica every 5 s, 1 UPDATE of `stopping` items past their lease; stats 1 SELECT with `count(*) FILTER`. Tests:
+  two claims take different items; an unacknowledged item is claimable after 5 s; a stale heartbeat is refused;
+  `stopping` past its lease reads `stopped`, `active` stays `active`.
+- **W4.** `work/src/board.rs` removed; `service.rs` and `lifecycle.rs` call the store; `Work.id` is the session id.
+  Tests: a new `AppState` on the same database serves the item (restart); `"actor":null`; `started_at` while
+  queued; an archived session's item reads `stopping`.
+- **W5.** `work/src/tokens.rs` `secret()` writes live's nine keys in live's order. Test: the decoded secret's keys,
+  order and types.
+- **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
+  key_digest unique, partial_key_hint, created_at, revoked_at)`.
+- **W7.** `api-keys/src/environment.rs`, `store-postgres/src/entities/environment_keys.rs`,
+  `api/src/cli/environment_keys.rs`, `api/src/edge/reach.rs` (what each scoped credential reaches),
+  `edge/auth.rs` (resolution only), `work/src/routes.rs` (poll). Per request 1 SELECT by digest, as for workspace
+  keys. Tests (`api/tests/edge.rs`, `api/tests/environment_keys.rs`): one per W-13 to W-18 with live's bodies.
+- **W8.** `sessions/src/service/events.rs`: the session row is already read; no new statement. Tests: refused with
+  live's text; the four answers accepted.
+- **F1m.** `alter table session_events add session_seq bigint, add processed_at timestamptz`; unique index
+  `(workspace_id, session_id, session_seq)`; `doc` compressed with lz4.
+- **F1.** `entities/session_events.rs`: append is one multi-row INSERT; `update_processed_at(ws, session,
+  up_to_seq, at)` is one `UPDATE … WHERE processed_at IS NULL AND session_seq <= $up_to … RETURNING`; reads by
+  keyset on `session_seq`. Tests: concurrent writers get consecutive `session_seq`; two stamps get disjoint events;
+  keyset reads return each event once.
+- **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
+  for every signalled session it streams. Tests: an event appended on one replica reaches another's stream in
+  order; a dropped signal is recovered by the 1 s timer; delete ends the other replica's stream.
+- **X1, E1 to E3.** As the 2026-11-06 plan: `config/store.rs`; `crates/adapters/events-dynamodb` with one
+  `TransactWriteItems` per append and a conditional update per stamp; the port's test suite run on both stores; the
+  workspace list setting. Tests: the port suite on both stores; a listed workspace's new session lands in DynamoDB.
+- **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
+  primary key (workspace_id, session_id))`; partial index on `due_at` where `lease_until is null`; index on
+  `lease_until`.
+- **L1 to L5.** `crates/engine` restored from `16805c8^` (each file under 200 lines): L1 model clients and router,
+  the one retry layer (M-2), cache marks (M-3); L2 history, prompt, permission policies; L3 the turn, built-in
+  calls parked as `agent.tool_use`; L4 threads, delegation, interrupts (L-6, L-7); L5 grading on its own thread,
+  budget and usage through `record.rs`. No statements of their own; the step (S2) reads and writes. Tests: the old
+  engine's unit tests over a fake contract, plus a parked call, an interrupt pair with live's text, and the budget
+  cases.
+- **S1.** `sessions/src/steps.rs` (port) and `store-postgres/src/entities/loop_steps.rs`. Statements in the next
+  section. Tests (`store-postgres/tests/pg_steps.rs`): two workers race for one step and only one runs it; a worker
+  killed after the model call and before its commit, the step reruns after its lease and its events are appended
+  once; a lease that runs out is taken over and the late commit is rolled back; a wake during a step runs another
+  step.
+- **S2.** `crates/engine/src/worker.rs` (claim, run one step, commit), `api/src/config/role.rs` (`AGENTD_ROLE`,
+  `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`, `AGENTD_MODEL_ATTEMPTS`). Tests: an `api` replica claims no step; two
+  `loop` replicas share the queue; a workspace at its limit leaves its next step for later and others run.
+- **L6.** `api/src/edge/reach.rs` (token routes); the memory routes' guard asks sessions which stores a session
+  attaches and how; every token request reads its item (1 SELECT by primary key). Tests: one per L-9 to L-12.
+- **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files), `SessionsService::reads_file`
+  on `Session::mounts` and `UserEvent::rubric_file`. Download: 1 SELECT of the session, 1 SELECT of its events when
+  the file is not mounted, 1 SELECT of the file, 1 object GET. Tests (`api/tests/session_token.rs`): one per FO-1
+  to FO-3.
+- **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
+  environment or the runtime queue; the flag lists workspaces. Tests: the live poll-path cases replayed with `ant`
+  pollers and the scripted model.
+- **Km.** `create table schedules (target, workspace_id, spec, next_fire_at, paused, primary key (target))`; index on
+  `next_fire_at` where not paused.
+- **K1.** `crates/adapters/scheduler-postgres` replaces `scheduler-local` in `backends.rs`. Tick, per replica every
+  10 s: 1 `SELECT … WHERE next_fire_at <= now() AND NOT paused FOR UPDATE SKIP LOCKED LIMIT 100`, 1 UPDATE of each
+  claimed row's `next_fire_at` (no backfill), in one transaction, then the fires outside it; `claim_fire` stays the
+  exactly-once guard. Tests: two schedulers on one database fire each occurrence once; a schedule registered on one
+  fires on the other.
+- **Hm.** `webhook_endpoints` (org, url, enabled events, secret name, state) and `webhook_deliveries` (endpoint,
+  body, attempt, `next_attempt_at`, `claimed_until`, `delivered_at`, `dropped_at`).
+- **H1.** `crates/resources/webhooks`: endpoints read from configuration (D20); one multi-row INSERT of deliveries
+  per status change in its commit; a task per replica claims due rows 100 at a time `FOR UPDATE SKIP LOCKED`, signs,
+  POSTs with a 10 s timeout, and marks them in one UPDATE per batch. Tests: signature verified with the SDK's
+  `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a due delivery
+  survives a restart.
+- **RM1.** Removes `harness/`, `api/src/harness.rs`, `HarnessContract` writes used only by the harness, the harness
+  CI job. CI's `sdk` and `demo` jobs run agentd's loop with the scripted model and the container project's worker.
+- **RM2, RM3.** Remove the crates and wiring named in the table once L7 is on everywhere; they move to the container
+  project (Out of scope).
+
+### The step queue: statements per operation (S1, S2)
 
 | Operation | Statements |
 |---|---|
-| Enqueue (in the commit that appends the waking event) | 1 `INSERT … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
-| Claim (one transaction) | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT count(*) … WHERE workspace_id = $1 AND lease_until > now()` (M-1); 1 `UPDATE … SET lease_owner, lease_until = now() + $ttl, attempts = attempts + 1` |
-| Run | 1 keyset `SELECT` of the session's events; the model call (no transaction open) |
-| Commit (one transaction) | 1 multi-row `INSERT` of the step's events; session row writes the events cause (status, usage), as `record` does today; 1 `DELETE … WHERE … AND wakes = $claimed_wakes`; when it deletes no row (a wake arrived), 1 `UPDATE … SET lease_until = NULL, due_at = now()` |
-| Takeover | the Claim statements: an expired lease is claimable |
+| Enqueue, in the commit that appends the waking event | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
+| Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_advisory_xact_lock(hashtext($workspace))`; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE … SET due_at = now() + interval '1 second'` and the claim moves to the next candidate; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
+| Run, no transaction open | 1 keyset SELECT of the session's events, noting the highest `session_seq` read; the model call |
+| Commit, one transaction | 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`; when it deletes nothing, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`, and when that updates nothing too the claim was taken over: roll back; 1 `UPDATE session_events SET processed_at = $now WHERE … AND session_seq <= $read_up_to AND processed_at IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today |
+| Takeover | the Claim statements: a lease that has run out is claimable |
 
-Tests (`store-postgres/tests/pg_steps.rs`, Postgres gated): two workers racing for one step, only one claims it; a
-worker killed after the model call and before the commit, the step reruns after its lease expires and appends its
-events once; a lease that expires is taken over by another worker; a wake during a step runs another step.
+## Rollout
+
+- W4 ships without a flag: on `main` no client polls work, so it changes only agentd's own harness work, verified
+  on stage.
+- L7 sits behind a setting listing workspaces; a session's path is fixed at create. Stages: one internal
+  workspace, then 10%, 50%, 100% of workspaces, each for at least 24 h including the daily peak, judged on the SLIs
+  below, with an absolute stop when a page fires.
+- E3's DynamoDB log follows the same stages, separately.
+- RM1 to RM3 merge after L7 reaches 100% and the container project serves `cloud` work on stage and prod.
+- Per deployment environment, the settings (`AGENTD_ROLE`, model limits, the L7 and E3 workspace lists) live in its
+  configuration.
+
+## Out of scope
+
+- **The container project** (its own repository, D6): the image running the official `EnvironmentWorker`
+  unchanged; the Docker launcher for development and the Fargate launcher for production; the file sidecar (files
+  staged in, outputs and `/workspace` snapshots out, with no AWS credentials in the task: presigned S3 GETs in, a
+  presigned S3 POST limited to the session's prefix out); the egress proxy with credential placeholders; the
+  `--on-work` command; our `cloud` deployment polling the runtime queue. It speaks only the public API, so it runs
+  against live as well. Its plan is a separate document. `sandbox-docker`, `sandbox-worker` and the egress crates
+  move there (RM2, RM3).
+- Session webhook registration through an API: live has none (B8).
 
 ## SRE
 
-### SLOs (targets in `docker/observability/slos.yaml`, signed off 2026-11-06, plus S)
+### SLOs (targets in `docker/observability/slos.yaml`)
 
 | Component | SLI | SLO |
 |---|---|---|
@@ -171,38 +305,53 @@ events once; a lease that expires is taken over by another worker; a wake during
 | Tool-call dispatch | `agent.tool_use` on the worker's stream within the threshold / all built-in calls | 90% < 250 ms, 99% < 1 s |
 | Event delivery | events on every open stream within 1 s of append | 99% |
 | Turn success | turns ending `end_turn`, `requires_action` or `budget_reached` / all turns | 99% |
-| Sandbox start (cloud) | runtime work acknowledged within 30 s of queueing | 99% |
 
 ### Sizing at the peak
 
 | Resource | Calculation | Result |
 |---|---|---|
-| Steps | 10^4 sessions / 20 s (S2) | 500 steps/s |
-| Step statements | about 8 per step | 4×10^3/s on Postgres |
-| Log reads | 500 steps/s × 400 KB (S4) | 200 MB/s, from a read replica when it grows |
-| Event appends | 10^4 × 5 events/s | 5×10^4/s, multi-row per step |
-| Model calls | 500/s at most, 32 per workspace (D21) | bounded by M-1 |
-| Loop workers | a step holds no connection during the model call (5 to 30 s); 64 steps in flight per worker | 500 × 30 s / 64 = about 240 workers at the worst model latency |
+| Steps | 10^4 sessions / 20 s per step (N1, N2) | 500 steps/s |
+| Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
+| Step statements | about 9 per step | 4.5×10^3/s on Postgres |
+| Log reads | 500 steps/s × the log size a step reads | measured in the load test; a read replica serves them when it grows |
+| Model calls | 500/s at most, 32 at once per workspace (D13) | bounded by M-1 |
+| Loop workers | steps in flight = 500/s × model latency; each worker runs up to 64 steps at once (a setting) | about 240 workers at a 30 s latency; the autoscaler follows queue depth |
 
 ### Load test plan
 
-`perf/` (k6) drives N sessions against the scripted model with 2 to 8 loop workers: step-start latency, claim
-contention, Postgres statements per second and connections; a run that kills a loop worker mid-step; a run at the
-per-workspace limit. Results and the before and after table go on the S2 PR.
+`perf/` (k6) drives N sessions against the scripted model with 2 to 8 loop workers, and records step-start latency,
+claim contention, Postgres statements per second, connections, the log size per step and model latency. Runs: a
+steady run; a loop worker killed mid-step; a workspace at its model limit. Results go on the S2 PR.
 
 ## Audit of this plan
 
-- Inventory: the 2026-11-06 inventory on 88ab967 (two passes, 35 patterns, reconciled) holds on `main` at 63e07b7.
-  The second pass over the delta (`git diff 88ab967 origin/main -- crates harness docker`) changes no runtime
-  file; it adds that new tables record their writer through the connection settings from #41 (`actor`,
-  `request_id` defaults).
-- `~/.claude/CLAUDE.md`: PASS. Separate spec, migration and code PRs, `gh stack`, no footer, no em dashes.
-- `planning-questions.md`: PASS. Every new table is a migration PR the user approves; access checks read one row.
-- `diagnose-before-patch`: PASS. The engine is restored, not rewritten; the harness and its routes go.
-- `sql-transactions`: PASS. Statements listed per operation; no subqueries; claims with `SKIP LOCKED`; the commit
-  that appends also releases.
-- SRE (`sre-non-abstract-design`, `sre-simplicity`, `sre-managing-load`): PASS with S2 and S4 to measure; the
-  2026-11-06 review's findings are answered (signals over Valkey, no held lease, snapshots only at `end_turn`, one
-  retry layer, reaper as a task, autoscaling on queue depth).
-- Memory `project-agentd-harness-in-sandbox` (parity) and `feedback-agentd-no-own-sdk`: PASS.
-- O1 and O2 settled with the plan (decisions D20, D21).
+Inventory: the 2026-11-06 inventory of the runtime on 88ab967 (a first pass by reading `work`, `sessions`,
+`edge/auth.rs`, `sandbox_work.rs`, `harness.rs` and the migrations; a second, independent pass of 35 patterns, from
+`WorkScope` with 22 hits to `SKIP LOCKED` with 0; the reconciliation added the harness reading the 412 detail at the
+wrong path, interrupts drained in FIFO order, the conformance suites polling with a workspace key, and three area
+audits' findings). A second pass over `git diff 88ab967 origin/main -- crates harness docker` (21 files, all in
+`store-postgres`, `docker/sandbox/README.md`) changes no runtime file; it adds that new tables record their writer
+through the connection settings from history PR #41.
+
+| Source | Result |
+|---|---|
+| `~/.claude/CLAUDE.md` | PASS: separate spec, migration and code PRs; `gh stack`; no footer; no em dashes; never push `main` or merge. |
+| `rules/planning-phase.md`, `plan-audit` | PASS: inventory, second pass, plan, this audit, questions to the user one at a time. |
+| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves; access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`). |
+| `rules/diagnose-before-patch.md` | PASS: the engine is restored, not rewritten; container code leaves agentd instead of growing beside it. |
+| `rules/comment-policy.md` | PASS: no comments planned beyond the SQL claim notes. |
+| `rules/auto-rerun-ci.md` | Not applicable: applies during the build. |
+| Repo `CLAUDE.md` | Not applicable: agentd has none. |
+| Memory: agentd parity, no SDK of our own, harness in sandbox | PASS: the loop in agentd, workers outside, no agentd-only route. |
+| `grill-me` ledger | PASS: no `ASSUMED` row. |
+| `industry-practice` | PASS: section above; no departure. |
+| `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`, `UserEvent::rubric_file`), no `else`, files at most 200 lines. |
+| `review/references/sql-transactions.md` | PASS: statements per operation; no subqueries; claims with `SKIP LOCKED`; a commit checks its claim first. |
+| `review/references/architecture.md`, `system-design.md` | PASS: one path for `cloud` and `self_hosted`; no parallel route. |
+| `review/references/checks.md`, script checks | PASS on this text; each PR runs them. |
+| `build` (migrations, dependencies) | PASS: migrations in their own PRs; `aws-sdk-dynamodb` beside the other AWS SDK crates. |
+| `test` | PASS: each requirement row names its test in its PR. |
+| `tech-writing-style`, `no-em-dashes` | PASS: terms defined above; no em dashes; the design stated as fact. |
+| `pr-body` | PASS: each PR's body carries these IDs. |
+| `tosspaper-testing` | Not applicable as written (tosspaper's stage); each agentd PR records its local and CI verification. |
+| SRE skills | PASS: SLOs, sizing, load test plan, rollout stages, the 2026-11-06 review's findings answered (signals over Valkey, no held lease, one retry layer, reaper as a task, autoscaling on queue depth). |
