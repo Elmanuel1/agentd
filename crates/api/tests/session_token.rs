@@ -142,6 +142,11 @@ async fn the_session_token_reports_the_agent_s_side_and_stamps_what_the_agent_to
     let message = r#"{"events":[{"type":"user.message","content":[{"type":"text","text":"go"}]}]}"#;
     let (status, _) = json(&f.app, "POST", &events, KEY, message).await;
     assert_eq!(status, StatusCode::OK);
+    // A batch holding a client event is refused before anything is stamped.
+    let (status, _) = json(&f.app, "POST", &events, &token, message).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, listed) = json(&f.app, "GET", &events, KEY, "").await;
+    assert!(listed["data"][0].get("processed_at").is_none(), "{listed}");
     let agent_side = r#"{"events":[{"type":"session.status_running"},
         {"type":"agent.message","content":[{"type":"text","text":"hi"}],"session_thread_id":null}]}"#;
     let (status, recorded) = json(&f.app, "POST", &events, &token, agent_side).await;
@@ -152,10 +157,8 @@ async fn the_session_token_reports_the_agent_s_side_and_stamps_what_the_agent_to
     assert!(first["type"] == "user.message" && first["processed_at"].is_string(), "{listed}");
     let (_, s) = json(&f.app, "GET", &format!("/v1/sessions/{sid}"), KEY, "").await;
     assert_eq!(s["status"], "running");
-    // A key still sends client events only; a token sends no client events.
+    // A key still sends client events only.
     let (status, _) = json(&f.app, "POST", &events, KEY, agent_side).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) = json(&f.app, "POST", &events, &token, message).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (other, _) = session(&f, input["id"].as_str().unwrap()).await;
     let (status, _) = json(&f.app, "POST", &format!("/v1/sessions/{other}/events"), &token, agent_side).await;
@@ -176,9 +179,18 @@ async fn the_session_token_saves_replaces_and_reads_the_session_s_files() {
     assert!(status == StatusCode::OK && bytes == b"brief");
     let (status, _) = call(&f.app, "GET", &content, KEY, "application/json", Vec::new()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) =
-        call(&f.app, "GET", &format!("/v1/files/{stray}/content"), &token, "application/json", Vec::new())
-            .await;
+    let stray_content = format!("/v1/files/{stray}/content");
+    let (status, _) = call(&f.app, "GET", &stray_content, &token, "application/json", Vec::new()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A file an outcome of the session grades against is the session's to read too.
+    let outcome = format!(
+        r#"{{"events":[{{"type":"user.define_outcome","description":"d","rubric":{{"type":"file","file_id":"{stray}"}}}}]}}"#
+    );
+    let (status, _) = json(&f.app, "POST", &format!("/v1/sessions/{sid}/events"), KEY, &outcome).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, bytes) = call(&f.app, "GET", &stray_content, &token, "application/json", Vec::new()).await;
+    assert!(status == StatusCode::OK && bytes == b"x");
+    let (status, _) = call(&f.app, "GET", &stray_content, KEY, "application/json", Vec::new()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // An output is the session's, downloadable, and replaced by deleting its earlier version.
     let (status, first) = upload(&f.app, &token, "out.json", "{}").await;

@@ -346,13 +346,16 @@ async fn pg_sessions_shared_event_log() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].id, e1.id, "log returns append order (by seq)");
 
-    // replace stamps processed_at in place — no new row.
-    let mut e1p = e1.clone();
-    e1p.processed_at = Some(Timestamp::now());
-    log.replace_event(&ws, &session.id, e1p).await.unwrap();
+    // One statement stamps every waiting client event in place, no new row,
+    // and returns them in append order; a second finds none waiting.
+    let at = Timestamp::now();
+    let stamped = log.stamp_processed(&ws, &session.id, at).await.unwrap();
+    assert_eq!(stamped.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), vec![e1.id.clone(), e2.id.clone()]);
+    assert!(stamped.iter().all(|e| e.processed_at.is_some()));
     let events = log.events(&ws, &session.id).await.unwrap();
     assert_eq!(events.len(), 2);
-    assert!(events[0].processed_at.is_some());
+    assert!(events.iter().all(|e| e.processed_at.is_some()));
+    assert!(log.stamp_processed(&ws, &session.id, at).await.unwrap().is_empty());
 
     store.delete(&ws, &session.id).await.unwrap();
     assert!(store.get(&ws, &session.id).await.is_err());

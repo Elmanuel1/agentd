@@ -8,10 +8,19 @@ use async_trait::async_trait;
 use diesel::sql_types::{Array, BigInt, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 
 use crate::schema::{session_events, sessions};
 use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
+
+/// A stamped event, with its place in the log.
+#[derive(diesel::QueryableByName)]
+struct StampedRow {
+    #[diesel(sql_type = BigInt)]
+    seq: i64,
+    #[diesel(sql_type = Jsonb)]
+    doc: serde_json::Value,
+}
 
 /// Postgres-backed session event log (Diesel).
 #[derive(Debug, Clone)]
@@ -63,24 +72,6 @@ impl SessionEventLog for PgSessionEventLog {
         Ok(())
     }
 
-    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let affected = diesel::update(
-            session_events::table
-                .filter(session_events::workspace_id.eq(ws.as_str()))
-                .filter(session_events::session_id.eq(id.as_str()))
-                .filter(session_events::event_id.eq(event.id.as_str())),
-        )
-        .set(session_events::doc.eq(to_doc(&event)?))
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
-    }
-
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
@@ -95,19 +86,27 @@ impl SessionEventLog for PgSessionEventLog {
         docs.into_iter().map(parse_doc).collect()
     }
 
-    async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let rows: Vec<DocRow> = diesel::sql_query(
-            "SELECT doc FROM session_events
+    async fn stamp_processed(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        at: Timestamp,
+    ) -> Result<Vec<Event>, StoreError> {
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        let mut rows: Vec<StampedRow> = diesel::sql_query(
+            "UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', to_jsonb($3::text))
              WHERE workspace_id = $1 AND session_id = $2 AND doc->>'processed_at' IS NULL
                AND (doc->>'type' LIKE 'user.%' OR doc->>'type' = 'system.message')
-             ORDER BY seq",
+             RETURNING seq, doc",
         )
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
+        .bind::<Text, _>(at.to_wire())
         .load(&mut conn)
         .await
         .map_err(diesel_be)?;
+        // RETURNING keeps no order: the log's own order is seq.
+        rows.sort_by_key(|r| r.seq);
         rows.into_iter().map(|r| parse_doc(r.doc)).collect()
     }
 

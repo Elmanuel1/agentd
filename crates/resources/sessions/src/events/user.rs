@@ -76,3 +76,14 @@ pub enum UserEvent {
         content: Vec<ContentBlock>,
     },
 }
+
+impl UserEvent {
+    /// The file an outcome's rubric names, if this defines one.
+    #[must_use]
+    pub fn rubric_file(&self) -> Option<&str> {
+        match self {
+            Self::DefineOutcome { rubric: Rubric::File { file_id }, .. } => Some(file_id),
+            _ => None,
+        }
+    }
+}

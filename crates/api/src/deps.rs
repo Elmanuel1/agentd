@@ -20,7 +20,6 @@ use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
 /// SessionFiles over the real sessions service.
 #[derive(Debug)]
 pub struct RealSessionFiles {
-    /// Sessions service.
     pub sessions: Arc<SessionsService>,
 }
 

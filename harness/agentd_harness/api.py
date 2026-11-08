@@ -2,6 +2,8 @@
 
 import contextlib
 
+import anthropic
+
 
 class Agentd:
     def __init__(self, client, session_id):
@@ -28,12 +30,14 @@ class Agentd:
         recorded = self.client.beta.sessions.events.send(self.session_id, events=sent)
         return [event.model_dump(mode="json") for event in recorded.data]
 
-    def save_output(self, name, data, previous=None):
-        """Save `data` as the session's output `name`, in place of the file `previous`; its file id."""
-        saved = self.client.beta.files.upload(file=(name, data))
-        if previous:
-            self.client.beta.files.delete(previous)
-        return saved.id
+    def save_output(self, name, data):
+        """Save `data` as the session's output `name`; its file id."""
+        return self.client.beta.files.upload(file=(name, data)).id
+
+    def drop_output(self, file_id):
+        """Remove an output's earlier version; one already gone, a client deleted it say, is removed."""
+        with contextlib.suppress(anthropic.NotFoundError):
+            self.client.beta.files.delete(file_id)
 
     def file(self, file_id):
         """A file the session mounts or a rubric it names: a client's uploads are not downloadable."""

@@ -4,7 +4,7 @@
 use shared::{ApiError, AuthContext, Timestamp};
 
 use super::{guard_writable, map_store, parse_id, SessionsService};
-use crate::events::{EventPayload, Rubric, UserEvent};
+use crate::events::EventPayload;
 use crate::types::{Session, SessionResource, SessionResourceId, SessionResourceInput};
 
 impl SessionsService {
@@ -17,17 +17,13 @@ impl SessionsService {
     /// one of its outcomes names.
     pub async fn reads_file(&self, ctx: &AuthContext, raw_id: &str, file_id: &str) -> Result<bool, ApiError> {
         let session = self.get(ctx, raw_id).await?;
-        let mounted = session
-            .resources
-            .iter()
-            .any(|r| matches!(r, SessionResource::File { file_id: f, .. } if f == file_id));
-        if mounted {
+        if session.mounts(file_id) {
             return Ok(true);
         }
         let events = self.events.events(&ctx.workspace, &session.id).await.map_err(map_store)?;
-        Ok(events.iter().any(|e| {
-            matches!(&e.payload, EventPayload::User(UserEvent::DefineOutcome { rubric: Rubric::File { file_id: f }, .. }) if f == file_id)
-        }))
+        Ok(events
+            .iter()
+            .any(|e| matches!(&e.payload, EventPayload::User(u) if u.rubric_file() == Some(file_id))))
     }
 
     /// `POST …/resources`: attach a file.

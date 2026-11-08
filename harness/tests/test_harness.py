@@ -312,15 +312,25 @@ def test_outputs_sync_skips_links_the_agent_made(tmp_path):
     (root / "env").symlink_to(secret)
 
     class Agentd:
-        saved = []
+        saved, dropped = [], []
 
-        def save_output(self, path, data, previous=None):
+        def save_output(self, path, data):
             self.saved.append((path, data))
             return f"file_{len(self.saved)}"
 
-    agentd = Agentd()
-    assert mounts.sync_outputs(agentd, root=root, state=tmp_path / "state.json") == 1
-    assert agentd.saved == [("result.json", b"{}")]
+        def drop_output(self, file_id):
+            self.dropped.append(file_id)
+            raise RuntimeError("agentd is down")
+
+    agentd, state = Agentd(), tmp_path / "state.json"
+    assert mounts.sync_outputs(agentd, root=root, state=state) == 1
+    assert agentd.saved == [("result.json", b"{}")] and agentd.dropped == []
+    (root / "result.json").write_text('{"a": 1}')
+    with pytest.raises(RuntimeError):
+        mounts.sync_outputs(agentd, root=root, state=state)
+    # The new version was recorded before the earlier one's removal failed, so it is not saved again.
+    assert agentd.dropped == ["file_1"] and json.loads(state.read_text())["result.json"]["file_id"] == "file_2"
+    assert mounts.sync_outputs(agentd, root=root, state=state) == 0
 
 
 def test_a_stopped_sandbox_saves_its_outputs_before_it_exits(monkeypatch):

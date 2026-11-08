@@ -25,18 +25,17 @@ fn usage(u: &ModelUsage) -> Usage {
 /// belongs to (the primary thread when absent).
 #[derive(Debug, Deserialize)]
 pub struct Reported {
-    /// The thread the event belongs to.
     #[serde(default)]
     pub session_thread_id: Option<ThreadId>,
-    /// The event.
     #[serde(flatten)]
     pub payload: EventPayload,
 }
 
 impl SessionsService {
-    /// `POST …/events` from the session's own work token: the client events
-    /// waiting for the agent are stamped processed, since the agent has taken
-    /// them, and then each reported event is recorded.
+    /// `POST …/events` from the session's own work token: once the batch holds
+    /// no client event, the client events waiting for the agent are stamped
+    /// processed, since the agent has taken them, and each reported event is
+    /// recorded.
     pub async fn report(
         &self,
         ctx: &AuthContext,
@@ -44,6 +43,9 @@ impl SessionsService {
         events: Vec<Reported>,
     ) -> Result<Vec<Event>, ApiError> {
         let session = parse_id(raw_id)?;
+        if events.iter().any(|e| e.payload.is_user_event()) {
+            return Err(ApiError::invalid_request("a harness sends agent, span and session events only"));
+        }
         self.drain_user_events(&ctx.workspace, &session).await?;
         let mut recorded = Vec::with_capacity(events.len());
         for e in events {
@@ -54,8 +56,8 @@ impl SessionsService {
     }
 
     /// Record `payload`, which the session's harness sent for `thread` (the
-    /// primary thread when `None`). Client events are not the harness's to send.
-    pub async fn record(
+    /// primary thread when `None`).
+    async fn record(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
@@ -63,9 +65,6 @@ impl SessionsService {
         mut payload: EventPayload,
     ) -> Result<Event, ApiError> {
         let status = match (&payload, thread) {
-            (EventPayload::User(_), _) => {
-                return Err(ApiError::invalid_request("a harness sends agent, span and session events only"))
-            }
             (EventPayload::Session(SessionEvent::StatusRunning {}), None) => Some(SessionStatus::Running),
             (EventPayload::Session(SessionEvent::StatusIdle { .. }), None) => Some(SessionStatus::Idle),
             (EventPayload::Session(SessionEvent::StatusTerminated {}), None) => {

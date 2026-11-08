@@ -109,8 +109,7 @@ impl Runtime for DockerRuntime {
     async fn launch(&self, job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
         let name = Self::container_name(&job.target_id);
         let network = self.open_network(&job.target_id).await?;
-        let mut env: Vec<String> = job.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        env.push(format!("AGENTD_TARGET_ID={}", job.target_id));
+        let env: Vec<String> = job.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let labels = HashMap::from([
             ("agentd.target".to_owned(), job.target_id.clone()),
             ("agentd.workspace".to_owned(), job.workspace_id.clone()),

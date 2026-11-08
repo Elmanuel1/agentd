@@ -108,7 +108,8 @@ def prepare_dirs():
 
 
 def sync_outputs(agentd, root=OUTPUTS, state=STATE):
-    """Save outputs that changed since the last sync as session files, one file per path."""
+    """Save outputs that changed since the last sync as session files, one file per path. Each new
+    version is recorded before its earlier one is removed, so a failed removal never saves it twice."""
     with SYNC:
         synced = json.loads(state.read_text()) if state.exists() else {}
         count = 0
@@ -127,9 +128,10 @@ def sync_outputs(agentd, root=OUTPUTS, state=STATE):
             if known and known["sha256"] == digest:
                 continue
             # A session file is named by the file's own name; the path keys it here.
-            file_id = agentd.save_output(path.name, data, previous=known and known["file_id"])
-            synced[rel] = {"sha256": digest, "file_id": file_id}
+            synced[rel] = {"sha256": digest, "file_id": agentd.save_output(path.name, data)}
             count += 1
-        state.parent.mkdir(parents=True, exist_ok=True)
-        state.write_text(json.dumps(synced))
+            state.parent.mkdir(parents=True, exist_ok=True)
+            state.write_text(json.dumps(synced))
+            if known:
+                agentd.drop_output(known["file_id"])
         return count

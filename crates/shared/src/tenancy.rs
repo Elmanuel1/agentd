@@ -77,7 +77,6 @@ pub struct AdminContext {
 /// `sessions_token`): the harness of that session, inside its sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionCaller {
-    /// The session the token was issued for.
     pub session: String,
 }
 

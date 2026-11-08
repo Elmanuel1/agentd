@@ -27,19 +27,17 @@ def well_formed(text):
     return LONE_SURROGATE.sub("\ufffd", text)
 
 
-def text_safe(block):
-    if block.get("type") != "text":
-        return block
-    return {**block, "text": well_formed(block.get("text", ""))}
-
-
 def blocks(content):
     """Tool output as well-formed content blocks, the form `agent.tool_result` carries."""
     if content is None:
         return []
     if isinstance(content, str):
         content = [{"type": "text", "text": content}]
-    return [text_safe(b if isinstance(b, dict) else b.model_dump(exclude_none=True)) for b in content]
+    out = []
+    for block in content:
+        block = block if isinstance(block, dict) else block.model_dump(exclude_none=True)
+        out.append({**block, "text": well_formed(block.get("text", ""))} if block.get("type") == "text" else block)
+    return out
 
 
 def error_content(error):

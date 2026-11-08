@@ -68,17 +68,13 @@ impl HarnessContract for SessionsService {
     }
 
     async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError> {
-        let events = self.events.unprocessed_events(ws, session).await.map_err(map_store)?;
-        let mut drained = Vec::new();
-        for mut ev in events {
-            ev.processed_at = Some(Timestamp::now());
-            self.events.replace_event(ws, session, ev.clone()).await.map_err(map_store)?;
-            // The processed form is re-broadcast (documented: client events
-            // appear twice, queued then processed).
-            self.broadcast(session, &ev);
-            drained.push(ev);
+        let stamped = self.events.stamp_processed(ws, session, Timestamp::now()).await.map_err(map_store)?;
+        // The processed form is re-broadcast (documented: client events
+        // appear twice, queued then processed).
+        for ev in &stamped {
+            self.broadcast(session, ev);
         }
-        Ok(drained)
+        Ok(stamped)
     }
 
     async fn add_usage(&self, ws: &WorkspaceId, session: &SessionId, usage: &Usage) -> Result<(), ApiError> {

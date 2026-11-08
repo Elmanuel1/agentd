@@ -37,7 +37,6 @@ pub struct SendEventsBody {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReportBody {
-    /// The events to record.
     #[serde(default)]
     pub events: Vec<Reported>,
 }
@@ -47,9 +46,7 @@ pub struct ReportBody {
 /// agent's side of it.
 #[derive(Debug)]
 pub enum SendBody {
-    /// From a client.
     Client(SendEventsBody),
-    /// From the session's harness.
     Harness(ReportBody),
 }
 

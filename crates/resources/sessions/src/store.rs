@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use shared::page::filters::CreatedRange;
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 
 use crate::events::Event;
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
@@ -101,12 +101,16 @@ pub trait SessionsStore: Send + Sync {
 pub trait SessionEventLog: Send + Sync {
     /// Append an event to the log of an existing session.
     async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
-    /// Replace an event in place (processed_at stamping).
-    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
     /// Full event history, append order.
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
-    /// The client events the agent has not taken yet, append order.
-    async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
+    /// Stamp the client events the agent has not taken yet processed at `at`,
+    /// in one statement; those events as stamped, append order.
+    async fn stamp_processed(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        at: Timestamp,
+    ) -> Result<Vec<Event>, StoreError>;
     /// One page of the events `filter` keeps, in its order.
     async fn events_page(
         &self,
