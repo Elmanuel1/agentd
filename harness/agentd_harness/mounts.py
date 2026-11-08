@@ -118,7 +118,9 @@ def sync_outputs(agentd, root=OUTPUTS, state=STATE):
     cannot be removed stays recorded and is retried at the next sync, so no output is lost or
     saved twice."""
     with SYNC:
-        recorded = json.loads(state.read_text()) if state.exists() else {}
+        recorded = {}
+        if state.exists():
+            recorded = json.loads(state.read_text())
         synced, stale = recorded.get("files", {}), recorded.get("stale", [])
         count = 0
         # The agent owns this directory: never follow a link it made (to /proc/1/environ, say).

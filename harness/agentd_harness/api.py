@@ -26,7 +26,9 @@ class Agentd:
 
     def emit(self, events, thread=None):
         """Record `events` for `thread` (the primary thread when None); the recorded events, with ids."""
-        sent = [{**e, "session_thread_id": thread} if thread else e for e in events]
+        sent = list(events)
+        if thread:
+            sent = [{**e, "session_thread_id": thread} for e in sent]
         recorded = self.client.beta.sessions.events.send(self.session_id, events=sent)
         return [event.model_dump(mode="json") for event in recorded.data]
 
