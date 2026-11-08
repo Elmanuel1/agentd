@@ -68,7 +68,8 @@ impl HarnessContract for SessionsService {
     }
 
     async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError> {
-        let stamped = self.events.stamp_processed(ws, session, Timestamp::now()).await.map_err(map_store)?;
+        let stamped =
+            self.events.update_processed_at(ws, session, Timestamp::now()).await.map_err(map_store)?;
         // The processed form is re-broadcast (documented: client events
         // appear twice, queued then processed).
         for ev in &stamped {

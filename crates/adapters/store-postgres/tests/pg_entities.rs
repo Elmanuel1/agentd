@@ -325,7 +325,7 @@ async fn pg_sessions_shared_event_log() {
     if !enabled() {
         return;
     }
-    use sessions::events::{Event, EventPayload, UserEvent};
+    use sessions::events::{Event, EventPayload, SessionEvent, UserEvent};
     use sessions::store::{SessionEventLog, SessionsStore};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
@@ -342,20 +342,26 @@ async fn pg_sessions_shared_event_log() {
     log.append_event(&ws, &session.id, e1.clone()).await.unwrap();
     log.append_event(&ws, &session.id, e2.clone()).await.unwrap();
 
+    let running = Event::new(EventPayload::Session(SessionEvent::StatusRunning {}));
+    log.append_event(&ws, &session.id, running.clone()).await.unwrap();
+
     let events = log.events(&ws, &session.id).await.unwrap();
-    assert_eq!(events.len(), 2);
+    assert_eq!(events.len(), 3);
     assert_eq!(events[0].id, e1.id, "log returns append order (by seq)");
 
     // One statement stamps every waiting client event in place, no new row,
     // and returns them in append order; a second finds none waiting.
     let at = Timestamp::now();
-    let stamped = log.stamp_processed(&ws, &session.id, at).await.unwrap();
+    let stamped = log.update_processed_at(&ws, &session.id, at).await.unwrap();
     assert_eq!(stamped.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), vec![e1.id.clone(), e2.id.clone()]);
-    assert!(stamped.iter().all(|e| e.processed_at.is_some()));
+    let at_wire = Some(at.to_wire());
+    assert!(stamped.iter().all(|e| e.processed_at.map(|t| t.to_wire()) == at_wire));
+    // Only client events are stamped: the status event keeps no processed_at.
     let events = log.events(&ws, &session.id).await.unwrap();
-    assert_eq!(events.len(), 2);
-    assert!(events.iter().all(|e| e.processed_at.is_some()));
-    assert!(log.stamp_processed(&ws, &session.id, at).await.unwrap().is_empty());
+    assert_eq!(events.len(), 3);
+    assert!(events[..2].iter().all(|e| e.processed_at.map(|t| t.to_wire()) == at_wire));
+    assert_eq!((events[2].id.clone(), events[2].processed_at), (running.id, None));
+    assert!(log.update_processed_at(&ws, &session.id, at).await.unwrap().is_empty());
 
     store.delete(&ws, &session.id).await.unwrap();
     assert!(store.get(&ws, &session.id).await.is_err());

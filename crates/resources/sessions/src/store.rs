@@ -105,7 +105,7 @@ pub trait SessionEventLog: Send + Sync {
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
     /// Stamp the client events the agent has not taken yet processed at `at`,
     /// in one statement; those events as stamped, append order.
-    async fn stamp_processed(
+    async fn update_processed_at(
         &self,
         ws: &WorkspaceId,
         id: &SessionId,

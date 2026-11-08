@@ -174,7 +174,6 @@ impl SessionResource {
 }
 
 impl super::Session {
-    /// Whether the session mounts the file `file_id` as a resource.
     #[must_use]
     pub fn mounts(&self, file_id: &str) -> bool {
         self.resources.iter().any(|r| matches!(r, SessionResource::File { file_id: f, .. } if f == file_id))

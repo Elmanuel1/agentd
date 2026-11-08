@@ -13,7 +13,6 @@ use shared::{Pagination, Timestamp, WorkspaceId};
 use crate::schema::{session_events, sessions};
 use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
-/// A stamped event, with its place in the log.
 #[derive(diesel::QueryableByName)]
 struct StampedRow {
     #[diesel(sql_type = BigInt)]
@@ -86,7 +85,7 @@ impl SessionEventLog for PgSessionEventLog {
         docs.into_iter().map(parse_doc).collect()
     }
 
-    async fn stamp_processed(
+    async fn update_processed_at(
         &self,
         ws: &WorkspaceId,
         id: &SessionId,

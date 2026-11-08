@@ -107,11 +107,19 @@ def prepare_dirs():
         os.chown(d, NOBODY, NOBODY) if os.geteuid() == 0 else None
 
 
+def save_state(state, synced, stale):
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({"files": synced, "stale": stale}))
+
+
 def sync_outputs(agentd, root=OUTPUTS, state=STATE):
-    """Save outputs that changed since the last sync as session files, one file per path. Each new
-    version is recorded before its earlier one is removed, so a failed removal never saves it twice."""
+    """Save outputs that changed since the last sync as session files, one file per path. Every
+    changed output is saved and recorded first; earlier versions are removed after, and one that
+    cannot be removed stays recorded and is retried at the next sync, so no output is lost or
+    saved twice."""
     with SYNC:
-        synced = json.loads(state.read_text()) if state.exists() else {}
+        recorded = json.loads(state.read_text()) if state.exists() else {}
+        synced, stale = recorded.get("files", {}), recorded.get("stale", [])
         count = 0
         # The agent owns this directory: never follow a link it made (to /proc/1/environ, say).
         files = []
@@ -129,9 +137,16 @@ def sync_outputs(agentd, root=OUTPUTS, state=STATE):
                 continue
             # A session file is named by the file's own name; the path keys it here.
             synced[rel] = {"sha256": digest, "file_id": agentd.save_output(path.name, data)}
+            stale += [known["file_id"]] if known else []
             count += 1
-            state.parent.mkdir(parents=True, exist_ok=True)
-            state.write_text(json.dumps(synced))
-            if known:
-                agentd.drop_output(known["file_id"])
+            save_state(state, synced, stale)
+        failed = []
+        for file_id in stale:
+            try:
+                agentd.drop_output(file_id)
+            except Exception as e:  # noqa: BLE001 - kept for the next sync, and reported below
+                failed.append((file_id, e))
+        save_state(state, synced, [file_id for file_id, _ in failed])
+        if failed:
+            raise RuntimeError(f"{len(failed)} earlier output version(s) not removed yet: {failed[0][1]}")
         return count

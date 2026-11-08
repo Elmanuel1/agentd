@@ -35,8 +35,11 @@ def blocks(content):
         content = [{"type": "text", "text": content}]
     out = []
     for block in content:
-        block = block if isinstance(block, dict) else block.model_dump(exclude_none=True)
-        out.append({**block, "text": well_formed(block.get("text", ""))} if block.get("type") == "text" else block)
+        if not isinstance(block, dict):
+            block = block.model_dump(exclude_none=True)
+        if block.get("type") == "text":
+            block = {**block, "text": well_formed(block.get("text", ""))}
+        out.append(block)
     return out
 
 
