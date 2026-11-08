@@ -123,7 +123,8 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 - The container project is called `agentd-worker` (2026-11-08).
 - agentd has no part in egress secrets; `agentd-worker`'s operator decides, and our `cloud` deployment injects
   none (2026-11-08).
-- agentd serves MCP servers from the loop with the session's vault credentials, read fresh each call (2026-11-08).
+- agentd serves MCP servers from the loop with the session's vault credentials (2026-11-08), read once per loop step
+  (2026-11-08).
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
   a departure from live (2026-11-08).
 - A `cloud` session's environment-variable credentials are not substituted at egress, a departure from live that

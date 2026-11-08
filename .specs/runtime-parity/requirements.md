@@ -131,7 +131,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | MC-3 | If no credential in the session's vaults matches a server, then the loop shall connect unauthenticated. |
 | MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. |
 | MC-5 | If the loop cannot connect to an MCP server, then the loop shall record `session.error` with `mcp_connection_failed_error` and let the session continue. |
-| MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` in every step that uses it, with no cache, so that a rotated, archived or deleted credential applies on the next call. |
+| MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` in every step that uses it, with no cache, so that a rotated, archived or deleted credential applies from the next step (D27). |
 | MC-7 | When an `mcp_oauth` credential's access token has expired and it carries a `refresh` block, the loop shall refresh it at the block's `token_endpoint` and store the new token and its expiry in its vault; when another loop worker has already refreshed it, the loop shall use the stored token instead. |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -357,6 +357,10 @@ are gated by `AGENTD_PG_TESTS`, as today.
   configuration.
 
 ## Out of scope
+
+- Follow-up, planned on its own before MCP serves many tenants: envelope encryption for per-tenant credentials
+  (credentials encrypted in Postgres under a KMS key per workspace, in place of one Secrets Manager entry each), the
+  common multi-tenant pattern at scale. It changes the vault design, so it gets its own plan.
 
 - Egress secrets: agentd has no part in them (D25); `agentd-worker`'s proxy enforces the environment's networking
   and, when its operator turns it on, injects secrets from the operator's own source.
