@@ -9,5 +9,6 @@ pub mod files;
 pub mod memory;
 pub mod session_events;
 pub mod sessions;
+pub mod skill_versions;
 pub mod skills;
 pub mod vaults;
