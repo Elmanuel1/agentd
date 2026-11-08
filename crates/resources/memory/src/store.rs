@@ -14,19 +14,12 @@ use async_trait::async_trait;
 use shared::{Pagination, WorkspaceId};
 
 mod filters;
+mod records;
 
 pub use filters::{StoreFilter, VersionFilter};
+pub use records::{MemoryRecord, VersionRecord, VersionSelector};
 
-use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
-
-/// How a reader resolves a memory to a concrete version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VersionSelector {
-    /// The current head — re-resolved at each session-create.
-    Latest,
-    /// A pinned version.
-    Pinned(MemoryVersionId),
-}
+use crate::types::{MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersionId};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -51,41 +44,6 @@ pub enum StoreError {
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
-}
-
-/// One version's full record: wire metadata + content blob.
-#[derive(Debug, Clone)]
-pub struct VersionRecord {
-    /// Wire metadata (content field unset; populated on full view).
-    pub version: MemoryVersion,
-    /// The content blob — `None` after redact.
-    pub blob: Option<String>,
-}
-
-/// A memory's full state: head pointer + chain.
-#[derive(Debug, Clone)]
-pub struct MemoryRecord {
-    /// Wire head (its `memory_version_id` IS the `latest` ref).
-    pub head: Memory,
-    /// Whether the memory is deleted (chain retained for audit).
-    pub deleted: bool,
-    /// The append-only chain, oldest first.
-    pub chain: Vec<VersionRecord>,
-}
-
-impl MemoryRecord {
-    /// Find a version in the chain.
-    fn find(&self, id: &MemoryVersionId) -> Option<&VersionRecord> {
-        self.chain.iter().find(|v| &v.version.id == id)
-    }
-
-    /// Resolve a selector to a version record.
-    pub fn resolve(&self, sel: &VersionSelector) -> Option<&VersionRecord> {
-        match sel {
-            VersionSelector::Latest => self.find(&self.head.memory_version_id),
-            VersionSelector::Pinned(id) => self.find(id),
-        }
-    }
 }
 
 /// Persistence port for stores/memories/versions.
