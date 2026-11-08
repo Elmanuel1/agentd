@@ -1,6 +1,6 @@
 # ADR 0001: The agent loop runs in agentd; the sandbox runs Anthropic's worker unchanged
 
-Status: Proposed (2026-11-08)
+Status: Accepted (2026-11-08)
 
 ## Context
 

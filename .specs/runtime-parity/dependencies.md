@@ -25,7 +25,7 @@ Each fact the design rests on, with its evidence. `VERIFIED` rows were read in s
 | L5 | On `self_hosted`, each built-in call idles the session `requires_action`; on `cloud` the session stays `running` and results show as `agent.tool_result`. | VERIFIED | same |
 | L6 | The grader runs on its own thread, its calls answered by the worker, inside `span.outcome_evaluation_*`. | VERIFIED | same |
 | L7 | While a tool call is unanswered, `user.message` is refused with live's 400 text; `user.interrupt` posts a synthetic error result. | VERIFIED | `ant-poller-spike.md` |
-| L8 | Session webhook endpoints have no registration API (Console only). | VERIFIED | probes 2026-11-07; open question O1 |
+| L8 | Session webhook endpoints have no registration API (Console only). | VERIFIED | probes 2026-11-07; decision D20 |
 
 ## Load (SRE sizing inputs)
 

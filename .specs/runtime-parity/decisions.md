@@ -38,9 +38,10 @@ decision names who made it and when; a later decision replaces an earlier one on
 | D18 | Starter SLOs as signed off on 2026-11-06, targets in one config file. | User, 2026-11-06 (Q14) |
 | D19 | No paid model run without the user's OK; CI uses the scripted model. | User, standing |
 
-## Open
+## Settled with the plan
 
-| # | Question | Recommendation |
+| # | Decision | Source |
 |---|---|---|
-| O1 | How session webhook endpoints are registered: live has no API for them (Console only). | Register them with `agentd` configuration per organization until Anthropic publishes an API; the delivery side follows live exactly. |
-| O2 | The model provider limits' defaults (concurrency per workspace, retry attempts, cache use). | 32 concurrent model calls per workspace, 5 attempts from 2 s with jitter inside a 10 min deadline, `cache_control` on the system prompt and tool list for Anthropic models. |
+| D20 | Session webhook endpoints are registered through agentd configuration per organization, since live registers them only in its Console; deliveries follow live exactly. | User, 2026-11-08 (plan approved) |
+| D21 | Model limits default to 32 concurrent model calls per workspace, 5 attempts from 2 s with jitter inside a 10 min deadline, and `cache_control` on the system prompt and tool list for Anthropic models; each is a setting. | User, 2026-11-08 (plan approved) |
+| D22 | The plan of PRs in [requirements](requirements.md) is agreed; each PR starts on the user's go-ahead. | User, 2026-11-08 |

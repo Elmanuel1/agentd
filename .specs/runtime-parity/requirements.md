@@ -137,7 +137,7 @@ branches (not pushed).
 | C4 | agentd's poller pool | code | C-1 | |
 | C5 | `cloud` sessions run on agentd's loop and the runtime queue (flagged) | code | C-1, L-3 | |
 | C6 | Remove the harness, `/harness/*` routes, agentd's Docker launch, the harness CI job | code | L-1 | |
-| Hm | `webhook_deliveries` (and endpoints once O1 is answered) | migration | H-3 | |
+| Hm | `webhook_deliveries` and the configured endpoints (D20) | migration | H-3 | |
 | H1 | Session status webhooks, signed, retried from Postgres | code | H-1 to H-3 | |
 | D1 | Docs and runbook | docs | all | |
 
@@ -181,7 +181,7 @@ events once; a lease that expires is taken over by another worker; a wake during
 | Step statements | about 8 per step | 4×10^3/s on Postgres |
 | Log reads | 500 steps/s × 400 KB (S4) | 200 MB/s, from a read replica when it grows |
 | Event appends | 10^4 × 5 events/s | 5×10^4/s, multi-row per step |
-| Model calls | 500/s at most, 32 per workspace (O2) | bounded by M-1 |
+| Model calls | 500/s at most, 32 per workspace (D21) | bounded by M-1 |
 | Loop workers | a step holds no connection during the model call (5 to 30 s); 64 steps in flight per worker | 500 × 30 s / 64 = about 240 workers at the worst model latency |
 
 ### Load test plan
@@ -205,4 +205,4 @@ per-workspace limit. Results and the before and after table go on the S2 PR.
   2026-11-06 review's findings are answered (signals over Valkey, no held lease, snapshots only at `end_turn`, one
   retry layer, reaper as a task, autoscaling on queue depth).
 - Memory `project-agentd-harness-in-sandbox` (parity) and `feedback-agentd-no-own-sdk`: PASS.
-- Open: O1 (webhook registration), O2 (model limit defaults).
+- O1 and O2 settled with the plan (decisions D20, D21).
