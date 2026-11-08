@@ -137,7 +137,8 @@ def sync_outputs(agentd, root=OUTPUTS, state=STATE):
                 continue
             # A session file is named by the file's own name; the path keys it here.
             synced[rel] = {"sha256": digest, "file_id": agentd.save_output(path.name, data)}
-            stale += [known["file_id"]] if known else []
+            if known:
+                stale.append(known["file_id"])
             count += 1
             save_state(state, synced, stale)
         failed = []
