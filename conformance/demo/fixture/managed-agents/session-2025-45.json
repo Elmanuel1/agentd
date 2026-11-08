@@ -20,6 +20,10 @@
   },
   {
    "type": "file",
+   "mount_path": "/extraction/bin/blocks.py"
+  },
+  {
+   "type": "file",
    "file_id": "file_017c5yXQEDpL3by5wuknpBnz",
    "mount_path": "/extraction/bin/cite.py"
   },
