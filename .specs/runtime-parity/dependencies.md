@@ -1,15 +1,15 @@
 # Runtime parity: dependencies
 
 Each fact the design rests on, with its evidence. "Live" means Anthropic's hosted Managed Agents API. `VERIFIED`
-rows were read in the official SDK's source or measured on live. `ACCEPTED-RISK` rows are the user's numbers, signed
-off with the plan, each with the signal that reopens it. `GATE` rows are conditions a rollout step waits on.
+rows were read in the official SDK's source or measured on live. `ACCEPTED-RISK` rows are the user's numbers, accepted
+by the user, each with the signal that reopens it.
 
 ## What Anthropic's worker uses (official SDK 2.3.0)
 
 | # | Fact | Status | Evidence |
 |---|---|---|---|
 | A1 | The worker's per-item entry is `client.beta.environments.work.worker(workdir=...).handle_item()`, reading `ANTHROPIC_WORK_ID`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID`, `ANTHROPIC_WORK_SECRET`; it needs no environment key when the secret carries a sessions token. | VERIFIED | `lib/environments/_worker.py` `handle_item` and its docstring |
-| A2 | Poll and ack belong to the poller, with the environment key; `ant worker poll --on-work` hands a claimed item to a fresh process. | VERIFIED | `lib/environments/_poller.py` (`work.poll`, `work.ack`, `work.stop`), `_worker.py` docstring |
+| A2 | Poll and ack belong to the poller, with the environment key; `ant beta:worker poll --on-work` (the SDK's docstring calls it `ant worker poll`) hands a claimed item to a fresh process. | VERIFIED | `lib/environments/_poller.py` (`work.poll`, `work.ack`, `work.stop`), `_worker.py` docstring |
 | A3 | Per item the worker calls `work.heartbeat`, `work.stop`, `sessions.retrieve`, `skills.versions.retrieve` and `download`, `memory_stores.memories` `list`, `retrieve`, `create`, `update`, `delete`, and `sessions.events` `stream`, `list`, `send`. | VERIFIED | `_worker.py`, `lib/tools/_beta_session_runner.py`, `_skills.py`, `_memories.py` |
 | A4 | The worker sends only `user.tool_result` and `user.custom_tool_result`; it reads `agent.tool_use`, `agent.custom_tool_use`, `user.tool_confirmation`, `session.thread_status_*`, `session.status_idle`, `session.status_terminated`, `session.deleted`. | VERIFIED | `_beta_session_runner.py` lines 189, 360-369, 610-710, 736-739, 1089 |
 | A5 | The memory endpoints accept the item's sessions token and refuse the environment key. | VERIFIED | `_worker.py`, comment above `SessionMemoryStores` |
@@ -32,15 +32,9 @@ off with the plan, each with the signal that reopens it. `GATE` rows are conditi
 
 | # | Fact | Status | Evidence |
 |---|---|---|---|
-| N1 | 10^4 sessions active at once at the peak. | ACCEPTED-RISK | user, 2026-11-06: "10,000 sessions at once"; signed off with the plan, 2026-11-08. Reopens when stage or prod shows more than 5×10^3 active sessions. |
-| N2 | About one loop step every 20 s per active session. | ACCEPTED-RISK | user, 2026-11-08 ("about one step every 20 seconds per session"); signed off with the plan. Reopens when the load test or stage measures more than one step per 10 s per session. |
+| N1 | 10^4 sessions active at once at the peak. | ACCEPTED-RISK | user, 2026-11-06: "10,000 sessions at once"; accepted with the plan, user, 2026-11-08: "Approve the plan". Reopens when stage or prod shows more than 5×10^3 active sessions. |
+| N2 | About one loop step every 20 s per active session. | ACCEPTED-RISK | user, 2026-11-08 ("about one step every 20 seconds per session"); accepted with the plan, user, 2026-11-08: "Approve the plan". Reopens when the load test or stage measures more than one step per 10 s per session. |
 | N3 | About 10 events and 2 status changes per built-in call; 2 KB per event. | VERIFIED | live capture, Haiku with fast tools |
-
-## Gates
-
-| # | Condition | Status | Where |
-|---|---|---|---|
-| G1 | `agentd-worker` polls the runtime queue in a deployment environment before L7 lists a workspace there. | GATE | requirements.md, Rollout |
 
 Measured, not assumed: the log size a step reads and the model's latency per call. The design does not rest on
 either; the load test plan in [requirements](requirements.md) measures both and the loop workers' autoscaler

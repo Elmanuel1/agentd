@@ -36,6 +36,11 @@ sequenceDiagram
 ## Terms
 
 - **Live**: Anthropic's hosted Managed Agents API, the behaviour agentd copies.
+- **Sandbox**: the container a session's tools run in.
+- **Loop worker**: an agentd server whose job is running loop steps; the **step queue** is the list of sessions
+  with a step to run.
+- **Work token**: the credential a worker gets with a work item; it reaches only that session.
+- **Environment key**: the key a worker uses to ask for work; the **runtime queue** is where `cloud` work waits.
 - **Loop step**: one pass of a session's loop: read the session's event log, ask the model, record what it said.
   A tool call ends a step; the tool's result starts the next one.
 - **Work item**: a queue entry that tells a worker "this session needs you"; its id is the session id.
@@ -89,7 +94,7 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 33. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`), once its credential source is settled.
 34. Docs and runbook.
 
-`agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created once you agree this plan):
+`agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created on your go-ahead):
 
 1. The worker image: the official `anthropic` SDK only, running `EnvironmentWorker` per work item.
 2. The command `ant beta:worker poll --on-work` runs: start one task per work item.
@@ -108,20 +113,18 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
 - No container code in agentd; the container work is a separate project you will also use elsewhere (2026-11-08).
 - `cloud` reuses that container project, run by us (2026-11-08).
 - The container project is called `agentd-worker` (2026-11-08).
+- A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
+  the one departure from live (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
 - Environment keys in their own table (2026-11-08).
 - No endpoint Anthropic does not have (2026-11-06).
 - Custom tools are answered by the API caller (2026-11-04).
 - Fan-out signals over Valkey; the event log moves to DynamoDB for listed workspaces (2026-11-06).
-- Model limits: 32 model calls at once per workspace, 5 retries, prompt caching (2026-11-08).
+- Model limits: 32 model calls at once per workspace, 5 attempts, prompt caching (2026-11-08).
 - Webhook endpoints configured per organization (2026-11-08).
 
 ## Open questions
 
-- **Files for `agentd-worker`.** Live has no endpoint a worker can use to fetch a session's files or save its
-  outputs; Anthropic does it inside its own sandboxes. Recommendation: let a session's work token download the files
-  its session mounts and upload its outputs through the existing files endpoints, the one departure from live,
-  limited to that session's own files.
 - **Where the egress proxy gets real credential values.** Live has no public API that returns vault secrets.
   Recommendation: our `cloud` deployment reads them from Secrets Manager with its own IAM role; a customer's
   `self_hosted` deployment is given its own. Removing the egress crates from agentd waits on this.
@@ -136,4 +139,3 @@ The full detail lives beside this page:
 - [dependencies.md](dependencies.md): what the design rests on, with evidence.
 - [ADR 0001](adr/0001-agent-loop-in-agentd.md): the decision record and the alternatives.
 
-Review findings on this spec: round 1 found 16, round 2 found 13; all fixed. Round 3 is under way.

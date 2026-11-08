@@ -92,7 +92,8 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | L-13 | The loop shall apply each tool's permission policy, writing `agent.tool_use` with its evaluation. |
 | L-14 | When the model calls a custom tool, the loop shall write `agent.custom_tool_use` and wait for the caller's `user.custom_tool_result`. |
 | L-15 | When the agent delegates, the loop shall run the delegate on a thread of its own and record its thread events. |
-| L-16 | The loop shall add each model call's usage to the session and record `session.usage`, and stop with `budget_reached` once the budget is spent. |
+| L-16 | The loop shall add each model call's usage to the session and record `session.usage`. |
+| L-18 | If the session's budget is spent, then the loop shall stop the turn with `budget_reached`. |
 | L-17 | The loop shall record `agent.thinking`, `span.model_request_start` and `span.model_request_end` for each model call. |
 | L-2 | When the model asks for a built-in tool on a `self_hosted` session, the loop shall write `agent.tool_use` and idle the thread and the session `requires_action` (`event_ids`), in the order `session.thread_status_idle`, `session.usage`, `session.status_idle`. |
 | L-3 | When a `self_hosted` session's `user.tool_result` arrives, the loop shall write `session.status_running` and `session.thread_status_running` and continue. |
@@ -134,13 +135,15 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 | Pattern | Source | Here |
 |---|---|---|
-| A server-side agent loop with remote tool execution | Anthropic Managed Agents: the loop on the server, `EnvironmentWorker` runs tools and posts results | Followed exactly. |
+| A server-side agent loop with remote tool execution | Anthropic Managed Agents: the loop on the server, `EnvironmentWorker` runs tools and posts results | Followed, with the one files departure below. |
 | A job queue in Postgres claimed with `FOR UPDATE SKIP LOCKED` | Postgres docs (`SELECT … FOR UPDATE SKIP LOCKED`); queues built on it: Que, GoodJob, Oban, pg-boss, River | Followed for the step queue, the work queue and schedules. |
 | Durable execution: state in a log, each step replayable | Temporal (workflow history replayed by any worker), AWS Step Functions | Followed: the event log is the history; a step derives its action from it, so a rerun is safe. |
 | A lease with an expiry instead of a held connection or lock | The SRE review of 2026-11-06; Temporal activity timeouts | Followed; a commit checks its claim is still its own. |
 | Fan-out by signal, data from the source of truth | Common pub/sub notify-then-read designs | Followed with Valkey signals and log reads. |
 
-Departures: none.
+Departures: a session's work token reads its session's mounted files and saves its outputs through the existing
+files endpoints (FO-1, FO-2; decision D24). Live refuses this; Anthropic stages files inside its own `cloud`
+sandboxes.
 
 ## Plan of PRs
 
@@ -151,10 +154,10 @@ work already written on local branches.
 | # | PR | Kind | Pts | Requirements | Reuses |
 |---|---|---|---|---|---|
 | P0 | This spec | spec | 1 | all | |
-| W1 | The work-token key lives in Secrets Manager | code | 2 | W-1 | |
+| W1 | The work-token key lives in Secrets Manager | code | 2 | W-1, W-20 | |
 | W2m | `work_items` table | migration | 1 | W-2 | |
 | W3 | Postgres work store, unused | code | 3 | W-2, W-5, W-6, W-9 | |
-| W4 | Work items live in Postgres; id = session id; `actor`; `started_at` | code | 3 | W-2 to W-4, W-7, W-8, W-10, W-11 | |
+| W4 | Work items live in Postgres; id = session id; `actor`; `started_at` | code | 3 | W-2 to W-4, W-7, W-8, W-10, W-11, W-21 | |
 | W5 | The work secret carries live's fields | code | 1 | W-12 | |
 | W6m | `environment_keys` table | migration | 1 | W-13 | branch `environment-keys` |
 | W7 | Environment keys: store, CLI, runtime key, edge rules, poll by environment key only | code | 4 | W-13 to W-18 | branch `environment-keys` |
@@ -164,7 +167,7 @@ work already written on local branches.
 | X1 | Store config moves to `config/store.rs` | code | 1 | none (makes room) | |
 | E1 to E3 | DynamoDB event log: writes, reads, the flag | code | 3 each | E-1 | |
 | Sm | `loop_steps` table | migration | 1 | S-1, S-2 | |
-| L1 to L5 | Engine restored from `16805c8^`: model client, history, turn with parked built-in calls, threads, grading, budget (unused) | code | 3 to 4 each | L-1 to L-7, L-13 to L-17, M-2, M-3 | |
+| L1 to L5 | Engine restored from `16805c8^`: model client, history, turn with parked built-in calls, threads, grading, budget (unused) | code | 3 to 4 each | L-1 to L-7, L-13 to L-18, M-2, M-3 | |
 | S1 | Step queue store: enqueue, claim, commit, takeover (unused) | code | 3 | S-1 to S-6 | |
 | S2 | Loop workers: one step per claim; `AGENTD_ROLE`; model concurrency per workspace (unused) | code | 3 | S-3, S-7, R-1, M-1 | |
 | L6 | Work tokens: answers for open calls only, reads and writes scoped, die with the work | code | 3 | L-9 to L-12 | memory guard (branch `harness-memory-stores`), token scoping tests (PR #44) |
@@ -217,10 +220,12 @@ are gated by `AGENTD_PG_TESTS`, as today.
 - **W8.** `sessions/src/service/events.rs`: the session row is already read; no new statement. Tests: refused with
   live's text; the four answers accepted.
 - **F1.** `entities/session_events.rs`: append is one multi-row INSERT; `update_processed_at(ws, session,
-  up_to_seq, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND seq <= $up_to AND
-  doc->>'processed_at' IS NULL RETURNING seq, doc`; reads by keyset on `seq`, the log's insertion order, which
-  orders each session's events. No migration: `processed_at` stays in `doc`, as today. Tests: two stamps get
-  disjoint events; a stamp leaves a status event unstamped; keyset reads return each event once.
+  ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
+  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. Every append
+  first takes `pg_advisory_xact_lock(hashtext(session))`, so a session's `seq` order is its commit order and a
+  keyset read on `seq` never skips an event that commits late. No migration: `processed_at` stays in `doc`, as
+  today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
+  concurrent appends to one session are read back in commit order, each once.
 - **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
   for every signalled session it streams. Tests: an event appended on one replica reaches another's stream in
   order; a dropped signal is recovered by the 1 s timer; delete ends the other replica's stream.
@@ -248,8 +253,9 @@ are gated by `AGENTD_PG_TESTS`, as today.
   attaches and how; every token request reads its item (1 SELECT by primary key). Tests: one per L-9 to L-12.
 - **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files), `SessionsService::reads_file`
   on `Session::mounts` and `UserEvent::rubric_file`. Download: 1 SELECT of the session, 1 SELECT of its events when
-  the file is not mounted, 1 SELECT of the file, 1 object GET. Tests (`api/tests/session_token.rs`): one per FO-1
-  to FO-3.
+  the file is not mounted, 1 SELECT of the file, 1 object GET. Tests (`api/tests/session_token.rs`): its own
+  mounted file is served; another session's file is refused; a file not mounted in its session is refused; an
+  upload is scoped to its session and absent from another session's `files.list(scope_id=...)`.
 - **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
   environment or the runtime queue; the flag lists workspaces. Tests: the live poll-path cases replayed with `ant`
   pollers and the scripted model.
@@ -277,10 +283,10 @@ are gated by `AGENTD_PG_TESTS`, as today.
 
 | Operation | Statements |
 |---|---|
-| Enqueue, in the commit that appends the waking event | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
-| Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_advisory_xact_lock(hashtext($workspace))`; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Run, no transaction open | 1 keyset SELECT of the session's events, noting the highest `seq` read; the model call |
-| Commit, one transaction | 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`; when it deletes nothing, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`, and when that updates nothing too the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND seq <= $read_up_to AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today |
+| Enqueue, in the commit that appends the waking event (after its session append lock) | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
+| Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
+| Run, no transaction open | 1 keyset SELECT of the session's events, noting the ids of the client events it read; the model call |
+| Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`; when it deletes nothing, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`, and when that updates nothing too the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today |
 | Takeover | the Claim statements: a lease that has run out is claimable |
 
 ## Rollout
@@ -311,13 +317,8 @@ are gated by `AGENTD_PG_TESTS`, as today.
 
 ## Open
 
-These need the user's answer before the PRs they name start.
+This needs the user's answer before the PR it names starts.
 
-- **Files for workers (FO-1, FO-2).** Live refuses a `self_hosted` session's file resources and has no endpoint
-  through which a worker stages them; Anthropic stages them inside its own `cloud` sandboxes. For
-  `agentd-worker` to serve `cloud`, agentd lets a session's work token download the files its session mounts and
-  upload its outputs through the public files endpoints, which live does not allow. Recommendation: accept this as
-  the one departure, limited to the work token and the session's own files.
 - **Credentials for the egress proxy (RM3).** Live has no public API that returns vault credential values.
   Recommendation: our `cloud` deployment of `agentd-worker` reads them from Secrets Manager with its own IAM role; a
   customer's `self_hosted` deployment is given its own. RM3 waits on this.
@@ -340,8 +341,8 @@ These need the user's answer before the PRs they name start.
 |---|---|---|
 | Steps | 10^4 sessions / 20 s per step (N1, N2) | 500 steps/s |
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
-| Step statements | about 9 per step | 4.5×10^3/s on Postgres |
-| A workspace at its limit | 3 statements per deferral, at most once a second per workspace | bounded by the number of workspaces at their limit |
+| Step statements | about 10 per step | 5×10^3/s on Postgres |
+| A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
 | Log reads | 500 steps/s × the log size a step reads | measured in the load test; a read replica serves them when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13) | bounded by M-1 |
 | Loop workers | steps in flight = 500/s × model latency; each worker runs up to 64 steps at once (a setting) | about 240 workers at a 30 s latency; the autoscaler follows queue depth |

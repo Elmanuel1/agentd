@@ -40,4 +40,5 @@ Anthropic's hosted Managed Agents API. Each row names who decided and when.
 | D20 | Session webhook endpoints are registered through agentd configuration per organization, since live registers them only in its Console; deliveries follow live exactly. | User, 2026-11-08 (plan approved) |
 | D21 | Starter SLOs as signed off on 2026-11-06, targets in one config file. | User, 2026-11-06 |
 | D22 | No paid model run without the user's OK; CI uses the scripted model. | User, standing |
-| D23 | The plan of PRs in [requirements](requirements.md) is agreed; each PR starts on the user's go-ahead. | User, 2026-11-08 |
+| D23 | Each PR in [requirements](requirements.md) starts on the user's go-ahead; the `agentd-worker` repository is created on the user's go-ahead. | User, 2026-11-08 |
+| D24 | A session's work token may read its session's mounted files through `GET /v1/files/{id}/content` and save outputs through `files.upload`, scoped to that session so `files.list(scope_id=session)` returns them; any other session's file, and a file not mounted in the session, are refused. No new route. Live refuses this; it is the one departure from live. | User, 2026-11-08 ("Yes") |

@@ -26,8 +26,9 @@ customer; a `cloud` environment's workers belong to Anthropic.
 2. agentd is the API, the loop and the work queue. It holds no container code: no sandbox launcher, no runtime
    adapter, no file staging, no snapshots, no egress proxy.
 3. For `cloud` and `self_hosted` environments alike, agentd queues work items and serves exactly the work,
-   session, events, skills and memory store endpoints the official worker calls, and the files endpoints
-   `agentd-worker`'s sidecar calls, with live's behaviour.
+   session, events, skills and memory store endpoints the official worker calls, with live's behaviour. A session's
+   work token also reads its session's mounted files and saves its outputs through the files endpoints, for
+   `agentd-worker`'s sidecar; live refuses this, and it is the one departure (decision D24).
 4. Workers run outside agentd, in a separate container project, `agentd-worker`, that speaks only the public API. A customer runs it
    for `self_hosted` environments; we run it for `cloud` environments, polling agentd's runtime queue with our own
    environment key. `cloud` and `self_hosted` differ only in who runs the workers and holds the key.
