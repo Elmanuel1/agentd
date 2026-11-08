@@ -1,13 +1,15 @@
+//! Skill business logic, with the live Skills API rules and messages.
+
 use std::sync::Arc;
 
 use bytes::Bytes;
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
-use crate::{
-    parse_bundle, Skill, SkillId, SkillResource, SkillSource, SkillTag, SkillVersion, SkillVersionId,
-    SkillVersionTag,
-};
-use crate::{SkillVersionsStore, SkillsStore, StoreError};
+use crate::bundle::{parse_bundle, UploadFile};
+use crate::store::{SkillVersionsStore, SkillsStore, StoreError};
+use crate::types::{Skill, SkillId, SkillSource, SkillTag, SkillVersion, SkillVersionId, SkillVersionTag};
+
+mod versions;
 
 /// Skills service.
 pub struct SkillsService {
@@ -22,95 +24,113 @@ impl std::fmt::Debug for SkillsService {
 }
 
 impl SkillsService {
-    /// Build with a store.
+    /// Build with the skill and version stores.
     pub fn new(store: Arc<dyn SkillsStore>, versions: Arc<dyn SkillVersionsStore>) -> Self {
         Self { store, versions }
     }
 
-    /// `POST /v1/skills` — create a custom skill from a zip bundle. An explicit
-    /// `display_title` overrides the frontmatter-derived title.
+    /// `POST /v1/skills`: a custom skill and its first version. The label is
+    /// `display_name` when sent, else the frontmatter `name` (live skills/02).
     pub async fn create(
         &self,
         ctx: &AuthContext,
-        zip_bytes: Bytes,
-        display_title: Option<String>,
+        files: Vec<UploadFile>,
+        display_name: Option<String>,
     ) -> Result<Skill, ApiError> {
-        let bundle = parse_bundle(&zip_bytes)?;
-        let now = Timestamp::now();
-        let version_num = now.as_datetime().timestamp_micros().max(0).to_string();
+        if let Some(name) = &display_name {
+            validate_display_name(name)?;
+        }
         let skill_id = SkillId::generate();
+        let (version, archive) = new_version(skill_id.clone(), files)?;
         let skill = Skill {
             tag: SkillTag::Skill,
-            id: skill_id.clone(),
-            created_at: now,
-            updated_at: now,
-            display_title: display_title.unwrap_or_else(|| bundle.name.clone()),
+            id: skill_id,
+            created_at: version.created_at,
+            updated_at: version.created_at,
+            display_name: display_name.unwrap_or_else(|| version.name.clone()),
             source: SkillSource::Custom,
-            latest_version: version_num.clone(),
+            latest_version: version.version.clone(),
+            latest_version_id: Some(version.id.clone()),
         };
-        let version = SkillVersion {
-            tag: SkillVersionTag::SkillVersion,
-            skill_id,
-            id: SkillVersionId::generate(),
-            version: version_num,
-            directory: bundle.directory,
-            name: bundle.name,
-            description: bundle.description,
-            created_at: now,
-        };
-        self.store.create(&ctx.workspace, skill.clone(), version, zip_bytes).await.map_err(map_store)?;
+        self.store
+            .create(&ctx.workspace, skill.clone(), version, archive)
+            .await
+            .map_err(|e| map_store(e, "", ""))?;
         Ok(skill)
     }
 
-    /// `GET /v1/skills/{id}`.
+    /// `GET /v1/skills/{id}`. Live (skills/44, 45): an unknown or malformed id
+    /// is ``Skill not found: <id>``.
     pub async fn get(&self, ctx: &AuthContext, raw_id: &str) -> Result<Skill, ApiError> {
-        let id = shared::parse_id::<SkillResource>(raw_id)?;
-        self.store.get(&ctx.workspace, &id).await.map_err(map_store)
+        let id = SkillId::parse(raw_id).map_err(|_| map_store(StoreError::SkillNotFound, raw_id, ""))?;
+        self.store.get(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id, ""))
     }
 
-    /// `GET /v1/skills`.
-    pub async fn list(&self, ctx: &AuthContext, page: &Pagination) -> Result<Vec<Skill>, ApiError> {
-        self.store.list(&ctx.workspace, page).await.map_err(map_store)
-    }
-
-    /// `GET /v1/skills/{id}/versions`.
-    pub async fn versions(
+    /// `GET /v1/skills`. agentd has no Anthropic prebuilt skills, so
+    /// `source=anthropic` is an empty list.
+    pub async fn list(
         &self,
         ctx: &AuthContext,
-        raw_id: &str,
+        source: Option<SkillSource>,
         page: &Pagination,
-    ) -> Result<Vec<SkillVersion>, ApiError> {
-        let id = shared::parse_id::<SkillResource>(raw_id)?;
-        self.versions.versions(&ctx.workspace, &id, page).await.map_err(map_store)
-    }
-
-    /// `DELETE /v1/skills/{id}` — remove the skill and all its versions.
-    pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<(), ApiError> {
-        let id = shared::parse_id::<SkillResource>(raw_id)?;
-        self.store.delete_skill(&ctx.workspace, &id).await.map_err(map_store)
-    }
-
-    /// `DELETE /v1/skills/{id}/versions/{version}` — deleting the last version
-    /// removes the skill (matches live).
-    pub async fn delete_version(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-        version: &str,
-    ) -> Result<(), ApiError> {
-        let id = shared::parse_id::<SkillResource>(raw_id)?;
-        let any_left = self.versions.delete_version(&ctx.workspace, &id, version).await.map_err(map_store)?;
-        if !any_left {
-            self.store.delete_skill(&ctx.workspace, &id).await.map_err(map_store)?;
+    ) -> Result<Vec<Skill>, ApiError> {
+        if source == Some(SkillSource::Anthropic) {
+            return Ok(Vec::new());
         }
-        Ok(())
+        self.store.list(&ctx.workspace, page).await.map_err(|e| map_store(e, "", ""))
+    }
+
+    /// `DELETE /v1/skills/{id}`: the skill and every version (live skills/29).
+    pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<(), ApiError> {
+        let skill = self.get(ctx, raw_id).await?;
+        self.store.delete_skill(&ctx.workspace, &skill.id).await.map_err(|e| map_store(e, raw_id, ""))
     }
 }
 
-fn map_store(e: StoreError) -> ApiError {
+pub(super) fn new_version(
+    skill_id: SkillId,
+    files: Vec<UploadFile>,
+) -> Result<(SkillVersion, Bytes), ApiError> {
+    let bundle = parse_bundle(files)?;
+    let now = Timestamp::now();
+    let version = SkillVersion {
+        tag: SkillVersionTag::SkillVersion,
+        skill_id,
+        id: SkillVersionId::generate(),
+        version: now.as_datetime().timestamp_micros().max(0).to_string(),
+        directory: bundle.directory,
+        name: bundle.name,
+        description: bundle.description,
+        created_at: now,
+    };
+    Ok((version, bundle.archive))
+}
+
+/// Live (skills/10, 11).
+fn validate_display_name(name: &str) -> Result<(), ApiError> {
+    if name.chars().count() > 255 {
+        return Err(ApiError::invalid_request("display_name must be at most 255 characters long"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(ApiError::invalid_request(
+            "display_name cannot contain line breaks or control characters",
+        ));
+    }
+    Ok(())
+}
+
+/// Live (skills/26, 44): the not-found messages name the skill, and the
+/// version as it was asked for.
+pub(super) fn map_store(e: StoreError, raw_id: &str, raw_version: &str) -> ApiError {
     match e {
-        StoreError::SkillNotFound => ApiError::not_found("skill not found"),
-        StoreError::VersionNotFound => ApiError::not_found("skill version not found"),
+        StoreError::SkillNotFound => ApiError::not_found(format!("Skill not found: {raw_id}")),
+        StoreError::VersionNotFound => {
+            ApiError::not_found(format!("Skill version not found: {raw_id} version {raw_version}"))
+        }
+        // Live (cleanup/10): the wording of the only-version refusal.
+        StoreError::OnlyVersion => ApiError::invalid_request(
+            "cannot delete a Skill's only version. Delete the Skill, or create another version first",
+        ),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

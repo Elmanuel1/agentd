@@ -53,6 +53,9 @@ impl<T> IdPage<T> {
 pub struct IdCursor {
     /// Exclusive lower bound: items strictly after this id in list order.
     pub after_id: Option<String>,
+    /// The `after_id` item's creation time, when the cursor carries it: the
+    /// bound then holds even after that item is deleted.
+    pub after_created: Option<crate::Timestamp>,
     /// Exclusive upper bound: items strictly before this id in list order.
     pub before_id: Option<String>,
     /// Page size (1..=100).
@@ -64,6 +67,7 @@ impl IdCursor {
     pub fn from_params(params: &HashMap<String, String>) -> Result<Self, ApiError> {
         Ok(Self {
             after_id: params.get("after_id").cloned(),
+            after_created: None,
             before_id: params.get("before_id").cloned(),
             limit: Pagination::from_params(params)?.limit,
         })
