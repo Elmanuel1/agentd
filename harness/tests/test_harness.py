@@ -242,7 +242,7 @@ def test_client_events_a_budget_stop_did_not_reach_run_with_the_next_work(monkey
 
 def test_a_lost_lease_is_left_alone_and_a_stale_beat_recovers(monkeypatch):
     import anthropic
-    import httpx
+    import httpx2 as httpx
     from agentd_harness import __main__ as entry
 
     monkeypatch.setattr(entry.time, "sleep", lambda _s: None)

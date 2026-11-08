@@ -63,6 +63,7 @@ dependencies = [
  "async-trait",
  "aws-common",
  "axum",
+ "base64 0.22.1",
  "blobs-s3",
  "bollard",
  "bytes",

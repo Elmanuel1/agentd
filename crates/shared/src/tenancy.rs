@@ -73,6 +73,14 @@ pub struct AdminContext {
     pub admin_key_id: String,
 }
 
+/// Set by the edge when the caller is a session's own work token (its
+/// `sessions_token`): the harness of that session, inside its sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCaller {
+    /// The session the token was issued for.
+    pub session: String,
+}
+
 impl AuthContext {
     /// Audit actor for mutations performed under this context.
     pub fn actor(&self) -> crate::Actor {

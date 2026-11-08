@@ -40,17 +40,24 @@ fakes in test code, never from configuration ([Security](#security)).
 ## Sandboxes
 
 Each session's agent loop, its harness (`harness/`), runs in the session's
-sandbox. It takes the session's work item with the work token agentd starts
-the sandbox with, mounts the session's files and its agents' skills, and runs
-the agent with harness-sim's mini-swe-agent loop. The agent's tools are the
-official SDK's `agent_toolset` (bash, read, write, edit, glob, grep), run as
-`nobody` in a child process that never sees the work token; each call is its
-own `agent.tool_use` and `agent.tool_result`. A coordinator delegates to its
-roster with `send_to_agent`, each delegation a session thread; outcomes are
-graded by an independent grader thread. The harness reads the session through
-the public API and writes its events, the client events it takes and its
-outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
-token reaches. agentd keeps the API, the event log and the sandbox's
+sandbox. agentd claims the session's work item and starts the sandbox with what
+the official SDK worker's `handle_item` reads: `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID`, `ANTHROPIC_WORK_ID` and
+`ANTHROPIC_WORK_SECRET`, whose sessions token is the harness's only credential.
+No environment key enters a sandbox. The harness mounts the session's files and
+its agents' skills, and runs the agent with harness-sim's mini-swe-agent loop.
+The agent's tools are the official SDK's `agent_toolset` (bash, read, write,
+edit, glob, grep), run as `nobody` in a child process that never sees the
+sessions token; each call is its own `agent.tool_use` and `agent.tool_result`.
+A coordinator delegates to its roster with `send_to_agent`, each delegation a
+session thread; outcomes are graded by an independent grader thread. The
+harness reaches agentd only through the official SDK's public methods. It
+reports the agent's events with `sessions.events.send`, which takes agent, span
+and session events only from that session's own token. It saves outputs with
+`files.upload`, which from a session's token keeps the file as that session's
+output, and it downloads the files the session mounts with `files.download`.
+agentd stamps the session's waiting client events processed when the harness
+next reports an event. agentd keeps the API, the event log and the sandbox's
 lifecycle, and runs no agent loop; the sandbox takes no inbound connection.
 
 A session's `budget` is enforced by the harness. It adds up each model

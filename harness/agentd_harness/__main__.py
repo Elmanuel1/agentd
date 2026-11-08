@@ -1,8 +1,10 @@
-"""The sandbox's first process: take the session's work item, keep its lease, and run the session.
+"""The sandbox's first process: run the session of a work item agentd already claimed, keeping
+its lease, as the official SDK worker's `handle_item` does.
 
-Environment: `AGENTD_API_URL`, `AGENTD_ENVIRONMENT_ID`, `AGENTD_WORK_ID`, `AGENTD_WORK_SECRET`
-(base64url JSON carrying `sessions_token`), `AGENTD_TARGET_ID` (the session), and the egress
-settings agentd starts the sandbox with.
+Environment, as Anthropic's poller hands a claimed item to a fresh process: `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID`, `ANTHROPIC_WORK_ID` and `ANTHROPIC_WORK_SECRET`
+(base64url JSON carrying `sessions_token`, the credential for every call), and the egress settings
+agentd starts the sandbox with. No environment key reaches the sandbox.
 """
 
 import base64
@@ -78,19 +80,13 @@ def on_stop(agentd):
 def main(env=os.environ):
     # First: the sandbox's TLS settings name this bundle, and every HTTP client reads it when built.
     mounts.trust_ca(env.get("AGENTD_EGRESS_CA"))
-    api, environment_id, work_id = env["AGENTD_API_URL"], env["AGENTD_ENVIRONMENT_ID"], env["AGENTD_WORK_ID"]
-    token = sessions_token(env["AGENTD_WORK_SECRET"])
-    client = anthropic.Anthropic(base_url=api, auth_token=token, max_retries=5)
+    environment_id, session_id = env["ANTHROPIC_ENVIRONMENT_ID"], env["ANTHROPIC_SESSION_ID"]
+    work_id = env["ANTHROPIC_WORK_ID"]
+    token = sessions_token(env["ANTHROPIC_WORK_SECRET"])
+    client = anthropic.Anthropic(base_url=env["ANTHROPIC_BASE_URL"], auth_token=token, max_retries=5)
     work = client.beta.environments.work
     # No SDK retries for heartbeats: a lost answer must come back to keep_lease, not become a 412.
     beats = client.with_options(max_retries=0).beta.environments.work
-    while True:
-        try:
-            item = work.ack(work_id, environment_id=environment_id)
-            break
-        except anthropic.APIConnectionError:
-            time.sleep(1)
-    session_id = env.get("AGENTD_TARGET_ID") or item.data.id
     end, done = [], threading.Event()
 
     def ended(how):
@@ -98,7 +94,7 @@ def main(env=os.environ):
         done.set()
 
     threading.Thread(target=keep_lease, args=(beats, work_id, environment_id, ended), daemon=True).start()
-    agentd = Agentd(api, token, session_id)
+    agentd = Agentd(client, session_id)
     signal.signal(signal.SIGTERM, on_stop(agentd))
     runner = threading.Thread(target=SessionRun(agentd, env).serve, daemon=True)
     runner.start()

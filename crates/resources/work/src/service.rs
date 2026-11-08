@@ -51,7 +51,8 @@ impl WorkService {
     }
 
     /// Queue the work of running `session` in `environment_id`; the work and
-    /// its secret. Hosted work is taken by its own sandbox's worker.
+    /// its secret. Hosted work is claimed here, as a poller claims queued work:
+    /// acknowledged, for its own sandbox's worker to heartbeat and stop.
     pub fn issue(
         &self,
         ctx: &AuthContext,
@@ -59,9 +60,13 @@ impl WorkService {
         session: &str,
         hosted: bool,
     ) -> (Work, String) {
+        let state = match hosted {
+            true => WorkState::Starting,
+            false => WorkState::Queued,
+        };
         let work = Work {
             id: WorkId::generate(),
-            acknowledged_at: None,
+            acknowledged_at: hosted.then(Timestamp::now),
             created_at: Timestamp::now(),
             data: WorkData { id: session.to_owned(), tag: WorkDataTag::Session },
             environment_id: environment_id.to_owned(),
@@ -69,7 +74,7 @@ impl WorkService {
             metadata: BTreeMap::new(),
             secret: None,
             started_at: None,
-            state: WorkState::Queued,
+            state,
             stop_requested_at: None,
             stopped_at: None,
             tag: WorkTag::Work,

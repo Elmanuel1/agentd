@@ -10,7 +10,8 @@ use axum::middleware::Next;
 use axum::response::Response;
 use shared::ports::keys::{AdminKeySource, KeySource};
 use shared::{
-    current_request_id, wire_response, with_writer, ApiError, AuthContext, OrgId, WorkspaceId, Writer,
+    current_request_id, wire_response, with_writer, ApiError, AuthContext, OrgId, SessionCaller, WorkspaceId,
+    Writer,
 };
 use work::{WorkClaims, WorkScope, WorkTokens};
 
@@ -32,20 +33,24 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
-/// The routes a work token reaches: its own work item's, its own session's
-/// (read, and the harness routes), and reads of the workspace's files and
-/// skills, which the harness mounts. Nothing else.
+/// The routes a work token reaches: its own work item's; its own session's
+/// reads, and its events, where it sends the agent's side; reads of the
+/// workspace's files and skills, which the harness mounts; and the files
+/// routes the harness saves its outputs through. Nothing else.
 fn work_route(method: &Method, path: &str, claims: &WorkClaims) -> bool {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     let read = method == Method::GET;
     match parts.as_slice() {
         ["v1", "environments", _, "work", work, ..] => *work == claims.work,
-        ["v1", "sessions", session] | ["v1", "sessions", session, "events"] => {
+        ["v1", "sessions", session] | ["v1", "sessions", session, "events", "stream"] => {
             read && *session == claims.session
         }
-        ["v1", "sessions", session, "events", "stream"] => read && *session == claims.session,
-        ["v1", "sessions", session, "harness", ..] => *session == claims.session,
-        ["v1", "files", _] | ["v1", "files", _, "content"] => read,
+        ["v1", "sessions", session, "events"] => {
+            (read || method == Method::POST) && *session == claims.session
+        }
+        ["v1", "files"] => method == Method::POST,
+        ["v1", "files", _] => read || method == Method::DELETE,
+        ["v1", "files", _, "content"] => read,
         ["v1", "skills", ..] => read,
         _ => false,
     }
@@ -86,6 +91,7 @@ pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next
             api_key_id: format!("work:{}", claims.work),
         };
         let session = claims.session.clone();
+        req.extensions_mut().insert(SessionCaller { session: session.clone() });
         req.extensions_mut().insert(WorkScope(claims));
         (ctx, session)
     } else {
@@ -171,13 +177,18 @@ mod tests {
         assert!(!work_route(&get, "/v1/environments/env_1/work/poll", &claims));
         assert!(work_route(&get, "/v1/sessions/sesn_1", &claims));
         assert!(work_route(&get, "/v1/sessions/sesn_1/events/stream", &claims));
-        assert!(work_route(&post, "/v1/sessions/sesn_1/harness/events", &claims));
-        assert!(!work_route(&post, "/v1/sessions/sesn_1/events", &claims));
+        assert!(work_route(&get, "/v1/sessions/sesn_1/events", &claims));
+        assert!(work_route(&post, "/v1/sessions/sesn_1/events", &claims));
+        assert!(!work_route(&post, "/v1/sessions/sesn_2/events", &claims));
+        assert!(!work_route(&post, "/v1/sessions/sesn_1", &claims));
+        assert!(!work_route(&post, "/v1/sessions/sesn_1/harness/events", &claims));
         assert!(!work_route(&del, "/v1/sessions/sesn_1", &claims));
         assert!(!work_route(&get, "/v1/sessions/sesn_2/events", &claims));
-        assert!(!work_route(&post, "/v1/sessions/sesn_2/harness/events", &claims));
         assert!(work_route(&get, "/v1/files/file_1/content", &claims));
-        assert!(!work_route(&del, "/v1/files/file_1", &claims));
+        assert!(work_route(&post, "/v1/files", &claims));
+        assert!(work_route(&del, "/v1/files/file_1", &claims));
+        assert!(!work_route(&get, "/v1/files", &claims));
+        assert!(!work_route(&del, "/v1/files/file_1/content", &claims));
         assert!(work_route(&get, "/v1/skills/skill_1/versions/1", &claims));
         assert!(!work_route(&get, "/v1/agents", &claims));
         assert!(!work_route(&get, "/v1/sessions", &claims));

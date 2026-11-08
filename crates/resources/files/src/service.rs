@@ -7,7 +7,8 @@ use shared::limits::required;
 use shared::{ApiError, AuthContext, IdCursor, Timestamp};
 
 use crate::store::{FilesStore, StoreError, StoredFile};
-use crate::types::{FileId, FileMetadata, FileScope, FileTag};
+use crate::types::{FileId, FileMetadata, FileTag};
+use crate::SessionFiles;
 
 /// `expires_in_seconds` bounds (live files/10).
 const EXPIRES_MIN: i64 = 3600;
@@ -25,6 +26,7 @@ pub struct FileFilter {
 /// Files service.
 pub struct FilesService {
     store: Arc<dyn FilesStore>,
+    pub(crate) sessions: Arc<dyn SessionFiles>,
 }
 
 impl std::fmt::Debug for FilesService {
@@ -34,9 +36,9 @@ impl std::fmt::Debug for FilesService {
 }
 
 impl FilesService {
-    /// Build with a store.
-    pub fn new(store: Arc<dyn FilesStore>) -> Self {
-        Self { store }
+    /// Build with a store, asking `sessions` which files a session reads.
+    pub fn new(store: Arc<dyn FilesStore>, sessions: Arc<dyn SessionFiles>) -> Self {
+        Self { store, sessions }
     }
 
     /// `POST /v1/files` (multipart). The filename keeps its last path
@@ -50,8 +52,7 @@ impl FilesService {
         scope_id: Option<String>,
         expires_in_seconds: Option<String>,
     ) -> Result<FileMetadata, ApiError> {
-        let filename = required("file", filename)?;
-        let filename = filename.rsplit(['/', '\\']).next().unwrap_or_default().to_owned();
+        let filename = file_name(filename)?;
         let created_at = Timestamp::now();
         let expires_at = match expires_in_seconds {
             None => None,
@@ -78,7 +79,7 @@ impl FilesService {
         self.insert(ctx, meta, bytes, scope_id).await
     }
 
-    async fn insert(
+    pub(crate) async fn insert(
         &self,
         ctx: &AuthContext,
         meta: FileMetadata,
@@ -90,35 +91,6 @@ impl FilesService {
             .await
             .map_err(|e| map_store(e, meta.id.as_str()))?;
         Ok(meta)
-    }
-
-    /// Keep a file a session wrote to `/mnt/session/outputs/`: scoped to the
-    /// session and downloadable, as live serves outputs.
-    pub async fn save_output(
-        &self,
-        ctx: &AuthContext,
-        session_id: &str,
-        filename: &str,
-        bytes: Bytes,
-    ) -> Result<FileMetadata, ApiError> {
-        let mime = match filename.rsplit_once('.').map(|(_, ext)| ext) {
-            Some("json") => "application/json",
-            Some("txt" | "md" | "csv") => "text/plain",
-            Some("pdf") => "application/pdf",
-            _ => "application/octet-stream",
-        };
-        let meta = FileMetadata {
-            created_at: Timestamp::now(),
-            downloadable: true,
-            expires_at: None,
-            filename: filename.to_owned(),
-            id: FileId::generate(),
-            mime_type: mime.into(),
-            size_bytes: bytes.len() as u64,
-            tag: FileTag::File,
-            scope: Some(FileScope::Session { id: session_id.to_owned() }),
-        };
-        self.insert(ctx, meta, bytes, Some(session_id.to_owned())).await
     }
 
     /// `GET /v1/files/{id}`; an expired file is not found.
@@ -141,14 +113,7 @@ impl FilesService {
         Ok((file.meta, self.bytes(ctx, raw_id).await?))
     }
 
-    /// A file's bytes whether or not the API lets them be downloaded: what a
-    /// session mounts in its sandbox.
-    pub async fn content(&self, ctx: &AuthContext, raw_id: &str) -> Result<(FileMetadata, Bytes), ApiError> {
-        let file = self.live(ctx, raw_id).await?;
-        Ok((file.meta, self.bytes(ctx, raw_id).await?))
-    }
-
-    async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
+    pub(crate) async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
         let id = parse_id(raw_id)?;
         self.store.content(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))
     }
@@ -172,7 +137,7 @@ impl FilesService {
         self.store.delete(&ctx.workspace, &id).await.map(|f| f.meta).map_err(|e| map_store(e, raw_id))
     }
 
-    async fn live(&self, ctx: &AuthContext, raw_id: &str) -> Result<StoredFile, ApiError> {
+    pub(crate) async fn live(&self, ctx: &AuthContext, raw_id: &str) -> Result<StoredFile, ApiError> {
         let id = parse_id(raw_id)?;
         let file = self.store.get(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))?;
         if file.meta.expired(Timestamp::now()) {
@@ -182,13 +147,19 @@ impl FilesService {
     }
 }
 
+/// The upload's filename, its last path component only (live files/04).
+pub(crate) fn file_name(filename: Option<String>) -> Result<String, ApiError> {
+    let filename = required("file", filename)?;
+    Ok(filename.rsplit(['/', '\\']).next().unwrap_or_default().to_owned())
+}
+
 /// Live (files/31): a malformed id is a 400 naming the prefix.
 fn parse_id(raw: &str) -> Result<FileId, ApiError> {
     FileId::parse(raw).map_err(|_| ApiError::invalid_request("File id must have `file_` prefix."))
 }
 
 /// Live (files/30): ``File `file_…` not found.``
-fn map_store(e: StoreError, raw_id: &str) -> ApiError {
+pub(crate) fn map_store(e: StoreError, raw_id: &str) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found(format!("File `{raw_id}` not found.")),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),

@@ -13,12 +13,21 @@ pub mod types;
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use shared::module::BodyLimit;
-use shared::Module;
+use shared::{ApiError, AuthContext, Module};
 
 mod service;
+mod session;
 
 pub use service::{FileFilter, FilesService};
+
+/// What the files API asks of sessions.
+#[async_trait]
+pub trait SessionFiles: Send + Sync {
+    /// Whether `session` reads `file_id`: a file it mounts, or an outcome's rubric.
+    async fn reads(&self, ctx: &AuthContext, session: &str, file_id: &str) -> Result<bool, ApiError>;
+}
 
 /// The files module: its routes, with the Files API's 500 MB body cap.
 pub fn module(service: Arc<FilesService>) -> Module {

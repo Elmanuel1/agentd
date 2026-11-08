@@ -11,10 +11,25 @@ use async_trait::async_trait;
 use deployments::service::DeploymentDeps;
 use deployments::types::{Deployment, InitialEvent};
 use environments::EnvironmentsService;
+use files::SessionFiles;
 use organizations::workspaces::WorkspaceKeys;
 use sessions::service::SessionDeps;
 use sessions::SessionsService;
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
+
+/// SessionFiles over the real sessions service.
+#[derive(Debug)]
+pub struct RealSessionFiles {
+    /// Sessions service.
+    pub sessions: Arc<SessionsService>,
+}
+
+#[async_trait]
+impl SessionFiles for RealSessionFiles {
+    async fn reads(&self, ctx: &AuthContext, session: &str, file_id: &str) -> Result<bool, ApiError> {
+        self.sessions.reads_file(ctx, session, file_id).await
+    }
+}
 
 /// SessionDeps over the real agents + environments services.
 pub struct RealSessionDeps {

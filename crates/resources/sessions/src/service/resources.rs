@@ -4,12 +4,30 @@
 use shared::{ApiError, AuthContext, Timestamp};
 
 use super::{guard_writable, map_store, parse_id, SessionsService};
+use crate::events::{EventPayload, Rubric, UserEvent};
 use crate::types::{Session, SessionResource, SessionResourceId, SessionResourceInput};
 
 impl SessionsService {
     /// `GET …/resources`.
     pub async fn resources(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vec<SessionResource>, ApiError> {
         Ok(self.get(ctx, raw_id).await?.resources)
+    }
+
+    /// Whether the session reads `file_id`: a file it mounts, or the rubric
+    /// one of its outcomes names.
+    pub async fn reads_file(&self, ctx: &AuthContext, raw_id: &str, file_id: &str) -> Result<bool, ApiError> {
+        let session = self.get(ctx, raw_id).await?;
+        let mounted = session
+            .resources
+            .iter()
+            .any(|r| matches!(r, SessionResource::File { file_id: f, .. } if f == file_id));
+        if mounted {
+            return Ok(true);
+        }
+        let events = self.events.events(&ctx.workspace, &session.id).await.map_err(map_store)?;
+        Ok(events.iter().any(|e| {
+            matches!(&e.payload, EventPayload::User(UserEvent::DefineOutcome { rubric: Rubric::File { file_id: f }, .. }) if f == file_id)
+        }))
     }
 
     /// `POST …/resources`: attach a file.

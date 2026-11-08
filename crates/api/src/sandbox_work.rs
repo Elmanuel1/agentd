@@ -1,6 +1,6 @@
-//! What each session's sandbox starts with: the work item its harness runs,
-//! where the harness reaches agentd, and its egress settings, registered with
-//! the egress service at launch.
+//! What each session's sandbox starts with: the work item agentd claimed for
+//! it, where the harness reaches agentd, and its egress settings, registered
+//! with the egress service at launch.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -85,10 +85,13 @@ impl SandboxWork for WorkIssuer {
         let mut env = self.egress_env(ctx, session, environment).await?;
         let (work, secret) = self.work.issue(ctx, &session.environment_id, session.id.as_str(), true);
         env.extend([
-            ("AGENTD_API_URL".to_owned(), self.api_url.clone()),
-            ("AGENTD_ENVIRONMENT_ID".to_owned(), session.environment_id.clone()),
-            ("AGENTD_WORK_ID".to_owned(), work.id.as_str().to_owned()),
-            ("AGENTD_WORK_SECRET".to_owned(), secret),
+            // What the SDK worker's `handle_item` reads, as Anthropic's poller
+            // hands a claimed item to a fresh process: never an environment key.
+            ("ANTHROPIC_BASE_URL".to_owned(), self.api_url.clone()),
+            ("ANTHROPIC_ENVIRONMENT_ID".to_owned(), session.environment_id.clone()),
+            ("ANTHROPIC_SESSION_ID".to_owned(), session.id.as_str().to_owned()),
+            ("ANTHROPIC_WORK_ID".to_owned(), work.id.as_str().to_owned()),
+            ("ANTHROPIC_WORK_SECRET".to_owned(), secret),
             ("AGENTD_MODEL_BASE_URL".to_owned(), self.model_base_url.clone()),
         ]);
         Ok(env)

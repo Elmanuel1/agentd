@@ -36,6 +36,7 @@ mod threads;
 pub use threads::threads_projection;
 
 pub use events::Subscription;
+pub use record::Reported;
 
 /// Resolution + validation dependencies the sessions service needs from
 /// other entities — a port, so tests fake it and `api` wires it to

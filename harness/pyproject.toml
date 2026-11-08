@@ -3,7 +3,7 @@ name = "agentd-harness"
 version = "0.1.0"
 description = "agentd's session harness: the agent loop of one session, inside its sandbox."
 requires-python = ">=3.11"
-dependencies = ["anthropic==2.3.0", "mini-swe-agent==2.4.6", "httpx", "requests"]
+dependencies = ["anthropic==2.3.0", "mini-swe-agent==2.4.6", "requests"]
 
 [tool.setuptools]
 packages = ["agentd_harness"]

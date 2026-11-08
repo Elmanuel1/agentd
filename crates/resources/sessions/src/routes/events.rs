@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, FromRequest, Path, Request};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -12,12 +12,15 @@ use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use shared::error::DataEnvelope;
 use shared::page::filters::CreatedRange;
-use shared::{ApiJson, AuthContext, ListQuery, ListSpec, Messages, Page, RouteError, UnknownParams};
+use shared::{
+    ApiJson, ApiJsonError, AuthContext, ListQuery, ListSpec, Messages, Page, RouteError, SessionCaller,
+    UnknownParams,
+};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::order;
 use crate::events::{Event, EventPayload, SessionEvent};
-use crate::service::SessionsService;
+use crate::service::{Reported, SessionsService};
 use crate::store::{EventFilter, Order};
 
 /// `POST …/events` body: `{"events":[…]}`.
@@ -27,6 +30,40 @@ pub struct SendEventsBody {
     /// The events to enqueue.
     #[serde(default)]
     pub events: Vec<EventPayload>,
+}
+
+/// `POST …/events` body from a session's own work token: the agent's side
+/// of the session, each event with its thread.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportBody {
+    /// The events to record.
+    #[serde(default)]
+    pub events: Vec<Reported>,
+}
+
+/// What `POST …/events` carries: client events, or, from the session's own
+/// work token (the edge lets a token reach only its own session), the
+/// agent's side of it.
+#[derive(Debug)]
+pub enum SendBody {
+    /// From a client.
+    Client(SendEventsBody),
+    /// From the session's harness.
+    Harness(ReportBody),
+}
+
+impl<S: Send + Sync> FromRequest<S> for SendBody {
+    type Rejection = ApiJsonError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        if req.extensions().get::<SessionCaller>().is_some() {
+            let ApiJson(body) = ApiJson::<ReportBody>::from_request(req, state).await?;
+            return Ok(Self::Harness(body));
+        }
+        let ApiJson(body) = ApiJson::<SendEventsBody>::from_request(req, state).await?;
+        Ok(Self::Client(body))
+    }
 }
 
 /// The events list. Its limit goes to 1000: the SDK session tool runners
@@ -73,9 +110,13 @@ async fn send_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<String>,
-    ApiJson(body): ApiJson<SendEventsBody>,
+    body: SendBody,
 ) -> Result<Response, RouteError> {
-    Ok(Json(DataEnvelope { data: svc.send_events(&ctx, &id, body.events).await? }).into_response())
+    let data = match body {
+        SendBody::Client(body) => svc.send_events(&ctx, &id, body.events).await?,
+        SendBody::Harness(body) => svc.report(&ctx, &id, body.events).await?,
+    };
+    Ok(Json(DataEnvelope { data }).into_response())
 }
 
 /// One SSE frame per event, named by its `type` (both SDKs skip frames with

@@ -18,9 +18,8 @@ use skills::SkillsService;
 use vaults::VaultsService;
 
 use crate::backends::Backends;
-use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealWorkspaceKeys};
+use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealSessionFiles, RealWorkspaceKeys};
 use crate::egress::{EgressAdmin, SessionEgressPolicy};
-use crate::harness::{self, Harness};
 use crate::sandbox_work::WorkIssuer;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
@@ -89,7 +88,10 @@ impl AppState {
             Some(runtime) => sessions.with_sandbox(runtime, issuer),
             None => sessions,
         });
-        let files = Arc::new(FilesService::new(stores.files));
+        let files = Arc::new(FilesService::new(
+            stores.files,
+            Arc::new(RealSessionFiles { sessions: sessions.clone() }),
+        ));
         let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
@@ -105,9 +107,8 @@ impl AppState {
             environments::module(environments),
             vaults::module(Arc::new(VaultsService::new(stores.vaults))),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
-            files::module(files.clone()),
+            files::module(files),
             skills::module(skills),
-            harness::module(Harness { sessions: sessions.clone(), files: files.clone() }),
             sessions::module(sessions),
             deployments::module(deployments),
             work::module(work.clone()),

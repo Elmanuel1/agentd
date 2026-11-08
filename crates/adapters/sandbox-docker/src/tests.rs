@@ -30,13 +30,14 @@ async fn a_container_comes_and_goes() {
         workspace_id: "wrkspc_test".into(),
         environment_id: "env_test".into(),
         environment: json!({"networking": {"type": "limited"}}),
-        // A worker with nowhere to report keeps retrying its ack, so the
+        // A worker with nowhere to report keeps retrying the session, so the
         // container stays up.
         env: BTreeMap::from([
-            ("AGENTD_API_URL".into(), "http://127.0.0.1:9".into()),
-            ("AGENTD_ENVIRONMENT_ID".into(), "env_test".into()),
-            ("AGENTD_WORK_ID".into(), "work_test".into()),
-            ("AGENTD_WORK_SECRET".into(), "eyJzZXNzaW9uc190b2tlbiI6InQifQ".into()),
+            ("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:9".into()),
+            ("ANTHROPIC_ENVIRONMENT_ID".into(), "env_test".into()),
+            ("ANTHROPIC_SESSION_ID".into(), "sesn_test".into()),
+            ("ANTHROPIC_WORK_ID".into(), "work_test".into()),
+            ("ANTHROPIC_WORK_SECRET".into(), "eyJzZXNzaW9uc190b2tlbiI6InQifQ".into()),
         ]),
     };
     let handle = runtime.launch(job).await.unwrap();

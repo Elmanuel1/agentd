@@ -7,27 +7,46 @@ an unprivileged user with a clean environment, so a tool never sees the harness'
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
+from anthropic.lib.tools import ToolError
 from anthropic.lib.tools import agent_toolset as toolset
-from anthropic.lib.tools._tool_dispatch import run_runnable_tool, tool_error_content, tool_result_content
 
 WORKDIR = Path("/workspace")
 ROOTS = [Path("/workspace"), Path("/mnt/session"), Path("/tmp")]
 READ_ONLY = [Path("/mnt/session/uploads")]
+# The API's limit for a text field: the most of an exception's text a result carries.
+FIELD_MAX = 4096
+# A lone surrogate cannot be encoded as UTF-8, so a result holding one could never be sent.
+LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def well_formed(text):
+    return LONE_SURROGATE.sub("\ufffd", text)
+
+
+def text_safe(block):
+    if block.get("type") != "text":
+        return block
+    return {**block, "text": well_formed(block.get("text", ""))}
 
 
 def blocks(content):
-    """Tool output as content blocks, the form `agent.tool_result` carries."""
+    """Tool output as well-formed content blocks, the form `agent.tool_result` carries."""
     if content is None:
         return []
     if isinstance(content, str):
-        return [{"type": "text", "text": content}]
-    out = []
-    for block in content:
-        out.append(block if isinstance(block, dict) else block.model_dump(exclude_none=True))
-    return out
+        content = [{"type": "text", "text": content}]
+    return [text_safe(b if isinstance(b, dict) else b.model_dump(exclude_none=True)) for b in content]
+
+
+def error_content(error):
+    """A failed tool's result: a `ToolError`'s own content, else the exception's repr, cut to the field limit."""
+    if isinstance(error, ToolError):
+        return error.content
+    return well_formed(repr(error))[:FIELD_MAX]
 
 
 async def serve(reader, write, workdir=WORKDIR, roots=ROOTS, read_only=READ_ONLY):
@@ -41,9 +60,9 @@ async def serve(reader, write, workdir=WORKDIR, roots=ROOTS, read_only=READ_ONLY
             try:
                 if tool is None:
                     raise ValueError(f"no tool named {request['name']}")
-                content, is_error = tool_result_content(await run_runnable_tool(tool, request["input"])), False
+                content, is_error = await tool.call(request["input"]), False
             except Exception as e:  # noqa: BLE001 - every failure goes back to the agent as its result
-                content, is_error = tool_error_content(e), True
+                content, is_error = error_content(e), True
             write(json.dumps({"id": request["id"], "content": blocks(content), "is_error": is_error}))
     finally:
         await ctx.__aexit__(None, None, None)

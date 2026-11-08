@@ -1,18 +1,23 @@
-"""Client events, as the harness receives them: it follows the session's stream, takes each
-queued client event from agentd (which stamps it processed), and hands it to whoever waits for
-it: new work for the loop, an answer for a tool call that waits, or an interrupt."""
+"""Client events, as the harness receives them: it follows the session's stream, catches up from
+the session's events each time the stream opens, and hands each client event, once, to whoever
+waits for it: new work for the loop, an answer for a tool call that waits, or an interrupt.
+agentd stamps a client event processed when the harness next reports an event."""
 
 import threading
 import time
 
 import anthropic
-import httpx
+import httpx2
 
 WORK = ("user.message", "user.define_outcome", "system.message")
 
 
 class Interrupted(Exception):
     """The client interrupted the turn."""
+
+
+def is_client(event):
+    return event["type"].startswith(("user.", "system."))
 
 
 class Inbox:
@@ -23,6 +28,9 @@ class Inbox:
         self.answers = {}
         self.interrupted = False
         self.closed = False
+        self.seen = set()
+        # Client events already processed when the harness started: an earlier run's.
+        self.earlier = None
 
     def start(self):
         threading.Thread(target=self._follow, daemon=True).start()
@@ -33,17 +41,17 @@ class Inbox:
         try:
             while True:
                 try:
-                    # A client event sent while no stream was open is taken here.
-                    self.take()
-                    for event in self.agentd.stream():
-                        wait = 1
-                        if event["type"] == "session.deleted":
-                            return
-                        if event["type"].startswith(("user.", "system.")) and not event.get("processed_at"):
-                            self.take()
+                    # Open first, then catch up: an event sent in between is in one or the other.
+                    with self.agentd.stream() as events:
+                        self.catch_up()
+                        for event in events:
+                            wait = 1
+                            if event["type"] == "session.deleted":
+                                return
+                            self.offer(event)
                 except anthropic.NotFoundError:
                     return
-                except (anthropic.APIError, httpx.HTTPError):
+                except (anthropic.APIError, httpx2.HTTPError):
                     pass
                 time.sleep(wait)
                 wait = min(wait * 2, 30)
@@ -52,9 +60,19 @@ class Inbox:
                 self.closed = True
                 self.cond.notify_all()
 
-    def take(self):
-        for event in self.agentd.take():
-            self.deliver(event)
+    def catch_up(self):
+        history = [e for e in self.agentd.history() if is_client(e)]
+        if self.earlier is None:
+            self.earlier = {e["id"] for e in history if e.get("processed_at")}
+        for event in history:
+            self.offer(event)
+
+    def offer(self, event):
+        """Deliver a client event the harness has not had yet."""
+        if not is_client(event) or event["id"] in self.seen or event["id"] in self.earlier:
+            return
+        self.seen.add(event["id"])
+        self.deliver(event)
 
     def deliver(self, event):
         with self.cond:

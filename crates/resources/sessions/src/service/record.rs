@@ -1,11 +1,13 @@
 //! What a session's harness reports, recorded with its effects: a status
 //! event moves the session's status, a model request's usage adds to the
 //! session's usage, a usage snapshot records its list cost, and a grader
-//! verdict updates its outcome evaluations.
+//! verdict updates its outcome evaluations. It reports them on
+//! `POST …/events` with the session's own work token.
 
-use shared::{ApiError, Usage, WorkspaceId};
+use serde::Deserialize;
+use shared::{ApiError, AuthContext, Usage, WorkspaceId};
 
-use super::{HarnessContract, SessionsService};
+use super::{parse_id, HarnessContract, SessionsService};
 use crate::events::{Event, EventPayload, ModelUsage, SessionEvent, SpanEvent};
 use crate::types::{OutcomeEvaluation, SessionId, SessionStatus, ThreadId};
 
@@ -19,7 +21,38 @@ fn usage(u: &ModelUsage) -> Usage {
     }
 }
 
+/// One event a session's harness reports: the wire payload and the thread it
+/// belongs to (the primary thread when absent).
+#[derive(Debug, Deserialize)]
+pub struct Reported {
+    /// The thread the event belongs to.
+    #[serde(default)]
+    pub session_thread_id: Option<ThreadId>,
+    /// The event.
+    #[serde(flatten)]
+    pub payload: EventPayload,
+}
+
 impl SessionsService {
+    /// `POST …/events` from the session's own work token: the client events
+    /// waiting for the agent are stamped processed, since the agent has taken
+    /// them, and then each reported event is recorded.
+    pub async fn report(
+        &self,
+        ctx: &AuthContext,
+        raw_id: &str,
+        events: Vec<Reported>,
+    ) -> Result<Vec<Event>, ApiError> {
+        let session = parse_id(raw_id)?;
+        self.drain_user_events(&ctx.workspace, &session).await?;
+        let mut recorded = Vec::with_capacity(events.len());
+        for e in events {
+            recorded
+                .push(self.record(&ctx.workspace, &session, e.session_thread_id.as_ref(), e.payload).await?);
+        }
+        Ok(recorded)
+    }
+
     /// Record `payload`, which the session's harness sent for `thread` (the
     /// primary thread when `None`). Client events are not the harness's to send.
     pub async fn record(

@@ -15,7 +15,7 @@ use shared::beta::{BetaSet, FILES_API};
 use shared::Timestamp;
 use shared::{
     multipart_error, ApiError, AuthContext, Deleted, IdCursor, IdPage, ListQuery, ListSpec, Messages,
-    RouteError, UnknownParams,
+    RouteError, SessionCaller, UnknownParams,
 };
 
 use crate::types::FileMetadata;
@@ -38,6 +38,9 @@ const BETA_LIST: ListSpec = ListSpec {
     messages: Messages::Files,
 };
 
+/// Set when the caller is a session's own work token.
+type Caller = Option<Extension<SessionCaller>>;
+
 /// Build the files router.
 pub fn router() -> Router {
     Router::new()
@@ -50,6 +53,7 @@ async fn upload(
     Extension(svc): Extension<Arc<FilesService>>,
     Extension(ctx): Extension<AuthContext>,
     Extension(betas): Extension<BetaSet>,
+    caller: Caller,
     multipart: Result<Multipart, MultipartRejection>,
 ) -> Result<Response, RouteError> {
     // Live (files/09): a body that is not multipart has no `file` field.
@@ -69,7 +73,11 @@ async fn upload(
             _ => {}
         }
     }
-    let meta = svc.upload(&ctx, filename, mime, bytes.unwrap_or_default(), scope_id, expires).await?;
+    let bytes = bytes.unwrap_or_default();
+    let meta = match caller {
+        Some(Extension(caller)) => svc.save_output(&ctx, &caller, filename, bytes).await?,
+        None => svc.upload(&ctx, filename, mime, bytes, scope_id, expires).await?,
+    };
     Ok(Json(meta.wire(betas.has(FILES_API))).into_response())
 }
 
@@ -137,17 +145,25 @@ async fn metadata(
 async fn download(
     Extension(svc): Extension<Arc<FilesService>>,
     Extension(ctx): Extension<AuthContext>,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    let (meta, bytes) = svc.download(&ctx, &id).await?;
+    let (meta, bytes) = match caller {
+        Some(Extension(caller)) => svc.download_for(&ctx, &caller, &id).await?,
+        None => svc.download(&ctx, &id).await?,
+    };
     Ok(([(axum::http::header::CONTENT_TYPE, meta.mime_type)], bytes).into_response())
 }
 
 async fn delete(
     Extension(svc): Extension<Arc<FilesService>>,
     Extension(ctx): Extension<AuthContext>,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    let file = svc.delete(&ctx, &id).await?;
+    let file = match caller {
+        Some(Extension(caller)) => svc.delete_output(&ctx, &caller, &id).await?,
+        None => svc.delete(&ctx, &id).await?,
+    };
     Ok(Json(Deleted::new(file.id.as_str(), "file_deleted")).into_response())
 }

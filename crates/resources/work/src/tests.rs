@@ -10,10 +10,11 @@ fn ctx(ws: &str) -> AuthContext {
 }
 
 #[tokio::test]
-async fn a_hosted_work_item_runs_through_ack_heartbeat_and_stop() {
+async fn a_hosted_work_item_is_claimed_at_issue_and_runs_through_heartbeat_and_stop() {
     let svc = WorkService::new(WorkTokens::new(b"k".to_vec()));
     let (work, secret) = svc.issue(&ctx("wrkspc_1"), "env_1", "sesn_1", true);
     assert!(!secret.is_empty());
+    assert!(work.state == WorkState::Starting && work.acknowledged_at.is_some());
     let id = work.id.as_str();
     assert!(svc.poll(&ctx("wrkspc_1"), "env_1", Duration::ZERO).await.is_none(), "hosted work is not polled");
     assert_eq!(svc.ack(&ctx("wrkspc_1"), None, "env_1", id).unwrap().state, WorkState::Starting);
