@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A document's Textract blocks as the citation tools read them: its printed rows, each row's cells
 left to right joined " | ", and the page each falls on."""
+import functools
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,6 @@ from pathlib import Path
 DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
 ROW_TOLERANCE = 0.5
 DEFAULT_LINE_HEIGHT = 0.01
-_PAGE_LINES = {}
 
 
 def normalise(s):
@@ -48,13 +48,12 @@ def rows(blocks):
     return [{"page": r["page"], "cells": [b for _, b in sorted(r["cells"], key=lambda x: x[0])]} for r in built]
 
 
+@functools.cache
 def page_lines(doc_id):
     """Each page as the pipeline reads it: one line per printed row, cells joined " | "."""
-    if doc_id not in _PAGE_LINES:
-        pages = {}
-        for row in rows(load_blocks(doc_id)):
-            text = row_text(row)
-            if text:
-                pages.setdefault(row["page"], []).append(text)
-        _PAGE_LINES[doc_id] = pages
-    return _PAGE_LINES[doc_id]
+    pages = {}
+    for row in rows(load_blocks(doc_id)):
+        text = row_text(row)
+        if text:
+            pages.setdefault(row["page"], []).append(text)
+    return pages
