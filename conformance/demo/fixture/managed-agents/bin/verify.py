@@ -13,15 +13,13 @@ usage:
 """
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import cite  # noqa: E402
+from blocks import normalise, page_lines  # noqa: E402
 
-DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
 SIGNALS = json.loads((Path(__file__).resolve().parent / "signals.json").read_text())
 PAGE_SPAN = 1400
 MAX_SOURCE_CHARS = 3000
@@ -51,14 +49,8 @@ ROW_VERDICTS = {"correct", "unit_mismatch", "quantity_mismatch", "description_mi
 
 def page_texts(doc_id):
     """Row-aware page text, as the pipeline gives Jev: the line blocks that share a row joined by
-    " | " (cite.py rows), so a table row reads whole and its section heading sits above it."""
-    blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
-    pages = {}
-    for row in cite.rows(blocks):
-        text = cite.row_text(row)
-        if text:
-            pages.setdefault(row["page"], []).append(text)
-    return {p: "\n".join(lines) for p, lines in pages.items()}
+    " | " (blocks.py rows), so a table row reads whole and its section heading sits above it."""
+    return {p: "\n".join(lines) for p, lines in page_lines(doc_id).items()}
 
 
 def source_text(pages, page, quote):
@@ -89,19 +81,19 @@ def contained(value, quotes):
     """A scalar value its own quote states as written (numbers compared by digits)."""
     if isinstance(value, bool) or value is None or isinstance(value, (dict, list)):
         return False
-    joined = cite.normalise(" ".join(quotes))
+    joined = normalise(" ".join(quotes))
     if isinstance(value, (int, float)):
         digits = re.sub(r"\D", "", " ".join(quotes))
         whole = str(int(value)) if float(value).is_integer() else str(value).replace(".", "")
         return bool(whole) and whole in digits
-    v = cite.normalise(value)
+    v = normalise(value)
     return len(v) >= 3 and v in joined
 
 
 def row_contained(item, quotes):
-    joined = cite.normalise(" ".join(quotes))
-    item_id, qty = cite.normalise(item.get("item_id") or ""), item.get("quantity")
-    words = [w for w in cite.normalise(item.get("description") or "").split() if len(w) > 2]
+    joined = normalise(" ".join(quotes))
+    item_id, qty = normalise(item.get("item_id") or ""), item.get("quantity")
+    words = [w for w in normalise(item.get("description") or "").split() if len(w) > 2]
     if not item_id or item_id not in joined or not words:
         return False
     if qty is not None and not contained(qty, quotes):
