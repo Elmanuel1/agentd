@@ -11,12 +11,16 @@ use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use shared::{reject_unknown_params, ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
+use shared::page::filters::{bool_param, CreatedRange};
+use shared::{reject_unknown_params, ApiError, ApiJson, AuthContext, Deleted, ListSpec, Page, RouteError};
 
-use crate::service::{MemoriesService, View};
-use crate::types::{CreateMemoryRequest, CreateStoreRequest, UpdateMemoryRequest};
+use crate::service::{MemoriesService, MemoryListQuery, View};
+use crate::store::StoreFilter;
+use crate::types::{CreateMemoryRequest, CreateStoreRequest, UpdateMemoryRequest, UpdateStoreRequest};
 
-fn view_of(params: &HashMap<String, String>, default: View) -> View {
+mod versions;
+
+pub(crate) fn view_of(params: &HashMap<String, String>, default: View) -> View {
     match params.get("view").map(String::as_str) {
         Some("full") => View::Full,
         Some("basic") => View::Basic,
@@ -24,16 +28,16 @@ fn view_of(params: &HashMap<String, String>, default: View) -> View {
     }
 }
 
-/// Memory-store lists read `limit` and `page` only.
-const LIST: ListSpec = ListSpec::managed(&[]);
-/// The memory-versions list.
-const VERSIONS: ListSpec = ListSpec::managed(&["view", "memory_id"]);
+/// The memory-stores list.
+const LIST: ListSpec = ListSpec::managed(&["include_archived", "created_at[gte]", "created_at[lte]"]);
+/// The memories list.
+const MEMORIES: ListSpec = ListSpec::managed(&["path_prefix", "order_by", "depth", "view"]);
 
 /// Build the memory router.
 pub fn router() -> Router {
     Router::new()
         .route("/v1/memory_stores", post(create_store).get(list_stores))
-        .route("/v1/memory_stores/{id}", get(get_store).delete(delete_store))
+        .route("/v1/memory_stores/{id}", get(get_store).post(update_store).delete(delete_store))
         .route("/v1/memory_stores/{id}/archive", post(archive_store))
         .route("/v1/memory_stores/{id}/memories", post(create_memory).get(list_memories))
         // ONLY get/post/delete — PATCH/PUT get 405 + Allow, matching live.
@@ -41,9 +45,7 @@ pub fn router() -> Router {
             "/v1/memory_stores/{id}/memories/{mid}",
             get(get_memory).post(update_memory).delete(delete_memory),
         )
-        .route("/v1/memory_stores/{id}/memory_versions", get(list_versions))
-        .route("/v1/memory_stores/{id}/memory_versions/{vid}", get(get_version))
-        .route("/v1/memory_stores/{id}/memory_versions/{vid}/redact", post(redact_version))
+        .merge(versions::router())
 }
 
 async fn create_store(
@@ -60,7 +62,20 @@ async fn list_stores(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
     let page = LIST.parse(&params)?;
-    Ok(Json(Page::from_fetched(svc.list_stores(&ctx, &page).await?, &page)).into_response())
+    let filter = StoreFilter {
+        include_archived: bool_param(&params, "include_archived")?,
+        created: CreatedRange::from_query(&params)?,
+    };
+    Ok(Json(Page::from_fetched(svc.list_stores(&ctx, &filter, &page).await?, &page)).into_response())
+}
+
+async fn update_store(
+    Extension(svc): Extension<Arc<MemoriesService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<UpdateStoreRequest>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.update_store(&ctx, &id, body).await?).into_response())
 }
 
 async fn get_store(
@@ -103,11 +118,22 @@ async fn list_memories(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, RouteError> {
-    reject_unknown_params(&params, &["path_prefix", "order_by", "depth"])?;
+    let mut page = MEMORIES.parse(&params)?;
+    let view = view_of(&params, View::Basic);
+    if view == View::Full {
+        // Live: with `view=full`, a page holds at most 20 items.
+        page.limit = page.limit.min(20);
+    }
+    let depth = match params.get("depth") {
+        None => 0,
+        Some(d) => d
+            .parse::<u32>()
+            .map_err(|_| ApiError::invalid_request("depth: Input should be a valid integer"))?,
+    };
     let prefix = params.get("path_prefix").map(String::as_str);
     let order_by = params.get("order_by").map(String::as_str);
-    let depth = params.get("depth").and_then(|d| d.parse::<u32>().ok());
-    Ok(Json(svc.list_memories(&ctx, &id, prefix, order_by, depth).await?).into_response())
+    let query = MemoryListQuery { path_prefix: prefix, order_by, depth, view };
+    Ok(Json(svc.list_memories(&ctx, &id, &query, &page).await?).into_response())
 }
 
 async fn get_memory(
@@ -141,32 +167,4 @@ async fn delete_memory(
     let expected = params.get("expected_content_sha256").map(String::as_str);
     let memory = svc.delete_memory(&ctx, &id, &mid, expected).await?;
     Ok(Json(Deleted::new(memory.id.as_str(), "memory_deleted")).into_response())
-}
-
-async fn list_versions(
-    Extension(svc): Extension<Arc<MemoriesService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path(id): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Response, RouteError> {
-    let view = view_of(&params, View::Basic);
-    let memory_id = params.get("memory_id").map(String::as_str);
-    let page = VERSIONS.parse(&params)?;
-    Ok(Json(Page::paginate(svc.list_versions(&ctx, &id, memory_id, view).await?, &page)).into_response())
-}
-
-async fn get_version(
-    Extension(svc): Extension<Arc<MemoriesService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path((id, vid)): Path<(String, String)>,
-) -> Result<Response, RouteError> {
-    Ok(Json(svc.get_version(&ctx, &id, &vid).await?).into_response())
-}
-
-async fn redact_version(
-    Extension(svc): Extension<Arc<MemoriesService>>,
-    Extension(ctx): Extension<AuthContext>,
-    Path((id, vid)): Path<(String, String)>,
-) -> Result<Response, RouteError> {
-    Ok(Json(svc.redact_version(&ctx, &id, &vid).await?).into_response())
 }

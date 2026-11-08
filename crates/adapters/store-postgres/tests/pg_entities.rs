@@ -182,7 +182,20 @@ async fn pg_memory_list_directory_browse_matches_live() {
 
     // depth=1, order_by=path → leaf /a.md + collapsed /notes/ and /rules/,
     // exactly as the live API returns (probed 2026-07-05).
-    let page = svc.list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(1)).await.unwrap();
+    let page = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: Some("/"),
+                order_by: Some("path"),
+                depth: 1,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     let v = serde_json::to_value(&page).unwrap();
     let shapes: Vec<(&str, &str)> = v["data"]
         .as_array()
@@ -195,7 +208,20 @@ async fn pg_memory_list_directory_browse_matches_live() {
     assert!(v["data"][0].get("content").is_none(), "list omits content");
 
     // depth=2 expands one more level, collapsing /notes/sub/.
-    let page2 = svc.list_memories(&ctx, ms.id.as_str(), Some("/"), Some("path"), Some(2)).await.unwrap();
+    let page2 = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: Some("/"),
+                order_by: Some("path"),
+                depth: 2,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     let v2 = serde_json::to_value(&page2).unwrap();
     let shapes2: Vec<(&str, &str)> = v2["data"]
         .as_array()
@@ -214,11 +240,37 @@ async fn pg_memory_list_directory_browse_matches_live() {
     );
 
     // invalid order_by → the exact live 400 message.
-    let err = svc.list_memories(&ctx, ms.id.as_str(), None, Some("bogus"), None).await.unwrap_err();
+    let err = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: None,
+                order_by: Some("bogus"),
+                depth: 0,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap_err();
     assert_eq!(err.message, "order_by must be one of: created_at, path");
 
     // no depth → flat list of all memories (no prefixes).
-    let flat = svc.list_memories(&ctx, ms.id.as_str(), None, None, None).await.unwrap();
+    let flat = svc
+        .list_memories(
+            &ctx,
+            ms.id.as_str(),
+            &memory::service::MemoryListQuery {
+                path_prefix: None,
+                order_by: None,
+                depth: 0,
+                view: memory::service::View::Basic,
+            },
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(flat.data.len(), 4);
 }
 
@@ -301,6 +353,35 @@ async fn pg_sessions_shared_event_log() {
 
     store.delete(&ws, &session.id).await.unwrap();
     assert!(store.get(&ws, &session.id).await.is_err());
+}
+
+#[tokio::test]
+async fn pg_memory_overlapping_paths_written_at_once_admit_one() {
+    if !enabled() {
+        return;
+    }
+    let Some(blobs) = s3("memrace").await else {
+        return;
+    };
+    use memory::MemoriesService;
+    let svc = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(backend().await, blobs))));
+    let ctx = ctx_ws(&uniq_ws("memrace"));
+    let ms = svc.create_store(&ctx, serde_json::from_value(json!({"name": "m"})).unwrap()).await.unwrap();
+    for round in 0..10 {
+        let (dir, file) = (format!("/r{round}"), format!("/r{round}/a.md"));
+        let writes = [dir, file].map(|path| {
+            let (svc, ctx, id) = (svc.clone(), ctx.clone(), ms.id.to_string());
+            tokio::spawn(async move {
+                let req = serde_json::from_value(json!({"path": path, "content": "x"})).unwrap();
+                svc.create_memory(&ctx, &id, req).await
+            })
+        });
+        let mut ok = 0;
+        for w in writes {
+            ok += usize::from(w.await.unwrap().is_ok());
+        }
+        assert_eq!(ok, 1, "round {round}: exactly one of a path and its child is admitted");
+    }
 }
 
 #[tokio::test]

@@ -110,8 +110,8 @@ impl BetaSet {
 /// field "X"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BetaGate {
-    /// The beta that opens the routes.
-    pub beta: &'static str,
+    /// The betas that open the routes (any one of them).
+    pub betas: &'static [&'static str],
     /// The path prefixes it gates.
     pub prefixes: &'static [&'static str],
     /// The body fields the GA schema accepts.
@@ -122,7 +122,13 @@ impl BetaGate {
     /// The Managed Agents gate over `prefixes`.
     #[must_use]
     pub const fn managed(prefixes: &'static [&'static str]) -> Self {
-        Self { beta: MANAGED_AGENTS, prefixes, ga_fields: &["name", "description", "metadata"] }
+        Self { betas: &[MANAGED_AGENTS], prefixes, ga_fields: &["name", "description", "metadata"] }
+    }
+
+    /// Whether `betas` opens the gate.
+    #[must_use]
+    pub fn opened_by(&self, betas: &BetaSet) -> bool {
+        self.betas.iter().any(|b| betas.has(b))
     }
 
     /// Whether the gate covers `path`.

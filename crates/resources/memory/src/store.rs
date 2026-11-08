@@ -13,6 +13,10 @@
 use async_trait::async_trait;
 use shared::{Pagination, WorkspaceId};
 
+mod filters;
+
+pub use filters::{StoreFilter, VersionFilter};
+
 use crate::types::{Memory, MemoryId, MemoryStoreEntity, MemoryStoreId, MemoryVersion, MemoryVersionId};
 
 /// How a reader resolves a memory to a concrete version.
@@ -114,6 +118,7 @@ pub trait MemoryStorePersistence: Send + Sync {
     async fn list_stores(
         &self,
         ws: &WorkspaceId,
+        filter: &StoreFilter,
         page: &Pagination,
     ) -> Result<Vec<MemoryStoreEntity>, StoreError>;
 }
@@ -161,12 +166,14 @@ pub trait MemoryRecordPersistence: Send + Sync {
 /// Persistence port for memory versions.
 #[async_trait]
 pub trait MemoryVersionPersistence: Send + Sync {
-    /// All versions across the store, newest first, optionally filtered.
+    /// One page of the store's versions that pass `filter`, newest first,
+    /// without content.
     async fn list_versions(
         &self,
         ws: &WorkspaceId,
         store: &MemoryStoreId,
-        memory_id: Option<&MemoryId>,
+        filter: &VersionFilter,
+        page: &Pagination,
     ) -> Result<Vec<VersionRecord>, StoreError>;
     /// Fetch one version (searches all memories incl. deleted).
     async fn get_version(

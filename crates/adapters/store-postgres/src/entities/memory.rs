@@ -13,6 +13,7 @@ use shared::WorkspaceId;
 use crate::schema::memory_stores;
 use crate::{diesel_be, pool_be, PgBackend};
 
+mod heads;
 mod memories;
 mod stores;
 mod versions;

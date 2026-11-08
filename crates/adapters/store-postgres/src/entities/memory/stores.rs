@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use memory::store::{MemoryStorePersistence, StoreError};
+use memory::store::{MemoryStorePersistence, StoreError, StoreFilter};
 use memory::types::{MemoryStoreEntity, MemoryStoreId};
 use shared::{Pagination, WorkspaceId};
 
@@ -109,11 +109,21 @@ impl MemoryStorePersistence for PgMemoryStore {
     async fn list_stores(
         &self,
         ws: &WorkspaceId,
+        filter: &StoreFilter,
         page: &Pagination,
     ) -> Result<Vec<MemoryStoreEntity>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = memory_stores::table
-            .filter(memory_stores::workspace_id.eq(ws.as_str()))
+        let mut q = memory_stores::table.filter(memory_stores::workspace_id.eq(ws.as_str())).into_boxed();
+        if !filter.include_archived {
+            q = q.filter(diesel::dsl::sql::<diesel::sql_types::Bool>("doc->>'archived_at' IS NULL"));
+        }
+        if let Some(t) = filter.created.gte {
+            q = q.filter(memory_stores::created_at.ge(t.as_datetime()));
+        }
+        if let Some(t) = filter.created.lte {
+            q = q.filter(memory_stores::created_at.le(t.as_datetime()));
+        }
+        let docs: Vec<serde_json::Value> = q
             .order(memory_stores::created_at.desc())
             .select(memory_stores::doc)
             .limit(page.fetch_limit())
