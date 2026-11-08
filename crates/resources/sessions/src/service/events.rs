@@ -4,7 +4,7 @@ use shared::{ApiError, AuthContext, Timestamp, Usage, WorkspaceId};
 use tokio::sync::broadcast;
 
 use super::{guard_writable, map_store, parse_id, EngineContract, SessionsService};
-use crate::events::{Event, EventPayload, StopReason};
+use crate::events::{Event, EventPayload, SessionEvent, StopReason, UserEvent};
 use crate::types::{OutcomeEvaluation, OutcomeId, SessionId, SessionStatus};
 
 impl SessionsService {
@@ -23,7 +23,7 @@ impl SessionsService {
         }
         // Validate each payload with the live field-path error convention.
         for (i, p) in payloads.iter().enumerate() {
-            if let EventPayload::UserDefineOutcome { max_iterations: Some(n), .. } = p {
+            if let EventPayload::User(UserEvent::DefineOutcome { max_iterations: Some(n), .. }) = p {
                 validate_range_u32(
                     &format!("events.{i}.user_define_outcome.max_iterations"),
                     *n,
@@ -41,14 +41,17 @@ impl SessionsService {
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.
             let p = match p {
-                EventPayload::UserDefineOutcome { description, rubric, max_iterations, outcome_id: _ } => {
-                    EventPayload::UserDefineOutcome {
-                        description,
-                        rubric,
-                        max_iterations,
-                        outcome_id: Some(OutcomeId::generate()),
-                    }
-                }
+                EventPayload::User(UserEvent::DefineOutcome {
+                    description,
+                    rubric,
+                    max_iterations,
+                    outcome_id: _,
+                }) => EventPayload::User(UserEvent::DefineOutcome {
+                    description,
+                    rubric,
+                    max_iterations,
+                    outcome_id: Some(OutcomeId::generate()),
+                }),
                 other => other,
             };
             let ev = Event::new(p);
@@ -122,12 +125,12 @@ impl EngineContract for SessionsService {
         s.updated_at = Timestamp::now();
         self.store.replace(ws, s).await.map_err(map_store)?;
         let payload = match status {
-            SessionStatus::Idle => {
-                EventPayload::SessionStatusIdle { stop_reason: stop_reason.unwrap_or(StopReason::EndTurn {}) }
-            }
-            SessionStatus::Running => EventPayload::SessionStatusRunning {},
-            SessionStatus::Rescheduling => EventPayload::SessionStatusRescheduled {},
-            SessionStatus::Terminated => EventPayload::SessionStatusTerminated {},
+            SessionStatus::Idle => EventPayload::Session(SessionEvent::StatusIdle {
+                stop_reason: stop_reason.unwrap_or(StopReason::EndTurn {}),
+            }),
+            SessionStatus::Running => EventPayload::Session(SessionEvent::StatusRunning {}),
+            SessionStatus::Rescheduling => EventPayload::Session(SessionEvent::StatusRescheduled {}),
+            SessionStatus::Terminated => EventPayload::Session(SessionEvent::StatusTerminated {}),
         };
         self.emit(ws, session, payload).await?;
         Ok(())

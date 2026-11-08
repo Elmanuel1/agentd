@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use agents::types::Tool;
 use agents::AgentSnapshot;
-use sessions::events::{ConfirmationResult, EventId, EventPayload, StopReason};
+use sessions::events::{
+    AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SpanEvent, StopReason, UserEvent,
+};
 use sessions::types::{SessionId, SessionStatus};
 use sessions::EngineContract;
 use shared::{ApiError, ContentBlock, Usage, WorkspaceId};
@@ -66,6 +68,11 @@ impl std::fmt::Debug for TurnRunner {
 }
 
 impl TurnRunner {
+    /// Append an event to this runner's session and broadcast it.
+    async fn emit(&self, payload: impl Into<EventPayload> + Send) -> Result<Event, ApiError> {
+        self.contract.emit(&self.ws, &self.session_id, payload.into()).await
+    }
+
     /// Build a runner for one session.
     pub fn new(
         contract: Arc<dyn EngineContract>,
@@ -96,20 +103,20 @@ impl TurnRunner {
         let mut interrupted = false;
         for ev in &drained {
             match &ev.payload {
-                EventPayload::UserInterrupt {} => interrupted = true,
-                EventPayload::UserMessage { content } => {
+                EventPayload::User(UserEvent::Interrupt {}) => interrupted = true,
+                EventPayload::User(UserEvent::Message { content }) => {
                     self.history.push(ModelMessage { role: "user".into(), content: blocks_to_text(content) });
                 }
-                EventPayload::SystemMessage { content } => {
+                EventPayload::User(UserEvent::SystemMessage { content }) => {
                     self.history.push(ModelMessage {
                         role: "user".into(),
                         content: format!("<system>{}</system>", blocks_to_text(content)),
                     });
                 }
-                EventPayload::UserToolConfirmation { tool_use_id, result, deny_message } => {
+                EventPayload::User(UserEvent::ToolConfirmation { tool_use_id, result, deny_message }) => {
                     self.resolve_confirmation(tool_use_id.clone(), *result, deny_message.clone()).await?;
                 }
-                EventPayload::UserCustomToolResult { custom_tool_use_id, content, is_error } => {
+                EventPayload::User(UserEvent::CustomToolResult { custom_tool_use_id, content, is_error }) => {
                     self.resolve_custom_result(
                         custom_tool_use_id.clone(),
                         blocks_to_text(content),
@@ -146,10 +153,7 @@ impl TurnRunner {
 
         // 3. The loop.
         for _ in 0..self.max_model_calls {
-            let start = self
-                .contract
-                .emit(&self.ws, &self.session_id, EventPayload::SpanModelRequestStart {})
-                .await?;
+            let start = self.emit(SpanEvent::ModelRequestStart {}).await?;
             let response = self
                 .model
                 .complete(ModelRequest {
@@ -160,17 +164,12 @@ impl TurnRunner {
                 })
                 .await
                 .map_err(|e| ApiError::internal(e.to_string()))?;
-            self.contract
-                .emit(
-                    &self.ws,
-                    &self.session_id,
-                    EventPayload::SpanModelRequestEnd {
-                        model_request_start_id: start.id.clone(),
-                        is_error: false,
-                        model_usage: response.usage.clone(),
-                    },
-                )
-                .await?;
+            self.emit(SpanEvent::ModelRequestEnd {
+                model_request_start_id: start.id.clone(),
+                is_error: false,
+                model_usage: response.usage.clone(),
+            })
+            .await?;
             self.contract
                 .add_usage(
                     &self.ws,
@@ -189,26 +188,12 @@ impl TurnRunner {
                 match output {
                     ModelOutput::Text { text } => {
                         self.history.push(ModelMessage { role: "assistant".into(), content: text.clone() });
-                        self.contract
-                            .emit(
-                                &self.ws,
-                                &self.session_id,
-                                EventPayload::AgentMessage { content: vec![ContentBlock::text(text)] },
-                            )
-                            .await?;
+                        self.emit(AgentEvent::Message { content: vec![ContentBlock::text(text)] }).await?;
                     }
                     ModelOutput::ToolUse { name, input } => match self.policy_for(&name) {
                         ToolDisposition::Custom => {
                             let ev = self
-                                .contract
-                                .emit(
-                                    &self.ws,
-                                    &self.session_id,
-                                    EventPayload::AgentCustomToolUse {
-                                        name: name.clone(),
-                                        input: input.clone(),
-                                    },
-                                )
+                                .emit(AgentEvent::CustomToolUse { name: name.clone(), input: input.clone() })
                                 .await?;
                             self.pending =
                                 Some(PendingTool { event_id: ev.id.clone(), name, input, custom: true });
@@ -216,16 +201,11 @@ impl TurnRunner {
                         }
                         ToolDisposition::Ask => {
                             let ev = self
-                                .contract
-                                .emit(
-                                    &self.ws,
-                                    &self.session_id,
-                                    EventPayload::AgentToolUse {
-                                        name: name.clone(),
-                                        input: input.clone(),
-                                        evaluated_permission: Some("ask".into()),
-                                    },
-                                )
+                                .emit(AgentEvent::ToolUse {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    evaluated_permission: Some("ask".into()),
+                                })
                                 .await?;
                             self.pending =
                                 Some(PendingTool { event_id: ev.id.clone(), name, input, custom: false });
@@ -233,29 +213,19 @@ impl TurnRunner {
                         }
                         ToolDisposition::Allow => {
                             let ev = self
-                                .contract
-                                .emit(
-                                    &self.ws,
-                                    &self.session_id,
-                                    EventPayload::AgentToolUse {
-                                        name: name.clone(),
-                                        input: input.clone(),
-                                        evaluated_permission: Some("allow".into()),
-                                    },
-                                )
+                                .emit(AgentEvent::ToolUse {
+                                    name: name.clone(),
+                                    input: input.clone(),
+                                    evaluated_permission: Some("allow".into()),
+                                })
                                 .await?;
                             let outcome = self.tools.execute(&name, &input).await;
-                            self.contract
-                                .emit(
-                                    &self.ws,
-                                    &self.session_id,
-                                    EventPayload::AgentToolResult {
-                                        tool_use_id: ev.id,
-                                        content: vec![ContentBlock::text(outcome.output.clone())],
-                                        is_error: outcome.is_error,
-                                    },
-                                )
-                                .await?;
+                            self.emit(AgentEvent::ToolResult {
+                                tool_use_id: ev.id,
+                                content: vec![ContentBlock::text(outcome.output.clone())],
+                                is_error: outcome.is_error,
+                            })
+                            .await?;
                             self.history.push(ModelMessage {
                                 role: "user".into(),
                                 content: format!(
@@ -310,17 +280,12 @@ impl TurnRunner {
         match result {
             ConfirmationResult::Allow => {
                 let outcome = self.tools.execute(&pending.name, &pending.input).await;
-                self.contract
-                    .emit(
-                        &self.ws,
-                        &self.session_id,
-                        EventPayload::AgentToolResult {
-                            tool_use_id,
-                            content: vec![ContentBlock::text(outcome.output.clone())],
-                            is_error: outcome.is_error,
-                        },
-                    )
-                    .await?;
+                self.emit(AgentEvent::ToolResult {
+                    tool_use_id,
+                    content: vec![ContentBlock::text(outcome.output.clone())],
+                    is_error: outcome.is_error,
+                })
+                .await?;
                 self.history.push(ModelMessage {
                     role: "user".into(),
                     content: format!("[tool_result {}] {}", pending.name, outcome.output),
@@ -332,17 +297,12 @@ impl TurnRunner {
                 // replica reconstructing history from the log would miss it
                 // and feed the model a different conversation. Emit it as an
                 // errored tool_result carrying the deny reason.
-                self.contract
-                    .emit(
-                        &self.ws,
-                        &self.session_id,
-                        EventPayload::AgentToolResult {
-                            tool_use_id,
-                            content: vec![ContentBlock::text(format!("denied: {msg}"))],
-                            is_error: true,
-                        },
-                    )
-                    .await?;
+                self.emit(AgentEvent::ToolResult {
+                    tool_use_id,
+                    content: vec![ContentBlock::text(format!("denied: {msg}"))],
+                    is_error: true,
+                })
+                .await?;
                 self.history.push(ModelMessage {
                     role: "user".into(),
                     content: format!("[tool_denied {}] {msg}", pending.name),
