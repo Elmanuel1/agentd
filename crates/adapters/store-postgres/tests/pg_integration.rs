@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
+use agents::store::AgentFilter;
 use agents::store::AgentsStore;
-use agents::types::{AgentId, AgentTag, ModelSpec, ModelSpeed};
+use agents::types::{AgentConfig, AgentId, AgentTag, ExecutionIdentity, ModelSpec};
 use agents::{Agent, AgentsService};
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use deployments::store::DeploymentsStore;
@@ -43,18 +44,21 @@ fn ctx(ws: &WorkspaceId) -> AuthContext {
 
 fn agent(version: u64, id: AgentId, name: &str) -> Agent {
     Agent {
+        id,
+        config: AgentConfig {
+            name: name.into(),
+            model: ModelSpec::standard("claude-sonnet-4-6"),
+            description: None,
+            system: None,
+            tools: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            multiagent: None,
+            execution_identity: ExecutionIdentity::ServiceAccount,
+        },
         archived_at: None,
         created_at: Timestamp::now(),
-        description: None,
-        id,
-        mcp_servers: vec![],
         metadata: Metadata::new(),
-        model: ModelSpec { id: "claude-sonnet-4-6".into(), speed: ModelSpeed::Standard },
-        multiagent: None,
-        name: name.into(),
-        skills: vec![],
-        system: None,
-        tools: vec![],
         tag: AgentTag::Agent,
         updated_at: Timestamp::now(),
         version,
@@ -80,6 +84,10 @@ async fn pg_agents_versioned_roundtrip() {
     assert_eq!(versions.iter().map(|a| a.version).collect::<Vec<_>>(), vec![1, 2]);
     // workspace isolation
     assert!(store.latest(&uniq_ws("other"), &id).await.is_err());
+    // An archive that read version 1 cannot stamp it once version 2 exists.
+    let stale = store.version(&ws, &id, 1).await.unwrap();
+    assert!(matches!(store.replace_latest(&ws, stale).await, Err(agents::store::StoreError::Conflict)));
+    store.replace_latest(&ws, store.latest(&ws, &id).await.unwrap()).await.unwrap();
 }
 
 #[tokio::test]
@@ -223,10 +231,14 @@ async fn dashboard_queries_are_native_sql() {
     agents.insert(&ws, agent(1, AgentId::generate(), "report-bot")).await.unwrap();
 
     let listed = agents
-        .list(&ws, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+        .list(
+            &ws,
+            &AgentFilter::default(),
+            &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(listed.len(), 3, "DISTINCT ON returns latest of each agent");
+    assert_eq!(listed.len(), 3, "the list returns the latest of each agent");
     assert!(listed.iter().any(|a| a.id == a1 && a.version == 2));
 
     // Deployments with mixed status → count + status filter in SQL.

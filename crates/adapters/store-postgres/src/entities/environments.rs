@@ -105,11 +105,19 @@ impl EnvironmentsStore for PgEnvironmentsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn list(&self, org: &OrgId, page: &Pagination) -> Result<Vec<Environment>, StoreError> {
+    async fn list(
+        &self,
+        org: &OrgId,
+        include_archived: bool,
+        page: &Pagination,
+    ) -> Result<Vec<Environment>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = environments::table
-            .filter(environments::org_id.eq(org.as_str()))
-            .order(environments::created_at.asc())
+        let mut query = environments::table.filter(environments::org_id.eq(org.as_str())).into_boxed();
+        if !include_archived {
+            query = query.filter(environments::state.eq("active"));
+        }
+        let docs: Vec<serde_json::Value> = query
+            .order((environments::created_at.desc(), environments::environment_id.desc()))
             .select(environments::doc)
             .limit(page.fetch_limit())
             .offset(page.sql_offset())

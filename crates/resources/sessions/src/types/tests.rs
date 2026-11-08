@@ -4,7 +4,9 @@ const SESSION_FIXTURE: &str = include_str!("../../../../../conformance/fixtures/
 
 #[test]
 fn fixture_roundtrip_is_lossless() {
-    let original: serde_json::Value = serde_json::from_str(SESSION_FIXTURE).unwrap();
+    // The July capture predates the agent's `execution_identity`.
+    let mut original: serde_json::Value = serde_json::from_str(SESSION_FIXTURE).unwrap();
+    original["agent"]["execution_identity"] = serde_json::json!({"type": "service_account"});
     let s: Session = serde_json::from_str(SESSION_FIXTURE).unwrap();
     assert_eq!(serde_json::to_value(&s).unwrap(), original);
 }

@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use shared::{Metadata, Timestamp};
 
-use super::{AgentId, AgentTag, McpServer, ModelSpec, Multiagent, SkillRef, Tool};
+use super::{AgentId, AgentTag, ExecutionIdentity, McpServer, ModelSpec, Multiagent, SkillRef, Tool};
 
-/// The canonical agent configuration shared by all three projections.
+/// The canonical agent configuration, written once and flattened into each
+/// projection ([`Agent`], [`AgentSnapshot`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Human name (1–256 chars).
@@ -14,43 +15,33 @@ pub struct AgentConfig {
     pub description: Option<String>,
     /// Optional system prompt (≤100000).
     pub system: Option<String>,
-    /// Tools (≤128).
+    /// Tools (≤256).
     pub tools: Vec<Tool>,
     /// MCP servers (≤20, unique names).
     pub mcp_servers: Vec<McpServer>,
     /// Skills (≤20, unique skill_id).
     pub skills: Vec<SkillRef>,
-    /// Multiagent roster.
+    /// Multiagent configuration.
     pub multiagent: Option<Multiagent>,
+    /// The principal its runs execute as.
+    #[serde(default)]
+    pub execution_identity: ExecutionIdentity,
 }
 
 /// Full wire agent object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agent {
+    /// `agent_…`.
+    pub id: AgentId,
+    /// The configuration.
+    #[serde(flatten)]
+    pub config: AgentConfig,
     /// Archive timestamp (null while active).
     pub archived_at: Option<Timestamp>,
     /// Created.
     pub created_at: Timestamp,
-    /// Description (nullable).
-    pub description: Option<String>,
-    /// `agent_…`.
-    pub id: AgentId,
-    /// Declared MCP servers.
-    pub mcp_servers: Vec<McpServer>,
     /// User metadata.
     pub metadata: Metadata,
-    /// Canonical model.
-    pub model: ModelSpec,
-    /// Multiagent roster.
-    pub multiagent: Option<Multiagent>,
-    /// Name.
-    pub name: String,
-    /// Skills.
-    pub skills: Vec<SkillRef>,
-    /// System prompt (nullable).
-    pub system: Option<String>,
-    /// Tools.
-    pub tools: Vec<Tool>,
     /// Always `"agent"`.
     #[serde(rename = "type")]
     pub tag: AgentTag,
@@ -61,25 +52,18 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// The embedded projection used by sessions/threads (live shape: full
-    /// config + id + version, **no** timestamps/metadata/archived_at).
+    /// The embedded projection used by sessions and threads (live shape:
+    /// config, id and version; no timestamps, metadata or archived_at).
     pub fn snapshot(&self) -> AgentSnapshot {
         AgentSnapshot {
-            description: self.description.clone(),
             id: self.id.clone(),
-            mcp_servers: self.mcp_servers.clone(),
-            model: self.model.clone(),
-            multiagent: self.multiagent.clone(),
-            name: self.name.clone(),
-            skills: self.skills.clone(),
-            system: self.system.clone(),
-            tools: self.tools.clone(),
+            config: self.config.clone(),
             tag: AgentTag::Agent,
             version: self.version,
         }
     }
 
-    /// The compact projection used by deployments.
+    /// The compact projection used by deployments and rosters.
     pub fn reference(&self) -> AgentRef {
         AgentRef { id: self.id.clone(), tag: AgentTag::Agent, version: self.version }
     }
@@ -88,24 +72,11 @@ impl Agent {
 /// Frozen agent config embedded in sessions and threads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSnapshot {
-    /// Description (nullable).
-    pub description: Option<String>,
     /// Agent id.
     pub id: AgentId,
-    /// MCP servers.
-    pub mcp_servers: Vec<McpServer>,
-    /// Model.
-    pub model: ModelSpec,
-    /// Multiagent roster.
-    pub multiagent: Option<Multiagent>,
-    /// Name.
-    pub name: String,
-    /// Skills.
-    pub skills: Vec<SkillRef>,
-    /// System prompt (nullable).
-    pub system: Option<String>,
-    /// Tools.
-    pub tools: Vec<Tool>,
+    /// The configuration.
+    #[serde(flatten)]
+    pub config: AgentConfig,
     /// Always `"agent"`.
     #[serde(rename = "type")]
     pub tag: AgentTag,
