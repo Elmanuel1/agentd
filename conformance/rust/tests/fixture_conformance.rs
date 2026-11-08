@@ -97,12 +97,15 @@ fn fixture(name: &str) -> serde_json::Value {
         other => panic!("unknown fixture {other}"),
     };
     let mut v: serde_json::Value = serde_json::from_str(raw).unwrap();
-    // The July captures predate `execution_identity`, which the current API
-    // serves on every agent (SDK 1.3.0 types it as required).
+    // The July captures predate `execution_identity` and a session's
+    // `budget`, which the current API serves (SDK 1.3.0 types both as required).
     let identity = serde_json::json!({"type": "service_account"});
     match name {
         "agent.create" => v["execution_identity"] = identity,
-        "session.create" => v["agent"]["execution_identity"] = identity,
+        "session.create" => {
+            v["agent"]["execution_identity"] = identity;
+            v["budget"] = serde_json::Value::Null;
+        }
         _ => {}
     }
     v

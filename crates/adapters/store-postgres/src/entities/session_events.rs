@@ -2,15 +2,16 @@
 //! (SSE tails `session_events` by `seq`).
 
 use ::sessions::events::Event;
-use ::sessions::store::{SessionEventLog, StoreError};
+use ::sessions::store::{EventFilter, Order, SessionEventLog, StoreError};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
+use diesel::sql_types::{Array, BigInt, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::WorkspaceId;
+use shared::{Pagination, WorkspaceId};
 
 use crate::schema::{session_events, sessions};
-use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
 /// Postgres-backed session event log (Diesel).
 #[derive(Debug, Clone)]
@@ -41,20 +42,24 @@ impl PgSessionEventLog {
 #[async_trait]
 impl SessionEventLog for PgSessionEventLog {
     async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
-        self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // DB stamps the log time (authoritative ordering is `seq` bigserial).
-        diesel::insert_into(session_events::table)
-            .values((
-                session_events::workspace_id.eq(ws.as_str()),
-                session_events::session_id.eq(id.as_str()),
-                session_events::event_id.eq(event.id.as_str()),
-                session_events::created_at.eq(diesel::dsl::now),
-                session_events::doc.eq(to_doc(&event)?),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(diesel_be)?;
+        // One statement: the event lands only while its session exists, so a
+        // delete that removed the session first leaves no orphan behind.
+        let inserted = diesel::sql_query(
+            "INSERT INTO session_events (workspace_id, session_id, event_id, created_at, doc)
+             SELECT $1, $2, $3, now(), $4
+             WHERE EXISTS (SELECT 1 FROM sessions WHERE workspace_id = $1 AND session_id = $2)",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .bind::<Text, _>(event.id.as_str())
+        .bind::<Jsonb, _>(to_doc(&event)?)
+        .execute(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        if inserted == 0 {
+            return Err(StoreError::NotFound);
+        }
         Ok(())
     }
 
@@ -88,6 +93,44 @@ impl SessionEventLog for PgSessionEventLog {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(parse_doc).collect()
+    }
+
+    async fn events_page(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        filter: &EventFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Event>, StoreError> {
+        self.require_session(ws, id).await?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let p = &filter.processed;
+        let order = if filter.order == Order::Desc { "DESC" } else { "ASC" };
+        let processed = "(doc->>'processed_at')::timestamptz";
+        let rows: Vec<DocRow> = diesel::sql_query(format!(
+            "SELECT doc FROM session_events
+             WHERE workspace_id = $1 AND session_id = $2
+               AND (cardinality($3::text[]) = 0 OR doc->>'type' = ANY($3))
+               AND ($4::timestamptz IS NULL OR {processed} > $4)
+               AND ($5::timestamptz IS NULL OR {processed} >= $5)
+               AND ($6::timestamptz IS NULL OR {processed} < $6)
+               AND ($7::timestamptz IS NULL OR {processed} <= $7)
+             ORDER BY {processed} {order} NULLS LAST, seq {order}
+             LIMIT $8 OFFSET $9"
+        ))
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .bind::<Array<Text>, _>(&filter.types)
+        .bind::<Nullable<Timestamptz>, _>(p.gt.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(p.gte.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(p.lt.map(|t| t.as_datetime()))
+        .bind::<Nullable<Timestamptz>, _>(p.lte.map(|t| t.as_datetime()))
+        .bind::<BigInt, _>(page.fetch_limit())
+        .bind::<BigInt, _>(page.sql_offset())
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        rows.into_iter().map(|r| parse_doc(r.doc)).collect()
     }
 
     async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {

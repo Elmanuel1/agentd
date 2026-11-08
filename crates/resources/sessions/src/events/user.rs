@@ -35,7 +35,21 @@ pub enum UserEvent {
     CustomToolResult {
         /// The `agent.custom_tool_use` event id.
         custom_tool_use_id: EventId,
-        /// Result content.
+        /// Result content (none when left out).
+        #[serde(default)]
+        content: Vec<ContentBlock>,
+        /// Whether the tool failed.
+        #[serde(default)]
+        is_error: bool,
+    },
+    /// Result for a built-in tool the client ran itself (the SDK's session
+    /// tool runner answers `agent.tool_use` with it).
+    #[serde(rename = "user.tool_result")]
+    ToolResult {
+        /// The `agent.tool_use` event id.
+        tool_use_id: EventId,
+        /// Result content (none when left out).
+        #[serde(default)]
         content: Vec<ContentBlock>,
         /// Whether the tool failed.
         #[serde(default)]

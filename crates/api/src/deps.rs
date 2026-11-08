@@ -107,7 +107,7 @@ impl DeploymentDeps for RealDeploymentDeps {
 
     async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError> {
         // Build the session create from the frozen deployment config.
-        let req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
+        let mut req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "agent": {
                 "type": "agent",
                 "id": deployment.agent.id.as_str(),
@@ -118,6 +118,7 @@ impl DeploymentDeps for RealDeploymentDeps {
             "vault_ids": deployment.vault_ids,
         }))
         .map_err(|e| ApiError::internal(e.to_string()))?;
+        req.deployment_id = Some(deployment.id.as_str().to_owned());
         let session = self.sessions.create(ctx, req).await?;
         // Queue the deployment's initial events as the kickoff.
         let payloads: Vec<sessions::events::EventPayload> = deployment

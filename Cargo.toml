@@ -48,6 +48,7 @@ secrets-blob = { path = "crates/adapters/secrets-blob" }
 # external
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_urlencoded = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 chrono-tz = "0.10"
 thiserror = "2"

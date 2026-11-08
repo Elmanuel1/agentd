@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use shared::{Id, Resource};
+use shared::{Id, Resource, Timestamp};
 
 /// Marker for `sesrsc_…` session-resource ids.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +51,12 @@ pub enum SessionResource {
         file_id: String,
         /// Absolute mount path.
         mount_path: String,
+        /// Attached.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created_at: Option<Timestamp>,
+        /// Last changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        updated_at: Option<Timestamp>,
     },
     /// A GitHub repository cloned at startup.
     GithubRepository {
@@ -65,6 +71,12 @@ pub enum SessionResource {
         /// Checkout selector.
         #[serde(skip_serializing_if = "Option::is_none")]
         checkout: Option<Checkout>,
+        /// Attached.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created_at: Option<Timestamp>,
+        /// Last changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        updated_at: Option<Timestamp>,
         // NOTE: authorization_token is accepted on input but NEVER echoed —
         // it is stripped before this type is constructed (see requests).
     },
@@ -117,4 +129,46 @@ pub enum SessionResourceInput {
         /// Instructions.
         instructions: Option<String>,
     },
+}
+
+impl SessionResourceInput {
+    /// The attached resource, with its id, its default mount path and its
+    /// timestamps. A repository's token is dropped here and never stored.
+    pub fn into_resource(self, now: Timestamp) -> SessionResource {
+        let id = Some(SessionResourceId::generate());
+        match self {
+            Self::File { file_id, mount_path } => SessionResource::File {
+                id,
+                mount_path: mount_path.unwrap_or_else(|| format!("/workspace/{file_id}")),
+                file_id,
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+            Self::GithubRepository { url, mount_path, checkout, .. } => SessionResource::GithubRepository {
+                id,
+                mount_path: Some(mount_path.unwrap_or_else(|| {
+                    let repo = url.trim_end_matches('/').rsplit('/').next().unwrap_or_default();
+                    format!("/workspace/{}", repo.trim_end_matches(".git"))
+                })),
+                url,
+                checkout,
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+            Self::MemoryStore { memory_store_id, access, instructions } => {
+                SessionResource::MemoryStore { id, memory_store_id, access, instructions }
+            }
+        }
+    }
+}
+
+impl SessionResource {
+    /// The resource's id (memory stores attached before ids were assigned have none).
+    pub fn id(&self) -> Option<&SessionResourceId> {
+        match self {
+            Self::File { id, .. } | Self::GithubRepository { id, .. } | Self::MemoryStore { id, .. } => {
+                id.as_ref()
+            }
+        }
+    }
 }

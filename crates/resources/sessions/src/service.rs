@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
+use shared::limits::ModelCatalog;
 use shared::{ApiError, AuthContext, Usage, WorkspaceId};
 use tokio::sync::broadcast;
 
@@ -23,8 +24,12 @@ use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus};
 
 use agents::AgentSnapshot;
 
+mod engine;
 mod events;
 mod lifecycle;
+mod resources;
+
+pub use events::Subscription;
 
 /// Resolution + validation dependencies the sessions service needs from
 /// other entities — a port, so tests fake it and `api` wires it to
@@ -75,13 +80,18 @@ pub trait EngineContract: Send + Sync {
     ) -> Result<(), ApiError>;
 }
 
+/// The live fan-out: one broadcast channel per session that has a listener.
+type Channels = Arc<Mutex<HashMap<SessionId, broadcast::Sender<Event>>>>;
+
 /// Sessions service.
 pub struct SessionsService {
     store: Arc<dyn SessionsStore>,
     events: Arc<dyn SessionEventLog>,
     deps: Arc<dyn SessionDeps>,
     /// Live SSE fan-out. Stream has NO replay — reconnect = list + dedupe.
-    channels: Mutex<HashMap<SessionId, broadcast::Sender<Event>>>,
+    channels: Channels,
+    /// The models an `agent_with_overrides` may name.
+    catalog: ModelCatalog,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -91,13 +101,15 @@ impl std::fmt::Debug for SessionsService {
 }
 
 impl SessionsService {
-    /// Build with the session rows, their event log and the dependency port.
+    /// Build with the session rows, their event log, the dependency port and
+    /// the model catalog.
     pub fn new(
         store: Arc<dyn SessionsStore>,
         events: Arc<dyn SessionEventLog>,
         deps: Arc<dyn SessionDeps>,
+        catalog: ModelCatalog,
     ) -> Self {
-        Self { store, events, deps, channels: Mutex::new(HashMap::new()) }
+        Self { store, events, deps, catalog, channels: Channels::default() }
     }
 }
 
@@ -115,6 +127,9 @@ fn parse_id(raw: &str) -> Result<SessionId, ApiError> {
 fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("session not found"),
+        StoreError::Conflict => {
+            ApiError::conflict_invalid_request("the session changed while this request ran; retry it")
+        }
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

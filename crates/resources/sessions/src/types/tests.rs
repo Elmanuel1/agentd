@@ -4,9 +4,10 @@ const SESSION_FIXTURE: &str = include_str!("../../../../../conformance/fixtures/
 
 #[test]
 fn fixture_roundtrip_is_lossless() {
-    // The July capture predates the agent's `execution_identity`.
+    // The July capture predates the agent's `execution_identity` and `budget`.
     let mut original: serde_json::Value = serde_json::from_str(SESSION_FIXTURE).unwrap();
     original["agent"]["execution_identity"] = serde_json::json!({"type": "service_account"});
+    original["budget"] = serde_json::Value::Null;
     let s: Session = serde_json::from_str(SESSION_FIXTURE).unwrap();
     assert_eq!(serde_json::to_value(&s).unwrap(), original);
 }
@@ -31,7 +32,14 @@ fn repo_resource_token_is_never_serialized() {
     // The wire type has no token field at all — constructing it drops it.
     let wire = match input {
         SessionResourceInput::GithubRepository { url, mount_path, checkout, .. } => {
-            SessionResource::GithubRepository { id: None, url, mount_path, checkout }
+            SessionResource::GithubRepository {
+                id: None,
+                url,
+                mount_path,
+                checkout,
+                created_at: None,
+                updated_at: None,
+            }
         }
         _ => panic!("wrong variant"),
     };

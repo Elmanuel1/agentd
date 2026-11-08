@@ -45,6 +45,7 @@ impl AppState {
             stores.sessions,
             stores.session_events,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
+            ModelCatalog::default_catalog(),
         ));
         let deployments = Arc::new(DeploymentsService::new(
             stores.deployments,
