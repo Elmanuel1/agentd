@@ -18,7 +18,9 @@ use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use secrets_blob::BlobSecretStore;
 use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
-use store_postgres::{PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionsStore, PgVaultsStore};
+use store_postgres::{
+    PgBackend, PgEnvironmentsStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgVaultsStore,
+};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -269,9 +271,10 @@ async fn pg_sessions_shared_event_log() {
         return;
     }
     use sessions::events::{Event, EventPayload, UserEvent};
-    use sessions::store::SessionsStore;
+    use sessions::store::{SessionEventLog, SessionsStore};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
+    let log = PgSessionEventLog::new(backend().await);
     let ws = uniq_ws("sessions");
     let session: Session =
         serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
@@ -281,18 +284,18 @@ async fn pg_sessions_shared_event_log() {
 
     let e1 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
     let e2 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-    store.append_event(&ws, &session.id, e1.clone()).await.unwrap();
-    store.append_event(&ws, &session.id, e2.clone()).await.unwrap();
+    log.append_event(&ws, &session.id, e1.clone()).await.unwrap();
+    log.append_event(&ws, &session.id, e2.clone()).await.unwrap();
 
-    let events = store.events(&ws, &session.id).await.unwrap();
+    let events = log.events(&ws, &session.id).await.unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].id, e1.id, "log returns append order (by seq)");
 
     // replace stamps processed_at in place — no new row.
     let mut e1p = e1.clone();
     e1p.processed_at = Some(Timestamp::now());
-    store.replace_event(&ws, &session.id, e1p).await.unwrap();
-    let events = store.events(&ws, &session.id).await.unwrap();
+    log.replace_event(&ws, &session.id, e1p).await.unwrap();
+    let events = log.events(&ws, &session.id).await.unwrap();
     assert_eq!(events.len(), 2);
     assert!(events[0].processed_at.is_some());
 

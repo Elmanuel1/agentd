@@ -55,7 +55,7 @@ impl SessionsService {
                 other => other,
             };
             let ev = Event::new(p);
-            self.store.append_event(&ctx.workspace, &id, ev.clone()).await.map_err(map_store)?;
+            self.events.append_event(&ctx.workspace, &id, ev.clone()).await.map_err(map_store)?;
             self.broadcast(&id, &ev);
             out.push(ev);
         }
@@ -66,7 +66,7 @@ impl SessionsService {
     /// source; the SSE stream has no replay).
     pub async fn list_events(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vec<Event>, ApiError> {
         let id = parse_id(raw_id)?;
-        self.store.events(&ctx.workspace, &id).await.map_err(map_store)
+        self.events.events(&ctx.workspace, &id).await.map_err(map_store)
     }
 
     /// Subscribe to live events (`GET /v1/sessions/{id}/events/stream`).
@@ -104,7 +104,7 @@ impl EngineContract for SessionsService {
         let mut ev = Event::new(payload);
         // Agent-side events are processed by construction.
         ev.processed_at = Some(Timestamp::now());
-        self.store.append_event(ws, session, ev.clone()).await.map_err(map_store)?;
+        self.events.append_event(ws, session, ev.clone()).await.map_err(map_store)?;
         self.broadcast(session, &ev);
         Ok(ev)
     }
@@ -137,12 +137,12 @@ impl EngineContract for SessionsService {
     }
 
     async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError> {
-        let events = self.store.events(ws, session).await.map_err(map_store)?;
+        let events = self.events.events(ws, session).await.map_err(map_store)?;
         let mut drained = Vec::new();
         for mut ev in events {
             if ev.payload.is_user_event() && ev.processed_at.is_none() {
                 ev.processed_at = Some(Timestamp::now());
-                self.store.replace_event(ws, session, ev.clone()).await.map_err(map_store)?;
+                self.events.replace_event(ws, session, ev.clone()).await.map_err(map_store)?;
                 // The processed form is re-broadcast (documented: client
                 // events appear twice — queued then processed).
                 self.broadcast(session, &ev);

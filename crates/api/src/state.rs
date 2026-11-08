@@ -43,6 +43,7 @@ impl AppState {
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let sessions = Arc::new(SessionsService::new(
             stores.sessions,
+            stores.session_events,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
         ));
         let deployments = Arc::new(DeploymentsService::new(
