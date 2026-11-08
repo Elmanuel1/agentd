@@ -125,7 +125,9 @@ agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code):
   none (2026-11-08).
 - agentd serves MCP servers from the loop with the session's vault credentials, read fresh each call (2026-11-08).
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
-  the one departure from live (2026-11-08).
+  a departure from live (2026-11-08).
+- A `cloud` session's environment-variable credentials are not substituted at egress, a departure from live that
+  follows from the egress decision (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
 - Environment keys in their own table (2026-11-08).
 - No endpoint Anthropic does not have (2026-11-06).

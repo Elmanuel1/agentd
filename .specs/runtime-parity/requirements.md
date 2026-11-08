@@ -131,10 +131,14 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | MC-3 | If no credential in the session's vaults matches a server, then the loop shall connect unauthenticated. |
 | MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. |
 | MC-5 | If the loop cannot connect to an MCP server, then the loop shall record `session.error` with `mcp_connection_failed_error` and let the session continue. |
-| MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` on every MCP request, with no cache, so that a rotated, archived or deleted credential applies on the next call. |
-| MC-7 | When an `mcp_oauth` credential's access token has expired and it carries a `refresh` block, the loop shall refresh it at the block's `token_endpoint` and store the new token in its vault. |
+| MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` in every step that uses it, with no cache, so that a rotated, archived or deleted credential applies on the next call. |
+| MC-7 | When an `mcp_oauth` credential's access token has expired and it carries a `refresh` block, the loop shall refresh it at the block's `token_endpoint` and store the new token and its expiry in its vault; when another loop worker has already refreshed it, the loop shall use the stored token instead. |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
+| MC-10 | If the session's environment has `limited` networking with `allow_mcp_servers` false and the server's host is not in `allowed_hosts`, then the loop shall not connect, and shall record `mcp_connection_failed_error` on a session (the session error types have no egress-blocked error) or `mcp_egress_blocked_error` on a deployment run. |
+| MC-11 | If an MCP server's URL resolves to a loopback, private or link-local address, then the loop shall not connect and shall record `mcp_connection_failed_error`. |
+| MC-12 | When an MCP tool call's permission evaluation is `ask`, the loop shall write `agent.mcp_tool_use` and idle the session `requires_action`, call the server only after a `user.tool_confirmation` that allows it, and record an `is_error` `agent.mcp_tool_result` on a deny. |
+| MC-13 | The loop shall connect to each of the agent's MCP servers and list its tools once per step, reading each credential once for that step. |
 | H-5 | If an `mcp_oauth` refresh fails, then the API shall send the `vault_credential.refresh_failed` webhook to the organization's configured endpoints. |
 
 ## 7. Webhooks
@@ -156,10 +160,15 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | A lease with an expiry instead of a held connection or lock | The SRE review of 2026-11-06; Temporal activity timeouts | Followed; a commit checks its claim is still its own. |
 | Fan-out by signal, data from the source of truth | Common pub/sub notify-then-read designs | Followed with Valkey signals and log reads. |
 
-Departures: a session's work token reads its session's mounted files and saves its outputs through the existing
-files endpoints (FO-1, FO-2; decision D24). Live refuses this; Anthropic stages files inside its own `cloud`
-sandboxes. Why: agentd holds no container code (D5) and `agentd-worker` speaks only the public API (D6), so its
-sidecar can stage a session's files only through the files endpoints.
+Departures:
+- A session's work token reads its session's mounted files and saves its outputs through the existing files
+  endpoints (FO-1, FO-2; decision D24). Live refuses this; Anthropic stages files inside its own `cloud` sandboxes.
+  Why: agentd holds no container code (D5) and `agentd-worker` speaks only the public API (D6), so its sidecar can
+  stage a session's files only through the files endpoints.
+- A `cloud` session's `environment_variable` credentials get no placeholder in the sandbox and no substitution at
+  egress, where live's `cloud` sandboxes substitute them. Why: agentd has no part in egress secrets and our
+  `cloud` deployment of `agentd-worker` leaves secret injection off (D25); live itself does not support those
+  credentials with self-hosted sandboxes.
 
 ## Plan of PRs
 
@@ -188,8 +197,8 @@ work already written on local branches.
 | S2 | Loop workers: one step per claim; `AGENTD_ROLE`; model concurrency per workspace (unused) | code | 3 | S-3, S-7, R-1, M-1 | |
 | L6 | Work tokens: answers for open calls only, reads and writes scoped, die with the work | code | 3 | L-9 to L-12 | memory guard (branch `harness-memory-stores`), token scoping tests (PR #44) |
 | FO1 | Workers' file reads and output uploads with the work token | code | 2 | FO-1 to FO-3 | files session paths (PR #44) |
-| MC1 | MCP in the loop: connect, list tools, call, `agent.mcp_tool_*` events, MCP session errors (unused) | code | 4 | MC-1, MC-3 to MC-5, MC-8 | |
-| MC2 | MCP credentials from the session's vaults, read per request; OAuth refresh (unused) | code | 3 | MC-2, MC-6, MC-7, MC-9 | |
+| MC1 | MCP in the loop: connect, list tools, call, permission prompts, networking, `agent.mcp_tool_*` events (unused) | code | 4 | MC-1, MC-5, MC-8, MC-10 to MC-13 | |
+| MC2 | MCP credentials from the session's vaults, read per step; OAuth refresh (unused) | code | 3 | MC-2 to MC-4, MC-6, MC-7, MC-9 | |
 | L7 | Sessions run on agentd's loop; their work is queued and agentd launches nothing (flagged per workspace) | code | 3 | L-2 to L-4, L-8 | branch `self-hosted-work` |
 | Km | `schedules` table | migration | 1 | K-1 | |
 | K1 | Postgres scheduler | code | 3 | K-1, K-2 | |
@@ -278,15 +287,25 @@ are gated by `AGENTD_PG_TESTS`, as today.
   another session's file is refused; a file not mounted in its session is refused; an upload is scoped to its
   session and absent from another session's `files.list(scope_id=...)`; deleting another session's file or a
   mounted input answers 404 (FO-3).
-- **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP, tool listing per server, calls with the
-  step's deadline); the turn treats an MCP tool call like any tool run in the loop: no work item, no worker. The
-  permission evaluation follows the agent's `mcp_toolset` configs. Tests against a scripted MCP server: tools are
-  listed and called with `agent.mcp_tool_use` and `agent.mcp_tool_result`; an unreachable server records
+- **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP). Each step connects to each of the
+  agent's servers and lists its tools (`initialize` and `tools/list`: 2 requests per server per step, MC-13); calls
+  run with the step's deadline. An MCP tool call runs in the loop: no work item, no worker. The permission
+  evaluation follows the agent's `mcp_toolset` configs; an `ask` idles the session as a built-in `always_ask` call
+  does. Before connecting, the loop checks the environment's networking and the resolved address. Tests against a
+  scripted MCP server: tools listed and called, with `agent.mcp_tool_use` (`evaluated_permission` `allow`) and
+  `agent.mcp_tool_result`; no work item is queued for an MCP call; an `always_ask` tool idles `requires_action`,
+  runs after an allow and records an `is_error` result after a deny; a `limited` environment without
+  `allow_mcp_servers` and with the host not listed records `mcp_connection_failed_error` without connecting; a URL
+  resolving to `127.0.0.1` or `169.254.169.254` is refused; an unreachable server records
   `mcp_connection_failed_error` and the session continues.
-- **MC2.** `crates/engine/src/mcp/credentials.rs`: per request, 1 SELECT of the session's vault credentials
-  matching the server URL (by `mcp_server_url`, through the vaults store) and 1 `GetSecretValue` through
-  `SecretStore`; an expired `mcp_oauth` token with a `refresh` block is refreshed at its `token_endpoint` and the
-  new token stored (1 `PutSecretValue`). Tests: the credential comes from the first of the session's vaults that
+- **MC2.** `crates/engine/src/mcp/credentials.rs`: per step and server, 1 SELECT of the session's vault
+  credentials matching the server URL (by `mcp_server_url`, through the vaults store) and 1 `GetSecretValue`
+  through `SecretStore`. An expired `mcp_oauth` token with a `refresh` block is refreshed at its `token_endpoint`
+  through the vaults service's `update_credential`: 1 `UPDATE` of the credential row's `doc` (its public
+  `expires_at`) guarded by the `updated_at` the step read, and 1 `PutSecretValue`; when the guard matches no row,
+  another loop worker refreshed first, and this one re-reads the stored token (1 SELECT, 1 `GetSecretValue`)
+  instead of refreshing. Tests: an expired token is refreshed, stored, its new expiry shown by
+  `credentials.retrieve`, and used on the next call; two workers refreshing at once make one refresh request; the credential comes from the first of the session's vaults that
   holds one; with none, the connection is unauthenticated and a refusing server records
   `mcp_authentication_failed_error`; a rotated secret is used on the next call and an archived credential is not;
   no secret appears in any event, log line or output (a test sink scans them all).
@@ -373,7 +392,7 @@ are gated by `AGENTD_PG_TESTS`, as today.
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
 | Log reads | 500 steps/s × the log size a step reads | measured in the load test; a read replica serves them when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13) | bounded by M-1 |
-| MCP credential reads | 1 `GetSecretValue` per MCP request (MC-6); at one MCP call in ten steps, 50/s | far under Secrets Manager's request quota |
+| MCP per step | per server: `initialize`, `tools/list`, 1 credential SELECT, 1 `GetSecretValue` (MC-13) | at 500 steps/s and one server per agent, 500 secret reads/s: about 1.3×10^9 a month, about $6.5k a month at $0.05 per 10,000 calls; each further server adds the same |
 | Loop workers | steps in flight = 500/s × model latency; each worker runs up to 64 steps at once (a setting) | about 240 workers at a 30 s latency; the autoscaler follows queue depth |
 
 ### Load test plan
@@ -419,7 +438,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | Repo `CLAUDE.md` | Not applicable: agentd has none. |
 | Memory: agentd parity, no SDK of our own, harness in sandbox | PASS: the loop in agentd, workers outside, no agentd-only route. |
 | `grill-me` ledger | PASS: no `ASSUMED` row. |
-| `industry-practice` | PASS: section above; one departure (D24), with its reason. |
+| `industry-practice` | PASS: section above; two departures (D24, D25), each with its reason. |
 | `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`), no `else`, files at most 200 lines. |
 | `review/references/sql-transactions.md` | PASS: statements per operation; no subqueries; claims with `SKIP LOCKED`; a commit checks its claim first. |
 | `review/references/architecture.md`, `system-design.md` | PASS: one path for `cloud` and `self_hosted`; no parallel route. |
