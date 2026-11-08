@@ -64,6 +64,15 @@ pub struct AuthContext {
     pub api_key_id: String,
 }
 
+/// The resolved identity of an admin request: an organization, no workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminContext {
+    /// The organization the admin key belongs to.
+    pub org: OrgId,
+    /// The admin key id (`adminkey_…`).
+    pub admin_key_id: String,
+}
+
 impl AuthContext {
     /// Audit actor for mutations performed under this context.
     pub fn actor(&self) -> crate::Actor {

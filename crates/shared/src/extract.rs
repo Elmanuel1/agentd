@@ -44,6 +44,11 @@ pub async fn with_request_id<F: std::future::Future>(id: RequestId, fut: F) -> F
     REQUEST_ID.scope(id, fut).await
 }
 
+/// The current request's id; outside a request, a fresh one.
+pub fn current_request_id() -> RequestId {
+    REQUEST_ID.try_with(Clone::clone).unwrap_or_else(|_| RequestId::generate())
+}
+
 /// Marks a response that carries no `request-id` header (live: an unknown
 /// route answers with `request_id: null` and no header).
 #[derive(Debug, Clone, Copy)]
@@ -53,8 +58,7 @@ pub struct NoRequestId;
 /// id (routes, extractor rejections, and the edge layers all go through here).
 /// A 4xx other than 408 and 429 carries `x-should-retry: false`, as live does.
 pub fn wire_response(error: &ApiError) -> Response {
-    let rid = REQUEST_ID.try_with(Clone::clone).unwrap_or_else(|_| RequestId::generate());
-    render(error, Some(&rid))
+    render(error, Some(&current_request_id()))
 }
 
 /// The 404 for a path no route serves: `request_id: null`, no `request-id` header.

@@ -38,7 +38,7 @@ struct NewEnvironment {
 #[async_trait]
 impl EnvironmentsStore for PgEnvironmentsStore {
     async fn insert(&self, org: &OrgId, env: Environment) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(environments::table)
             .values(NewEnvironment {
                 org_id: org.as_str().to_owned(),
@@ -68,7 +68,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
     }
 
     async fn replace(&self, org: &OrgId, env: Environment) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc = to_doc(&env)?;
         let affected = diesel::update(
             environments::table
@@ -91,7 +91,7 @@ impl EnvironmentsStore for PgEnvironmentsStore {
 
     async fn delete(&self, org: &OrgId, id: &EnvironmentId) -> Result<Environment, StoreError> {
         // Single round-trip: delete and return the row in one statement.
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = diesel::delete(
             environments::table
                 .filter(environments::org_id.eq(org.as_str()))

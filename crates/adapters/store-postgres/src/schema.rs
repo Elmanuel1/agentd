@@ -4,6 +4,11 @@
 //! jOOQ in the Java stack). Column types map: `text`→Text, `bigint`/`bigserial`
 //! →Int8, `timestamptz`→Timestamptz, `jsonb`→Jsonb, `boolean`→Bool.
 
+mod api_keys_table;
+mod workspaces_table;
+pub use api_keys_table::api_keys;
+pub use workspaces_table::workspaces;
+
 diesel::table! {
     agents (workspace_id, agent_id, version) {
         workspace_id -> Text,

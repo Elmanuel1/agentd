@@ -57,7 +57,7 @@ fn row(ws: &WorkspaceId, a: &Agent) -> Result<NewAgent, StoreError> {
 #[async_trait]
 impl AgentsStore for PgAgentsStore {
     async fn insert(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(agents::table)
             .values(row(ws, &agent)?)
             .execute(&mut conn)
@@ -95,7 +95,7 @@ impl AgentsStore for PgAgentsStore {
     }
 
     async fn append_version(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let exists: Option<i64> = agents::table
             .filter(agents::workspace_id.eq(ws.as_str()))
             .filter(agents::agent_id.eq(agent.id.as_str()))
@@ -119,7 +119,7 @@ impl AgentsStore for PgAgentsStore {
     }
 
     async fn replace_latest(&self, ws: &WorkspaceId, agent: Agent) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc = to_doc(&agent)?;
         let version = i64::try_from(agent.version).map_err(|_| StoreError::NotFound)?;
         // One statement: the row read as latest is updated only while no newer

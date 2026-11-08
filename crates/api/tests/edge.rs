@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::sync::Arc;
-use test_support::StaticKeySource;
+use test_support::{StaticAdminKeys, StaticKeySource};
 
 use api::edge;
 use axum::body::Body;
@@ -16,10 +16,12 @@ use axum::{Json, Router};
 use http_body_util::BodyExt;
 use shared::beta::{BetaGate, BetaSet};
 use shared::module::BodyLimit;
-use shared::{ApiJson, AuthContext, RouteError};
+use shared::{ApiJson, AuthContext, RouteError, Writer};
 use tower::ServiceExt;
 
 const KEY: &str = "sk-edge";
+const ADMIN_KEY: &str = "sk-edge-admin";
+const WORK_KEY: &[u8] = b"edge-work";
 
 async fn echo(
     Extension(ctx): Extension<AuthContext>,
@@ -30,6 +32,11 @@ async fn echo(
     )
 }
 
+async fn writer() -> Json<serde_json::Value> {
+    let writer = Writer::current();
+    Json(serde_json::json!({"actor": writer.actor, "request_id": writer.request_id}))
+}
+
 async fn create(ApiJson(body): ApiJson<serde_json::Value>) -> Result<Response, RouteError> {
     Ok(axum::response::IntoResponse::into_response(Json(body)))
 }
@@ -37,11 +44,20 @@ async fn create(ApiJson(body): ApiJson<serde_json::Value>) -> Result<Response, R
 fn app() -> Router {
     let mut keys = StaticKeySource::default();
     keys.register(KEY, "org_e", "wrkspc_e", "apikey_e");
-    let routes = Router::new().route("/v1/things", get(echo).post(create));
+    let mut admin_keys = StaticAdminKeys::default();
+    admin_keys.register(ADMIN_KEY, "org_e", "adminkey_e");
+    let routes = Router::new()
+        .route("/v1/things", get(echo).post(create))
+        .route("/v1/sessions/{id}", get(writer))
+        .route("/v1/organizations/me", get(writer));
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });
     edge::wrap(
         routes,
-        api::edge::auth::Credentials { keys: Arc::new(keys), work: None },
+        api::edge::auth::Credentials {
+            keys: Arc::new(keys),
+            admin_keys: Arc::new(admin_keys),
+            work: Some(work::WorkTokens::new(WORK_KEY)),
+        },
         Arc::from(vec![BetaGate::managed(&["/v1/things"])]),
         Arc::new(api::telemetry::Metrics::global()),
     )
@@ -95,6 +111,32 @@ async fn auth_errors_match_live_and_carry_the_header_request_id() {
     let bad =
         send(get_req("/v1/things").header("authorization", "Bearer nope").body(Body::empty()).unwrap()).await;
     assert_eq!(bad.body["error"]["message"], "invalid x-api-key");
+}
+
+#[tokio::test]
+async fn a_request_runs_as_its_key_or_work_session_under_its_request_id() {
+    let as_key =
+        send(get_req("/v1/sessions/sesn_1").header("x-api-key", KEY).body(Body::empty()).unwrap()).await;
+    assert_eq!(as_key.status, StatusCode::OK);
+    assert_eq!(as_key.body["actor"], "apikey_e");
+    assert_eq!(as_key.body["request_id"], as_key.headers["request-id"].to_str().unwrap());
+    let claims = work::WorkClaims {
+        work: "work_1".into(),
+        session: "sesn_1".into(),
+        ws: "wrkspc_e".into(),
+        org: "org_e".into(),
+    };
+    let token = work::WorkTokens::new(WORK_KEY).mint(&claims);
+    let as_work =
+        send(get_req("/v1/sessions/sesn_1").header("x-api-key", token).body(Body::empty()).unwrap()).await;
+    assert_eq!(as_work.status, StatusCode::OK);
+    assert_eq!(as_work.body["actor"], "sesn_1");
+    let as_admin =
+        send(get_req("/v1/organizations/me").header("x-api-key", ADMIN_KEY).body(Body::empty()).unwrap())
+            .await;
+    assert_eq!(as_admin.status, StatusCode::OK);
+    assert_eq!(as_admin.body["actor"], "adminkey_e");
+    assert_eq!(as_admin.body["request_id"], as_admin.headers["request-id"].to_str().unwrap());
 }
 
 #[tokio::test]

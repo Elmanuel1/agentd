@@ -2,6 +2,7 @@
 //! `crate::schema`; the wire object lives in each table's `doc` jsonb column).
 
 pub mod agents;
+pub mod api_keys;
 pub mod deployments;
 pub mod dreams;
 pub mod environments;
@@ -12,3 +13,4 @@ pub mod sessions;
 pub mod skill_versions;
 pub mod skills;
 pub mod vaults;
+pub mod workspaces;

@@ -80,7 +80,7 @@ impl SkillVersionsStore for PgSkillVersionsStore {
             "latest_version_id": version.id,
             "updated_at": version.created_at,
         }))?;
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let added = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
                 async move {
@@ -160,7 +160,7 @@ impl SkillVersionsStore for PgSkillVersionsStore {
     }
 
     async fn delete_version(&self, ws: &WorkspaceId, version: &SkillVersion) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let now = to_doc(&shared::Timestamp::now())?;
         let deleted = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
