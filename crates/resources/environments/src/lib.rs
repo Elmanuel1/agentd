@@ -18,13 +18,14 @@ pub mod types;
 
 use std::sync::Arc;
 
+use shared::beta::BetaGate;
 use shared::Module;
 
 pub use service::EnvironmentsService;
 pub use store::EnvironmentsStore;
 pub use types::{Environment, EnvironmentConfig, EnvironmentId};
 
-/// The environments module: its routes.
+/// The environments module: its routes, behind the Managed Agents beta.
 pub fn module(service: Arc<EnvironmentsService>) -> Module {
-    Module::new(routes::router(), service)
+    Module::new(routes::router(), service).with_beta(BetaGate::managed(&["/v1/environments"]))
 }

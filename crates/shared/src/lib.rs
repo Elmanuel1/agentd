@@ -12,7 +12,9 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod actor;
+pub mod beta;
 pub mod content;
+pub mod deleted;
 pub mod error;
 pub mod extract;
 pub mod hash;
@@ -30,12 +32,18 @@ pub mod usage;
 
 pub use actor::Actor;
 pub use content::ContentBlock;
+pub use deleted::Deleted;
 pub use error::{ApiError, BackendError, ErrorType};
-pub use extract::{wire_response, ApiJson, ApiJsonError, RouteError};
+pub use extract::{
+    multipart_error, request_too_large_response, unknown_route_response, wire_response, with_request_id,
+    ApiJson, ApiJsonError, NoRequestId, RouteError,
+};
 pub use id::{parse_id, Id, RequestId, Resource};
 pub use metadata::Metadata;
 pub use module::Module;
-pub use page::{reject_unknown_params, IdCursor, IdPage, Page, Pagination};
+pub use page::{
+    reject_unknown_params, IdCursor, IdPage, ListSpec, Messages, Page, Pagination, UnknownParams,
+};
 pub use scope::Scope;
 pub use tenancy::{AuthContext, OrgId, WorkspaceId};
 pub use time::Timestamp;
