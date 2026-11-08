@@ -21,6 +21,7 @@ from pathlib import Path
 
 import quotes
 from blocks import DOCS, load_blocks, normalise, page_of, row_text, rows
+from runs import Run, shortest_window
 
 MAX_WINDOW = 8
 MAX_EXACT_WINDOW = 40
@@ -61,6 +62,8 @@ class Locator:
                 self.row_runs[-1].append(line)
             else:
                 self.row_runs.append([line])
+        self.runs = [Run(r) for r in self.runs]
+        self.row_runs = [Run(r) for r in self.row_runs]
 
     def locate(self, page, snippet, exact=False):
         needle = normalise(snippet)
@@ -80,22 +83,12 @@ class Locator:
 
     @staticmethod
     def on(runs, page):
-        return [r for r in runs if r[0]["page"] == page]
-
-
-def shortest_window(runs, needle, max_window):
-    for size in range(1, max_window + 1):
-        for run in runs:
-            for i in range(len(run) - size + 1):
-                window = run[i:i + size]
-                if needle in " ".join(l["text"] for l in window):
-                    return window
-    return None
+        return [r for r in runs if r.page == page]
 
 
 def partial_span(runs, needle):
     best = None
-    for run in runs:
+    for run in (r.lines for r in runs):
         start = 0
         for end in range(len(run) + 1):
             inside = end < len(run) and len(run[end]["text"]) >= MIN_PARTIAL_LINE_LEN and run[end]["text"] in needle

@@ -22,7 +22,7 @@ from blocks import load_blocks, page_lines, page_of  # noqa: E402
 
 MIN_CONTENT_LENGTH = 5
 TEXT_BLOCK_TYPES = {
-    "line", "word", "cell", "title", "section_header", "paragraph", "list_item", "header", "footer",
+    "line", "cell", "title", "section_header", "paragraph", "list_item", "header", "footer",
     "key_value", "table", "table_cell", "table_row", "page_header", "page_footer", "page_number",
     "layout_text", "layout_section_header", "layout_header", "layout_footer", "layout_title", "layout_list",
     "layout_key_value", "layout_page_number", "table_title", "table_footer", "merged_cell", "layout_table",
@@ -30,7 +30,7 @@ TEXT_BLOCK_TYPES = {
 
 
 def keep(block):
-    if block.get("type") == "word" or block.get("type") not in TEXT_BLOCK_TYPES:
+    if block.get("type") not in TEXT_BLOCK_TYPES:
         return False
     content = (block.get("content") or "").strip()
     return len(content) >= MIN_CONTENT_LENGTH and sum(c.isalpha() for c in content) >= 2

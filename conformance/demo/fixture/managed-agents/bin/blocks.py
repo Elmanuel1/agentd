@@ -4,6 +4,7 @@ left to right joined " | ", and the page each falls on."""
 import functools
 import json
 import os
+import tempfile
 from pathlib import Path
 
 DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
@@ -26,7 +27,21 @@ def page_of(block):
 
 
 def load_blocks(doc_id):
-    return json.loads((DOCS / doc_id / "blocks.json").read_text())
+    """The document's blocks without Textract's single-word blocks, which no tool reads, kept in a cache
+    file under the temp directory that is named by the document's size and modification time."""
+    source = DOCS / doc_id / "blocks.json"
+    stat = source.stat()
+    cache = Path(tempfile.gettempdir()) / "extraction-blocks" / f"{doc_id}-{stat.st_size}-{int(stat.st_mtime)}.json"
+    try:
+        return json.loads(cache.read_text())
+    except FileNotFoundError:
+        pass
+    blocks = [b for b in json.loads(source.read_text()) if b.get("type") != "word"]
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    part = cache.with_suffix(f".{os.getpid()}.part")
+    part.write_text(json.dumps(blocks))
+    part.replace(cache)
+    return blocks
 
 
 def rows(blocks):
