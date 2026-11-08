@@ -52,21 +52,23 @@ the public API and writes its events, the client events it takes and its
 outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
 token reaches. agentd keeps the API, the event log and the sandbox's
 lifecycle, and runs no agent loop; the sandbox takes no inbound connection.
-agentd stops a sandbox with SIGTERM and a 10 second grace before it removes
-the container; the harness saves the files under `/mnt/session/outputs` that
-changed since its last turn ended, then exits.
 
 A session's `budget` is enforced by the harness. It adds up each model
 request's list cost (OpenRouter's `usage.cost`) across every thread, starting
 from the session's `usage.list_cost`, and reports it to agentd as a
-`session.usage` event. Once the cost reaches `budget.max_list_cost`, or a model
-with no list price ran, the harness starts no further model request and the
-session and its threads go idle with `stop_reason` `budget_reached`. A budget
-change a client makes while the session runs applies at the next request.
+`session.usage` event. When the session has a `budget.max_list_cost`, the
+harness starts no further model request once the cost reaches it or once a
+model with no list price ran, and the session and its threads go idle with
+`stop_reason` `budget_reached`. A session with no budget never stops for cost,
+whether or not its models have a list price. A budget change a client makes
+while the session runs applies at the next request.
 
 agentd stops a sandbox with SIGTERM and a 10 second grace before it removes
-the container. On SIGTERM the harness saves the files under
+the container. On SIGTERM the harness uploads, one at a time, the files under
 `/mnt/session/outputs/` that changed since its last turn ended, then exits.
+Saving is best effort: if an upload fails, the harness stops uploading and
+exits, so the files already uploaded are saved and the rest are lost. Files
+not uploaded when the grace runs out are lost too.
 
 The harness calls the model at an OpenAI-compatible API through the egress
 proxy. The key is an operator credential: `agentd model-key set [--host
@@ -253,8 +255,9 @@ There is no switch that weakens any of these; each is the only behaviour.
 
 ## Scheduled work
 
-A resource that owns scheduled work (deployments, dreams) registers a fire
-handler for its kind. The scheduler delivers each tick to the handler of the
+A resource that owns scheduled work (deployments) registers a fire handler
+for its kind. The dreams module is not assembled, so no dream handler is
+registered. The scheduler delivers each tick to the handler of the
 target's kind, which runs it under the tenant that registered the schedule.
 A tick whose kind has no handler fails and is logged as dropped.
 

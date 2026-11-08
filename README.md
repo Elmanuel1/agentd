@@ -44,8 +44,10 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
 (Temporal/EventBridge/local), `ModelClient` (Anthropic HTTP/rig/mock),
 `BlobStore` (S3), `SecretStore`, `KeySource`, storage traits per entity
 (in-memory/Postgres). The binary picks one backend per port from config at
-boot (`Backends::from_config`), and each resource crate contributes a
-`Module`: its routes and the `FireHandler`s for its scheduled work.
+boot (`Backends::from_config`). A resource crate contributes a `Module`: its
+routes and the `FireHandler`s for its scheduled work. `AppState::build`
+assembles every resource's module except dreams, so the dreams routes are not
+served and its fire handler is not registered.
 
 **The novel layer:** memory versions are immutable with a movable `latest`
 ref (O(1) rollback); dreams propose candidates, a review gate
