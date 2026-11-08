@@ -16,32 +16,21 @@ usage:
 """
 import argparse
 import json
-import os
-import re
 import sys
 from pathlib import Path
 
-DOCS = Path(os.environ.get("EXTRACTION_DOCS", "/mnt/session/uploads/extraction/docs"))
+import quotes
+from blocks import DOCS, load_blocks, normalise, page_of, row_text, rows
+
 MAX_WINDOW = 8
 MAX_EXACT_WINDOW = 40
 MIN_PARTIAL_LINE_LEN = 4
-ROW_TOLERANCE = 0.5
-DEFAULT_LINE_HEIGHT = 0.01
 UNRESOLVED = "__unresolved__"
-
-
-def normalise(s):
-    return " ".join("".join(c.lower() if c.isalnum() else " " for c in s).split())
-
-
-def page_of(block):
-    bbox = block.get("bbox") or {}
-    return bbox.get("page") or bbox.get("original_page")
 
 
 class Locator:
     def __init__(self, doc_id):
-        blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
+        blocks = load_blocks(doc_id)
         self.runs, self.row_runs = [], []
         for b in blocks:
             if b.get("type") != "line" or not b.get("bbox") or b.get("content") is None:
@@ -66,7 +55,7 @@ class Locator:
             if page is not None and run:
                 self.row_runs.append(run)
         for row in rows(blocks):
-            text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
+            text = row_text(row)
             line = {"cells": row["cells"], "page": row["page"], "text": normalise(text)}
             if self.row_runs and self.row_runs[-1][-1]["page"] == row["page"]:
                 self.row_runs[-1].append(line)
@@ -92,25 +81,6 @@ class Locator:
     @staticmethod
     def on(runs, page):
         return [r for r in runs if r[0]["page"] == page]
-
-
-def rows(blocks):
-    placed = []
-    for b in blocks:
-        if b.get("type") != "line" or not (b.get("content") or "").strip() or not b.get("bbox"):
-            continue
-        bbox, page = b["bbox"], page_of(b)
-        if page is None:
-            continue
-        placed.append((page, bbox.get("top") or 0.0, bbox.get("left") or 0.0, bbox.get("height") or DEFAULT_LINE_HEIGHT, b))
-    placed.sort(key=lambda x: (x[0], x[1]))
-    built = []
-    for page, top, left, height, b in placed:
-        if built and built[-1]["page"] == page and top - built[-1]["top"] <= ROW_TOLERANCE * built[-1]["height"]:
-            built[-1]["cells"].append((left, b))
-        else:
-            built.append({"page": page, "top": top, "height": max(height, 1e-12), "cells": [(left, b)]})
-    return [{"page": r["page"], "cells": [b for _, b in sorted(r["cells"], key=lambda x: x[0])]} for r in built]
 
 
 def shortest_window(runs, needle, max_window):
@@ -215,7 +185,7 @@ def check(args):
             moved += 1
         c.update(loc)
         c["document_id"] = doc
-    rows_bad = row_quote_problems(data) + off_page_quotes(citations, args.doc)
+    rows_bad = quotes.row_quote_problems(data) + quotes.off_page_quotes(citations, args.doc)
     if args.write:
         path.write_text(json.dumps(data, indent=1))
     print(json.dumps({"citations": len(citations), "resolved": len(citations) - len(unresolved),
@@ -227,89 +197,6 @@ def check(args):
     if unresolved or rows_bad:
         print("Fix each quote; never delete the value. A quote you cannot find stays, with a review_reason saying so.")
     return 1 if unresolved or rows_bad else 0
-
-
-QUOTE_WINDOW = 8
-_PAGE_LINES = {}
-
-
-def quote_words(text):
-    return [w for w in re.split(r"[^0-9a-zA-Z\u00C0-\uFFFF]+", text.lower()) if w]
-
-
-def page_lines(doc_id):
-    """Each page as the pipeline's checks read it: one line per printed row, cells joined " | "."""
-    if doc_id not in _PAGE_LINES:
-        blocks = json.loads((DOCS / doc_id / "blocks.json").read_text())
-        pages = {}
-        for row in rows(blocks):
-            text = " | ".join(c["content"].strip() for c in row["cells"] if (c.get("content") or "").strip())
-            if text:
-                pages.setdefault(row["page"], []).append(text)
-        _PAGE_LINES[doc_id] = pages
-    return _PAGE_LINES[doc_id]
-
-
-def quote_on_page(lines, quote):
-    """The pipeline's rule (score.rs quote_on_page): the quote's words in order within a few consecutive
-    lines; a quote of a table row (with " | ") holds when all its words fall within those lines."""
-    words = quote_words(quote)
-    if not words:
-        return False
-    if len(words) < 3:
-        flat = " ".join(" ".join(lines).replace("|", " ").split()).lower()
-        return " ".join(quote.replace("|", " ").split()).lower() in flat
-    line_words = [quote_words(l) for l in lines]
-    for start in range(len(line_words)):
-        nxt = 0
-        for lw in line_words[start:start + QUOTE_WINDOW]:
-            for w in lw:
-                if nxt < len(words) and w == words[nxt]:
-                    nxt += 1
-            if nxt == len(words):
-                return True
-    if "|" in quote:
-        for start in range(len(line_words)):
-            window = {w for lw in line_words[start:start + QUOTE_WINDOW] for w in lw}
-            if all(w in window for w in words):
-                return True
-    return False
-
-
-def off_page_quotes(citations, doc):
-    """Citations the pipeline's check would not find on their page: reworded, reordered, or rebuilt from
-    several printed lines."""
-    bad = []
-    for where, c in citations:
-        d = c.get("document_id") or doc
-        snippet = c.get("text_snippet")
-        if not snippet or not d or not (DOCS / d / "blocks.json").exists():
-            continue
-        lines = page_lines(d).get(c.get("page_number"), [])
-        if not quote_on_page(lines, snippet):
-            bad.append((where, snippet, "not on its page as printed: copy the words in the page's order; quote a table "
-                                        "row as one line of pages.py --rows"))
-    return bad
-
-
-def row_quote_problems(data):
-    """A schedule line is cited by its whole printed row: its own mark (the item number, or a
-    sub-row's first cell) and the row's cells joined by " | ", as pages.py --rows prints it."""
-    bad = []
-    for g, group in enumerate(data.get("vendor_groups") or []):
-        for i, item in enumerate(group.get("items") or []):
-            cites = item.get("citations") or []
-            snippet = (cites[0].get("text_snippet") or "") if cites else ""
-            where = f"vendor_groups[{g}].items[{i}]"
-            item_id = (item.get("item_id") or "").strip()
-            if not cites or not item_id:
-                continue
-            own = item_id.split(" ", 1)[1] if " " in item_id else item_id
-            if snippet.count("|") < 2:
-                bad.append((where, snippet, "quote the whole row from pages.py --rows, cells joined by ' | '"))
-            elif normalise(own) not in normalise(snippet) and normalise(item_id) not in normalise(snippet):
-                bad.append((where, snippet, f"the row quote does not include the line's own mark {own!r}"))
-    return bad
 
 
 def main():
