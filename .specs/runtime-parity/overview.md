@@ -63,7 +63,7 @@ sequenceDiagram
 - **Durable Object**: Cloudflare's per-name server object; each session's container has one, addressed by the
   session id, which starts the container, stages its files and runs the swap.
 - **Compaction**: keeping a long conversation inside the model's window. First old tool results are cleared from the
-  prompt; later the conversation is summarised into a checkpoint. The event log itself is never cut.
+  prompt; later the conversation is summarised into a checkpoint. Compaction deletes no event.
 - **`cloud` and `self_hosted`**: the two kinds of environment. A `self_hosted` environment's workers run on the
   customer's machines; a `cloud` environment's workers run on ours. agentd treats both the same way.
 

@@ -83,7 +83,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s. |
 | F-5 | While Postgres is overloaded (a connection waits more than 1 s for the pool, or the database's connections pass 90% of `max_connections`), the API shall refuse a new event stream with 529 `overloaded_error` "Overloaded" and keep the streams already open. |
 | E-2 | Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
-| E-4 | When a session is deleted, the API shall delete its events in the same commit. |
+| E-4 | When a session is deleted, the API shall delete its events through the event-log port after the session row, so that no event outlives its session. |
 | E-3 | Where a read replica is configured (`AGENTD_PG_READ_URL`), the API shall serve `events.list` from it; steps, streams and every write read the primary. |
 
 ## 3. Steps and the loop
@@ -172,7 +172,8 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-14 | When an MCP connection has failed, the loop shall not retry it in the same turn, and shall retry it on the session's next `session.status_idle` to `session.status_running` transition (B18). |
 | MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` once in each step that connects to its server or calls one of its tools, with no cache across steps, so that a rotated, archived or deleted credential applies from the next step (D27, D32). |
 | MC-7 | When an `mcp_oauth` credential's access token has expired and it carries a `refresh` block, the loop shall claim the refresh with one guarded UPDATE of the credential row (matching the `updated_at` it read, and only when that is more than 30 s old), then call the block's `token_endpoint`, then store the new token with `PutSecretValue`, then record the new expiry in the row. |
-| MC-20 | If the credential's `updated_at` is less than 30 s old, or the loop's refresh claim matches no row, then the loop shall re-read the credential's row and secret and use the stored token when it has not expired, and otherwise end its step and run it again 1 s later. |
+| MC-20 | If an expired token's credential row has `updated_at` less than 30 s old, then the loop shall end its step and run it again 1 s later, with no further read. |
+| MC-23 | If the loop's refresh claim matches no row, then the loop shall re-read the credential's row and secret and use the stored token when it has not expired, and otherwise end its step and run it again 1 s later. |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -183,7 +184,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, when the credential's `updated_at` differs from the one the connection was made with, and on the session's idle-to-running transition. |
 | MC-16 | When a server sends `notifications/tools/list_changed` in a response, or the loop reconnects, the loop shall list the server's tools again and store the new list. |
 | MC-17 | The loop shall never use one session's `mcp_connections` row for another session or workspace. |
-| MC-22 | When a session is deleted, the API shall delete its `mcp_connections` rows in the same commit. |
+| MC-22 | When a session is deleted, the API shall delete its `mcp_connections` rows in the commit that deletes the session row. |
 | MC-18 | When a deployment fires, the API shall check each MCP server host of the deployment's agent against the environment's networking as MC-10 does, before it creates the session. |
 | MC-19 | If a deployment fire's MCP host check fails, then the API shall create no session, record the run with `mcp_egress_blocked_error`, and pause the deployment with `paused_reason` `{"type": "error", "error": {"type": "mcp_egress_blocked_error", ...}}` (B22). |
 | H-5 | If an `mcp_oauth` refresh fails, then the API shall send the `vault_credential.refresh_failed` webhook to the organization's configured endpoints. |
@@ -257,7 +258,7 @@ The Cloudflare launcher (our `cloud`, D38):
 | CF-9 | The launcher shall keep the environment key outside the container: the container receives only the item's `ANTHROPIC_WORK_ID`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID` and `ANTHROPIC_WORK_SECRET` (whose `sessions_token` `handle_item()` uses, A1) and the placeholders. |
 | CF-11 | The launcher shall read an environment's networking with the runtime key (W-22), cache it for `networking_cache_seconds` (default 60), and apply the cached value when a container starts; a running container keeps the networking it started with (B26). |
 | CF-12 | If the launcher cannot read an environment's networking, then it shall start no container and stop the work item with `work.stop`, so no sandbox ever starts unrestricted. |
-| CF-10 | If the Durable Object cannot read the egress key, so that no placeholder can be checked, then the Durable Object shall refuse every outbound request but those to the `api_base_url` host (fail closed), never allow them unrestricted. |
+| CF-10 | If the Durable Object cannot read the egress key, then it shall refuse every request that carries a placeholder (fail closed) and pass the others under CF-2's networking. |
 | CF-3 | The session's Durable Object shall stage the session's mounted files into the container from `GET /v1/files/{id}/content` with the work token (FO-1) before the worker starts, and upload outputs with `files.upload` scoped to the session (FO-2) when the session finishes a turn and at exit, through `@cloudflare/sandbox`'s `Files`. |
 | CF-4 | The Durable Object shall back `/workspace` up to R2 with `@cloudflare/sandbox`'s `DirectoryBackup` when the session finishes a turn and at exit, and restore it on the next start; where that is unavailable, it shall save a tar of `/workspace` to `agentd-worker`'s bucket through a presigned URL instead. |
 | CF-5 | The Durable Object's outbound handler (`interceptHttps = true`, the container trusting Cloudflare's ephemeral CA at start) shall apply EG-3 to EG-5 to every outbound request of the container, treating a placeholder for any session but its own as invalid. |
@@ -267,7 +268,7 @@ The Cloudflare launcher (our `cloud`, D38):
 Tests in `agentd-worker`'s plan include: a session with built-in calls runs to `end_turn` against agentd while
 agentd records heartbeats for its work item from one client only (CF-8); `env` run by the agent shows no
 `sk-ant-oat01-` value (CF-9); with the networking read failing, no container starts and the item reads `stopped`
-(CF-12); with the egress key unreadable, a request to any host but `api_base_url`'s is refused (CF-10); with one credential
+(CF-12); with the egress key unreadable, a request carrying a placeholder is refused and one without passes (CF-10); with one credential
 unreadable, only the requests carrying its placeholder are refused (EG-7); in the Fargate fleet, `env` run by the agent shows no `sk-ant-oat01-` value (FL-1).
 
 The Fargate launcher's fleet (D33):
@@ -308,9 +309,9 @@ under SRE.
 
 One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, then
 one PR per feature. Each PR deploys alone. Sessions on the loop (L7) and compaction sit behind settings until Rollout
-turns them on. Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's work API,
-PR 5's overload refusal of new streams (F-5), and PR 8's vault and deployment checks (VA-2, VA-4, VA-5, MC-18,
-MC-19). The rest change no client-visible behaviour: PR 9's scheduler fires as today from any replica, and E-4 deletes
+turns them on. Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's refusal of
+other events while a session waits on a tool (W-19) and its environment-key answers (W-15 to W-18, W-22, W-23), PR
+5's overload refusal of new streams (F-5), and PR 8's vault and deployment checks (VA-2, VA-4, VA-5, MC-18, MC-19). The rest change no client-visible behaviour: PR 9's scheduler fires as today from any replica, and E-4 deletes
 in one commit what is deleted today. Migration
 numbers are taken at merge time. "Reuses" names work already written on local branches.
 
@@ -323,7 +324,7 @@ numbers are taken at merge time. "Reuses" names work already written on local br
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
 | 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
 | 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
-| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-22, VA-1 to VA-6 | |
+| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-23, VA-1 to VA-6 | |
 | 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-5 | |
 | 10 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
 | 11 | Conformance, SLOs and docs: the Java SDK suite, SLO alerts, scale-up alarms, the load test, docs and runbook | code | J1, SRE | J-1 | |
@@ -362,7 +363,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
   `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
   `request_id` default from the connection settings, as every table since history PR #41. Also the index
-  `(environment_id) where queue = 'runtime'` for W9.
+  `(environment_id) where queue = 'runtime'` for W9, and, in its own file, `create index concurrently
+  sessions_archived_at on sessions ((doc->>'archived_at')) where doc->>'archived_at' is not null` for E4.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
 - **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
@@ -452,17 +454,28 @@ Every new table and index, production-safe: new tables only, unused until their 
   Tests: with signals off, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
   `overloaded_error` and an open one keeps streaming; with a replica URL set, `events.list` reads it and a step
   reads the primary.
-- **E4.** `sessions/src/retention.rs` (new), a task per replica every hour: 1 `DELETE FROM session_events USING
-  sessions WHERE session_events.workspace_id = sessions.workspace_id AND session_events.session_id =
-  sessions.session_id AND sessions.doc->>'archived_at' < $cutoff`. `SessionsStore::delete`
-  (`store-postgres/src/entities/sessions.rs`) becomes one transaction: 1 `SELECT
-  pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so no append lands after it; 1
-  `DELETE FROM sessions WHERE workspace_id = $1 AND session_id = $2 RETURNING doc`; 1 `DELETE FROM session_events
-  WHERE workspace_id = $1 AND session_id = $2` (E-4); and, from PR 8, 1 `DELETE FROM mcp_connections WHERE
-  workspace_id = $1 AND session_id = $2` (MC-22). `SessionEventLog::delete_events` and its call in
-  `sessions/src/service/lifecycle.rs` go. Tests: with a period of 1 day, an archived session two days old loses its
-  events and one archived today keeps them; with no period set, nothing is deleted; a deleted session's events are
-  gone in the same commit, and an append racing the delete is refused.
+- **E4.** Every event-log access stays behind `SessionEventLog`, so the log can move without redesign (D18).
+  Retention, `sessions/src/retention.rs` (new): every 5 minutes one replica wins `pg_try_advisory_lock(hashtext(
+  'event_retention'))` and walks 5-minute windows of `archived_at` from `$cutoff - 1 hour` to `$cutoff`, so a run
+  missed by up to an hour is caught; per window, `SessionsStore::archived_between` issues 1 `SELECT workspace_id,
+  session_id FROM sessions WHERE doc->>'archived_at' >= $from AND doc->>'archived_at' < $to` (the migration PR's index
+  on `archived_at`), and `SessionEventLog::delete_events_of` issues 1 `DELETE FROM session_events USING unnest($ws,
+  $ids) AS v(workspace_id, session_id) WHERE session_events.workspace_id = v.workspace_id AND
+  session_events.session_id = v.session_id`. The read crosses from the sessions store to the event log's port, which
+  sql-transactions rule 7a's single statement cannot do without tying the log to Postgres (D18). A window holds the
+  sessions archived in 5 minutes, so each DELETE is bounded; `agentd_retention_last_success` is a metric, alarmed
+  after 2 hours without a run. Session delete, in `sessions/src/service/lifecycle.rs` and
+  `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one transaction: 1 `SELECT
+  pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes
+  first and a later one finds no session; 1 `DELETE FROM sessions WHERE workspace_id = $1 AND session_id = $2 AND
+  status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status FROM sessions WHERE …` on the failure path to
+  answer 404 or today's `cannot delete a running session` error; from PR 8, 1 `DELETE FROM mcp_connections WHERE workspace_id = $1 AND session_id = $2`
+  (MC-22). Today's pre-read of the session goes. After the commit, `SessionEventLog::delete_events` (1 `DELETE FROM
+  session_events WHERE workspace_id = $1 AND session_id = $2`, as today) and, from PR 4, the work item's stop (W-11:
+  1 UPDATE). Tests: with a period of 1 day, an archived session two days old loses its events and one archived today
+  keeps them; a run skipped for 40 minutes is caught by the next; two replicas never run retention at once; with no
+  period set, nothing is deleted; a deleted session's events are gone; a `user.message` racing a delete either runs
+  the session (the delete answers 409) or is refused (the session is gone), in a looped test.
 
 #### PR 6. The loop
 
@@ -508,9 +521,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   passed and CP-5 holds; the summary call reuses the turn's system prompt and tools (so the prompt cache hits) with
   `compact-2026-09-04`; the checkpoint event's stored `checkpoint` object holds the block, `through_seq` and the
   model, and the API's typed event drops it on read. Statements: the step's commit (step queue table) appends the
-  checkpoint in its multi-row INSERT; 1 `SELECT seq, doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND
-  doc->>'type' = 'agent.thread_context_compacted' AND doc->>'session_thread_id' = $3 ORDER BY
-  (doc->'checkpoint'->>'through_seq')::bigint DESC LIMIT 1` (CPm's index) finds the latest checkpoint; 1 keyset SELECT
+  checkpoint in its multi-row INSERT; the step queue's Run read (`SELECT DISTINCT ON (doc->>'session_thread_id') …`, CPm's index) finds each
+  thread's latest checkpoint; 1 keyset SELECT
   of the events after it. Tests (thresholds at 15%
   of the window): a long scripted conversation compacts once, writes one `agent.thread_context_compacted` with live's
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
@@ -554,7 +566,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   vault_id = ANY($vault_ids) AND doc->'auth'->>'mcp_server_url' = ANY($urls) AND doc->>'archived_at' IS NULL` for all
   the agent's servers, whatever the vault's own archive state (VA-3); then, for each server the step connects to or
   calls, 1 `GetSecretValue` through `SecretStore`. A refresh, in order, when the service sees the row's `updated_at`
-  is more than 30 s old (when it is newer, another worker holds the refresh, and the step acts as on a lost claim):
+  is more than 30 s old (when it is newer, another worker holds the refresh: the step ends and runs again 1 s later, MC-20):
   the claim, `replace_credential` with the guard `$read` and `Keep` (1 `UPDATE credentials SET
   display_name = $2, has_secret = $3, doc = $4 WHERE workspace_id = $5 AND vault_id = $6 AND credential_id = $7 AND
   doc->>'updated_at' = $read`, the new `doc` carrying `updated_at = $now`); then the POST to `token_endpoint` (10 s
@@ -562,13 +574,13 @@ Every new table and index, production-safe: new tables only, unused until their 
   recording the new `expires_at`). When that last UPDATE matches no row, an API update of the credential came between
   the claim and the write: the refresh's token is in Secrets Manager under the API's row, the loop logs
   `refresh_overwrote_update` with the credential id, and the user's next update applies (an accepted risk under
-  SRE). A claim that matches no row re-reads with
+  SRE). A claim that matches no row (MC-23) re-reads with
   `get_credential` (1 SELECT by primary key, 1 `GetSecretValue`) and uses the token when unexpired; otherwise the
   step ends with its row due again in 1 s. A failed refresh records `mcp_authentication_failed_error`; H1 (PR 9)
   adds the `vault_credential.refresh_failed` delivery. Tests: an expired token is refreshed, stored, its new expiry
   shown by `credentials.retrieve`, and used on the next call; two workers refreshing at once make one request to the
   token endpoint and the loser uses the stored token; a loser that finds the stored token still expired ends its step,
-  which runs again 1 s later; a worker that reads a row claimed less than 30 s ago does the same; an API update
+  which runs again 1 s later; a worker that reads an expired row claimed less than 30 s ago ends its step with no further read and runs 1 s later; an API update
   between a claim and its write logs `refresh_overwrote_update` and keeps the API's row; a worker killed after its claim lets another refresh after
   30 s; a refresh refused by the token endpoint records `mcp_authentication_failed_error`; the credential comes from
   the first of the session's vaults that holds one, and still does after that vault is archived; with none, the
@@ -634,7 +646,7 @@ Merges after the loop's setting reaches every workspace (Rollout).
 |---|---|
 | Enqueue, in the commit that appends the waking event (after its session append lock) | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
 | Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Run, no transaction open | for each thread with a checkpoint, 1 SELECT of its latest checkpoint (CPm's index); 1 keyset SELECT of the session's events after the oldest of those checkpoints, noting the ids of the client events it read; the model call |
+| Run, no transaction open | 1 `SELECT DISTINCT ON (doc->>'session_thread_id') seq, doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND doc->>'type' = 'agent.thread_context_compacted' ORDER BY doc->>'session_thread_id', (doc->'checkpoint'->>'through_seq')::bigint DESC` for every thread's latest checkpoint (CPm's index); 1 keyset SELECT of the session's events after the oldest of those checkpoints, noting the ids of the client events it read; the model call |
 | Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`; when it deletes nothing, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`, and when that updates nothing too the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today; when the step changes the session's status or a refresh failed, 1 multi-row `INSERT INTO webhook_deliveries` (H1) |
 | Defer at the account-wide model budget (M-4) or a lost refresh claim (MC-20) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
 | Compaction step (CP2) | the Run and Commit statements; the Commit's multi-row INSERT carries the checkpoint |
@@ -642,8 +654,10 @@ Merges after the loop's setting reaches every workspace (Rollout).
 
 ## Rollout
 
-- The work API (PR 4) ships without a flag: on `main` no client polls work, so it changes only agentd's own
-  harness work, verified on stage.
+- The work API (PR 4) ships without a flag. Its work routes change only agentd's own harness work, since no client
+  polls work on `main`; what clients see changes in two places, each verified on stage with a probe matching live's
+  captured answer before prod: a session idle with `requires_action` refuses other events with live's 400 (W-19),
+  and environment keys get live's 401 and 403 answers (W-15 to W-18, W-22, W-23).
 - PR 5's overload refusal (F-5) is verified on stage with the gate forced: a new stream gets 529 `overloaded_error`
   and open streams keep streaming; prod follows after a day with no page.
 - PR 8's checks are verified on stage with a probe of each refused case (VA-2, VA-4, VA-5) and a deployment whose
@@ -668,7 +682,7 @@ Merges after the loop's setting reaches every workspace (Rollout).
   workspace is listed for DynamoDB, the API shall keep its new sessions' events in DynamoDB behind the same port,
   with the same order, take and read semantics, and keep each session in the store it was created in. That plan
   also solves what one Postgres commit gives today: a step's claim release, stamps and appended events together
-  (S-3), and a session's row and events deleted together (E-4).
+  (S-3); and it moves retention (E-2) to DynamoDB's own expiry, set when a session is archived.
 - Envelope encryption (D30): the scale-up path for credential storage, behind `SecretStore` in agentd and the swap's
   credential source in `agentd-worker`, for MCP and `environment_variable` credentials together. It is planned when
   its trigger fires (SRE, scale-up triggers).
@@ -722,7 +736,7 @@ Durable Objects under $5. AWS data transfer for staging documents from S3 to Clo
 |---|---|---|
 | Steps | 10^4 sessions / 20 s per step (N1, N2) | 500 steps/s |
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
-| Step statements | about 10 per step, plus 1 per thread with a checkpoint, plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
+| Step statements | about 11 per step (the checkpoint read included), plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
 | Log reads | 500 steps/s × the log size a step reads, which compaction bounds at about 80% of a window | measured in the load test; `events.list` moves to the read replica when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13), and the account-wide budget (M-4) | bounded by M-1 and M-4 |
@@ -805,7 +819,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | `rules/comment-policy.md` | PASS: no comments planned beyond the SQL claim notes. |
 | `rules/auto-rerun-ci.md` | Not applicable: applies during the build. |
 | Repo `CLAUDE.md` | Not applicable: agentd has none. |
-| Memory: agentd parity, no SDK of our own, harness in sandbox | PASS: the loop in agentd, workers outside, no agentd-only route. |
+| Memory: agentd parity, no SDK of our own, harness in sandbox, event log behind its port | PASS: the loop in agentd, workers outside, no agentd-only route; every event-log access goes through `SessionEventLog`, so retention and session delete read sessions through their own store (E4). |
 | `grill-me` ledger | PASS: no `ASSUMED` row. |
 | `industry-practice` | PASS: section above; one departure from live (D24), with its reason; the handoff prompt for other models is beside live, not a departure from it. |
 | `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`), no `else`, files at most 200 lines. |
