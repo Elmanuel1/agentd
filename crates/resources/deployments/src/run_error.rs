@@ -86,4 +86,58 @@ mod tests {
             assert_eq!(serde_json::to_value(k).unwrap(), s);
         }
     }
+
+    fn deployment() -> Deployment {
+        serde_json::from_value(serde_json::json!({
+            "agent": {"id": "agent_011CZkYnKw7TfQv5X2mY8wP4", "type": "agent", "version": 1},
+            "archived_at": null,
+            "created_at": "2026-07-03T22:41:34.000000Z",
+            "description": null,
+            "environment_id": "env_011CZkYnKw7TfQv5X2mY8wP4",
+            "id": "depl_011CZkYnKw7TfQv5X2mY8wP4",
+            "initial_events": [],
+            "metadata": {},
+            "name": "d",
+            "paused_reason": null,
+            "resources": [],
+            "schedule": {
+                "expression": "0 0 1 1 *",
+                "last_run_at": null,
+                "timezone": "UTC",
+                "type": "cron",
+                "upcoming_runs_at": []
+            },
+            "status": "active",
+            "type": "deployment",
+            "updated_at": "2026-07-03T22:41:34.000000Z",
+            "vault_ids": []
+        }))
+        .unwrap()
+    }
+
+    fn error(kind: RunErrorKind) -> RunError {
+        RunError { kind, message: "m".into() }
+    }
+
+    #[test]
+    fn an_archived_agent_archives_the_deployment() {
+        let mut d = deployment();
+        assert!(apply_run_error(&mut d, &error(RunErrorKind::AgentArchived)));
+        assert_eq!(d.status, DeploymentStatus::Archived);
+        assert!(d.archived_at.is_some());
+    }
+
+    #[test]
+    fn any_other_run_error_leaves_the_deployment_as_it_was() {
+        for kind in [
+            RunErrorKind::EnvironmentArchived,
+            RunErrorKind::VaultNotFound,
+            RunErrorKind::SessionRateLimited,
+            RunErrorKind::ServiceUnavailable,
+        ] {
+            let mut d = deployment();
+            assert!(!apply_run_error(&mut d, &error(kind)));
+            assert_eq!(d, deployment());
+        }
+    }
 }
