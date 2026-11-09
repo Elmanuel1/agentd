@@ -28,12 +28,13 @@ customer; a `cloud` environment's workers belong to Anthropic.
 3. For `cloud` and `self_hosted` environments alike, agentd queues work items and serves exactly the work,
    session, events, skills and memory store endpoints the official worker calls, with live's behaviour. A session's
    work token also reads its session's mounted files and saves its outputs through the files endpoints, for
-   `agentd-worker`'s sidecar; live refuses this (decision D24). This is the one departure from live. A session's `environment_variable`
+   `agentd-worker`'s sidecar; live refuses this (decision D24). This is the one departure from live. A `cloud` session's `environment_variable`
    credentials reach the worker as signed placeholders in the work secret's `environment_variables` (D28); our `cloud`
-   deployment's egress proxy substitutes the values, as live's `cloud` does (D25).
+   deployment attaches the values at egress, outside the sandbox, as live's `cloud` does (D25, D38).
 4. Workers run outside agentd, in a separate container project, `agentd-worker`, that speaks only the public API. A customer runs it
    for `self_hosted` environments; we run it for `cloud` environments, polling agentd's runtime queue with our own
-   environment key. `cloud` and `self_hosted` differ only in who runs the workers and holds the key.
+   environment key and starting each session's sandbox on Cloudflare Containers (D38). `cloud` and `self_hosted`
+   differ only in who runs the workers and holds the key.
 5. The loop keeps no session state in a replica's memory. The event log in Postgres is the state; a step reads it,
    calls the model, and appends its events in one commit; steps come from a Postgres queue claimed with
    `FOR UPDATE SKIP LOCKED` under an expiring lease.
@@ -57,3 +58,7 @@ customer; a `cloud` environment's workers belong to Anthropic.
 - Every built-in tool call round-trips through the event log: the loop parks it as `agent.tool_use`, a worker answers
   with `user.tool_result`, and the result queues the session's next step.
 - agentd runs two roles from one binary, the API and loop workers, each scaled on its own.
+- The loop owns each thread's context: it clears old tool results and writes summary checkpoints into the event log
+  (D31), and never deletes an event.
+- At launch agentd runs as one container on tosspaper's existing host and Postgres (D34); the separate services,
+  RDS Proxy and envelope encryption are settings and later plans, each with its trigger.

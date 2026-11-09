@@ -1,10 +1,10 @@
 # Runtime parity: dependencies
 
 Each fact the design rests on, with its evidence. "Live" means Anthropic's hosted Managed Agents API. `VERIFIED`
-rows were read in the official SDK's source or measured on live. `ACCEPTED-RISK` rows are the user's numbers, accepted
+rows were read in the official SDKs' source, in Anthropic's, Cloudflare's or AWS's documentation, or measured on live; `OPEN` rows name what reopens them. `ACCEPTED-RISK` rows are the user's numbers, accepted
 by the user, each with the signal that reopens it.
 
-## What Anthropic's worker uses (official SDK 2.3.0)
+## What Anthropic's worker uses (official Python SDK 2.3.0)
 
 | # | Fact | Status | Evidence |
 |---|---|---|---|
@@ -40,6 +40,45 @@ by the user, each with the signal that reopens it.
 | B19 | Credentials with an `injection_location` apply to "the session's subsequent outbound requests": live `cloud` substitutes them at egress. Our `cloud` deployment of `agentd-worker` matches (D25, D28). | VERIFIED | platform.claude.com/docs/en/managed-agents/vaults, fetched 2026-11-08 |
 | B20 | An `environment_variable` credential has `secret_name` (immutable), a write-only `secret_value`, `networking` (`unrestricted`, or `limited` with up to 16 `allowed_hosts`: bare hostnames, IPv4 addresses or `*.` wildcards) and `injection_location` (`body`, `header`). | VERIFIED | SDK 2.3.0 `types/beta/vaults/beta_managed_agents_environment_variable_create_params.py`, `beta_managed_agents_injection_location_params.py`, `beta_managed_agents_limited_credential_networking_params.py` |
 | B21 | The work secret is base64url JSON that the worker decodes itself, so a launcher can read its `environment_variables` with no extra call. Live's values in that key were not captured; agentd's are name to placeholder (D28). | VERIFIED (shape); OPEN (live's values) | SDK 2.3.0 `lib/environments/_worker.py` `_sessions_token_from_secret`; `ant-poller-spike.md`. Reopens if a live capture shows a different value shape. |
+
+| B22 | A deployment run blocked by the environment's networking records `mcp_egress_blocked_error`, and the deployment is paused with `paused_reason` `{"type": "error", "error": {"type": "mcp_egress_blocked_error", ...}}`; `manual` is the other paused reason. | VERIFIED | Java SDK 2.52.0 `models/beta/deploymentruns/BetaManagedAgentsMcpEgressBlockedRunError`, `models/beta/deployments/BetaManagedAgentsErrorDeploymentPausedReason`, `BetaManagedAgentsMcpEgressBlockedDeploymentPausedReasonError` |
+| B23 | `POST /v1/vaults/{vault_id}/credentials/{credential_id}/mcp_oauth_validate` answers a `vault_credential_validation` object whose status is `valid`, `invalid` or `unknown`, with `validated_at`. | VERIFIED | Java SDK 2.52.0 `services/blocking/beta/vaults/CredentialServiceImpl`, `models/beta/vaults/credentials/CredentialMcpOAuthValidateParams` |
+| B24 | `agent.thread_context_compacted` "Indicates that context compaction (summarization) occurred during the session." | VERIFIED | platform.claude.com/docs/en/api/beta/sessions/events/list, fetched 2026-11-08; agentd's event types already carry it |
+| B25 | The Java SDK has beta services agentd does not serve: tunnels (create, retrieve, list, archive, reveal and rotate a token; tunnel certificates) and user profiles (create, retrieve, update, list, enrollment URLs, trust grants). Out of scope here (D37). | VERIFIED | `com.anthropic:anthropic-java-core` 2.52.0 `services/blocking/beta/TunnelService`, `UserProfileService` |
+
+## Compaction (read 2026-11-08)
+
+| # | Fact | Status | Evidence |
+|---|---|---|---|
+| C1 | On-demand compaction: beta `compact-2026-09-04`, request `"compaction": {"type": "summarize"}` with optional `instructions` (up to 16,384 characters); the reply is one `compaction` block (`content`, `signature`) with `stop_reason: "compaction"`, sent back exactly as returned, first in `messages`, exactly one per request; a changed block gets 400 `compaction_signature_invalid` or `compaction_content_mismatch`. The docs recommend on-demand compaction wherever it is available. | VERIFIED | platform.claude.com/docs/en/build-with-claude/compaction, /compaction-on-demand |
+| C2 | Threshold compaction is a separate feature: beta `compact-2026-01-12`, `context_management.edits` `compact_20260112`, trigger default 150,000 input tokens, minimum 50,000. | VERIFIED | platform.claude.com/docs/en/build-with-claude/compaction-threshold |
+| C3 | Context editing `clear_tool_uses_20250919` (beta `context-management-2025-06-27`): trigger default 100,000 input tokens, keeps 3 tool uses, `clear_tool_inputs` false. | VERIFIED | platform.claude.com/docs/en/build-with-claude/context-editing |
+| C4 | `GET /v1/models/{model_id}` returns `max_input_tokens` and `max_tokens`. | VERIFIED | platform.claude.com/docs/en/api/models/retrieve |
+| C5 | Codex compacts at `min(configured limit, 90% of the context window)`, with a handoff prompt ("Create a handoff summary for another LLM that will resume the task.") and the user's messages kept newest first up to 20,000 tokens. | VERIFIED | github.com/openai/codex at 6107b98: `codex-rs/protocol/src/openai_models.rs` 579-590, `codex-rs/prompts/templates/compact/prompt.md`, `codex-rs/core/src/compact.rs` 64 |
+| C6 | Clearing old tool output is about as effective as summarising and cheaper, so it comes first (JetBrains "The Complexity Trap"; Factory and Manus describe the same tiering). | OPEN | named in the user's brief of 2026-11-08, not re-read for this spec; the design does not rest on it (C3 and C5 set the numbers) |
+
+## Cloudflare Containers (read 2026-11-08)
+
+| # | Fact | Status | Evidence |
+|---|---|---|---|
+| G1 | Default account capacity: 1,500 concurrent vCPU, 6 TiB memory, 30 TB disk, raised through the account team or Support. Instance types include `basic` (1/4 vCPU, 1 GiB, 4 GB) and `standard-1` (1/2 vCPU, 4 GiB, 8 GB). | VERIFIED | developers.cloudflare.com/containers/platform/limits/ |
+| G2 | Pricing: Workers Paid $5 a month, including 375 vCPU-minutes, 25 GiB-hours of memory and 200 GB-hours of disk; then $0.000020 per vCPU-s (active use only), $0.0000025 per GiB-s and $0.00000007 per GB-s (provisioned), billed per 10 ms; egress in North America and Europe $0.025/GB after 1 TB. Each container's Durable Object is billed as a Durable Object (400,000 GB-s a month included, then $12.50 per million GB-s). | VERIFIED | developers.cloudflare.com/containers/platform/pricing/, /durable-objects/platform/pricing/ |
+| G3 | "Container cold starts can often be in the 1-3 second range." | VERIFIED | developers.cloudflare.com/containers/faq/ |
+| G4 | `Container` (from `@cloudflare/containers`) extends `DurableObject`; `sleepAfter` (default `"10m"`) stops an idle container; `getByName(name)` and `getContainer(binding, name)` address one container per name ("one container per logical entity, such as a user session"). | VERIFIED | developers.cloudflare.com/containers/api/container-class/, /containers/get-started/ |
+| G5 | `enableInternet = false` blocks public internet; `allowedHosts` is a deny-by-default allowlist checked before any handler; `outbound` and `outboundByHost` handlers run in the Workers runtime outside the sandbox, with bindings, and can inject secrets; `interceptHttps = true` with the ephemeral CA at `/etc/cloudflare/certs/cloudflare-containers-ca.crt`, trusted from the entrypoint at runtime. | VERIFIED | developers.cloudflare.com/containers/configuration/outbound-traffic/ |
+| G6 | Disk is ephemeral, fresh on each start. Snapshots (`snapshotContainer`, root filesystem only, up to 20 GB, kept 30 days) need the `durable_object` scheduling policy, which is in public beta and cannot be changed after the application is created; that policy has no `max_instances`. | VERIFIED | developers.cloudflare.com/containers/faq/, /containers/guides/snapshots/, /containers/configuration/scheduling-policy/, /workers/wrangler/configuration/ |
+| G7 | `@cloudflare/containers` (github.com/cloudflare/containers) is `MIT OR Apache-2.0`; `@cloudflare/sandbox` (github.com/cloudflare/sandbox-sdk, 1.x: `exec`, `Files` streaming in and out, `S3Mount`, `DirectoryBackup`) is `Apache-2.0`. | VERIFIED | each repository's LICENSE files and `package.json` |
+| G8 | A Worker signs AWS requests with `aws4fetch` and keys held as Worker secrets; Cloudflare documents no workload identity a Worker can present to AWS STS. | VERIFIED (aws4fetch); OPEN (workload identity) | developers.cloudflare.com/r2/examples/aws/aws4fetch/. Reopens if Cloudflare documents a Worker identity AWS accepts, which would replace the static key. |
+
+## AWS quotas and prices (read 2026-11-08)
+
+| # | Fact | Status | Evidence |
+|---|---|---|---|
+| Q1 | Secrets Manager `GetSecretValue`: 10,000 per second per Region, not adjustable; $0.40 per secret-month, $0.05 per 10,000 calls. | VERIFIED | docs.aws.amazon.com/secretsmanager/latest/userguide/reference_limits.html; aws.amazon.com/secrets-manager/pricing/ |
+| Q2 | KMS symmetric cryptographic operations share one adjustable per-Region quota (10,000/s by default, more in some Regions); $1 per key-month, $0.03 per 10,000 requests. | VERIFIED | docs.aws.amazon.com/kms/latest/developerguide/requests-per-second.html; aws.amazon.com/kms/pricing/ |
+| Q3 | ECS task scale-in protection: `UpdateTaskProtection` (`protectionEnabled`, `expiresInMinutes` 1 to 2,880, default 120) or `PUT $ECS_AGENT_URI/task-protection/v1/state`; tasks in a service only. | VERIFIED | docs.aws.amazon.com/AmazonECS/latest/APIReference/API_UpdateTaskProtection.html, /developerguide/task-scale-in-protection-endpoint.html |
+| Q4 | Fargate On-Demand and Fargate Spot vCPU counts default to 6 per Region, adjustable. | VERIFIED | docs.aws.amazon.com/general/latest/gr/ecs-service.html |
+| Q5 | RDS Proxy is priced per vCPU-hour of the database behind it. | VERIFIED | aws.amazon.com/rds/proxy/pricing/ |
 
 ## Load (sizing inputs)
 
