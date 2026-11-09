@@ -12,6 +12,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod credentials;
 pub mod egress;
 pub mod routes;
 pub mod sealed;
@@ -25,7 +26,7 @@ use shared::beta::BetaGate;
 use shared::Module;
 
 pub use service::VaultsService;
-pub use store::VaultsStore;
+pub use store::{VaultCredentialStore, VaultStore};
 pub use types::{Credential, SecretString, Vault, VaultId};
 
 /// The vaults module: its routes, behind the Managed Agents beta.

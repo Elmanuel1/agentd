@@ -12,10 +12,11 @@ use shared::ports::{ScheduleSpec, SchedulerPort, TenantRef};
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
 use crate::fire::target;
+use crate::run_error::{apply_run_error, classify_fire_error, PausedReason};
 use crate::store::{DeploymentsStore, StoreError};
 use crate::types::{
     CreateDeploymentRequest, Deployment, DeploymentId, DeploymentRun, DeploymentRunId, DeploymentRunTag,
-    DeploymentStatus, DeploymentTag, PausedReason, RunError, RunErrorKind, TriggerContext, WireSchedule,
+    DeploymentStatus, DeploymentTag, TriggerContext, WireSchedule,
 };
 
 /// What deployments need from other entities — resolved via ports so tests
@@ -260,33 +261,13 @@ impl DeploymentsService {
             d.schedule.last_run_at = Some(*scheduled_at);
             let _ = d.schedule.refresh_upcoming(Utc::now());
         }
-        // Documented: agent archived/deleted → deployment auto-archives.
-        if matches!(error, Some(RunError { kind: RunErrorKind::AgentArchived, .. })) {
-            d.status = DeploymentStatus::Archived;
-            d.archived_at = Some(Timestamp::now());
+        if error.as_ref().is_some_and(|e| apply_run_error(&mut d, e)) {
             let _ = self.scheduler.delete(&target(&d.id)).await;
         }
         d.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, d).await.map_err(map_store)?;
         Ok(run)
     }
-}
-
-/// Map a session-create rejection into the fixed run-error taxonomy.
-fn classify_fire_error(e: &ApiError) -> RunError {
-    let msg = e.message.clone();
-    let kind = if msg.contains("agent") && msg.contains("archived") {
-        RunErrorKind::AgentArchived
-    } else if msg.contains("environment") && msg.contains("archived") {
-        RunErrorKind::EnvironmentArchived
-    } else if msg.contains("vault") {
-        RunErrorKind::VaultNotFound
-    } else if e.status == 429 {
-        RunErrorKind::SessionRateLimited
-    } else {
-        RunErrorKind::ServiceUnavailable
-    };
-    RunError { kind, message: msg }
 }
 
 fn guard_not_archived(d: &Deployment) -> Result<(), ApiError> {

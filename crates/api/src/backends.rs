@@ -31,7 +31,7 @@ use store_postgres::{
     PgMemoryStore, PgSessionEventLog, PgSessionsStore, PgSkillVersionsStore, PgSkillsStore, PgVaultsStore,
     PgWorkspacesStore,
 };
-use vaults::VaultsStore;
+use vaults::{VaultCredentialStore, VaultStore};
 
 use crate::config::{
     BlobsConfig, Config, KeysConfig, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
@@ -48,7 +48,9 @@ pub struct Stores {
     /// Environments.
     pub environments: Arc<dyn EnvironmentsStore>,
     /// Vaults.
-    pub vaults: Arc<dyn VaultsStore>,
+    pub vaults: Arc<dyn VaultStore>,
+    /// Vault credentials, on the same store as the vaults.
+    pub vault_credentials: Arc<dyn VaultCredentialStore>,
     /// Memory stores, memories and versions.
     pub memory: Arc<dyn MemoryPersistence>,
     /// Files.
@@ -78,10 +80,12 @@ impl std::fmt::Debug for Stores {
 impl Stores {
     /// Every store on Postgres, with bytes in `blobs` and secrets in `secrets`.
     pub fn postgres(backend: PgBackend, blobs: Arc<dyn BlobStore>, secrets: Arc<dyn SecretStore>) -> Self {
+        let vaults = Arc::new(PgVaultsStore::new(backend.clone(), secrets));
         Self {
             agents: Arc::new(PgAgentsStore::new(backend.clone())),
             environments: Arc::new(PgEnvironmentsStore::new(backend.clone())),
-            vaults: Arc::new(PgVaultsStore::new(backend.clone(), secrets)),
+            vaults: vaults.clone(),
+            vault_credentials: vaults,
             memory: Arc::new(PgMemoryStore::new(backend.clone(), blobs.clone())),
             files: Arc::new(PgFilesStore::new(backend.clone(), blobs.clone())),
             skills: Arc::new(PgSkillsStore::new(backend.clone(), blobs.clone())),

@@ -12,5 +12,6 @@ pub mod session_events;
 pub mod sessions;
 pub mod skill_versions;
 pub mod skills;
+pub mod vault_credentials;
 pub mod vaults;
 pub mod workspaces;

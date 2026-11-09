@@ -72,7 +72,7 @@ impl AppState {
             let egress = config.egress_admin.as_ref().map(|(url, token)| {
                 Arc::new(SessionEgressPolicy::new(
                     Signer::new(key.clone()),
-                    VaultCredentials::new(stores.vaults.clone()),
+                    VaultCredentials::new(stores.vault_credentials.clone()),
                     EgressAdmin::new(url, token),
                     &config.model_base_url,
                 ))
@@ -103,7 +103,7 @@ impl AppState {
         let modules = vec![
             agents::module(agents),
             environments::module(environments),
-            vaults::module(Arc::new(VaultsService::new(stores.vaults))),
+            vaults::module(Arc::new(VaultsService::new(stores.vaults, stores.vault_credentials))),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
             files::module(files.clone()),
             skills::module(skills),

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use shared::{ApiError, WorkspaceId};
 
-use crate::store::{StoreError, VaultsStore};
+use crate::store::{StoreError, VaultCredentialStore};
 use crate::types::{CredentialAuthWire, CredentialNetworking, VaultId};
 
 /// One environment-variable credential a session may use.
@@ -28,7 +28,7 @@ pub struct EnvCredential {
 /// Lists the credentials a session's sandbox may use.
 #[derive(Clone)]
 pub struct VaultCredentials {
-    store: Arc<dyn VaultsStore>,
+    store: Arc<dyn VaultCredentialStore>,
 }
 
 impl std::fmt::Debug for VaultCredentials {
@@ -43,7 +43,7 @@ fn backend(e: StoreError) -> ApiError {
 
 impl VaultCredentials {
     /// Read from `store`.
-    pub fn new(store: Arc<dyn VaultsStore>) -> Self {
+    pub fn new(store: Arc<dyn VaultCredentialStore>) -> Self {
         Self { store }
     }
 
