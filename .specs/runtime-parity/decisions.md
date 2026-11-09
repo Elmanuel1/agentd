@@ -21,7 +21,7 @@ Anthropic's hosted Managed Agents API. Each row names who decided and when.
 | # | Decision | Source |
 |---|---|---|
 | D8 | No session state in a replica's memory. The event log in Postgres is the state; a step reads it, builds the prompt, calls the model, and appends its events in one commit. A crash repeats at most one step, which is safe to repeat. | User, 2026-11-08 ("okay. lets do that") |
-| D9 | Steps come from a queue. A session joins it when a client event, `user.tool_result` or `user.custom_tool_result` arrives, and stays on it when its step leaves an allowed MCP call for the next step; a loop worker claims it with `FOR UPDATE SKIP LOCKED` under a lease with an expiry, runs one step and releases it. Nothing is held while a tool runs. No subqueries. | User, 2026-11-08 |
+| D9 | Steps come from a queue. A session joins it when a client event, `user.tool_result` or `user.custom_tool_result` arrives, and stays on it when its step leaves an allowed MCP call for the next step (MC-24); a loop worker claims it with `FOR UPDATE SKIP LOCKED` under a lease with an expiry, runs one step and releases it. Nothing is held while a tool runs. No subqueries. | User, 2026-11-08 |
 | D10 | One binary, two roles: the API (requests and streams) and loop workers (steps). The role is a setting; each scales on its own, loop workers on queue depth. | User, 2026-11-08 |
 | D11 | Model provider limits: a per-workspace concurrency limit, retries with backoff on 408, 409, 429 and 5xx in the model client only, prompt caching where the provider supports it; each value a setting per deployment environment. | User, 2026-11-08 |
 | D12 | Scheduled jobs work with more than one replica: schedules live in Postgres and one replica claims each due fire. | User, 2026-11-08 |

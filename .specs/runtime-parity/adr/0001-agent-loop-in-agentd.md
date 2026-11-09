@@ -54,7 +54,8 @@ customer; a `cloud` environment's workers belong to Anthropic.
   container project.
 - agentd holds the model key and calls the model through its own client.
 - agentd serves the agent's MCP servers from the loop, with credentials from the session's vaults; no secret
-  reaches a worker. An MCP call runs in the step after the model chose it, which the step queue starts at once.
+  reaches a worker. An allowed MCP call runs in the next step, which the step queue starts at once; an `ask` call runs after its
+  confirmation.
 - Every built-in tool call round-trips through the event log: the loop parks it as `agent.tool_use`, a worker answers
   with `user.tool_result`, and the result queues the session's next step.
 - agentd runs two roles from one binary, the API and loop workers, each scaled on its own.
