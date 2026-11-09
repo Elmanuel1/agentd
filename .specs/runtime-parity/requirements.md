@@ -132,7 +132,7 @@ Decision D31; evidence C1 to C5.
 | CP-1 | The loop shall estimate a thread's prompt size as the previous model call's input, cache read, cache creation and output tokens plus one token per 4 bytes of the events appended since, with no token-counting call. |
 | CP-2 | When a thread's estimated prompt passes the lower of `compaction.clear_at` (`AGENTD_COMPACTION_CLEAR_AT`, default 100,000 tokens) and 50% of the model's window, the loop shall build the prompt with each tool result older than the last `compaction.keep_results` (default 3, from 3 to 5) replaced by a placeholder naming its event id, keeping every tool input and every result with `is_error` true. |
 | CP-3 | The loop shall cap each tool result at `tool_output_token_limit` (`AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`, default 16,000 tokens) when it appends the result to the prompt, marking the cut; the stored event stays whole. |
-| CP-4 | When a thread's estimated prompt passes 90% of the model's window, the loop shall run a compaction step for that thread before its next turn. |
+| CP-4 | When a thread's estimated prompt passes 80% of the model's window, the loop shall run a compaction step for that thread before its next turn. |
 | CP-5 | The loop shall run a compaction step only between turns, while the thread has no tool call waiting for its result, as the session's one running step (S-2), so that a thread has at most one compaction running. |
 | CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated) and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
 | CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and send the returned `compaction` block back unmodified, first in `messages`, in every later call of the thread (C1). |
@@ -292,7 +292,7 @@ The Fargate launcher's fleet (D33):
 | Durable execution: state in a log, each step replayable | Temporal (workflow history replayed by any worker), AWS Step Functions | Followed: the event log is the history; a step derives its action from it, so a rerun is safe. |
 | A lease with an expiry instead of a held connection or lock | The SRE review of 2026-11-06; Temporal activity timeouts | Followed; a commit checks its claim is still its own. |
 | Fan-out by signal, data from the source of truth | Common pub/sub notify-then-read designs | Followed with Valkey signals and log reads. |
-| Context management in tiers: clear old tool output first, summarise later, keep the raw log | Anthropic context editing (C3) and compaction (C1); Codex (C5) | Followed (D31): the same 100,000-token clearing default and 3 kept results as context editing; summaries at 90% of the window with no fixed cap, as Codex does (C5). |
+| Context management in tiers: clear old tool output first, summarise later, keep the raw log | Anthropic context editing (C3) and compaction (C1); Codex (C5) | Followed (D31): the same 100,000-token clearing default and 3 kept results as context editing; summaries at 80% of the window with no fixed cap, below Codex's 90% (C5). |
 | Credentials attached at egress, outside the sandbox | Live `cloud` (B19); Cloudflare outbound handlers (G5) | Followed for our `cloud` (D25, D38). |
 | A per-session sandbox Durable Object with an outbound egress hook and R2 backups | Cloudflare's `claude-managed-agents` template (G9) | Followed and credited (D38); it differs where the template departs from live (CF-8 to CF-10). |
 | Single-use workers scaled on queue depth | ECS target tracking with task scale-in protection (Q3) | Followed for the Fargate launcher and the loop workers (D33). |
@@ -541,7 +541,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   checkpoint in its multi-row INSERT; the step queue's Run read (`SELECT DISTINCT ON (doc->>'session_thread_id') …`, CPm's index) finds each
   thread's latest checkpoint; 1 keyset SELECT
   of the events after it. Tests (a scripted model with a 20,000-token
-  window, so 90% is reached in a few turns): a long scripted conversation compacts once, writes one `agent.thread_context_compacted` with live's
+  window, so 80% is reached in a few turns): a long scripted conversation compacts once, writes one `agent.thread_context_compacted` with live's
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
   the first checkpoint; a step with a tool call waiting does not compact; a summary call that returns no block
@@ -768,7 +768,7 @@ Durable Objects under $5. AWS data transfer for staging documents from S3 to Clo
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
 | Step statements | about 11 per step (the checkpoint read included), plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
-| Log reads | 500 steps/s × the log size a step reads: from the oldest checkpoint of the session's threads, or the whole log while a thread has none, so compaction bounds it at about 90% of a window per thread | measured in the load test; `events.list` moves to the read replica when it grows |
+| Log reads | 500 steps/s × the log size a step reads: from the oldest checkpoint of the session's threads, or the whole log while a thread has none, so compaction bounds it at about 80% of a window per thread | measured in the load test; `events.list` moves to the read replica when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13), and the account-wide budget (M-4) | bounded by M-1 and M-4 |
 | Compaction calls | one per thread each time it reaches the summary threshold; a step that compacts makes no turn call | at most the model call rate, measured in the load test |
 | MCP per step | an MCP tool call adds one step (MC-24); 1 `mcp_connections` SELECT and 1 credential SELECT per step; `initialize` and `tools/list` only on a reconnect (MC-15); 1 `GetSecretValue` per server the step connects to or calls (MC-6) | at most 500 secret reads/s when every step calls one server, about 1.3×10^9 a month, about $6.5k a month at $0.05 per 10,000 calls (Q1); a step that calls no MCP tool reads none |
