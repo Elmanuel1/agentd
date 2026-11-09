@@ -312,7 +312,7 @@ under SRE.
 
 One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, then
 one PR per feature. Each PR deploys alone. Sessions on the loop (L7) sit behind a setting until Rollout turns them on, and
-compaction (PR 7) runs only for those sessions. Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's refusal of
+compaction (PR 7) runs only for those sessions and merges while L7 lists only the internal workspace (Rollout). Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's refusal of
 other events while a session waits on a tool (W-19) and its environment-key answers (W-15 to W-18, W-22, W-23), PR
 5's overload refusal of new streams (F-5), and PR 8's vault and deployment checks (VA-2, VA-4, VA-5, MC-18, MC-19). The rest change no client-visible behaviour: PR 9's scheduler fires as today from any replica, and E-4 deletes, as
 today, the session row and then its events through the port. Migration
@@ -696,7 +696,8 @@ Merges after the loop's setting reaches every workspace (Rollout).
 - A workspace is listed for L7 only once `agentd-worker` polls the runtime queue in that deployment environment;
   until then its `cloud` sessions would wait on a queue nobody polls.
 - The removals (PR 10) merge after L7 reaches 100% and `agentd-worker` serves `cloud` work on stage and prod.
-- Compaction (PR 7) runs only for sessions on the loop, so it follows L7's workspace stages.
+- Compaction (PR 7) runs only for sessions on the loop, and PR 7 merges while L7 lists only the internal
+  workspace, so compaction reaches other workspaces only through L7's later stages.
 - The Cloudflare launcher serves stage's runtime queue first; prod's runtime queue moves to it after a week on stage
   with no page, and after Cloudflare has raised the account's vCPU capacity (G1) above the expected peak.
 - Per deployment environment, the settings (`AGENTD_ROLE`, model limits, the L7 workspace list) live in its
