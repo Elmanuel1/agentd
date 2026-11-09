@@ -175,7 +175,8 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-20 | If an expired token's credential row has `updated_at` less than 30 s old, then the loop shall end its step and run it again 1 s later, with no further read. |
 | MC-23 | If the loop's refresh claim matches no row, then the loop shall re-read the credential's row and secret and use the stored token when it has not expired, and otherwise end its step and run it again 1 s later. |
 | MC-24 | When the model calls an MCP tool whose evaluation is `allow`, the loop shall commit `agent.mcp_tool_use` with that step and keep the session on the step queue, so that the next step calls the tool. |
-| MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool before any model call. |
+| MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool before any model call, unless MC-26 applies. |
+| MC-26 | If the loop cannot call an allowed MCP tool, because its server's connection failed in this turn or fails now, then the loop shall record `agent.mcp_tool_result` with `is_error` true and a message naming the server for that call, beside MC-5's `session.error`, so that no allowed call stays unanswered. |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -326,7 +327,7 @@ numbers are taken at merge time. "Reuses" names work already written on local br
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
 | 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
 | 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
-| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-25, VA-1 to VA-6 | |
+| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-26, VA-1 to VA-6 | |
 | 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-5 | |
 | 10 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
 | 11 | Conformance, SLOs and docs: the Java SDK suite, SLO alerts, scale-up alarms, the load test, docs and runbook | code | J1, SRE | J-1 | |
@@ -553,7 +554,10 @@ Every new table and index, production-safe: new tables only, unused until their 
 #### PR 8. MCP and vaults
 
 - **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP) and
-  `store-postgres/src/entities/mcp_connections.rs`. Per step: 1 `SELECT * FROM mcp_connections WHERE workspace_id =
+  `store-postgres/src/entities/mcp_connections.rs`. The step commit gains the MCP branch: the step queue port's
+  commit (`sessions/src/steps.rs`) takes a `keep_due` flag, which `crates/engine/src/worker.rs` sets when the step
+  leaves an allowed `agent.mcp_tool_use` unanswered, and `store-postgres/src/entities/loop_steps.rs` then issues the
+  release UPDATE with no DELETE (the step queue table's Commit row). Per step: 1 `SELECT * FROM mcp_connections WHERE workspace_id =
   $1 AND session_id = $2`; a reconnect (MC-15) sends `initialize` and `tools/list` and writes 1 `INSERT … ON CONFLICT
   (workspace_id, session_id, server_url) DO UPDATE`; a `notifications/tools/list_changed` adds `tools/list` and the
   same upsert; the session's delete commit adds 1 `DELETE FROM mcp_connections WHERE workspace_id = $1 AND session_id
@@ -562,7 +566,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   `always_ask` call does. Before connecting, the loop checks the environment's networking through
   `environments/src/egress.rs` (new, shared with MC3) and the resolved address. Tests against a scripted MCP server:
   tools listed and called, with `agent.mcp_tool_use` (`evaluated_permission` `allow`) and `agent.mcp_tool_result`;
-  no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool; a
+  no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool;
+  a server that drops after the choosing step gets one `is_error` `agent.mcp_tool_result`, and that step's
+  `loop_steps` row is deleted, not kept due (MC-26); a
   deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a 404
   to it, a changed credential `updated_at` or an idle-to-running transition reconnects; a `list_changed`
   notification refreshes the stored list; one session never reads another's row; deleting a session deletes its rows in that commit; an `always_ask` tool idles
