@@ -1,6 +1,8 @@
 -- The runtime's coordination tables: work items, environment keys, the step queue, MCP
 -- connections, schedules and webhook deliveries. Rows here are updated in place (claims,
--- leases, heartbeats); they are not resources, so they keep no revisions.
+-- leases, heartbeats); they are not resources, so they keep no revisions. Every table
+-- but environment_keys, which follows api_keys, records its writer's actor and request id
+-- from the connection settings.
 
 -- ── work_items: one per session, reused for every run; its id is the session id ──
 create table work_items (
@@ -57,6 +59,10 @@ create table loop_steps (
     lease_owner  text,
     lease_until  timestamptz,
     attempts     bigint      not null default 0,
+    actor        text        not null
+        default coalesce(nullif(current_setting('agentd.actor', true), ''), 'unattributed'),
+    request_id   text
+        default nullif(current_setting('agentd.request_id', true), ''),
     primary key (workspace_id, session_id)
 ) with (
     fillfactor = 70,
@@ -89,7 +95,11 @@ create table schedules (
     workspace_id text        not null,
     spec         jsonb       not null,
     next_fire_at timestamptz not null,
-    paused       boolean     not null default false
+    paused       boolean     not null default false,
+    actor        text        not null
+        default coalesce(nullif(current_setting('agentd.actor', true), ''), 'unattributed'),
+    request_id   text
+        default nullif(current_setting('agentd.request_id', true), '')
 );
 create index schedules_due_idx on schedules (next_fire_at) where not paused;
 
@@ -105,6 +115,10 @@ create table webhook_deliveries (
     claimed_until   timestamptz,
     delivered_at    timestamptz,
     dropped_at      timestamptz,
+    actor           text        not null
+        default coalesce(nullif(current_setting('agentd.actor', true), ''), 'unattributed'),
+    request_id      text
+        default nullif(current_setting('agentd.request_id', true), ''),
     primary key (webhook_id, endpoint_key)
 );
 create index webhook_deliveries_due_idx
