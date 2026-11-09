@@ -110,6 +110,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | L-15 | When the agent delegates, the loop shall run the delegate on a thread of its own and record its thread events. |
 | L-16 | The loop shall add each model call's usage to the session and record `session.usage`. |
 | L-18 | If the session's budget is spent, then the loop shall stop the turn with `budget_reached`. |
+| L-19 | Where a session created on the harness path is idle and its workspace is listed for L7, the loop shall serve the session's next turn from its event log, so that no idle session depends on the harness. |
 | L-17 | The loop shall record `agent.thinking`, `span.model_request_start` and `span.model_request_end` for each model call. |
 | L-2 | When the model asks for a built-in tool on a `self_hosted` session, the loop shall write `agent.tool_use` and idle the thread and the session `requires_action` (`event_ids`), in the order `session.thread_status_idle`, `session.usage`, `session.status_idle`. |
 | L-3 | When a `self_hosted` session's `user.tool_result` arrives, the loop shall write `session.status_running` and `session.thread_status_running` and continue. |
@@ -135,7 +136,7 @@ Decision D31; evidence C1 to C5.
 | CP-4 | When a thread's estimated prompt passes 80% of the model's window, the loop shall run a compaction step for that thread before its next turn. |
 | CP-5 | The loop shall run a compaction step only between turns, while the thread has no tool call waiting for its result, as the session's one running step (S-2), so that a thread has at most one compaction running. |
 | CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated) and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
-| CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and send the returned `compaction` block back unmodified, first in `messages`, in every later call of the thread (C1). |
+| CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and every later call of the thread shall send the returned `compaction` block back unmodified, first in `messages`, with the `compact-2026-09-04` beta header (C1). |
 | CP-8 | Where the thread's model is not an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools and a handoff prompt carrying CP-6's instructions, and put the summary first in the thread's later prompts. |
 | CP-9 | When a compaction step finishes, the loop shall append `agent.thread_context_compacted` as the thread's checkpoint, holding the summary, the last event it covers and the model that wrote it, unique per thread and covered event; the API shall serve the event with live's fields only, and no event is deleted. |
 | CP-10 | If a compaction call returns no summary, then the loop shall continue with CP-2's prompt and run the compaction step again at the thread's next step. |
@@ -175,13 +176,14 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-20 | If an expired token's credential row has `updated_at` less than 30 s old, then the loop shall end its step and run it again 1 s later, with no further read. |
 | MC-23 | If the loop's refresh claim matches no row, then the loop shall re-read the credential's row and secret and use the stored token when it has not expired, and otherwise end its step and run it again 1 s later. |
 | MC-24 | When the model calls an MCP tool whose evaluation is `allow`, the loop shall commit `agent.mcp_tool_use` with that step and keep the session on the step queue, so that the next step calls the tool. |
-| MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool before any model call, unless MC-26 applies. |
+| MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool and commit its `agent.mcp_tool_result` in that step with no model call, keeping the session due for the next step, unless MC-26 applies. |
+| MC-27 | If an `mcp_oauth` refresh's `token_endpoint`, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not call it and shall treat the refresh as failed (MC-21, H-5). |
 | MC-26 | If the loop cannot call an allowed MCP tool, because its server's connection failed in this turn or fails now, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's `content` for that call, and, for each later call to that server in the same turn other than the one whose connection attempt MC-5 records, the `mcp_connection_failed_error` `session.error` live records for it (B27), so that no allowed call stays unanswered. |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
 | MC-10 | If a session's environment has `limited` networking with `allow_mcp_servers` false and an MCP server's host is not in `allowed_hosts`, then the loop shall not connect and shall record `mcp_connection_failed_error`, since the session error types have no egress-blocked error (B14). |
-| MC-11 | If an MCP server's URL resolves to a loopback, private or link-local address, then the loop shall not connect and shall record `mcp_connection_failed_error`. |
+| MC-11 | If an MCP server's URL, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not connect and shall record `mcp_connection_failed_error`. |
 | MC-12 | When an MCP tool call's permission evaluation is `ask`, the loop shall write `agent.mcp_tool_use` and idle the session `requires_action`, call the server only after a `user.tool_confirmation` that allows it, and record an `is_error` `agent.mcp_tool_result` on a deny. |
 | MC-13 | The loop shall keep each MCP server's `Mcp-Session-Id` and tool list per agentd session and server in Postgres (`mcp_connections`), and send `initialize` and `tools/list` only when it reconnects (MC-15). |
 | MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, when the credential's `updated_at` differs from the one the connection was made with, and on the session's idle-to-running transition. |
@@ -191,6 +193,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-18 | When a deployment fires, the API shall check each MCP server host of the deployment's agent against the environment's networking as MC-10 does, before it creates the session. |
 | MC-19 | If a deployment fire's MCP host check fails, then the API shall create no session, record the run with `mcp_egress_blocked_error`, and pause the deployment with `paused_reason` `{"type": "error", "error": {"type": "mcp_egress_blocked_error", ...}}` (B22). |
 | H-5 | If an `mcp_oauth` refresh fails, then the API shall send the `vault_credential.refresh_failed` webhook to the organization's configured endpoints. |
+| H-6 | When a credential is archived, directly or by its vault's archive, the API shall send the `vault_credential.archived` webhook to the organization's configured endpoints (B16). |
 
 ## 8. Vaults
 
@@ -200,7 +203,7 @@ Decision D29; evidence B15 to B17, B23.
 |---|---|
 | VA-1 | If a session update sets `vault_ids`, then the API shall answer 400 `invalid_request_error` with live's message (B15). |
 | VA-2 | If a session create names a vault that is archived or not in its workspace, then the API shall refuse it with live's status and message. |
-| VA-3 | While a session runs, the loop shall resolve credentials from every vault in its `vault_ids`, including a vault archived after the session was created (B16). |
+| VA-3 | When a vault is archived, the API shall archive each of its unarchived credentials and purge their secrets, so that a running session keeps running and resolves no credential from that vault from its next step, and a new session that names it is refused (VA-2, B16). |
 | VA-4 | If a credential update changes an `mcp_oauth` credential's `token_endpoint`, then the API shall refuse it with live's status and message (B17). |
 | VA-5 | When a credential update sets a new `access_token` without `expires_at`, the API shall keep the stored expiry (B17). |
 | VA-6 | When `mcp_oauth_validate` is called for an `mcp_oauth` credential, the API shall send `initialize` to its `mcp_server_url` with its access token and answer `vault_credential_validation` with `valid` on success, `invalid` when the server answers 401 or 403, and `unknown` otherwise, with `validated_at` (B23). |
@@ -237,8 +240,8 @@ Every launcher with secret injection on:
 |---|---|
 | EG-1 | When the launcher starts a sandbox, it shall set each `environment_variables` entry of the work secret as an environment variable, so the sandbox sees the placeholder and never the value. |
 | EG-3 | When a request to a host in the credential's `allowed_hosts` carries a valid placeholder in a location its `injection_location` allows, the swap shall attach the credential's value from its sealed secret and send the request. |
-| EG-4 | If a request carries a placeholder for a host outside the credential's `allowed_hosts`, then the swap shall refuse it with 403 and send nothing. |
-| EG-5 | If a placeholder's signature fails or its session is not the calling session, then the swap shall refuse the request with 403. |
+| EG-4 | If a request carries a placeholder for a host outside the credential's `allowed_hosts`, or in a location its `injection_location` does not allow, then the swap shall send the request with the placeholder unchanged, attaching no value, as live does (B28). |
+| EG-5 | If a placeholder's signature fails or its session is not the calling session, then the swap shall send the request with the placeholder unchanged, attaching no value. |
 | EG-7 | If the swap needs a value it cannot read (Secrets Manager unreachable, the credential gone) and holds no unexpired copy, then it shall refuse the request (fail closed). |
 | EG-8 | The swap shall log a credential's id and a fingerprint, never its value. |
 | EG-10 | Where its operator turns secret injection on, the swap shall apply EG-3 to EG-8; our `cloud` deployment turns it on, and it is off by default. |
@@ -256,15 +259,15 @@ The Cloudflare launcher (our `cloud`, D38):
 | ID | Requirement |
 |---|---|
 | CF-1 | When our runtime poller (`ant beta:worker poll --on-work`, on a small always-on task beside agentd) receives a work item, its `--on-work` command shall hand the item to the Cloudflare launcher Worker over HTTPS, signed with an HMAC key the two share, and the Worker shall start the session's container through `getByName(session_id)`. |
-| CF-2 | The container shall run the official `EnvironmentWorker` unchanged (`handle_item()`), from a fresh disk, with no warm pool, stopping after `sleepAfter` (default 10 min) idle; `limited` networking sets `enableInternet = false` and `allowedHosts`, and `unrestricted` sets `enableInternet = true`; `allowedHosts` always holds the host of the work secret's `api_base_url`, the worker's route to its session. |
+| CF-2 | The container shall run the official `EnvironmentWorker` unchanged (`handle_item()`), from a fresh disk, with no warm pool, stopping after `sleepAfter` (default 10 min) idle; `limited` networking sets `enableInternet = false` and `allowedHosts`, which always holds the host of the work secret's `api_base_url`, the worker's route to its session; `unrestricted` sets `enableInternet = true` with no `allowedHosts`. |
 | CF-8 | While a session's container runs, its `EnvironmentWorker` shall be the only process that heartbeats, stops or answers the session's work item; the Durable Object and the launcher Worker shall never call `work.heartbeat` or `work.stop` or send session events. |
 | CF-9 | The launcher shall keep the environment key outside the container: the container receives only the item's `ANTHROPIC_WORK_ID`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID` and `ANTHROPIC_WORK_SECRET` (whose `sessions_token` `handle_item()` uses, A1) and the placeholders. |
 | CF-11 | The launcher shall read an environment's networking with the runtime key (W-22), cache it for `networking_cache_seconds` (default 60), and apply the cached value when a container starts; a running container keeps the networking it started with (B26). |
-| CF-12 | If the launcher cannot read an environment's networking, then it shall start no container and stop the work item with `work.stop`, so no sandbox ever starts unrestricted. |
+| CF-12 | If the launcher cannot read an environment's networking, then it shall start no container, retry the read with backoff for up to 10 minutes, and then stop the work item with `work.stop`, so that no sandbox ever starts unrestricted; the session then waits on its tool call until a `user.interrupt` ends it (L-6). |
 | CF-10 | If the Durable Object cannot read the egress key, then it shall refuse every request that carries a placeholder (fail closed) and pass the others under CF-2's networking. |
 | CF-3 | The session's Durable Object shall stage the session's mounted files into the container from `GET /v1/files/{id}/content` with the work token (FO-1) before the worker starts, and upload outputs with `files.upload` scoped to the session (FO-2) when the session finishes a turn and at exit, through `@cloudflare/sandbox`'s `Files`. |
 | CF-4 | The Durable Object shall back `/workspace` up to R2 with `@cloudflare/sandbox`'s `DirectoryBackup` when the session finishes a turn and at exit, and restore it on the next start; where that is unavailable, it shall save a tar of `/workspace` to `agentd-worker`'s bucket through a presigned URL instead. |
-| CF-5 | The Durable Object's outbound handler (`interceptHttps = true`, the container trusting Cloudflare's ephemeral CA at start) shall apply EG-3 to EG-5 to every outbound request of the container, treating a placeholder for any session but its own as invalid. |
+| CF-5 | The Durable Object's outbound handler (`interceptHttps = true`, the container trusting Cloudflare's ephemeral CA at start) shall apply EG-3 to EG-5 to every outbound request of the container on ports 80 and 443, treating a placeholder for any session but its own as invalid; a placeholder sent on another port reaches its host unchanged, which Cloudflare's handlers do not intercept (G5). |
 | CF-6 | The Durable Object shall keep each value and the egress key in its memory for at most 5 minutes, never in Durable Object storage, and drop them on eviction and at session end, so that a rotated, archived or deleted credential applies within 5 minutes. |
 | CF-7 | The handler shall read Secrets Manager with `aws4fetch` and one AWS access key held as a Worker secret, never inside the container, belonging to an IAM user allowed only `secretsmanager:GetSecretValue` on secrets tagged `credential_type=environment_variable` and on `<prefix>/system/egress_key`, `kms:Decrypt` through Secrets Manager only, and only from Cloudflare's published IP ranges (`aws:SourceIp`); the key is rotated every 90 days. |
 
@@ -279,7 +282,7 @@ The Fargate launcher's fleet (D33):
 | ID | Requirement |
 |---|---|
 | FL-1 | The fleet shall be an ECS service of identical tasks, each serving one session and exiting, so no container serves two sessions; a poller container in the task holds the environment key, takes one work item, and passes only its `ANTHROPIC_WORK_ID`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID` and `ANTHROPIC_WORK_SECRET` to the worker container. |
-| FL-2 | A job shall publish `GET /v1/environments/{env}/work/stats` (queued plus active) to CloudWatch every 60 s, and target tracking shall keep the task count at queued plus active plus `warm_buffer` (default 0). |
+| FL-2 | A job shall read `GET /v1/environments/{env}/work/stats` every 60 s and set the service's desired count to queued plus active plus `warm_buffer` (default 0), with no target tracking. |
 | FL-3 | A task serving a session shall set ECS task scale-in protection and clear it when done (Q3). |
 
 ## Industry practice
@@ -325,10 +328,10 @@ numbers are taken at merge time. "Reuses" names work already written on local br
 | 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint and archived-session indexes | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm, E4m | E-2, W-2, W-13, S-1, S-2, MC-13, K-1, H-4, CP-9 | |
 | 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W1, W3 to W5, EV1, W7 to W9, L6, FO1 | W-1 to W-23, EV-1 to EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
-| 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
+| 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-19 | branch `self-hosted-work` |
 | 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
-| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-26, VA-1 to VA-6 | |
-| 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-5 | |
+| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-27, VA-1 to VA-6 | |
+| 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-6 | |
 | 10 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
 | 11 | Conformance, SLOs and docs: the Java SDK suite, SLO alerts, scale-up alarms, the load test, docs and runbook | code | J1, SRE | J-1 | |
 
@@ -517,8 +520,10 @@ Every new table and index, production-safe: new tables only, unused until their 
   statement in the step queue table and no model call. Tests: with a budget of 2 requests a minute, a third step is
   deferred to the next minute and runs then; Valkey down fails the step's claim back to the queue, not open.
 - **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
-  environment or the runtime queue; the flag lists workspaces. Tests: the live poll-path cases replayed with `ant`
-  pollers and the scripted model.
+  environment or the runtime queue; the flag lists workspaces. An idle session created on the harness path in a
+  listed workspace runs its next turn on the loop (L-19): its event log is its whole state (D8), so the loop reads it
+  as any other. Tests: the live poll-path cases replayed with `ant` pollers and the scripted model; a session started
+  on the harness, left idle, then woken after its workspace is listed, runs its turn on the loop with its history.
 
 #### PR 7. Compaction
 
@@ -544,7 +549,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
   the first checkpoint; a step with a tool call waiting does not compact; a summary call that returns no block
-  leaves the cleared prompt and compacts at the next step. A recall check against a real model runs only with the
+  leaves the cleared prompt and compacts at the next step; every call after compaction sends the
+  `compact-2026-09-04` beta header with the block (CP-7). A recall check against a real model runs only with the
   user's OK (D22).
 - **CP3.** `engine/src/turn/compact/handoff.rs` (the handoff prompt), `oversize.rs`, and the model-change check in
   `step.rs`. Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
@@ -556,7 +562,8 @@ Every new table and index, production-safe: new tables only, unused until their 
 - **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP) and
   `store-postgres/src/entities/mcp_connections.rs`. The step commit gains the MCP branch: the step queue port's
   commit (`sessions/src/steps.rs`) takes a `keep_due` flag, which `crates/engine/src/worker.rs` sets when the step
-  leaves an allowed `agent.mcp_tool_use` unanswered, and `store-postgres/src/entities/loop_steps.rs` then issues the
+  leaves an allowed `agent.mcp_tool_use` unanswered or ran MCP calls with no model call (MC-25), and
+  `store-postgres/src/entities/loop_steps.rs` then issues the
   release UPDATE with no DELETE (the step queue table's Commit row). Per step: 1 `SELECT * FROM mcp_connections WHERE workspace_id =
   $1 AND session_id = $2`; a reconnect (MC-15) sends `initialize` and `tools/list` and writes 1 `INSERT … ON CONFLICT
   (workspace_id, session_id, server_url) DO UPDATE`; a `notifications/tools/list_changed` adds `tools/list` and the
@@ -566,7 +573,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   `always_ask` call does. Before connecting, the loop checks the environment's networking through
   `environments/src/egress.rs` (new, shared with MC3) and the resolved address. Tests against a scripted MCP server:
   tools listed and called, with `agent.mcp_tool_use` (`evaluated_permission` `allow`) and `agent.mcp_tool_result`;
-  no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool;
+  no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool
+  and commits its result with no model call, then the step after calls the model (MC-25); a server redirecting to
+  `127.0.0.1` is refused (MC-11);
   a server that drops after the choosing step gets one `is_error` `agent.mcp_tool_result` (MC-26) and one
   `mcp_connection_failed_error` `session.error` (MC-5), and that step's `loop_steps` row is deleted, not kept due;
   with two allowed calls to one server in a step and the first failing, the second gets an `is_error` result with no
@@ -589,7 +598,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   no guard and `Replace`, archiving no guard and `Purge`. One method, in `entities/vault_credentials.rs`. Statements
   per step: 1 `SELECT * FROM credentials WHERE workspace_id = $1 AND
   vault_id = ANY($vault_ids) AND doc->'auth'->>'mcp_server_url' = ANY($urls) AND doc->>'archived_at' IS NULL` for all
-  the agent's servers, whatever the vault's own archive state (VA-3); then, for each server the step connects to or
+  the agent's servers (an archived vault's credentials are archived with it, VA-3); then, for each server the step connects to or
   calls, 1 `GetSecretValue` through `SecretStore`. A refresh, in order, when the service sees the row's `updated_at`
   is more than 30 s old (when it is newer, another worker holds the refresh: the step ends and runs again 1 s later, MC-20):
   the claim, `replace_credential` with the guard `$read` and `Keep` (1 `UPDATE credentials SET
@@ -607,8 +616,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   token endpoint and the loser uses the stored token; a loser that finds the stored token still expired ends its step,
   which runs again 1 s later; a worker that reads an expired row claimed less than 30 s ago ends its step with no further read and runs 1 s later; an API update
   between a claim and its write logs `refresh_overwrote_update` and keeps the API's row; a worker killed after its claim lets another refresh after
-  30 s; a refresh refused by the token endpoint records `mcp_authentication_failed_error`; the credential comes from
-  the first of the session's vaults that holds one, and still does after that vault is archived; with none, the
+  30 s; a refresh refused by the token endpoint records `mcp_authentication_failed_error`; a `token_endpoint` resolving to
+  `127.0.0.1`, or redirecting to `169.254.169.254`, is not called and the refresh fails (MC-27); the credential comes from
+  the first of the session's vaults that holds one, and none after that vault is archived; with none, the
   connection is unauthenticated and a refusing server records `mcp_authentication_failed_error`; a step that neither
   connects nor calls reads no secret; a rotated secret is used on the next call and an archived credential is not;
   no secret appears in any event, log line or output (a test sink scans them all).
@@ -628,7 +638,12 @@ Every new table and index, production-safe: new tables only, unused until their 
   (new) and a `mcp_oauth_validate` route in `routes.rs` (136 lines): 1 SELECT of the credential, 1 `GetSecretValue`,
   and `initialize` through an `McpProbe` port that the engine's MCP client implements, wired in `api`. Live's
   statuses and messages for VA-1, VA-2 and VA-4 are captured with a probe that makes no model call, and the tests
-  assert them. Tests: each of VA-1, VA-2, VA-4 and VA-5; `mcp_oauth_validate` answers `valid` against a scripted
+  assert them. A vault's archive, in `vaults/src/service.rs`, is one transaction: 1 `UPDATE vaults` (as today) and 1
+  `UPDATE credentials SET has_secret = false, doc = jsonb_set(jsonb_set(doc, '{archived_at}', $now), '{updated_at}',
+  $now) WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS NULL RETURNING credential_id`; after the
+  commit, 1 secret delete per returned credential, as a credential's archive purges today. Tests: each of VA-1, VA-2,
+  VA-3, VA-4 and VA-5, VA-3 with a running session that keeps running and gets no credential from the archived vault
+  at its next step; `mcp_oauth_validate` answers `valid` against a scripted
   server that accepts the token, `invalid` on 401, `unknown` when unreachable.
 
 #### PR 9. Scheduler and webhooks
@@ -643,7 +658,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   per status change in its commit; a task per replica claims due rows 100 at a time `FOR UPDATE SKIP LOCKED`, signs,
   POSTs with a 10 s timeout, and marks them in one UPDATE per batch. Tests: signature verified with the SDK's
   `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a due delivery
-  survives a restart; a failed OAuth refresh sends `vault_credential.refresh_failed`.
+  survives a restart; a failed OAuth refresh sends `vault_credential.refresh_failed`; archiving a vault with two
+  credentials sends two `vault_credential.archived` deliveries (H-6).
 
 #### PR 10. Removals
 
@@ -689,13 +705,16 @@ Merges after the loop's setting reaches every workspace (Rollout).
   and open streams keep streaming; prod follows after a day with no page.
 - PR 8's checks are verified on stage with a probe of each refused case (VA-2, VA-4, VA-5) and a deployment whose
   MCP host the environment blocks (MC-18, MC-19), each matching live's captured answer, and with the Python,
-  TypeScript and Java suites green; prod follows after a day with no page.
-- Sessions on the loop (L7, in PR 6) sit behind a setting listing workspaces; a session's path is fixed at create. Stages: one internal
+  TypeScript suites green (the Java suite joins with PR 11); prod follows after a day with no page.
+- Sessions on the loop (L7, in PR 6) sit behind a setting listing workspaces; a session's path is fixed at create, except that an idle harness-path session moves to the loop at its next turn
+  once its workspace is listed (L-19). Stages: one internal
   workspace, then 10%, 50%, 100% of workspaces, each for at least 24 h including the daily peak, judged on the SLIs
   below, with an absolute stop when a page fires.
 - A workspace is listed for L7 only once `agentd-worker` polls the runtime queue in that deployment environment;
   until then its `cloud` sessions would wait on a queue nobody polls.
-- The removals (PR 10) merge after L7 reaches 100% and `agentd-worker` serves `cloud` work on stage and prod.
+- The removals (PR 10) merge after L7 reaches 100%, `agentd-worker` serves `cloud` work on stage and prod, and no
+  session is running on the harness path: idle ones move to the loop at their next turn (L-19), and the merge waits
+  until a count of running harness-path sessions reads zero on stage and prod.
 - Compaction (PR 7) runs only for sessions on the loop, and PR 7 merges while L7 lists only the internal
   workspace, so compaction reaches other workspaces only through L7's later stages.
 - The Cloudflare launcher serves stage's runtime queue first; prod's runtime queue moves to it after a week on stage
@@ -804,6 +823,9 @@ session (E4).
 | The Cloudflare launcher's AWS read key is a static key (G8) | `GetSecretValue` on tagged secrets only, from Cloudflare's IP ranges, rotated every 90 days | Cloudflare documents a Worker identity AWS accepts |
 | An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) can have its secret overwritten by the refresh (MC2) | 10 s per refresh, logged as `refresh_overwrote_update`; both tokens come from the same grant | a customer reports a lost update, or the log shows it more than rarely |
 | A crash between a session delete's commit and its event delete leaves that session's events (E4) | one session per crash; no API can reach them, since the session answers 404 | the DynamoDB plan, which moves deletes to the store's expiry |
+| A loop worker that dies after an MCP server answered a call and before its step commits the result makes the next step call the tool again (MC-25) | one repeated call per crash; the step that calls a tool commits its result at once, with no model call in between | the MCP spec gains idempotency keys, or a customer reports a repeated side effect |
+| A sandbox whose networking cannot be read never starts, and its session waits on its tool call until a `user.interrupt` (CF-12) | 10 minutes of retries per work item | the networking read fails outside a Cloudflare or agentd outage |
+| On Cloudflare, a placeholder sent on a port other than 80 or 443 reaches its host unchanged, so the call fails there (CF-5) | tools that call credentialed APIs on other ports | a customer needs a credential on another port |
 | The Sandbox SDK and backups need the `durable_object` scheduling policy, in public beta (G6) | CF-4's tar-to-bucket fallback | the policy leaves beta, or breaks |
 
 ### Load test plan
