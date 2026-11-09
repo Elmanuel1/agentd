@@ -87,7 +87,7 @@ agentd (one stack, each PR on your go-ahead):
 8. MCP and vaults: MCP servers called from the loop with cached connections, vault credentials read per step, one
    OAuth refresh at a time, deployments paused when the environment blocks an MCP host, and vaults as Anthropic
    documents them.
-9. Scheduled deployments on any replica, and session webhooks.
+9. Scheduled deployments on any replica, and session, vault and credential webhooks.
 10. Removals: the Python harness and its routes, agentd's sandbox launch, the egress crates (they move to
     `agentd-worker`).
 11. The Java SDK in CI beside Python and TypeScript, SLO alerts, scale-up alarms, the load test, docs and runbook.
