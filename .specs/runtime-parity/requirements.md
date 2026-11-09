@@ -141,7 +141,6 @@ Decision D31; evidence C1 to C5.
 | CP-10 | If a compaction call returns no summary, then the loop shall continue with CP-2's prompt and run the compaction step again at the thread's next step. |
 | CP-11 | If a compaction request is itself larger than the window, then the loop shall drop the oldest events after the checkpoint from that request until it fits, and retry. |
 | CP-12 | When a thread's model changes to one with a smaller window, or the thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
-| CP-14 | If the provider refuses a model call because the prompt is longer than the model's window, then the loop shall run a compaction step for that thread and then run the turn again, without counting the refusal against M-2's attempts. |
 | CP-13 | The loop shall take each model's window from the provider's `GET /v1/models/{id}` `max_input_tokens` (C4), read once per process, or from `AGENTD_MODEL_WINDOWS` for a provider that has no such field. |
 
 ## 5. Files for workers
@@ -312,8 +311,8 @@ under SRE.
 ## Plan of PRs
 
 One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, then
-one PR per feature. Each PR deploys alone. Sessions on the loop (L7) and compaction sit behind settings until Rollout
-turns them on. Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's refusal of
+one PR per feature. Each PR deploys alone. Sessions on the loop (L7) sit behind a setting until Rollout turns them on, and
+compaction (PR 7) runs only for those sessions. Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's refusal of
 other events while a session waits on a tool (W-19) and its environment-key answers (W-15 to W-18, W-22, W-23), PR
 5's overload refusal of new streams (F-5), and PR 8's vault and deployment checks (VA-2, VA-4, VA-5, MC-18, MC-19). The rest change no client-visible behaviour: PR 9's scheduler fires as today from any replica, and E-4 deletes, as
 today, the session row and then its events through the port. Migration
@@ -327,7 +326,7 @@ numbers are taken at merge time. "Reuses" names work already written on local br
 | 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W1, W3 to W5, EV1, W7 to W9, L6, FO1 | W-1 to W-23, EV-1 to EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
 | 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
-| 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-14 | |
+| 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
 | 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-26, VA-1 to VA-6 | |
 | 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-5 | |
 | 10 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
@@ -545,8 +544,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
   the first checkpoint; a step with a tool call waiting does not compact; a summary call that returns no block
-  leaves the cleared prompt and compacts at the next step; a provider that refuses a prompt as too long gets a
-  compaction step and then the same turn again, with the refusal not counted as an attempt (CP-14). A recall check against a real model runs only with the
+  leaves the cleared prompt and compacts at the next step. A recall check against a real model runs only with the
   user's OK (D22).
 - **CP3.** `engine/src/turn/compact/handoff.rs` (the handoff prompt), `oversize.rs`, and the model-change check in
   `step.rs`. Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
@@ -698,7 +696,7 @@ Merges after the loop's setting reaches every workspace (Rollout).
 - A workspace is listed for L7 only once `agentd-worker` polls the runtime queue in that deployment environment;
   until then its `cloud` sessions would wait on a queue nobody polls.
 - The removals (PR 10) merge after L7 reaches 100% and `agentd-worker` serves `cloud` work on stage and prod.
-- Compaction (PR 7) follows L7's stages: its thresholds are settings, so a stage can raise them to turn it off.
+- Compaction (PR 7) runs only for sessions on the loop, so it follows L7's workspace stages.
 - The Cloudflare launcher serves stage's runtime queue first; prod's runtime queue moves to it after a week on stage
   with no page, and after Cloudflare has raised the account's vCPU capacity (G1) above the expected peak.
 - Per deployment environment, the settings (`AGENTD_ROLE`, model limits, the L7 workspace list) live in its
