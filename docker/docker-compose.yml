@@ -44,7 +44,8 @@ services:
     command: >
       -url=jdbc:postgresql://postgres:5432/agentd
       -user=agentd -password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-      -locations=filesystem:/flyway/sql -connectRetries=20 migrate
+      -locations=filesystem:/flyway/sql -connectRetries=20
+      -postgresql.transactional.lock=false migrate
     volumes:
       - ../crates/adapters/store-postgres/migrations:/flyway/sql:ro
     depends_on:
