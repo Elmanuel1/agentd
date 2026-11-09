@@ -48,7 +48,8 @@ sequenceDiagram
 - **Work token**: the credential a worker gets with a work item; it reaches only that session.
 - **Environment key**: the key a worker uses to ask for work; the **runtime queue** is where `cloud` work waits.
 - **Loop step**: one pass of a session's loop: read the session's event log, ask the model, record what it said.
-  A tool call ends a step; the tool's result starts the next one.
+  A tool call ends a step; the tool's result starts the next one, and an MCP call the loop makes itself runs in
+  the step right after.
 - **Work item**: a queue entry that tells a worker "this session needs you"; its id is the session id.
 - **Lease**: a claim with an expiry. A loop worker holds a step's lease while it runs that step; if it dies, the lease
   runs out and another worker takes the step.
