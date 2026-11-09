@@ -12,7 +12,7 @@
 | Optional feature | Where `<feature>`, the `<system>` shall `<response>`. |
 
 **Systems:** *agentd* (the one binary, in either role), *the API* (agentd in its `api` role: requests, streams,
-the work queue), *the loop* (agentd in its `loop` role: steps), *the scheduler* (agentd's schedule claims). Workers are not agentd: they run in the container
+the work queue), *the loop* (agentd in its `loop` role: steps), *the scheduler* (agentd's schedule claims), *the proxy* (`agentd-worker`'s egress proxy, section 8 only). Workers are not agentd: they run in the container
 project (see Out of scope).
 
 **Terms:**
@@ -150,6 +150,32 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | H-3 | If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
 | H-4 | The API shall keep pending deliveries in Postgres, so that they survive a restart. |
 
+## 8. Environment-variable credentials
+
+agentd's side (D28):
+
+| ID | Requirement |
+|---|---|
+| EV-1 | When the API hands out a session's work item, it shall set the work secret's `environment_variables` to one entry per unarchived `environment_variable` credential in the session's vaults, keyed by `secret_name` (the first vault in `vault_ids` wins, B10), whose value is the credential's placeholder. |
+| EV-2 | The API shall sign each placeholder with one key held in Secrets Manager (`<prefix>/system/egress_key`), created on first boot, over the session, workspace, vault and credential ids. |
+| EV-3 | The API shall never put a credential's value in the work secret, an event, a log or a response. |
+
+`agentd-worker`'s egress proxy, built in its own repository (D6) and recorded here so both sides build to one
+contract (D25, D28):
+
+| ID | Requirement |
+|---|---|
+| EG-1 | When the launcher starts a sandbox, it shall set each `environment_variables` entry of the work secret as an environment variable, so the sandbox sees the placeholder and never the value. |
+| EG-2 | The proxy shall take the calling session from `Proxy-Authorization: Basic <session id>:<sessions_token>`, checked with `GET /v1/sessions/{id}` and that token, cached at most 60 s per token digest. |
+| EG-3 | When a request to a host in the credential's `allowed_hosts` carries a valid placeholder in a location its `injection_location` allows, the proxy shall read the credential's sealed secret from Secrets Manager for that request, substitute the value, send the request, and wipe the value. |
+| EG-4 | If a request carries a placeholder for a host outside the credential's `allowed_hosts`, then the proxy shall refuse it with 403 and send nothing. |
+| EG-5 | If a placeholder's signature fails or its session is not the calling session, then the proxy shall refuse the request with 403. |
+| EG-6 | The proxy shall keep no copy of a value between requests, so that a rotated value applies on the next request. |
+| EG-7 | If Secrets Manager cannot be reached or the credential is gone, then the proxy shall refuse the request (fail closed). |
+| EG-8 | The proxy shall log a credential's id and a fingerprint, never its value. |
+| EG-9 | The proxy shall run as its own service with an IAM role allowed only `secretsmanager:GetSecretValue` on `<prefix>/wrkspc_*` and `<prefix>/system/egress_key` and `kms:Decrypt` with their KMS key; the sandbox task role holds no secret permission. |
+| EG-10 | Where its operator turns secret injection on, the proxy shall apply EG-2 to EG-8; our `cloud` deployment turns it on, and it is off by default. |
+
 ## Industry practice
 
 | Pattern | Source | Here |
@@ -165,10 +191,6 @@ Departures:
   endpoints (FO-1, FO-2; decision D24). Live refuses this; Anthropic stages files inside its own `cloud` sandboxes.
   Why: agentd holds no container code (D5) and `agentd-worker` speaks only the public API (D6), so its sidecar can
   stage a session's files only through the files endpoints.
-- A `cloud` session's `environment_variable` credentials get no placeholder in the sandbox and no substitution at
-  egress, where live's `cloud` sandboxes substitute them. Why: agentd has no part in egress secrets and our
-  `cloud` deployment of `agentd-worker` leaves secret injection off (D25); live itself does not support those
-  credentials with self-hosted sandboxes.
 
 ## Plan of PRs
 
@@ -184,6 +206,7 @@ work already written on local branches.
 | W3 | Postgres work store, unused | code | 3 | W-2, W-5, W-6, W-9 | |
 | W4 | Work items live in Postgres; id = session id; `actor`; `started_at` | code | 3 | W-2 to W-4, W-7, W-8, W-10, W-11, W-21 | |
 | W5 | The work secret carries live's fields | code | 1 | W-12 | |
+| EV1 | Environment-variable credentials: signed placeholders in the work secret | code | 2 | EV-1 to EV-3 | |
 | W6m | `environment_keys` table | migration | 1 | W-13 | branch `environment-keys` |
 | W7 | Environment keys: store, CLI, runtime key, edge rules, poll by environment key only | code | 4 | W-13 to W-18 | branch `environment-keys` |
 | W8 | A session waiting on a tool refuses other events | code | 1 | W-19 | |
@@ -209,7 +232,7 @@ work already written on local branches.
 | RM3 | Remove the egress proxy (`egress`, `egress-proxy`), the vaults' egress credential hand-off and the model-key egress binding | code | 2 | ADR consequences, D25 | |
 | DOC1 | Docs and runbook | docs | 1 | all | |
 
-36 PRs including the spec.
+37 PRs including the spec.
 
 ### Per-PR detail
 
@@ -241,6 +264,12 @@ are gated by `AGENTD_PG_TESTS`, as today.
   `active` item with no heartbeats still reads `active` (W-10).
 - **W5.** `work/src/tokens.rs` `secret()` writes live's nine keys in live's order. Test: the decoded secret's keys,
   order and types.
+- **EV1.** `work/src/secret.rs` (new) builds `environment_variables`; `work/src/placeholder.rs` (new) signs
+  placeholders with `Signer` keyed by `<prefix>/system/egress_key`, read or created through W1's `system_secret.rs`.
+  Statements per hand-out: 1 `SELECT * FROM credentials WHERE workspace_id = $1 AND vault_id = ANY($vault_ids) AND
+  doc->'auth'->>'type' = 'environment_variable' AND doc->>'archived_at' IS NULL`; no secret read. The key is read once per process. Tests: the decoded secret maps each name to a placeholder that
+  verifies for that session and fails for another; the first vault in `vault_ids` wins a shared name; an archived
+  credential is left out; no credential value appears in the secret, the events or the captured logs.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
 - **W7.** `api-keys/src/environment.rs`, `store-postgres/src/entities/environment_keys.rs`,
@@ -362,11 +391,10 @@ are gated by `AGENTD_PG_TESTS`, as today.
   (credentials encrypted in Postgres under a KMS key per workspace, in place of one Secrets Manager entry each), the
   common multi-tenant pattern at scale. It changes the vault design, so it gets its own plan.
 
-- Egress secrets: agentd has no part in them (D25); `agentd-worker`'s proxy enforces the environment's networking
-  and, when its operator turns it on, injects secrets from the operator's own source.
+- The egress proxy itself (D25): built in `agentd-worker` to EG-1 to EG-10; agentd's part is EV-1 to EV-3.
 - **`agentd-worker`**, the container project (its own repository, D6): the image running the official `EnvironmentWorker`
   unchanged; the Docker launcher for development and the Fargate launcher for production; the file sidecar (files
-  staged in, outputs and `/workspace` snapshots out, with no AWS credentials in the task); the egress proxy (networking enforced by default; secret injection optional, off by default, with its operator's own source, D25); the
+  staged in, outputs and `/workspace` snapshots out, with no AWS credentials in the task); the egress proxy (networking enforced by default; secret injection to EG-1 to EG-10, on in our `cloud` deployment and off by default elsewhere, D25); the
   `--on-work` command; our `cloud` deployment polling the runtime queue. It speaks only the public API, so it runs
   against live as well. It stages files in and saves outputs through the public files endpoints with the work token
   (FO-1, FO-2); snapshots go to its own bucket through presigned URLs its launcher makes. Its plan is a separate
@@ -426,7 +454,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | `api/src/config/sandbox.rs`, `config/runtime.rs` (14) | sandbox and runtime settings | RM2 |
 | `api/src/state.rs`, `backends.rs` (15) | wire the runtime, the issuer and egress | RM2, RM3 |
 | `sessions/src/service.rs`, `service/sandbox.rs`, `service/lifecycle.rs`, `lib.rs`, `record.rs`, `harness.rs` (13) | launch and stop sandboxes; `SandboxWork` | L7 replaces launch with queueing; RM2 removes the rest |
-| `vaults/src/egress.rs` (4) | hands vault credentials to the egress service | RM3 (D25: agentd keeps no egress credential path) |
+| `vaults/src/egress.rs` (4) | hands vault credentials to the egress service | RM3 (D28: placeholders travel in the work secret instead) |
 | `crates/egress/` (14), `crates/adapters/egress-proxy/` (2) | the egress service and proxy | move to `agentd-worker` (RM3) |
 | `crates/adapters/sandbox-docker/` (9), `crates/sandbox-worker/` | the Docker runtime and relay | move to `agentd-worker` (RM2) |
 | `Cargo.toml` members and deps, `api/Cargo.toml`, `docker/sandbox/Dockerfile` | build them | RM2, RM3 |
@@ -442,7 +470,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | Repo `CLAUDE.md` | Not applicable: agentd has none. |
 | Memory: agentd parity, no SDK of our own, harness in sandbox | PASS: the loop in agentd, workers outside, no agentd-only route. |
 | `grill-me` ledger | PASS: no `ASSUMED` row. |
-| `industry-practice` | PASS: section above; two departures (D24, D25), each with its reason. |
+| `industry-practice` | PASS: section above; one departure (D24), with its reason. |
 | `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`), no `else`, files at most 200 lines. |
 | `review/references/sql-transactions.md` | PASS: statements per operation; no subqueries; claims with `SKIP LOCKED`; a commit checks its claim first. |
 | `review/references/architecture.md`, `system-design.md` | PASS: one path for `cloud` and `self_hosted`; no parallel route. |
