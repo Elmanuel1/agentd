@@ -84,49 +84,51 @@ room):
 9. Add the `environment_keys` table.
 10. Environment keys: create them with a command; poll only with one; live's 401 and 403 answers.
 11. A session waiting on a tool result refuses other messages, as live does.
-12. Mark events processed in one statement; read the log in order without repeats.
-13. Events reach every stream on every replica, through Valkey signals.
-14. Streams: a jittered fallback timer, new streams refused while the database is overloaded, the event list read
+12. Our own runtime key may read the environments of `cloud` sessions, so the Cloudflare launcher can apply their
+    networking; customer keys keep live's refusal.
+13. Mark events processed in one statement; read the log in order without repeats.
+14. Events reach every stream on every replica, through Valkey signals.
+15. Streams: a jittered fallback timer, new streams refused while the database is overloaded, the event list read
     from a replica.
-15. ⚙ Move the storage settings into their own config file.
-16. DynamoDB event log: writes.
-17. DynamoDB event log: reads.
-18. DynamoDB event log for the workspaces you list.
-19. An optional retention period for old sessions' events.
-20. Add the `loop_steps` table.
-21. Bring the model client back: one retry layer, prompt caching.
-22. Bring back the event history and the prompt.
-23. Bring back the turn: a tool call waits for a worker.
-24. Bring back threads, delegation and interrupts.
-25. Bring back outcome grading and the budget.
-26. Each model's window, from the provider's models endpoint.
-27. The step queue: claim a step, commit it, take over a dead one.
-28. Loop workers run steps; the `api` and `loop` roles; a model-call limit per workspace; 256 steps per worker.
-29. An account-wide model limit, so all workspaces together stay under the provider's limit.
-30. Compaction, first tier: clear old tool results from the prompt.
-31. Add the checkpoint index.
-32. Compaction, second tier: summarise into a checkpoint, with Anthropic's compaction block.
-33. Compaction for other providers, oversized requests and model changes.
-34. Work tokens can only answer their own session's open tool calls and read its own files and memory.
-35. Workers read the session's mounted files and save its outputs with the work token.
-36. Add the `mcp_connections` table.
-37. MCP in the loop: connect to the agent's MCP servers, keep their session and tool list, call their tools, record
+16. ⚙ Move the storage settings into their own config file.
+17. DynamoDB event log: writes.
+18. DynamoDB event log: reads.
+19. DynamoDB event log for the workspaces you list.
+20. An optional retention period for old sessions' events.
+21. Add the `loop_steps` table.
+22. Bring the model client back: one retry layer, prompt caching.
+23. Bring back the event history and the prompt.
+24. Bring back the turn: a tool call waits for a worker.
+25. Bring back threads, delegation and interrupts.
+26. Bring back outcome grading and the budget.
+27. Each model's window, from the provider's models endpoint.
+28. The step queue: claim a step, commit it, take over a dead one.
+29. Loop workers run steps; the `api` and `loop` roles; a model-call limit per workspace; 256 steps per worker.
+30. An account-wide model limit, so all workspaces together stay under the provider's limit.
+31. Compaction, first tier: clear old tool results from the prompt.
+32. Add the checkpoint index.
+33. Compaction, second tier: summarise into a checkpoint, with Anthropic's compaction block.
+34. Compaction for other providers, oversized requests and model changes.
+35. Work tokens can only answer their own session's open tool calls and read its own files and memory.
+36. Workers read the session's mounted files and save its outputs with the work token.
+37. Add the `mcp_connections` table.
+38. MCP in the loop: connect to the agent's MCP servers, keep their session and tool list, call their tools, record
     Anthropic's MCP events.
-38. MCP credentials from the session's vaults, read in each step that uses them, with one OAuth refresh at a time.
-39. ⚙ Deployment run errors get their own file.
-40. A deployment whose MCP server the environment blocks records the error and pauses, as live does.
-41. Vaults as Anthropic documents them: `vault_ids` fixed, archived vaults refused, `token_endpoint` fixed, expiry
+39. MCP credentials from the session's vaults, read in each step that uses them, with one OAuth refresh at a time.
+40. ⚙ Deployment run errors get their own file.
+41. A deployment whose MCP server the environment blocks records the error and pauses, as live does.
+42. Vaults as Anthropic documents them: `vault_ids` fixed, archived vaults refused, `token_endpoint` fixed, expiry
     kept, `mcp_oauth_validate`.
-42. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
-43. Add the `schedules` table.
-44. Scheduled deployments fire on any replica, once.
-45. Add the webhook deliveries table.
-46. Session status webhooks, signed and retried as live does.
-47. The official Java SDK runs against agentd in CI, like the Python and TypeScript ones.
-48. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
-49. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to `agentd-worker`).
-50. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`).
-51. Docs and runbook.
+43. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
+44. Add the `schedules` table.
+45. Scheduled deployments fire on any replica, once.
+46. Add the webhook deliveries table.
+47. Session status webhooks, signed and retried as live does.
+48. The official Java SDK runs against agentd in CI, like the Python and TypeScript ones.
+49. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
+50. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to `agentd-worker`).
+51. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`).
+52. Docs and runbook.
 
 `agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created on your go-ahead):
 
@@ -134,8 +136,10 @@ room):
 2. Our runtime poller: `ant beta:worker poll --on-work`, handing each work item to the launcher.
 3. The Docker launcher, for development and CI.
 4. The Cloudflare launcher, for our `cloud`, built on Cloudflare's open-source `@cloudflare/containers` and
-   `@cloudflare/sandbox`: one container per session, its files staged in and outputs saved through the files
-   endpoints, `/workspace` snapshots, networking enforced by `allowedHosts`.
+   `@cloudflare/sandbox` and on Cloudflare's `claude-managed-agents` template (credited): one container per session
+   running the official worker, which alone holds the work item; files staged in and outputs saved through the
+   files endpoints; `/workspace` backed up to R2; networking read with our runtime key and enforced by
+   `allowedHosts`, failing closed; the environment key never inside the container.
 5. The Cloudflare swap: the session's Durable Object attaches `environment_variable` values on allowed hosts, reading
    them from agentd's Secrets Manager with one narrow read key and keeping each for 5 minutes in memory.
 6. The optional Fargate launcher with its queue-driven fleet, and the optional EC2 launcher, for AWS-only operators.
@@ -155,6 +159,8 @@ room):
   memory; a revoked value can work for up to 5 minutes (2026-11-08).
 - agentd hands the worker signed placeholders in the work item's secret, never values, and no new route
   (2026-11-08).
+- The Cloudflare launcher reads a `cloud` environment's networking with our runtime key, the only key allowed to;
+  if it cannot, the sandbox does not start (2026-11-08).
 - One credential store for now, Secrets Manager; envelope encryption when reads pass half of AWS's limit
   (2026-11-08).
 - agentd serves MCP servers from the loop with the session's vault credentials (2026-11-08), read once per loop step

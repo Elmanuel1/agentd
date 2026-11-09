@@ -66,9 +66,11 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | W-13 | When `agentd environment-keys create` runs, the API shall store only the key's peppered digest in `environment_keys`, bound to one organization, workspace and environment, and print the `sk-ant-oat01-` key once. |
 | W-14 | When the API boots with no runtime key in Secrets Manager, the API shall mint one, bound to the runtime queue. |
 | W-15 | If an environment key arrives as `x-api-key`, then the API shall answer 401 `authentication_error` "invalid x-api-key". |
-| W-16 | If an environment key calls a route other than its queue's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or a session's `GET`, events, stream and `POST …/events`, then the API shall answer 403 `permission_error` with live's scope message. |
+| W-16 | If an environment key calls a route other than W-22's (runtime key only), its queue's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or a session's `GET`, events, stream and `POST …/events`, then the API shall answer 403 `permission_error` with live's scope message. |
 | W-17 | If an environment key reads a session of another environment, then the API shall answer 404. |
 | W-18 | If a workspace API key calls `work/poll`, then the API shall answer 401 `authentication_error` "Invalid bearer token". |
+| W-22 | When agentd's runtime key calls `GET /v1/environments/{id}` for an environment with a work item on the runtime queue, the API shall serve the environment as it does to a workspace key (D39). |
+| W-23 | If the runtime key calls `GET /v1/environments/{id}` for an environment with no work item on the runtime queue, then the API shall answer 403 `permission_error` with live's scope message. |
 | W-19 | While a session is idle with `requires_action`, the API shall refuse every event but `user.tool_confirmation`, `user.custom_tool_result`, `user.tool_result` and `user.interrupt`, with live's 400 text naming the waiting ids. |
 
 ## 2. Event log
@@ -249,12 +251,22 @@ The Cloudflare launcher (our `cloud`, D38):
 | ID | Requirement |
 |---|---|
 | CF-1 | When our runtime poller (`ant beta:worker poll --on-work`, on a small always-on task beside agentd) receives a work item, its `--on-work` command shall hand the item to the Cloudflare launcher Worker over HTTPS, signed with an HMAC key the two share, and the Worker shall start the session's container through `getByName(session_id)`. |
-| CF-2 | The container shall run the official `EnvironmentWorker` unchanged, from a fresh disk, with no warm pool, stopping after `sleepAfter` (default 10 min) idle; `limited` networking sets `enableInternet = false` and `allowedHosts`, and `unrestricted` sets `enableInternet = true`. |
+| CF-2 | The container shall run the official `EnvironmentWorker` unchanged (`handle_item()`), from a fresh disk, with no warm pool, stopping after `sleepAfter` (default 10 min) idle; `limited` networking sets `enableInternet = false` and `allowedHosts`, and `unrestricted` sets `enableInternet = true`; `allowedHosts` always holds the host of the work secret's `api_base_url`, the worker's route to its session. |
+| CF-8 | Once the container starts, its `EnvironmentWorker` shall be the only process that heartbeats, stops or answers the session's work item; the Durable Object and the launcher Worker shall never call `work.heartbeat` or `work.stop` or send session events. |
+| CF-9 | The launcher shall keep the environment key outside the container: the container receives only the item's `ANTHROPIC_WORK_ID`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID` and `ANTHROPIC_WORK_SECRET` (whose `sessions_token` `handle_item()` uses, A1) and the placeholders. |
+| CF-11 | The launcher shall read an environment's networking with the runtime key (W-22), cache it for `networking_cache_seconds` (default 60), and apply the cached value when a container starts; a running container keeps the networking it started with (B26). |
+| CF-12 | If the launcher cannot read an environment's networking, then it shall start no container and stop the work item with `work.stop`, so no sandbox ever starts unrestricted. |
+| CF-10 | If the launcher cannot resolve a session's networking or credentials, then the Durable Object shall refuse every outbound request but those to the `api_base_url` host (fail closed), never allow them unrestricted. |
 | CF-3 | The session's Durable Object shall stage the session's mounted files into the container from `GET /v1/files/{id}/content` with the work token (FO-1) before the worker starts, and upload outputs with `files.upload` scoped to the session (FO-2) when the session finishes a turn and at exit, through `@cloudflare/sandbox`'s `Files`. |
-| CF-4 | The Durable Object shall save `/workspace` with `snapshotContainer` when the session finishes a turn and restore it on the next start; where snapshots are unavailable, it shall save a tar of `/workspace` to `agentd-worker`'s bucket through a presigned URL instead. |
+| CF-4 | The Durable Object shall back `/workspace` up to R2 with `@cloudflare/sandbox`'s `DirectoryBackup` when the session finishes a turn and at exit, and restore it on the next start; where that is unavailable, it shall save a tar of `/workspace` to `agentd-worker`'s bucket through a presigned URL instead. |
 | CF-5 | The Durable Object's outbound handler (`interceptHttps = true`, the container trusting Cloudflare's ephemeral CA at start) shall apply EG-3 to EG-5 to every request to a host one of the session's credentials allows, treating a placeholder for any session but its own as invalid. |
 | CF-6 | The Durable Object shall keep each value and the egress key in its memory for at most 5 minutes, never in Durable Object storage, and drop them on eviction and at session end, so that a rotated, archived or deleted credential applies within 5 minutes. |
 | CF-7 | The handler shall read Secrets Manager with `aws4fetch` and one AWS access key held as a Worker secret, never inside the container, belonging to an IAM user allowed only `secretsmanager:GetSecretValue` on secrets tagged `credential_type=environment_variable` and on `<prefix>/system/egress_key`, `kms:Decrypt` through Secrets Manager only, and only from Cloudflare's published IP ranges (`aws:SourceIp`); the key is rotated every 90 days. |
+
+Tests in `agentd-worker`'s plan include: a session with built-in calls runs to `end_turn` against agentd while
+agentd records heartbeats for its work item from one client only (CF-8); `env` run by the agent shows no
+`sk-ant-oat01-` value (CF-9); with the networking read failing, no container starts and the item reads `stopped`
+(CF-12); with policy resolution failing, a request to any host but `api_base_url`'s is refused (CF-10).
 
 The Fargate launcher's fleet (D33):
 
@@ -275,6 +287,7 @@ The Fargate launcher's fleet (D33):
 | Fan-out by signal, data from the source of truth | Common pub/sub notify-then-read designs | Followed with Valkey signals and log reads. |
 | Context management in tiers: clear old tool output first, summarise later, keep the raw log | Anthropic context editing (C3) and compaction (C1); Codex (C5) | Followed (D31): the same 100,000-token clearing default and 3 kept results as context editing; summaries below Codex's 90%. |
 | Credentials attached at egress, outside the sandbox | Live `cloud` (B19); Cloudflare outbound handlers (G5) | Followed for our `cloud` (D25, D38). |
+| A per-session sandbox Durable Object with an outbound egress hook and R2 backups | Cloudflare's `claude-managed-agents` template (G9) | Followed and credited (D38); it differs where the template departs from live (CF-8 to CF-10). |
 | Single-use workers scaled on queue depth | ECS target tracking with task scale-in protection (Q3) | Followed for the Fargate launcher and the loop workers (D33). |
 | Envelope encryption for per-tenant secrets at scale | AWS KMS data keys (Q2) | The scale-up path behind `SecretStore`, with its trigger (D30). |
 
@@ -308,6 +321,7 @@ work already written on local branches.
 | W6m | `environment_keys` table | migration | 1 | W-13 | branch `environment-keys` |
 | W7 | Environment keys: store, CLI, runtime key, edge rules, poll by environment key only | code | 4 | W-13 to W-18 | branch `environment-keys` |
 | W8 | A session waiting on a tool refuses other events | code | 1 | W-19 | |
+| W9 | The runtime key reads the environments of its queue's sessions | code | 2 | W-22, W-23 | |
 | F1 | Stamping in one statement; ordered reads by `seq` | code | 2 | S-3 | `update_processed_at` (PR #44) |
 | F2 | Valkey signals; each replica relays its sessions' streams | code | 3 | F-1 to F-3 | |
 | F3 | Streams: a jittered fallback timer, refused under overload; `events.list` from the replica | code | 2 | F-4, F-5, E-3 | |
@@ -343,7 +357,7 @@ work already written on local branches.
 | RM3 | Remove the egress proxy (`egress`, `egress-proxy`), the vaults' egress credential hand-off and the model-key egress binding | code | 2 | ADR consequences, D25 | |
 | DOC1 | Docs and runbook | docs | 1 | all | |
 
-51 PRs including the spec.
+52 PRs including the spec.
 
 ### Per-PR detail
 
@@ -359,7 +373,8 @@ are gated by `AGENTD_PG_TESTS`, as today.
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
   stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
   `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
-  `request_id` default from the connection settings, as every table since history PR #41.
+  `request_id` default from the connection settings, as every table since history PR #41. Also the index
+  `(environment_id) where queue = 'runtime'` for W9.
 - **W3.** `work/src/store.rs` (port, about 60 lines); `store-postgres/src/entities/work_items.rs` (about 180).
   Statements: queue 1 INSERT; claim, one transaction, 1 SELECT of the oldest queued item of the queue not handed out
   in 5 s `FOR UPDATE SKIP LOCKED LIMIT 1` and 1 UPDATE of `handed_out_at`; ack 1 `UPDATE … WHERE state = 'queued'
@@ -400,6 +415,12 @@ are gated by `AGENTD_PG_TESTS`, as today.
   keys. Tests (`api/tests/edge.rs`, `api/tests/environment_keys.rs`): one per W-13 to W-18 with live's bodies.
 - **W8.** `sessions/src/service/events.rs`: the session row is already read; no new statement. Tests: refused with
   live's text; the four answers accepted.
+- **W9.** `api/src/edge/reach.rs` (W7) allows the runtime key on `GET /v1/environments/{id}`; the environments route
+  checks it with 1 `SELECT workspace_id FROM work_items WHERE environment_id = $1 AND queue = 'runtime' LIMIT 1`, then
+  serves the environment from that workspace as today (1 SELECT); W2m adds the index `(environment_id) where queue =
+  'runtime'`. Tests (`api/tests/environment_keys.rs`): the runtime key reads an environment with a `cloud` session;
+  it gets live's 403 for an environment with none; a customer's environment key gets live's 403 for its own
+  environment.
 - **F1.** `entities/session_events.rs`: append is one multi-row INSERT; `update_processed_at(ws, session,
   ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
   doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. Every append
@@ -691,7 +712,7 @@ Each trigger is a CloudWatch alarm that opens a ticket, not a page; the scale-up
 |---|---|---|
 | A revoked `environment_variable` credential keeps working in a running `cloud` session for up to 5 minutes (CF-6) | 5 minutes, per session object | live documents a shorter re-resolution, or a customer needs immediate revocation |
 | The Cloudflare launcher's AWS read key is a static key (G8) | `GetSecretValue` on tagged secrets only, from Cloudflare's IP ranges, rotated every 90 days | Cloudflare documents a Worker identity AWS accepts |
-| Snapshots need the `durable_object` scheduling policy, in public beta (G6) | CF-4's tar-to-bucket fallback | the policy leaves beta, or breaks |
+| The Sandbox SDK and backups need the `durable_object` scheduling policy, in public beta (G6) | CF-4's tar-to-bucket fallback | the policy leaves beta, or breaks |
 
 ### Load test plan
 
