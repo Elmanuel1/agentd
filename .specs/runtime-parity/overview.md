@@ -69,81 +69,39 @@ sequenceDiagram
 
 ## The PRs
 
-agentd (one stack, each PR on your go-ahead; ✔ marks a PR that removes code, ⚙ a PR that only moves code to make
-room):
+agentd (one stack, each PR on your go-ahead):
 
 1. The spec (this folder).
-2. Work tokens keep working across restarts: their signing key lives in Secrets Manager.
-3. Add the `work_items` table.
-4. A Postgres store for work items, not used yet.
-5. Work items move to Postgres; a work item's id is its session id.
-6. The work item's secret carries the same fields as live's.
-7. ⚙ Vault credentials get their own files.
-8. `cloud` sessions' environment-variable credentials reach the worker as signed placeholders, never values; their
-   secrets are tagged so the swap can read only those.
-9. Add the `environment_keys` table.
-10. Environment keys: create them with a command; poll only with one; live's 401 and 403 answers.
-11. A session waiting on a tool result refuses other messages, as live does.
-12. Our own runtime key may read the environments of `cloud` sessions, so the Cloudflare launcher can apply their
-    networking; customer keys keep live's refusal.
-13. Mark events processed in one statement; read the log in order without repeats.
-14. Events reach every stream on every replica, through Valkey signals.
-15. Streams: a jittered fallback timer, new streams refused while the database is overloaded, the event list read
-    from a replica.
-16. ⚙ Move the storage settings into their own config file.
-17. DynamoDB event log: writes.
-18. DynamoDB event log: reads.
-19. DynamoDB event log for the workspaces you list.
-20. An optional retention period for old sessions' events.
-21. Add the `loop_steps` table.
-22. Bring the model client back: one retry layer, prompt caching.
-23. Bring back the event history and the prompt.
-24. Bring back the turn: a tool call waits for a worker.
-25. Bring back threads, delegation and interrupts.
-26. Bring back outcome grading and the budget.
-27. Each model's window, from the provider's models endpoint.
-28. The step queue: claim a step, commit it, take over a dead one.
-29. Loop workers run steps; the `api` and `loop` roles; a model-call limit per workspace; 256 steps per worker.
-30. An account-wide model limit, so all workspaces together stay under the provider's limit.
-31. Compaction, first tier: clear old tool results from the prompt.
-32. Add the checkpoint index.
-33. Compaction, second tier: summarise into a checkpoint, with Anthropic's compaction block.
-34. Compaction for other providers, oversized requests and model changes.
-35. Work tokens can only answer their own session's open tool calls and read its own files and memory.
-36. Workers read the session's mounted files and save its outputs with the work token.
-37. Add the `mcp_connections` table.
-38. MCP in the loop: connect to the agent's MCP servers, keep their session and tool list, call their tools, record
-    Anthropic's MCP events.
-39. MCP credentials from the session's vaults, read in each step that uses them, with one OAuth refresh at a time.
-40. ⚙ Deployment run errors get their own file.
-41. A deployment whose MCP server the environment blocks records the error and pauses, as live does.
-42. Vaults as Anthropic documents them: `vault_ids` fixed, archived vaults refused, `token_endpoint` fixed, expiry
-    kept, `mcp_oauth_validate`.
-43. Sessions run on agentd's loop and queue their work; agentd starts no sandbox (per workspace, behind a setting).
-44. Add the `schedules` table.
-45. Scheduled deployments fire on any replica, once.
-46. Add the webhook deliveries table.
-47. Session status webhooks, signed and retried as live does.
-48. The official Java SDK runs against agentd in CI, like the Python and TypeScript ones.
-49. ✔ Remove the Python harness, the `/harness/*` routes and the harness CI job.
-50. ✔ Remove agentd's sandbox launch and the `sandbox-docker` and `sandbox-worker` crates (they move to `agentd-worker`).
-51. ✔ Remove the egress proxy crates from agentd (they move to `agentd-worker`).
-52. Docs and runbook.
+2. Make room: three large files are split before later PRs change them, with no behaviour change.
+3. Migrations: every new table and index in one production-safe PR.
+4. The work API for Anthropic's worker: work items in Postgres, live's work secret (with signed placeholders for
+   `cloud` environment-variable credentials), environment keys and our runtime key, work tokens that reach only their
+   own session, and the session's files for workers.
+5. The event log and streams: events in order on every replica through Valkey signals, a fallback timer, new streams
+   refused under overload, the event list from a replica, an optional retention period.
+6. The DynamoDB event log for the workspaces you list.
+7. The loop: the engine brought back, steps from a Postgres queue with leases, the `api` and `loop` roles, model
+   limits per workspace and across the account, and sessions run on the loop behind a setting.
+8. Compaction: clear old tool results, then summarise into checkpoints.
+9. MCP and vaults: MCP servers called from the loop with cached connections, vault credentials read per step, one
+   OAuth refresh at a time, deployments paused when the environment blocks an MCP host, and vaults as Anthropic
+   documents them.
+10. Scheduled deployments on any replica, and session webhooks.
+11. Removals: the Python harness and its routes, agentd's sandbox launch, the egress crates (they move to
+    `agentd-worker`).
+12. The Java SDK in CI beside Python and TypeScript, SLO alerts, scale-up alarms, the load test, docs and runbook.
 
 `agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created on your go-ahead):
 
-1. The worker image: the official `anthropic` SDK only, running `EnvironmentWorker` per work item.
-2. Our runtime poller: `ant beta:worker poll --on-work`, handing each work item to the launcher.
-3. The Docker launcher, for development and CI.
-4. The Cloudflare launcher, for our `cloud`, built on Cloudflare's open-source `@cloudflare/containers` and
-   `@cloudflare/sandbox` and on Cloudflare's `claude-managed-agents` template (credited): one container per session
-   running the official worker, which alone holds the work item; files staged in and outputs saved through the
-   files endpoints; `/workspace` backed up to R2; networking read with our runtime key and enforced by
-   `allowedHosts`, failing closed; the environment key never inside the container.
-5. The Cloudflare swap: the session's Durable Object attaches `environment_variable` values on allowed hosts, reading
-   them from agentd's Secrets Manager with one narrow read key and keeping each for 5 minutes in memory.
-6. The optional Fargate launcher with its queue-driven fleet, and the optional EC2 launcher, for AWS-only operators.
-7. The optional AWS egress proxy (moved from agentd), for those launchers.
+1. The worker image (the official `anthropic` SDK only, running `EnvironmentWorker` per work item), our runtime
+   poller (`ant beta:worker poll --on-work`), the Docker launcher and file staging.
+2. The Cloudflare launcher for our `cloud`, built on `@cloudflare/containers`, `@cloudflare/sandbox` and Cloudflare's
+   `claude-managed-agents` template (credited): one container per session running the official worker, which alone
+   holds the work item; networking read with our runtime key and enforced by `allowedHosts`, failing closed; the
+   placeholder swap in the session's Durable Object with values kept 5 minutes in memory; `/workspace` backed up to
+   R2; the environment key never inside the container.
+3. Later and optional, for AWS-only operators: the Fargate launcher with its queue-driven fleet, the EC2 launcher,
+   and the AWS egress proxy.
 
 ## Your decisions
 

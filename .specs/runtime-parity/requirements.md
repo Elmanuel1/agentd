@@ -304,77 +304,83 @@ under SRE.
 
 ## Plan of PRs
 
-One stack with `gh stack`; spec, migration and code are separate PRs; each deploys alone and changes nothing on
-stage or prod until its switch PR. Points at most 4. Migration numbers are taken at merge time. "Reuses" names
-work already written on local branches.
+One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, then
+one PR per feature. Each PR deploys alone; new behaviour stays behind a setting until Rollout turns it on. Migration
+numbers are taken at merge time. "Reuses" names work already written on local branches.
 
-| # | PR | Kind | Pts | Requirements | Reuses |
+| # | PR | Kind | Parts | Requirements | Reuses |
 |---|---|---|---|---|---|
-| P0 | This spec | spec | 1 | all | |
-| W1 | The work-token key lives in Secrets Manager | code | 2 | W-1, W-20 | |
-| W2m | `work_items` table | migration | 1 | W-2 | |
-| W3 | Postgres work store, unused | code | 3 | W-2, W-5, W-6, W-9 | |
-| W4 | Work items live in Postgres; id = session id; `actor`; `started_at` | code | 3 | W-2 to W-4, W-7, W-8, W-10, W-11, W-21 | |
-| W5 | The work secret carries live's fields | code | 1 | W-12 | |
-| X2 | Vault credentials get their own port and files | code | 2 | none (makes room) | |
-| EV1 | Environment-variable credentials: signed placeholders in `cloud` work secrets; secrets tagged by type | code | 3 | EV-1 to EV-4 | |
-| W6m | `environment_keys` table | migration | 1 | W-13 | branch `environment-keys` |
-| W7 | Environment keys: store, CLI, runtime key, edge rules, poll by environment key only | code | 4 | W-13 to W-18 | branch `environment-keys` |
-| W8 | A session waiting on a tool refuses other events | code | 1 | W-19 | |
-| W9 | The runtime key reads the environments of its queue's sessions | code | 2 | W-22, W-23 | |
-| F1 | Stamping in one statement; ordered reads by `seq` | code | 2 | S-3 | `update_processed_at` (PR #44) |
-| F2 | Valkey signals; each replica relays its sessions' streams | code | 3 | F-1 to F-3 | |
-| F3 | Streams: a jittered fallback timer, refused under overload; `events.list` from the replica | code | 2 | F-4, F-5, E-3 | |
-| X1 | Store config moves to `config/store.rs` | code | 1 | none (makes room) | |
-| E1 to E3 | DynamoDB event log: writes, reads, the flag | code | 3 each | E-1 | |
-| E4 | Event retention period | code | 2 | E-2 | |
-| Sm | `loop_steps` table, with its autovacuum settings | migration | 1 | S-1, S-2 | |
-| L1 to L5 | Engine restored from `16805c8^`: model client, history, turn with parked built-in calls, threads, grading, budget (unused) | code | 3 to 4 each | L-1 to L-7, L-13 to L-18, M-2, M-3 | |
-| CP0 | Model windows from the provider's models endpoint | code | 2 | CP-13 | |
-| S1 | Step queue store: enqueue, claim, commit, takeover (unused) | code | 3 | S-1 to S-6 | |
-| S2 | Loop workers: one step per claim; `AGENTD_ROLE`; model concurrency per workspace; steps per worker; queue metrics (unused) | code | 3 | S-3, S-7, S-8, R-1, R-2, M-1 | |
-| M1 | Account-wide model limiter in Valkey | code | 3 | M-4 | |
-| CP1 | Compaction tier 1: estimate, clear old tool results, cap tool output | code | 3 | CP-1 to CP-3 | |
-| CPm | Unique checkpoint index on `session_events` | migration | 1 | CP-9 | |
-| CP2 | Compaction tier 2: the compaction step, Anthropic's compaction block, checkpoints | code | 4 | CP-4 to CP-7, CP-9, CP-10 | |
-| CP3 | Compaction for other providers, oversized requests and model changes | code | 3 | CP-8, CP-11, CP-12 | |
-| L6 | Work tokens: answers for open calls only, reads and writes scoped, die with the work | code | 3 | L-9 to L-12 | memory guard (branch `harness-memory-stores`), token scoping tests (PR #44) |
-| FO1 | Workers' file reads and output uploads with the work token | code | 2 | FO-1 to FO-3 | files session paths (PR #44) |
-| MCm | `mcp_connections` table | migration | 1 | MC-13 | |
-| MC1 | MCP in the loop: connect, cached session and tool list, call, permission prompts, networking, `agent.mcp_tool_*` events (unused) | code | 4 | MC-1, MC-5, MC-8, MC-10 to MC-17 | |
-| MC2 | MCP credentials from the session's vaults, read per step that uses them; claimed OAuth refresh (unused) | code | 4 | MC-2 to MC-4, MC-6, MC-7, MC-9, MC-20, MC-21, VA-3 | |
-| X3 | Deployment run errors get their own file | code | 1 | none (makes room) | |
-| MC3 | A deployment fire checks MCP hosts against the environment's networking | code | 2 | MC-18, MC-19 | |
-| VA1 | Vault parity: `vault_ids` fixed, archived vaults refused at create, `token_endpoint` fixed, expiry kept, `mcp_oauth_validate` | code | 3 | VA-1, VA-2, VA-4 to VA-6 | |
-| L7 | Sessions run on agentd's loop; their work is queued and agentd launches nothing (flagged per workspace) | code | 3 | L-2 to L-4, L-8 | branch `self-hosted-work` |
-| Km | `schedules` table | migration | 1 | K-1 | |
-| K1 | Postgres scheduler | code | 3 | K-1, K-2 | |
-| Hm | `webhook_deliveries` | migration | 1 | H-4 | |
-| H1 | Session status webhooks and `vault_credential.refresh_failed`, signed, retried from Postgres | code | 3 | H-1 to H-5 | |
-| J1 | Java SDK conformance suite | code | 3 | J-1 | |
-| RM1 | Remove the harness, the `/harness/*` routes and the harness CI job | code | 2 | ADR consequences | |
-| RM2 | Remove agentd's sandbox launch: `launch_sandbox`, the `Runtime` wiring, `sandbox-docker`, `sandbox-worker` | code | 3 | ADR consequences | |
-| RM3 | Remove the egress proxy (`egress`, `egress-proxy`), the vaults' egress credential hand-off and the model-key egress binding | code | 2 | ADR consequences, D25 | |
-| DOC1 | Docs and runbook | docs | 1 | all | |
+| 1 | This spec | spec | P0 | all | |
+| 2 | Make room: store settings, vault credentials and deployment run errors get their own files | cleanup | X1, X2, X3 | none (makes room) | |
+| 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint index | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm | W-2, W-13, S-1, S-2, MC-13, K-1, H-4, CP-9 | |
+| 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W1, W3 to W5, EV1, W7 to W9, L6, FO1 | W-1 to W-23, EV-1 to EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
+| 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2, E-3 | `update_processed_at` (PR #44) |
+| 6 | DynamoDB event log for listed workspaces | code | E1 to E3 | E-1 | |
+| 7 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
+| 8 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
+| 9 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-21, VA-1 to VA-6 | |
+| 10 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-5 | |
+| 11 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
+| 12 | Conformance, SLOs and docs: the Java SDK suite, SLO alerts, scale-up alarms, the load test, docs and runbook | code | J1, SRE | J-1 | |
 
-52 PRs including the spec.
+12 agentd PRs including the spec. `agentd-worker` (its own repository, D6) builds section 11 in 3 PRs: the image with
+the official `EnvironmentWorker`, the Docker launcher and file staging; the Cloudflare launcher (CF-1 to CF-12 with
+EG-1, EG-3 to EG-5, EG-7, EG-8, EG-10); the optional Fargate and EC2 launchers with the AWS egress proxy and the fleet
+(EG-2, EG-6, EG-9, FL-1 to FL-3).
 
 ### Per-PR detail
 
-Each code PR lists its files, its statements per operation (sql-transactions rule 1), and its tests. Database tests
+Each PR below is built from parts; each part lists its files, its statements per operation (sql-transactions rule 1), and its tests. A part's label (W1, MC2) names it wherever the spec refers to it. Database tests
 are gated by `AGENTD_PG_TESTS`, as today.
 
-- **W1.** `secrets-aws/src/system_secret.rs` (new, about 55 lines) holds the read-or-create body that `pepper.rs`
-  has today; `work_token_key()` and `api_key_pepper()` call it. Boot: 1 `GetSecretValue`, 1 `CreateSecret` the first
-  time; per request none. Tests (LocalStack): the second read returns the first's bytes; a token minted under one
-  boot verifies under the next; with `AGENTD_WORK_TOKEN_KEY` set, tokens are signed with it and Secrets Manager is
-  not read (W-20).
+#### PR 2. Make room
+
+Every production file over 200 lines that a later PR changes is split here first, with no behaviour change: the standing 200-line rule wants this as a separate cleanup PR stacked before the change.
+
+- **X1.** `config/store.rs` takes the store settings out of `api/src/config.rs`, as the 2026-11-06 plan has it.
+- **X2.** `vaults/src/store.rs` splits its port in two: `VaultStore` (vault rows) and `VaultCredentialStore`
+  (credential rows and their secrets), both implemented by the one Postgres store, so the vault aggregate keeps one
+  repository. The credential operations move from `vaults/src/service.rs` (304 lines) to `vaults/src/credentials.rs`
+  and from `store-postgres/src/entities/vaults.rs` (295 lines) to `entities/vault_credentials.rs`; every file ends
+  under 200 lines. No statement changes. Tests: the existing vault and credential suites, unchanged, pass.
+- **X3.** `deployments/src/run_error.rs` (new) takes `RunError`, `RunErrorKind`, `PausedReason` and
+  `classify_fire_error` from `types.rs` (318 lines) and `service.rs` (308 lines), and the after-fire bookkeeping
+  (auto-archive on `agent_archived`) from `service.rs` as `apply_run_error(&mut Deployment, &RunError)`. No
+  behaviour change; the deployment suites pass unchanged.
+
+#### PR 3. Migrations
+
+Every new table and index, production-safe: new tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
   stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
   `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
   `request_id` default from the connection settings, as every table since history PR #41. Also the index
   `(environment_id) where queue = 'runtime'` for W9.
+- **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
+  key_digest unique, partial_key_hint, created_at, revoked_at)`.
+- **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
+  primary key (workspace_id, session_id)) with (fillfactor = 70, autovacuum_vacuum_scale_factor = 0.01,
+  autovacuum_analyze_scale_factor = 0.02, autovacuum_vacuum_cost_limit = 2000)`, since every step updates and
+  deletes its row; partial index on `due_at` where `lease_until is null`; index on `lease_until`.
+- **Km.** `create table schedules (target, workspace_id, spec, next_fire_at, paused, primary key (target))`; index on
+  `next_fire_at` where not paused.
+- **Hm.** `webhook_deliveries` (the configured endpoint's key and URL, body, attempt, `next_attempt_at`,
+  `claimed_until`, `delivered_at`, `dropped_at`).
+- **MCm.** `create table mcp_connections (workspace_id, session_id, server_url, mcp_session_id, tools jsonb,
+  credential_updated_at, connected_at, actor, request_id, primary key (workspace_id, session_id, server_url))`.
+- **CPm.** `create unique index concurrently session_events_checkpoint on session_events (workspace_id, session_id,
+  (doc->>'session_thread_id'), (doc->'checkpoint'->>'through_seq')) where doc->>'type' =
+  'agent.thread_context_compacted'`. DynamoDB writes the checkpoint with a condition on the same key.
+
+#### PR 4. Work API for the official worker
+
+- **W1.** `secrets-aws/src/system_secret.rs` (new, about 55 lines) holds the read-or-create body that `pepper.rs`
+  has today; `work_token_key()` and `api_key_pepper()` call it. Boot: 1 `GetSecretValue`, 1 `CreateSecret` the first
+  time; per request none. Tests (LocalStack): the second read returns the first's bytes; a token minted under one
+  boot verifies under the next; with `AGENTD_WORK_TOKEN_KEY` set, tokens are signed with it and Secrets Manager is
+  not read (W-20).
 - **W3.** `work/src/store.rs` (port, about 60 lines); `store-postgres/src/entities/work_items.rs` (about 180).
   Statements: queue 1 INSERT; claim, one transaction, 1 SELECT of the oldest queued item of the queue not handed out
   in 5 s `FOR UPDATE SKIP LOCKED LIMIT 1` and 1 UPDATE of `handed_out_at`; ack 1 `UPDATE … WHERE state = 'queued'
@@ -390,11 +396,6 @@ are gated by `AGENTD_PG_TESTS`, as today.
   `active` item with no heartbeats still reads `active` (W-10).
 - **W5.** `work/src/tokens.rs` `secret()` writes live's nine keys in live's order. Test: the decoded secret's keys,
   order and types.
-- **X2.** `vaults/src/store.rs` splits its port in two: `VaultStore` (vault rows) and `VaultCredentialStore`
-  (credential rows and their secrets), both implemented by the one Postgres store, so the vault aggregate keeps one
-  repository. The credential operations move from `vaults/src/service.rs` (304 lines) to `vaults/src/credentials.rs`
-  and from `store-postgres/src/entities/vaults.rs` (295 lines) to `entities/vault_credentials.rs`; every file ends
-  under 200 lines. No statement changes. Tests: the existing vault and credential suites, unchanged, pass.
 - **EV1.** `work/src/secret.rs` (new) builds `environment_variables` for `cloud` sessions and an empty object for
   `self_hosted` ones; `work/src/placeholder.rs` (new) signs placeholders with `Signer` keyed by
   `<prefix>/system/egress_key`, read or created through W1's `system_secret.rs`; `secrets-aws/src/name.rs` adds the
@@ -407,8 +408,6 @@ are gated by `AGENTD_PG_TESTS`, as today.
   the first vault in `vault_ids` wins a shared name; an archived credential is left out; a `self_hosted` session's
   secret has `"environment_variables": {}`; a new `environment_variable` secret carries the tag and an MCP one does
   not (LocalStack); no credential value appears in the secret, the events or the captured logs.
-- **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
-  key_digest unique, partial_key_hint, created_at, revoked_at)`.
 - **W7.** `api-keys/src/environment.rs`, `store-postgres/src/entities/environment_keys.rs`,
   `api/src/cli/environment_keys.rs`, `api/src/edge/reach.rs` (what each scoped credential reaches),
   `edge/auth.rs` (resolution only), `work/src/routes.rs` (poll). Per request 1 SELECT by digest, as for workspace
@@ -421,6 +420,17 @@ are gated by `AGENTD_PG_TESTS`, as today.
   'runtime'`. Tests (`api/tests/environment_keys.rs`): the runtime key reads an environment with a `cloud` session;
   it gets live's 403 for an environment with none; a customer's environment key gets live's 403 for its own
   environment.
+- **L6.** `api/src/edge/reach.rs` (token routes); the memory routes' guard asks sessions which stores a session
+  attaches and how; every token request reads its item (1 SELECT by primary key). Tests: one per L-9 to L-12.
+- **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files) asking `Session::mounts`.
+  Download: 1 SELECT of the session, 1 SELECT of the file, 1 object GET. The grader reads a rubric file in the loop,
+  server side, so no worker downloads it. Tests (`api/tests/session_token.rs`): its own mounted file is served;
+  another session's file is refused; a file not mounted in its session is refused; an upload is scoped to its
+  session and absent from another session's `files.list(scope_id=...)`; deleting another session's file or a
+  mounted input answers 404 (FO-3).
+
+#### PR 5. Event log and streams
+
 - **F1.** `entities/session_events.rs`: append is one multi-row INSERT; `update_processed_at(ws, session,
   ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
   doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. Every append
@@ -437,29 +447,26 @@ are gated by `AGENTD_PG_TESTS`, as today.
   Tests: with signals off, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
   `overloaded_error` and an open one keeps streaming; with a replica URL set, `events.list` reads it and a step
   reads the primary.
-- **X1, E1 to E3.** As the 2026-11-06 plan: `config/store.rs`; `crates/adapters/events-dynamodb` with one
-  `TransactWriteItems` per append and a conditional update per stamp; the port's test suite run on both stores; the
-  workspace list setting. Tests: the port suite on both stores; a listed workspace's new session lands in DynamoDB.
 - **E4.** `sessions/src/retention.rs` (new), a task per replica every hour: 1 `SELECT session_id FROM sessions WHERE
   workspace_id = ANY($listed) AND coalesce(archived_at, deleted_at) < now() - $period ORDER BY session_id LIMIT 1000`,
   then 1 `DELETE FROM session_events WHERE session_id = ANY($ids)`; DynamoDB sessions through the port's delete.
   Tests: with a period of 1 day, an archived session two days old loses its events and one archived today keeps them;
   with no period set, nothing is deleted.
-- **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
-  primary key (workspace_id, session_id)) with (fillfactor = 70, autovacuum_vacuum_scale_factor = 0.01,
-  autovacuum_analyze_scale_factor = 0.02, autovacuum_vacuum_cost_limit = 2000)`, since every step updates and
-  deletes its row; partial index on `due_at` where `lease_until is null`; index on `lease_until`.
+
+#### PR 6. DynamoDB event log
+
+- **E1 to E3.** As the 2026-11-06 plan: `crates/adapters/events-dynamodb` with one
+  `TransactWriteItems` per append and a conditional update per stamp; the port's test suite run on both stores; the
+  workspace list setting. Tests: the port suite on both stores; a listed workspace's new session lands in DynamoDB.
+
+#### PR 7. The loop
+
 - **L1 to L5.** `crates/engine` restored from `16805c8^` (each file under 200 lines): L1 model clients and router,
   the one retry layer (M-2), cache marks (M-3); L2 history, prompt, permission policies; L3 the turn, built-in
   calls parked as `agent.tool_use`; L4 threads, delegation, interrupts (L-6, L-7); L5 grading on its own thread,
   budget and usage through `record.rs`. No statements of their own; the step (S2) reads and writes. Tests: the old
   engine's unit tests over a fake contract, plus a parked call, an interrupt pair with live's text, and the budget
   cases.
-- **CP0.** `shared/src/limits/models.rs` (69 lines) holds each model's window beside its id; `engine/src/model/
-  windows.rs` (new) reads `GET /v1/models/{id}` once per process per model, and `AGENTD_MODEL_WINDOWS`
-  (`model=tokens,...`) for other providers. Tests: a scripted models endpoint answering `max_input_tokens: 200000`
-  sets that window; a provider with no endpoint takes the setting; a model with neither refuses to start a step with
-  a clear log line.
 - **S1.** `sessions/src/steps.rs` (port) and `store-postgres/src/entities/loop_steps.rs`. Statements in the next
   section. Tests (`store-postgres/tests/pg_steps.rs`): two workers race for one step and only one runs it; a worker
   killed after the model call and before its commit, the step reruns after its lease and its events are appended
@@ -475,15 +482,23 @@ are gated by `AGENTD_PG_TESTS`, as today.
   estimated input tokens (CP-1) on a key that expires after 120 s; over the budget, the step is deferred with the
   statement in the step queue table and no model call. Tests: with a budget of 2 requests a minute, a third step is
   deferred to the next minute and runs then; Valkey down fails the step's claim back to the queue, not open.
+- **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
+  environment or the runtime queue; the flag lists workspaces. Tests: the live poll-path cases replayed with `ant`
+  pollers and the scripted model.
+
+#### PR 8. Compaction
+
+- **CP0.** `shared/src/limits/models.rs` (69 lines) holds each model's window beside its id; `engine/src/model/
+  windows.rs` (new) reads `GET /v1/models/{id}` once per process per model, and `AGENTD_MODEL_WINDOWS`
+  (`model=tokens,...`) for other providers. Tests: a scripted models endpoint answering `max_input_tokens: 200000`
+  sets that window; a provider with no endpoint takes the setting; a model with neither refuses to start a step with
+  a clear log line.
 - **CP1.** `engine/src/turn/compact/` (new, each file under 200 lines): `estimate.rs` (CP-1 from the last
   `span.model_request_end` usage and the bytes since), `clear.rs` (CP-2 placeholders `[tool result cleared: event
   <id>]`), `cap.rs` (CP-3). Prompt building only; no statement. Tests (thresholds set to 15% of a scripted model's
   window): past it, results older than the last 3 are placeholders naming their event ids, inputs and error results
   stay; below it, nothing changes; a 50,000-token result reaches the prompt cut at the limit and the stored event is
   whole.
-- **CPm.** `create unique index session_events_checkpoint on session_events (workspace_id, session_id,
-  (doc->>'session_thread_id'), (doc->'checkpoint'->>'through_seq')) where doc->>'type' =
-  'agent.thread_context_compacted'`. DynamoDB writes the checkpoint with a condition on the same key.
 - **CP2.** `engine/src/turn/compact/step.rs` and `summary.rs`: the step chooses compaction when CP-4's threshold is
   passed and CP-5 holds; the summary call reuses the turn's system prompt and tools (so the prompt cache hits) with
   `compact-2026-09-04`; the checkpoint event's stored `checkpoint` object holds the block, `through_seq` and the
@@ -499,16 +514,9 @@ are gated by `AGENTD_PG_TESTS`, as today.
   `step.rs`. Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
   summary; a compaction request over the window drops its oldest events and succeeds; switching to a model with a
   smaller window, or reading a checkpoint written by another model, compacts again before the next turn.
-- **L6.** `api/src/edge/reach.rs` (token routes); the memory routes' guard asks sessions which stores a session
-  attaches and how; every token request reads its item (1 SELECT by primary key). Tests: one per L-9 to L-12.
-- **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files) asking `Session::mounts`.
-  Download: 1 SELECT of the session, 1 SELECT of the file, 1 object GET. The grader reads a rubric file in the loop,
-  server side, so no worker downloads it. Tests (`api/tests/session_token.rs`): its own mounted file is served;
-  another session's file is refused; a file not mounted in its session is refused; an upload is scoped to its
-  session and absent from another session's `files.list(scope_id=...)`; deleting another session's file or a
-  mounted input answers 404 (FO-3).
-- **MCm.** `create table mcp_connections (workspace_id, session_id, server_url, mcp_session_id, tools jsonb,
-  credential_updated_at, connected_at, actor, request_id, primary key (workspace_id, session_id, server_url))`.
+
+#### PR 9. MCP and vaults
+
 - **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP) and
   `store-postgres/src/entities/mcp_connections.rs`. Per step: 1 `SELECT * FROM mcp_connections WHERE workspace_id =
   $1 AND session_id = $2`; a reconnect (MC-15) sends `initialize` and `tools/list` and writes 1 `INSERT … ON CONFLICT
@@ -540,8 +548,8 @@ are gated by `AGENTD_PG_TESTS`, as today.
   to `token_endpoint` (10 s timeout); then 1 `PutSecretValue`; then 1 `UPDATE credentials SET doc = $doc WHERE … AND
   doc->>'updated_at' = $now` recording the new `expires_at`. A claim that matches no row re-reads with
   `get_credential` (1 SELECT by primary key, 1 `GetSecretValue`) and uses the token when unexpired; otherwise the
-  step ends with its row due again in 1 s. A failed refresh records `mcp_authentication_failed_error`; H1, later
-  in the stack, adds the `vault_credential.refresh_failed` delivery. Tests: an expired token is refreshed, stored, its new expiry
+  step ends with its row due again in 1 s. A failed refresh records `mcp_authentication_failed_error`; H1 (PR 10)
+  adds the `vault_credential.refresh_failed` delivery. Tests: an expired token is refreshed, stored, its new expiry
   shown by `credentials.retrieve`, and used on the next call; two workers refreshing at once make one request to the
   token endpoint and the loser uses the stored token; a worker killed after its claim lets another refresh after
   30 s; a refresh refused by the token endpoint records `mcp_authentication_failed_error`; the credential comes from
@@ -549,10 +557,6 @@ are gated by `AGENTD_PG_TESTS`, as today.
   connection is unauthenticated and a refusing server records `mcp_authentication_failed_error`; a step that neither
   connects nor calls reads no secret; a rotated secret is used on the next call and an archived credential is not;
   no secret appears in any event, log line or output (a test sink scans them all).
-- **X3.** `deployments/src/run_error.rs` (new) takes `RunError`, `RunErrorKind`, `PausedReason` and
-  `classify_fire_error` from `types.rs` (318 lines) and `service.rs` (308 lines), and the after-fire bookkeeping
-  (auto-archive on `agent_archived`) from `service.rs` as `apply_run_error(&mut Deployment, &RunError)`. No
-  behaviour change; the deployment suites pass unchanged.
 - **MC3.** `sessions/src/service/lifecycle.rs` (162 lines): a create with `deployment_id` set checks the agent's MCP
   hosts against the environment's networking with `environments/src/egress.rs`, on the agent and environment rows
   create already reads, and refuses with a typed `mcp_egress_blocked` error; `run_error.rs` maps it to
@@ -571,31 +575,40 @@ are gated by `AGENTD_PG_TESTS`, as today.
   statuses and messages for VA-1, VA-2 and VA-4 are captured with a probe that makes no model call, and the tests
   assert them. Tests: each of VA-1, VA-2, VA-4 and VA-5; `mcp_oauth_validate` answers `valid` against a scripted
   server that accepts the token, `invalid` on 401, `unknown` when unreachable.
-- **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
-  environment or the runtime queue; the flag lists workspaces. Tests: the live poll-path cases replayed with `ant`
-  pollers and the scripted model.
-- **Km.** `create table schedules (target, workspace_id, spec, next_fire_at, paused, primary key (target))`; index on
-  `next_fire_at` where not paused.
+
+#### PR 10. Scheduler and webhooks
+
 - **K1.** `crates/adapters/scheduler-postgres` replaces `scheduler-local` in `backends.rs`. Tick, per replica every
   10 s, one transaction: 1 `SELECT … WHERE next_fire_at <= now() AND NOT paused FOR UPDATE SKIP LOCKED LIMIT 100`;
   1 `UPDATE schedules SET next_fire_at = v.next FROM unnest($targets, $nexts) AS v(target, next) WHERE
   schedules.target = v.target` (no backfill); then the fires, outside it; `claim_fire` stays the
   exactly-once guard. Tests: two schedulers on one database fire each occurrence once; a schedule registered on one
   fires on the other.
-- **Hm.** `webhook_deliveries` (the configured endpoint's key and URL, body, attempt, `next_attempt_at`,
-  `claimed_until`, `delivered_at`, `dropped_at`).
 - **H1.** `crates/resources/webhooks`: endpoints read from configuration (D20); one multi-row INSERT of deliveries
   per status change in its commit; a task per replica claims due rows 100 at a time `FOR UPDATE SKIP LOCKED`, signs,
   POSTs with a 10 s timeout, and marks them in one UPDATE per batch. Tests: signature verified with the SDK's
   `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a due delivery
   survives a restart; a failed OAuth refresh sends `vault_credential.refresh_failed`.
-- **J1.** `conformance/java` (Gradle, `com.anthropic:anthropic-java` 2.52.0 from the version catalog): the Python
-  suite's cases against agentd with only the base URL changed, run in the `sdk` CI job after the TypeScript suite.
-  Tests: the suite itself, green in CI.
+
+#### PR 11. Removals
+
+Merges after the loop's setting reaches every workspace (Rollout).
+
 - **RM1.** Removes `harness/`, `api/src/harness.rs`, `HarnessContract` writes used only by the harness, the harness
   CI job. CI's `sdk` and `demo` jobs run agentd's loop with the scripted model and the container project's worker.
 - **RM2, RM3.** Remove the crates and wiring named in the table once L7 is on everywhere; they move to the container
   project (Out of scope).
+
+#### PR 12. Conformance, SLOs and docs
+
+- **J1.** `conformance/java` (Gradle, `com.anthropic:anthropic-java` 2.52.0 from the version catalog): the Python
+  suite's cases against agentd with only the base URL changed, run in the `sdk` CI job after the TypeScript suite.
+  Tests: the suite itself, green in CI.
+- **SRE.** `docker/observability/slos.yaml` gains the alert rules for the five SLOs, and `docker/observability/alarms/`
+  the five scale-up alarms (SRE, scale-up triggers) with their metrics and thresholds; `perf/` gains the load test
+  runs; the docs and the runbook (DOC1) describe the roles, the settings, the launch deployment and each alarm's
+  action. Tests: the alert rules load in the local observability stack; the load test's steady run passes in CI's
+  `perf-smoke` job.
 
 ### The step queue: statements per operation (S1, S2)
 
@@ -611,16 +624,16 @@ are gated by `AGENTD_PG_TESTS`, as today.
 
 ## Rollout
 
-- W4 ships without a flag: on `main` no client polls work, so it changes only agentd's own harness work, verified
-  on stage.
-- L7 sits behind a setting listing workspaces; a session's path is fixed at create. Stages: one internal
+- The work API (PR 4) ships without a flag: on `main` no client polls work, so it changes only agentd's own
+  harness work, verified on stage.
+- Sessions on the loop (L7, in PR 7) sit behind a setting listing workspaces; a session's path is fixed at create. Stages: one internal
   workspace, then 10%, 50%, 100% of workspaces, each for at least 24 h including the daily peak, judged on the SLIs
   below, with an absolute stop when a page fires.
-- E3's DynamoDB log follows the same stages, separately.
+- The DynamoDB log (PR 6) follows the same stages, separately.
 - A workspace is listed for L7 only once `agentd-worker` polls the runtime queue in that deployment environment;
   until then its `cloud` sessions would wait on a queue nobody polls.
-- RM1 to RM3 merge after L7 reaches 100% and `agentd-worker` serves `cloud` work on stage and prod.
-- Compaction (CP1 to CP3) follows L7's stages: its thresholds are settings, so a stage can raise them to turn it off.
+- The removals (PR 11) merge after L7 reaches 100% and `agentd-worker` serves `cloud` work on stage and prod.
+- Compaction (PR 8) follows L7's stages: its thresholds are settings, so a stage can raise them to turn it off.
 - The Cloudflare launcher serves stage's runtime queue first; prod's runtime queue moves to it after a week on stage
   with no page, and after Cloudflare has raised the account's vCPU capacity (G1) above the expected peak.
 - Per deployment environment, the settings (`AGENTD_ROLE`, model limits, the L7 and E3 workspace lists) live in its
@@ -719,7 +732,7 @@ Each trigger is a CloudWatch alarm that opens a ticket, not a page; the scale-up
 `perf/` (k6) drives N sessions against the scripted model with 2 to 8 loop workers, and records step-start latency,
 claim contention, Postgres statements per second, connections, the log size per step, compaction calls and model
 latency. Runs: a steady run; a loop worker killed mid-step; a workspace at its model limit; the account-wide budget
-full; long sessions that cross both compaction thresholds. Results go on the S2 and CP2 PRs.
+full; long sessions that cross both compaction thresholds. Results go on the loop and compaction PRs (7, 8).
 
 ## Audit of this plan
 
@@ -758,7 +771,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 |---|---|
 | `~/.claude/CLAUDE.md` | PASS: separate spec, migration and code PRs; `gh stack`; no footer; no em dashes; never push `main` or merge. |
 | `rules/planning-phase.md`, `plan-audit` | PASS: inventory, second pass, plan, this audit, questions to the user one at a time. |
-| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves (`mcp_connections` and the checkpoint index follow D32 and D31); access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`; X2 splits the vault files before EV1, MC2 and VA1; X3 splits the deployment files before MC3; new code lands in new files); `mcp_oauth_validate` is live's endpoint, not a derived field. |
+| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves (`mcp_connections` and the checkpoint index follow D32 and D31); access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`; PR 2 splits the vault and deployment files before PRs 4 and 9 change them; new code lands in new files); `mcp_oauth_validate` is live's endpoint, not a derived field. |
 | `rules/diagnose-before-patch.md` | PASS: the engine is restored, not rewritten; container code leaves agentd instead of growing beside it. |
 | `rules/comment-policy.md` | PASS: no comments planned beyond the SQL claim notes. |
 | `rules/auto-rerun-ci.md` | Not applicable: applies during the build. |
