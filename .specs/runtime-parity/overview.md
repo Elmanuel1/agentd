@@ -125,8 +125,8 @@ agentd (one stack, each PR on your go-ahead):
 - agentd serves MCP servers from the loop with the session's vault credentials (2026-11-08), read once per loop step
   that uses them, with the MCP session and tool list kept per session in Postgres (2026-11-08).
 - Vaults behave as Anthropic documents them (2026-11-08).
-- Compaction in two tiers: clear old tool results at 100,000 tokens or half the window, summarise at 150,000 tokens
-  or 80% of the window (2026-11-08).
+- Compaction in two tiers: clear old tool results at 100,000 tokens or half the window, summarise at 90% of each
+  model's own window with no fixed cap (2026-11-08).
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
   a departure from live (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
