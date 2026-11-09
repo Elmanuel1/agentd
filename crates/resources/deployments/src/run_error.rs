@@ -60,6 +60,7 @@ pub(crate) fn classify_fire_error(e: &ApiError) -> RunError {
 
 /// Apply a failed fire to its deployment; true when the deployment archived,
 /// so the caller deletes its timer.
+#[must_use]
 pub(crate) fn apply_run_error(d: &mut Deployment, error: &RunError) -> bool {
     // Documented: agent archived/deleted → deployment auto-archives.
     if error.kind != RunErrorKind::AgentArchived {
