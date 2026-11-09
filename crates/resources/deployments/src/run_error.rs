@@ -123,8 +123,11 @@ mod tests {
     fn an_archived_agent_archives_the_deployment() {
         let mut d = deployment();
         assert!(apply_run_error(&mut d, &error(RunErrorKind::AgentArchived)));
-        assert_eq!(d.status, DeploymentStatus::Archived);
         assert!(d.archived_at.is_some());
+        let mut want = deployment();
+        want.status = DeploymentStatus::Archived;
+        want.archived_at = d.archived_at;
+        assert_eq!(d, want);
     }
 
     #[test]
