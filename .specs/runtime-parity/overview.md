@@ -78,18 +78,18 @@ agentd (one stack, each PR on your go-ahead):
    `cloud` environment-variable credentials), environment keys and our runtime key, work tokens that reach only their
    own session, and the session's files for workers.
 5. The event log and streams: events in order on every replica through Valkey signals, a fallback timer, new streams
-   refused under overload, the event list from a replica, an optional retention period.
-6. The DynamoDB event log for the workspaces you list.
-7. The loop: the engine brought back, steps from a Postgres queue with leases, the `api` and `loop` roles, model
+   refused under overload, the event list from a replica, an optional retention period. The log stays on
+   Postgres; DynamoDB for large workspaces is a later step, behind the same port, when its alarm fires.
+6. The loop: the engine brought back, steps from a Postgres queue with leases, the `api` and `loop` roles, model
    limits per workspace and across the account, and sessions run on the loop behind a setting.
-8. Compaction: clear old tool results, then summarise into checkpoints.
-9. MCP and vaults: MCP servers called from the loop with cached connections, vault credentials read per step, one
+7. Compaction: clear old tool results, then summarise into checkpoints.
+8. MCP and vaults: MCP servers called from the loop with cached connections, vault credentials read per step, one
    OAuth refresh at a time, deployments paused when the environment blocks an MCP host, and vaults as Anthropic
    documents them.
-10. Scheduled deployments on any replica, and session webhooks.
-11. Removals: the Python harness and its routes, agentd's sandbox launch, the egress crates (they move to
+9. Scheduled deployments on any replica, and session webhooks.
+10. Removals: the Python harness and its routes, agentd's sandbox launch, the egress crates (they move to
     `agentd-worker`).
-12. The Java SDK in CI beside Python and TypeScript, SLO alerts, scale-up alarms, the load test, docs and runbook.
+11. The Java SDK in CI beside Python and TypeScript, SLO alerts, scale-up alarms, the load test, docs and runbook.
 
 `agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created on your go-ahead):
 
@@ -134,7 +134,8 @@ agentd (one stack, each PR on your go-ahead):
 - Environment keys in their own table (2026-11-08).
 - No endpoint Anthropic does not have (2026-11-06).
 - Custom tools are answered by the API caller (2026-11-04).
-- Fan-out signals over Valkey; the event log moves to DynamoDB for listed workspaces (2026-11-06).
+- Fan-out signals over Valkey (2026-11-06); the event log stays on Postgres for now, DynamoDB later behind the same
+  port (2026-11-08).
 - Model limits: 32 model calls at once per workspace, 5 attempts, prompt caching (2026-11-08), and an account-wide
   limit (2026-11-08).
 - Webhook endpoints configured per organization (2026-11-08).
