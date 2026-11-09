@@ -1,7 +1,7 @@
 //! Integration tests against a live Postgres (schema applied by Flyway).
 //!
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`; the hermetic suite skips
-//! them. Bring up Postgres, `flyway migrate`, then:
+//! them. Bring up Postgres, apply the migrations as `docs/postgres-store.md` shows, then:
 //! ```sh
 //! AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
 //!   cargo test -p store-postgres --test pg_integration

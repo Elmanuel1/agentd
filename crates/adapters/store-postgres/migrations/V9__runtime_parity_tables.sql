@@ -47,8 +47,8 @@ create table environment_keys (
 );
 
 -- ── loop_steps: the step queue, one row per session with a step due or running ──
--- Every step updates and then deletes its row, so pages keep room for HOT updates and
--- autovacuum runs long before the default 20% of dead rows.
+-- Every step updates and then deletes its row: pages keep free room for the updates,
+-- and autovacuum runs long before the default 20% of dead rows.
 create table loop_steps (
     workspace_id text        not null,
     session_id   text        not null,
@@ -100,7 +100,7 @@ create table webhook_deliveries (
     endpoint_key    text        not null,
     endpoint_url    text        not null,
     body            text        not null,
-    attempt         integer     not null default 0,
+    attempt         bigint      not null default 0,
     next_attempt_at timestamptz not null,
     claimed_until   timestamptz,
     delivered_at    timestamptz,
