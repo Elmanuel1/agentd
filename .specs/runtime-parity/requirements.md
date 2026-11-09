@@ -176,7 +176,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-23 | If the loop's refresh claim matches no row, then the loop shall re-read the credential's row and secret and use the stored token when it has not expired, and otherwise end its step and run it again 1 s later. |
 | MC-24 | When the model calls an MCP tool whose evaluation is `allow`, the loop shall commit `agent.mcp_tool_use` with that step and keep the session on the step queue, so that the next step calls the tool. |
 | MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool before any model call, unless MC-26 applies. |
-| MC-26 | If the loop cannot call an allowed MCP tool, because its server's connection failed in this turn or fails now, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's `content` for that call (B27), beside MC-5's `session.error`, so that no allowed call stays unanswered. |
+| MC-26 | If the loop cannot call an allowed MCP tool, because its server's connection failed in this turn or fails now, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's `content` for that call, and the `mcp_connection_failed_error` `session.error` events live records for it (once per call or once per server in the turn, B27), so that no allowed call stays unanswered. |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -569,8 +569,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool;
   a server that drops after the choosing step gets one `is_error` `agent.mcp_tool_result` and a
   `mcp_connection_failed_error` `session.error`, and that step's `loop_steps` row is deleted, not kept due (MC-26);
-  with two allowed calls to one server in a step and the first failing, the second gets an `is_error` result and a
-  `session.error` with no new connection attempt (MC-14, MC-26); the `is_error` content matches B27's capture; a
+  with two allowed calls to one server in a step and the first failing, the second gets an `is_error` result with no
+  new connection attempt (MC-14, MC-26), and the step records as many `session.error` events as B27's capture shows;
+  the `is_error` content matches B27's capture; a
   deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a 404
   to it, a changed credential `updated_at` or an idle-to-running transition reconnects; a `list_changed`
   notification refreshes the stored list; one session never reads another's row; deleting a session deletes its rows in that commit; an `always_ask` tool idles
