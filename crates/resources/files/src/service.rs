@@ -188,7 +188,7 @@ fn parse_id(raw: &str) -> Result<FileId, ApiError> {
 }
 
 /// Live (files/30): ``File `file_…` not found.``
-fn map_store(e: StoreError, raw_id: &str) -> ApiError {
+pub(crate) fn map_store(e: StoreError, raw_id: &str) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found(format!("File `{raw_id}` not found.")),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),

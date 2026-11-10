@@ -93,7 +93,7 @@ impl WorkStore for PgWorkStore {
                     .bind::<Timestamptz, _>(free_before)
                     .load(c)
                     .await?;
-                    if let Some(r) = rows.iter().next() {
+                    if let Some(r) = <[Row]>::first(&rows) {
                         diesel::sql_query(format!("UPDATE work_items SET handed_out_at = $3 WHERE {KEY}"))
                             .bind::<Text, _>(&r.workspace_id)
                             .bind::<Text, _>(&r.session_id)

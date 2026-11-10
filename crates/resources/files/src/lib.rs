@@ -17,10 +17,14 @@ use shared::module::BodyLimit;
 use shared::Module;
 
 mod service;
+mod session;
 
 pub use service::{FileFilter, FilesService};
+pub use session::{Mounts, SessionFiles};
 
-/// The files module: its routes, with the Files API's 500 MB body cap.
-pub fn module(service: Arc<FilesService>) -> Module {
-    Module::new(routes::router(), service).with_body_limit(BodyLimit { api: "Files", max_mb: 500 })
+/// The files module: its routes, with the Files API's 500 MB body cap;
+/// `sessions` says which files a session's work token reaches.
+pub fn module(service: Arc<FilesService>, sessions: Arc<dyn SessionFiles>) -> Module {
+    let router = routes::router().layer(axum::Extension(Mounts(sessions)));
+    Module::new(router, service).with_body_limit(BodyLimit { api: "Files", max_mb: 500 })
 }

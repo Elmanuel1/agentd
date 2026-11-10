@@ -12,10 +12,12 @@ use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use shared::error::DataEnvelope;
 use shared::page::filters::CreatedRange;
-use shared::{ApiJson, AuthContext, ListQuery, ListSpec, Messages, Page, RouteError, UnknownParams};
+use shared::{
+    ApiJson, AuthContext, ListQuery, ListSpec, Messages, Page, RouteError, SessionCaller, UnknownParams,
+};
 use tokio::sync::broadcast::error::RecvError;
 
-use super::order;
+use super::{in_environment, order, Worker};
 use crate::events::{Event, EventPayload, SessionEvent};
 use crate::service::SessionsService;
 use crate::store::{EventFilter, Order};
@@ -55,9 +57,11 @@ pub(super) fn router() -> Router {
 async fn list_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
     Path(id): Path<String>,
     query: ListQuery,
 ) -> Result<Response, RouteError> {
+    in_environment(&svc, &ctx, &worker, &id).await?;
     let params = query.map();
     let page = LIST.parse(&params)?;
     let filter = EventFilter {
@@ -72,9 +76,15 @@ async fn list_events(
 async fn send_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
+    token: Option<Extension<SessionCaller>>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<SendEventsBody>,
 ) -> Result<Response, RouteError> {
+    in_environment(&svc, &ctx, &worker, &id).await?;
+    if token.is_some() {
+        svc.guard_worker_results(&ctx.workspace, &id, &body.events).await?;
+    }
     Ok(Json(DataEnvelope { data: svc.send_events(&ctx, &id, body.events).await? }).into_response())
 }
 
@@ -86,8 +96,10 @@ async fn send_events(
 async fn stream_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
+    in_environment(&svc, &ctx, &worker, &id).await?;
     let sub = svc.subscribe(&ctx, &id).await?;
     // Live opens the stream with a `: connected` comment frame before events.
     let connected = stream::once(async { Ok(SseEvent::default().comment("connected")) });

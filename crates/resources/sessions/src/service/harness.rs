@@ -62,7 +62,7 @@ impl HarnessContract for SessionsService {
         };
         self.emit(ws, session, None, payload).await?;
         if status == SessionStatus::Terminated {
-            self.stop_sandbox(session).await;
+            self.stop_sandbox(ws, session).await;
         }
         Ok(())
     }

@@ -22,6 +22,7 @@ impl SessionsService {
             return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
         }
         validate_sendable("events", &payloads)?;
+        self.guard_waiting(&ctx.workspace, &session, &payloads).await?;
         let mut out = Vec::with_capacity(payloads.len());
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.

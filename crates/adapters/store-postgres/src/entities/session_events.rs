@@ -1,7 +1,7 @@
 //! `SessionEventLog` on Postgres via Diesel: the shared append-only event log
 //! (SSE tails `session_events` by `seq`).
 
-use ::sessions::events::Event;
+use ::sessions::events::{Event, EventId};
 use ::sessions::store::{EventFilter, Order, SessionEventLog, StoreError};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
@@ -148,6 +148,27 @@ impl SessionEventLog for PgSessionEventLog {
         .bind::<BigInt, _>(page.fetch_limit())
         .bind::<BigInt, _>(page.sql_offset())
         .bind::<Nullable<Text>, _>(filter.thread.as_ref().map(|t| t.as_str()))
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        rows.into_iter().map(|r| parse_doc(r.doc)).collect()
+    }
+
+    async fn tool_calls(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        calls: &[EventId],
+    ) -> Result<Vec<Event>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let calls: Vec<&str> = calls.iter().map(EventId::as_str).collect();
+        let rows: Vec<DocRow> = diesel::sql_query(
+            "SELECT doc FROM session_events WHERE workspace_id = $1 AND session_id = $2
+               AND (event_id = ANY($3) OR doc->>'tool_use_id' = ANY($3) OR doc->>'custom_tool_use_id' = ANY($3))",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .bind::<Array<Text>, _>(&calls)
         .load(&mut conn)
         .await
         .map_err(diesel_be)?;

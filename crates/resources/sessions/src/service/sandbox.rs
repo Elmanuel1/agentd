@@ -1,5 +1,5 @@
 use shared::ports::{JobKind, JobSpec, RuntimeError};
-use shared::{ApiError, AuthContext, ErrorType};
+use shared::{ApiError, AuthContext, ErrorType, WorkspaceId};
 
 use super::SessionsService;
 use crate::types::{Session, SessionId};
@@ -32,7 +32,7 @@ impl SessionsService {
         let launched = runtime.launch(job).await;
         if launched.is_err() {
             if let Some(work) = &self.work {
-                work.end(&session.id);
+                work.end(&ctx.workspace, &session.id).await;
             }
         }
         match launched {
@@ -52,9 +52,9 @@ impl SessionsService {
     /// Remove the session's sandbox (on archive, delete and terminate). The session's own state is the source
     /// of truth, so a runtime that cannot be reached is logged, not raised:
     /// an archive or delete never waits on the sandbox host.
-    pub(super) async fn stop_sandbox(&self, id: &SessionId) {
+    pub(super) async fn stop_sandbox(&self, ws: &WorkspaceId, id: &SessionId) {
         if let Some(work) = &self.work {
-            work.end(id);
+            work.end(ws, id).await;
         }
         let Some(runtime) = &self.sandbox else {
             return;

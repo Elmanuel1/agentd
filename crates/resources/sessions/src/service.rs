@@ -32,6 +32,7 @@ mod record;
 mod resources;
 mod sandbox;
 mod threads;
+mod waiting;
 
 pub use threads::threads_projection;
 
@@ -109,8 +110,8 @@ pub trait SandboxWork: Send + Sync {
         session: &Session,
         environment: &serde_json::Value,
     ) -> Result<BTreeMap<String, String>, ApiError>;
-    /// The session's sandbox is gone.
-    fn end(&self, session: &SessionId);
+    /// The session's sandbox is gone: its work item stops.
+    async fn end(&self, ws: &WorkspaceId, session: &SessionId);
 }
 
 /// The live fan-out: one broadcast channel per session that has a listener.

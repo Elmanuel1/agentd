@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
+use shared::ports::keys::{AdminKeySource, EnvironmentGrant, EnvironmentKeySource, KeyError, KeySource};
 use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
 use shared::{AdminContext, AuthContext, OrgId, WorkspaceId};
 
@@ -87,5 +87,16 @@ impl StaticAdminKeys {
 impl AdminKeySource for StaticAdminKeys {
     async fn resolve(&self, key: &str) -> Result<Option<AdminContext>, KeyError> {
         Ok(self.0.get(key).cloned())
+    }
+}
+
+/// No environment keys: every one is unknown.
+#[derive(Debug, Default)]
+pub struct NoEnvironmentKeys;
+
+#[async_trait]
+impl EnvironmentKeySource for NoEnvironmentKeys {
+    async fn resolve(&self, _: &str) -> Result<Option<EnvironmentGrant>, KeyError> {
+        Ok(None)
     }
 }

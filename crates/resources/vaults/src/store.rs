@@ -86,4 +86,10 @@ pub trait VaultCredentialStore: Send + Sync {
         ws: &WorkspaceId,
         vault: &VaultId,
     ) -> Result<Vec<StoredCredential>, StoreError>;
+    /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
+    async fn environment_credentials(
+        &self,
+        ws: &WorkspaceId,
+        vaults: &[String],
+    ) -> Result<Vec<Credential>, StoreError>;
 }

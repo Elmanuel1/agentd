@@ -36,7 +36,12 @@ fn app() -> Router {
     let routes = Router::new().route("/v1/organizations/me", get(org)).route("/v1/things", get(workspace));
     edge::wrap(
         routes,
-        edge::auth::Credentials { keys: Arc::new(keys), admin_keys: Arc::new(admin_keys), work: None },
+        edge::auth::Credentials {
+            keys: Arc::new(keys),
+            admin_keys: Arc::new(admin_keys),
+            environment_keys: Arc::new(test_support::NoEnvironmentKeys),
+            work: None,
+        },
         Arc::from(vec![]),
         Arc::new(api::telemetry::Metrics::global()),
     )

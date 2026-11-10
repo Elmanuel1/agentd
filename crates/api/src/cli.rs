@@ -5,6 +5,8 @@
 //! everything else goes to stderr.
 
 pub mod admin_keys;
+pub mod environment_keys;
+pub mod vault_secrets;
 
 use std::process::ExitCode;
 use std::sync::Arc;

@@ -81,7 +81,7 @@ impl SessionsService {
         }
         let event = self.emit(ws, session, thread, payload).await?;
         if status == Some(SessionStatus::Terminated) {
-            self.stop_sandbox(session).await;
+            self.stop_sandbox(ws, session).await;
         }
         Ok(event)
     }

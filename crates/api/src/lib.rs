@@ -16,10 +16,11 @@ pub mod egress;
 pub mod harness;
 pub mod model_key;
 pub mod sandbox_work;
+pub mod session_grants;
 pub mod state;
 pub mod telemetry;
 
-pub use backends::{Backends, Stores};
+pub use backends::{Backends, Stores, SystemKeys};
 pub use config::Config;
 pub use state::AppState;
 
@@ -35,7 +36,11 @@ pub fn build_router(state: AppState) -> Router {
     let routes = state.modules.into_iter().fold(Router::new(), |router, module| {
         router.merge(edge::limits::bounded(module.router, module.body_limit))
     });
-    let credentials =
-        edge::auth::Credentials { keys: state.keys, admin_keys: state.admin_keys, work: state.work_tokens };
+    let credentials = edge::auth::Credentials {
+        keys: state.keys,
+        admin_keys: state.admin_keys,
+        environment_keys: state.environment_keys,
+        work: Some(state.work),
+    };
     edge::wrap(routes, credentials, gates, state.metrics)
 }

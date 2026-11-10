@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use shared::page::filters::CreatedRange;
 use shared::{Pagination, WorkspaceId};
 
-use crate::events::Event;
+use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
 /// Store-level errors.
@@ -114,6 +114,13 @@ pub trait SessionEventLog: Send + Sync {
         id: &SessionId,
         filter: &EventFilter,
         page: &Pagination,
+    ) -> Result<Vec<Event>, StoreError>;
+    /// The events whose id is one of `calls`, and the results that answer them.
+    async fn tool_calls(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        calls: &[EventId],
     ) -> Result<Vec<Event>, StoreError>;
     /// Delete the whole log.
     async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError>;

@@ -8,7 +8,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use shared::page::filters::{bool_param, CreatedRange};
-use shared::{ApiError, ApiJson, AuthContext, Deleted, ListQuery, ListSpec, Page, RouteError};
+use shared::{
+    ApiError, ApiJson, AuthContext, Deleted, EnvironmentCaller, ListQuery, ListSpec, Page, RouteError,
+};
 
 use crate::service::SessionsService;
 use crate::store::{Order, SessionFilter};
@@ -96,12 +98,36 @@ fn status(raw: &str) -> Result<SessionStatus, ApiError> {
     })
 }
 
+/// Set when the caller is an environment key: its environment's sessions only.
+type Worker = Option<Extension<EnvironmentCaller>>;
+
+/// An environment key reaches its own environment's sessions; to it any
+/// other session does not exist.
+async fn in_environment(
+    svc: &SessionsService,
+    ctx: &AuthContext,
+    worker: &Worker,
+    id: &str,
+) -> Result<(), RouteError> {
+    let Some(Extension(caller)) = worker else { return Ok(()) };
+    let session = svc.get(ctx, id).await?;
+    if session.environment_id != caller.queue {
+        return Err(RouteError(ApiError::not_found("session not found")));
+    }
+    Ok(())
+}
+
 async fn get_one(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.get(&ctx, &id).await?).into_response())
+    let session = svc.get(&ctx, &id).await?;
+    if worker.is_some_and(|Extension(c)| c.queue != session.environment_id) {
+        return Err(RouteError(ApiError::not_found("session not found")));
+    }
+    Ok(Json(session).into_response())
 }
 
 async fn update(

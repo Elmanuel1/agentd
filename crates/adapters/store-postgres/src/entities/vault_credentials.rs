@@ -6,6 +6,8 @@ use ::vaults::store::{StoreError, StoredCredential, VaultCredentialStore};
 use ::vaults::types::{Credential, CredentialId, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use diesel::dsl::sql;
+use diesel::sql_types::Bool;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::WorkspaceId;
@@ -171,5 +173,25 @@ impl VaultCredentialStore for PgVaultsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(|d| Ok(StoredCredential { wire: parse_doc(d)?, auth: None })).collect()
+    }
+
+    async fn environment_credentials(
+        &self,
+        ws: &WorkspaceId,
+        vaults: &[String],
+    ) -> Result<Vec<Credential>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = credentials::table
+            .filter(credentials::workspace_id.eq(ws.as_str()))
+            .filter(credentials::vault_id.eq_any(vaults))
+            .filter(sql::<Bool>(
+                "doc->'auth'->>'type' = 'environment_variable' AND doc->>'archived_at' IS NULL",
+            ))
+            .order(credentials::created_at.asc())
+            .select(credentials::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse_doc).collect()
     }
 }
