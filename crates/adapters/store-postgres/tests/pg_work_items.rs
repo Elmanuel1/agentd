@@ -206,17 +206,22 @@ async fn a_session_s_one_item_is_queued_again_only_once_it_is_stopped() {
     s.queue(&queued(&ws, "sesn_run", "env_run", 10)).await.unwrap();
     s.heartbeat(&w, "sesn_run", &any, &beat(None, 300)).await.unwrap().unwrap();
     let held = s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
-    assert_eq!(held.work.state, WorkState::Active, "a held item is left as it is");
+    assert_eq!(held, None, "a held item is left as it is");
+    assert_eq!(s.get(&w, "sesn_run", &any).await.unwrap().unwrap().work.state, WorkState::Active);
     s.stop(&w, "sesn_run", &any, true, Timestamp::now()).await.unwrap().unwrap();
-    let again = s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
-    assert_eq!(
-        (again.work.id.as_str(), again.work.state),
-        ("sesn_run", WorkState::Queued),
-        "the same item, reused"
-    );
+    let mut next = queued(&ws, "sesn_run", "runtime", 0);
+    next.work.environment_id = "env_moved".into();
+    let again = s.queue(&next).await.unwrap().unwrap();
+    // The same item, reused: its creation stays, everything a run set is reset, and the run's queue,
+    // environment and start are the new run's.
+    let first = queued(&ws, "sesn_run", "env_run", 10);
+    let mut expected = next.clone();
+    expected.work.created_at = again.work.created_at;
     assert!(
-        again.work.stopped_at.is_none()
-            && again.last_heartbeat.is_none()
-            && again.work.acknowledged_at.is_none()
+        (again.work.created_at.as_datetime() - first.work.created_at.as_datetime()).num_seconds().abs() <= 1
     );
+    expected.work.started_at = again.work.started_at;
+    assert!(again.work.started_at.is_some_and(|t| t.as_datetime() >= first.work.created_at.as_datetime()));
+    assert_eq!(again, expected);
+    s.stop(&w, "sesn_run", &any, true, Timestamp::now()).await.unwrap();
 }

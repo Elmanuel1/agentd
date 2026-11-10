@@ -83,11 +83,11 @@ impl SandboxWork for WorkIssuer {
         environment: &serde_json::Value,
     ) -> Result<BTreeMap<String, String>, ApiError> {
         let mut env = self.egress_env(ctx, session, environment).await?;
-        let (work, secret) = self.work.issue(ctx, &session.environment_id, session.id.as_str()).await?;
+        let secret = self.work.issue(ctx, &session.environment_id, session.id.as_str()).await?;
         env.extend([
             ("AGENTD_API_URL".to_owned(), self.api_url.clone()),
             ("AGENTD_ENVIRONMENT_ID".to_owned(), session.environment_id.clone()),
-            ("AGENTD_WORK_ID".to_owned(), work.id),
+            ("AGENTD_WORK_ID".to_owned(), session.id.as_str().to_owned()),
             ("AGENTD_WORK_SECRET".to_owned(), secret),
             ("AGENTD_MODEL_BASE_URL".to_owned(), self.model_base_url.clone()),
         ]);

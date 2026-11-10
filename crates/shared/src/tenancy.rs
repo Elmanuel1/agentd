@@ -81,6 +81,11 @@ pub struct SessionCaller {
     pub session: String,
 }
 
+/// The runtime queue: `cloud` sessions' work, polled with agentd's runtime key.
+pub const RUNTIME_QUEUE: &str = "runtime";
+/// Sessions whose own sandbox's harness takes their work; no poll hands it out.
+pub const HOSTED_QUEUE: &str = "hosted";
+
 /// Set by the edge when the caller is an environment key: a worker's
 /// poller, which reaches one work queue and the sessions on it.
 #[derive(Debug, Clone, PartialEq, Eq)]

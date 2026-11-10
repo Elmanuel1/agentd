@@ -9,15 +9,12 @@ use async_trait::async_trait;
 use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyError, KeyPepper};
 use shared::ports::secrets::{ExposeSecret, SecretString};
+use shared::tenancy::{HOSTED_QUEUE, RUNTIME_QUEUE};
 use shared::{AuthContext, EnvironmentCaller, Id, OrgId, Timestamp, WorkspaceId};
 
 use crate::service::{key_error, mint};
 use crate::store::EnvironmentKeysStore;
 use crate::types::{EnvironmentKey, EnvironmentKeyResource};
-
-/// The queues agentd keeps for itself (`work::RUNTIME`, `work::HOSTED`): a
-/// key bound to one would reach other workspaces' work.
-const RESERVED_QUEUES: [&str; 2] = ["runtime", "hosted"];
 
 /// Environment keys over a store, digested with one pepper.
 #[derive(Clone)]
@@ -56,7 +53,8 @@ impl EnvironmentKeysService {
         environment: &str,
         name: &str,
     ) -> Result<(EnvironmentKey, SecretString), KeyError> {
-        if RESERVED_QUEUES.contains(&environment) {
+        // A key bound to one of agentd's own queues would reach other workspaces' work.
+        if [RUNTIME_QUEUE, HOSTED_QUEUE].contains(&environment) {
             return Err(KeyError(format!(
                 "`{environment}` names one of agentd's own queues, not an environment"
             )));

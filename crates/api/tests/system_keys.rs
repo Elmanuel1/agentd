@@ -22,14 +22,15 @@ async fn aws(endpoint: &str, prefix: &str) -> AwsSecretStore {
     AwsSecretStore::connect(&config).await.unwrap()
 }
 
-fn prefix() -> String {
-    format!("agentd_test/boot{}", shared::Timestamp::now().as_datetime().timestamp_micros())
+/// A prefix of the test's own: the tests run at once, so a timestamp alone can repeat.
+fn prefix(test: &str) -> String {
+    format!("agentd_test/{test}{}", shared::Timestamp::now().as_datetime().timestamp_micros())
 }
 
 #[tokio::test]
 async fn a_token_minted_under_one_boot_verifies_under_the_next() {
     let Ok(endpoint) = std::env::var("AGENTD_AWS_ENDPOINT") else { return };
-    let prefix = prefix();
+    let prefix = prefix("boot");
     let first = SystemKeys::load(&aws(&endpoint, &prefix).await, &SandboxConfig::default()).await.unwrap();
     let next = SystemKeys::load(&aws(&endpoint, &prefix).await, &SandboxConfig::default()).await.unwrap();
     assert_eq!((first.work_token_key.len(), first.egress_key.len()), (32, 32));
@@ -42,7 +43,7 @@ async fn a_token_minted_under_one_boot_verifies_under_the_next() {
 #[tokio::test]
 async fn a_configured_work_token_key_signs_and_secrets_manager_is_not_read_for_it() {
     let Ok(endpoint) = std::env::var("AGENTD_AWS_ENDPOINT") else { return };
-    let prefix = prefix();
+    let prefix = prefix("configured");
     let sandbox = SandboxConfig { work_token_key: Some(vec![7; 32]), ..SandboxConfig::default() };
     let keys = SystemKeys::load(&aws(&endpoint, &prefix).await, &sandbox).await.unwrap();
     assert_eq!(keys.work_token_key, vec![7; 32]);

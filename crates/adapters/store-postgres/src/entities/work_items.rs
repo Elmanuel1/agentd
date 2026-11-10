@@ -38,16 +38,9 @@ impl PgWorkStore {
 
 #[async_trait]
 impl WorkStore for PgWorkStore {
-    async fn queue(&self, i: &WorkItem) -> Result<WorkItem, StoreError> {
-        let mut conn = self.write().await?;
-        let rows: Vec<Row> = insert(i).load(&mut conn).await.map_err(diesel_be)?;
-        if let Some(queued) = first(rows) {
-            return Ok(queued);
-        }
-        let held = Self::reached(&mut conn, &i.workspace, &i.work.id, &Reach::default()).await?;
-        held.ok_or_else(|| {
-            StoreError::Backend(shared::BackendError::new(std::io::Error::other("work item gone")))
-        })
+    async fn queue(&self, i: &WorkItem) -> Result<Option<WorkItem>, StoreError> {
+        let rows: Vec<Row> = insert(i).load(&mut self.write().await?).await.map_err(diesel_be)?;
+        Ok(first(rows))
     }
 
     async fn claim(

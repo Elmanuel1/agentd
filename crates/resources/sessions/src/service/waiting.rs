@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use shared::{ApiError, Pagination, WorkspaceId};
 
 use super::{map_store, parse_id, SessionsService};
-use crate::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, StopReason, UserEvent};
+use crate::events::{EventId, EventPayload, SessionEvent, StopReason};
 use crate::store::{EventFilter, Order};
 use crate::types::{Session, SessionStatus};
 
@@ -77,24 +77,13 @@ impl SessionsService {
         }
         let ids: Vec<EventId> = calls.iter().map(|(id, _)| (*id).clone()).collect();
         let found = self.events.tool_calls(ws, id, &ids).await.map_err(map_store)?;
-        let is_call = |e: &Event, custom: bool| match &e.payload {
-            EventPayload::Agent(AgentEvent::ToolUse { .. }) => !custom,
-            EventPayload::Agent(AgentEvent::CustomToolUse { .. }) => custom,
-            _ => false,
-        };
-        let done: HashSet<&EventId> = found
-            .iter()
-            .filter_map(|e| match &e.payload {
-                EventPayload::User(UserEvent::ToolResult { tool_use_id: t, .. })
-                | EventPayload::Agent(AgentEvent::ToolResult { tool_use_id: t, .. }) => Some(t),
-                EventPayload::User(UserEvent::CustomToolResult { custom_tool_use_id: t, .. }) => Some(t),
-                _ => None,
-            })
-            .collect();
+        let done: HashSet<&EventId> =
+            found.iter().filter_map(|e| e.payload.answered_call()).map(|(t, _)| t).collect();
         for (i, (call, custom)) in calls.iter().enumerate() {
             let first = calls.iter().take(i).all(|(earlier, _)| earlier != call);
-            let open =
-                first && found.iter().any(|e| e.id == **call && is_call(e, *custom)) && !done.contains(call);
+            let open = first
+                && found.iter().any(|e| e.id == **call && e.payload.is_call(*custom))
+                && !done.contains(call);
             if !open {
                 return Err(ApiError::invalid_request(format!(
                     "events.{i}: {call} is not a call of this session waiting on its result"

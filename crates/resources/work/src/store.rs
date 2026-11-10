@@ -10,10 +10,7 @@ use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 
 use crate::types::{Work, WorkState};
 
-/// The runtime queue: `cloud` sessions' work, polled with agentd's runtime key.
-pub const RUNTIME: &str = "runtime";
-/// Sessions whose own sandbox's harness takes their work; no poll hands it out.
-pub const HOSTED: &str = "hosted";
+pub use shared::tenancy::{HOSTED_QUEUE as HOSTED, RUNTIME_QUEUE as RUNTIME};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {
@@ -120,8 +117,8 @@ pub trait WorkReads: Send + Sync {
 #[async_trait]
 pub trait WorkStore: WorkReads {
     /// Insert `item`, or queue the session's `stopped` item again as `item`
-    /// says; a session's item that is not `stopped` is left as it is.
-    async fn queue(&self, item: &WorkItem) -> Result<WorkItem, StoreError>;
+    /// says; `None` when the session's item is not `stopped` and is left as it is.
+    async fn queue(&self, item: &WorkItem) -> Result<Option<WorkItem>, StoreError>;
     /// Hand out the oldest queued item of `queue` not handed out within
     /// `reclaim`, marking it handed out at `now`.
     async fn claim(

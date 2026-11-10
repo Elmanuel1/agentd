@@ -41,34 +41,37 @@ impl KeysCommand {
     /// The command in `args`, the words after the command's name.
     pub fn parse(args: &[String], kind: Kind) -> Result<Self, String> {
         match args {
-            [cmd, rest @ ..] if cmd == "create" => Self::create(rest, kind),
+            [cmd, rest @ ..] if cmd == "create" => {
+                let (mut org, mut workspace, mut environment, mut name) = (None, None, None, None);
+                let mut flags = rest.iter();
+                while let Some(flag) = flags.next() {
+                    let slot = match (flag.as_str(), kind) {
+                        ("--org", _) => &mut org,
+                        ("--workspace", Kind::Workspace | Kind::Environment) => &mut workspace,
+                        ("--environment", Kind::Environment) => &mut environment,
+                        ("--name", _) => &mut name,
+                        (other, _) => return Err(format!("unknown option `{other}`")),
+                    };
+                    *slot = Some(flags.next().ok_or_else(|| format!("{flag} needs a value"))?.clone());
+                }
+                if kind != Kind::Admin && workspace.is_none() {
+                    return Err("--workspace is required".into());
+                }
+                if kind == Kind::Environment && environment.is_none() {
+                    return Err("--environment is required".into());
+                }
+                let org = org.ok_or("--org is required")?;
+                Ok(Self::Create {
+                    org,
+                    workspace,
+                    environment,
+                    name: name.unwrap_or_else(|| "agentd".into()),
+                })
+            }
             [cmd] if cmd == "list" => Ok(Self::List),
             [cmd, id] if cmd == "revoke" => Ok(Self::Revoke(id.clone())),
             _ => Err("unknown keys command".into()),
         }
-    }
-
-    fn create(rest: &[String], kind: Kind) -> Result<Self, String> {
-        let (mut org, mut workspace, mut environment, mut name) = (None, None, None, None);
-        let mut flags = rest.iter();
-        while let Some(flag) = flags.next() {
-            let slot = match (flag.as_str(), kind) {
-                ("--org", _) => &mut org,
-                ("--workspace", Kind::Workspace | Kind::Environment) => &mut workspace,
-                ("--environment", Kind::Environment) => &mut environment,
-                ("--name", _) => &mut name,
-                (other, _) => return Err(format!("unknown option `{other}`")),
-            };
-            *slot = Some(flags.next().ok_or_else(|| format!("{flag} needs a value"))?.clone());
-        }
-        if kind != Kind::Admin && workspace.is_none() {
-            return Err("--workspace is required".into());
-        }
-        if kind == Kind::Environment && environment.is_none() {
-            return Err("--environment is required".into());
-        }
-        let org = org.ok_or("--org is required")?;
-        Ok(Self::Create { org, workspace, environment, name: name.unwrap_or_else(|| "agentd".into()) })
     }
 }
 

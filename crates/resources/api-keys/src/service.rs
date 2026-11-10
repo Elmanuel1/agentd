@@ -29,11 +29,6 @@ pub(crate) fn key_error(e: StoreError) -> KeyError {
     KeyError(e.to_string())
 }
 
-/// A name for people: 1 to 128 characters, none of them a control character.
-fn name_ok(name: &str) -> bool {
-    (1..=128).contains(&name.chars().count()) && !name.chars().any(char::is_control)
-}
-
 /// A new key of `kind`, its stored digest and its hint, once `ids` are in the
 /// id charset and `name` is a name for people.
 pub(crate) fn mint(
@@ -45,7 +40,8 @@ pub(crate) fn mint(
     if !ids.iter().all(|id| is_id_charset(id)) {
         return Err(KeyError("every id must be in the id charset".into()));
     }
-    if !name_ok(name) {
+    // A name for people: 1 to 128 characters, none of them a control character.
+    if !(1..=128).contains(&name.chars().count()) || name.chars().any(char::is_control) {
         return Err(KeyError("the name must be 1 to 128 characters, with no control characters".into()));
     }
     let key = material::generate(kind);

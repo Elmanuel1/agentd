@@ -97,13 +97,10 @@ async fn runtime_key(items: &dyn WorkReads, mut req: Request, next: Next) -> Res
         Ok(item) => item,
         Err(e) => return wire_response(&ApiError::internal(e.to_string())),
     };
-    let Some(item) = item else {
-        let what = match path.starts_with("/v1/sessions/") {
-            true => "session not found",
-            false => "work not found",
-        };
-        return wire_response(&ApiError::not_found(what));
-    };
+    if item.is_none() && path.starts_with("/v1/sessions/") {
+        return wire_response(&ApiError::not_found("session not found"));
+    }
+    let Some(item) = item else { return wire_response(&ApiError::not_found("work not found")) };
     let ctx = runtime_ctx(item.org, item.workspace);
     req.extensions_mut().insert(WorkCaller::Queue { queue: RUNTIME.into(), ctx: Some(ctx.clone()) });
     run_in_workspace(ctx, RUNTIME_ACTOR.into(), req, next).await

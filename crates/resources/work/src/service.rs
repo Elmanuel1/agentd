@@ -54,14 +54,15 @@ impl WorkService {
     }
 
     /// Queue `session`'s work in `environment_id` on `queue`: its item, with
-    /// the session's id, `started_at` set at once as on live.
+    /// the session's id, `started_at` set at once as on live. `None` when the
+    /// session's item is held and was left as it is.
     pub async fn queue(
         &self,
         ctx: &AuthContext,
         environment_id: &str,
         session: &str,
         queue: &str,
-    ) -> Result<Work, ApiError> {
+    ) -> Result<Option<Work>, ApiError> {
         let now = Timestamp::now();
         let work = Work {
             id: session.to_owned(),
@@ -88,24 +89,24 @@ impl WorkService {
             lease_until: None,
             handed_out_at: None,
         };
-        Ok(self.store.queue(&item).await.map_err(backend)?.work)
+        Ok(self.store.queue(&item).await.map_err(backend)?.map(|i| i.work))
     }
 
-    /// Queue the work of a session whose own sandbox's harness takes it,
-    /// with the secret that sandbox starts with.
+    /// Queue the work of a session whose own sandbox's harness takes it: the
+    /// secret that sandbox starts with.
     pub async fn issue(
         &self,
         ctx: &AuthContext,
         environment_id: &str,
         session: &str,
-    ) -> Result<(Work, String), ApiError> {
-        let work = self.queue(ctx, environment_id, session, HOSTED).await?;
+    ) -> Result<String, ApiError> {
+        self.queue(ctx, environment_id, session, HOSTED).await?;
         let claims = WorkClaims {
             session: session.to_owned(),
             ws: ctx.workspace.as_str().to_owned(),
             org: ctx.org.as_str().to_owned(),
         };
-        Ok((work, self.tokens.secret(&claims, &self.api_base_url, &BTreeMap::new())))
+        Ok(self.tokens.secret(&claims, &self.api_base_url, &BTreeMap::new()))
     }
 
     /// `GET …/work/{id}`.
