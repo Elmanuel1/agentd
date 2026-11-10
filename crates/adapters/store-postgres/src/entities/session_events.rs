@@ -33,7 +33,9 @@ impl PgSessionEventLog {
 impl SessionEventLog for PgSessionEventLog {
     async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let inserted = insert(&mut conn, ws, id, &event.id, to_doc(&event)?).await.map_err(diesel_be)?;
+        let inserted = insert(&mut conn, ws, id, &[event.id.as_str()], vec![to_doc(&event)?])
+            .await
+            .map_err(diesel_be)?;
         if inserted == 0 {
             return Err(StoreError::NotFound);
         }
@@ -68,6 +70,7 @@ impl SessionEventLog for PgSessionEventLog {
     ) -> Result<Result<(), ApiError>, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let calls: Vec<&str> = calls.iter().map(EventId::as_str).collect();
+        let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
         let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
@@ -90,17 +93,18 @@ impl SessionEventLog for PgSessionEventLog {
                 if let Err(refused) = check(&found.map_err(|e| diesel::result::Error::DeserializationError(e.into()))?) {
                     return Ok(Err(refused));
                 }
-                for (event, doc) in events.iter().zip(docs) {
-                    if insert(c, ws, id, &event.id, doc).await? == 0 {
-                        return Err(diesel::result::Error::NotFound);
-                    }
+                if insert(c, ws, id, &ids, docs).await? != events.len() {
+                    return Err(diesel::result::Error::NotFound);
                 }
                 Ok(Ok(()))
             }
             .scope_boxed()
         })
         .await
-        .map_err(|e| if e == diesel::result::Error::NotFound { StoreError::NotFound } else { diesel_be(e) })
+        .map_err(|e| match e {
+            diesel::result::Error::NotFound => StoreError::NotFound,
+            e => diesel_be(e),
+        })
     }
 
     async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
@@ -117,24 +121,25 @@ impl SessionEventLog for PgSessionEventLog {
     }
 }
 
-/// One statement: the event lands only while its session exists, so a delete
-/// that removed the session first leaves no orphan behind.
 async fn insert(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     id: &SessionId,
-    event: &EventId,
-    doc: serde_json::Value,
+    events: &[&str],
+    docs: Vec<serde_json::Value>,
 ) -> Result<usize, diesel::result::Error> {
+    // One statement: the events land only while their session row exists, so
+    // a delete that removed the session first leaves no orphan behind.
     diesel::sql_query(
         "INSERT INTO session_events (workspace_id, session_id, event_id, created_at, doc)
-         SELECT $1, $2, $3, now(), $4
-         WHERE EXISTS (SELECT 1 FROM sessions WHERE workspace_id = $1 AND session_id = $2)",
+         SELECT s.workspace_id, s.session_id, e.event_id, now(), e.doc
+         FROM sessions s, unnest($3::text[], $4::jsonb[]) WITH ORDINALITY AS e(event_id, doc, n)
+         WHERE s.workspace_id = $1 AND s.session_id = $2 ORDER BY e.n",
     )
     .bind::<Text, _>(ws.as_str())
     .bind::<Text, _>(id.as_str())
-    .bind::<Text, _>(event.as_str())
-    .bind::<Jsonb, _>(doc)
+    .bind::<Array<Text>, _>(events)
+    .bind::<Array<Jsonb>, _>(docs)
     .execute(c)
     .await
 }

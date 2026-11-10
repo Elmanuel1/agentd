@@ -43,7 +43,6 @@ impl SessionsService {
         Ok(out)
     }
 
-    /// The session `payloads` are sent to, once it takes them.
     pub(super) async fn sendable(
         &self,
         ctx: &AuthContext,

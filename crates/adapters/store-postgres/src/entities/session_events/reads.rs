@@ -70,7 +70,10 @@ impl SessionEventReads for PgSessionEventLog {
         self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let p = &filter.processed;
-        let order = if filter.order == Order::Desc { "DESC" } else { "ASC" };
+        let order = match filter.order {
+            Order::Desc => "DESC",
+            Order::Asc => "ASC",
+        };
         let processed = "(doc->>'processed_at')::timestamptz";
         let rows: Vec<DocRow> = diesel::sql_query(format!(
             "SELECT doc FROM session_events
