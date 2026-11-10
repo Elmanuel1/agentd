@@ -5,8 +5,9 @@
 use shared::{ApiError, AuthContext, WorkspaceId};
 
 use crate::service::{not_found, WorkService};
-use crate::store::{Reach, Scope, RUNTIME};
+use crate::store::{Reach, Scope};
 use crate::tokens::WorkClaims;
+use shared::tenancy::RUNTIME_QUEUE;
 
 /// Who calls the work routes, as the edge resolved them.
 #[derive(Debug, Clone)]
@@ -59,7 +60,7 @@ pub(crate) fn scope(caller: &WorkCaller, env: &str) -> Result<Scope, ApiError> {
             environment: env.to_owned(),
             queue: None,
         }),
-        WorkCaller::Queue { queue, .. } if queue == RUNTIME => Ok(Scope::Queue(queue.clone())),
+        WorkCaller::Queue { queue, .. } if queue == RUNTIME_QUEUE => Ok(Scope::Queue(queue.clone())),
         WorkCaller::Queue { queue, ctx: Some(ctx) } => Ok(Scope::Environment {
             workspace: ctx.workspace.clone(),
             environment: queue.clone(),

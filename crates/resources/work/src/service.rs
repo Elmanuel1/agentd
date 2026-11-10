@@ -9,9 +9,10 @@ use shared::{ApiError, AuthContext, Page, Pagination, Timestamp};
 
 use crate::caller::WorkCaller;
 use crate::secret::CloudVariables;
-use crate::store::{StoreError, WorkItem, WorkStore, HOSTED};
+use crate::store::{StoreError, WorkItem, WorkStore};
 use crate::tokens::{WorkClaims, WorkTokens};
 use crate::types::{QueueStats, StatsTag, Work, WorkData, WorkDataTag, WorkState, WorkTag};
+use shared::tenancy::HOSTED_QUEUE;
 
 /// Work items over their store.
 pub struct WorkService {
@@ -54,7 +55,7 @@ impl WorkService {
     }
 
     /// Queue `session`'s work in `environment_id` on `queue`: its item, with
-    /// the session's id, `started_at` set at once as on live. `None` when the
+    /// the session's id, `started_at` set at once as on live. `false` when the
     /// session's item is held and was left as it is.
     pub async fn queue(
         &self,
@@ -62,7 +63,7 @@ impl WorkService {
         environment_id: &str,
         session: &str,
         queue: &str,
-    ) -> Result<Option<Work>, ApiError> {
+    ) -> Result<bool, ApiError> {
         let now = Timestamp::now();
         let work = Work {
             id: session.to_owned(),
@@ -84,12 +85,12 @@ impl WorkService {
             workspace: ctx.workspace.clone(),
             org: ctx.org.clone(),
             queue: queue.to_owned(),
-            work: work.clone(),
+            work,
             last_heartbeat: None,
             lease_until: None,
             handed_out_at: None,
         };
-        Ok(self.store.queue(&item).await.map_err(backend)?.map(|i| i.work))
+        self.store.queue(&item).await.map_err(backend)
     }
 
     /// Queue the work of a session whose own sandbox's harness takes it: the
@@ -100,7 +101,7 @@ impl WorkService {
         environment_id: &str,
         session: &str,
     ) -> Result<String, ApiError> {
-        self.queue(ctx, environment_id, session, HOSTED).await?;
+        self.queue(ctx, environment_id, session, HOSTED_QUEUE).await?;
         let claims = WorkClaims {
             session: session.to_owned(),
             ws: ctx.workspace.as_str().to_owned(),

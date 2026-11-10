@@ -130,7 +130,7 @@ pub(super) fn insert(i: &WorkItem) -> BoxedSqlQuery<'_, Pg, diesel::query_builde
              acknowledged_at = NULL, latest_heartbeat_at = NULL, last_heartbeat = NULL, lease_until = NULL, \
              handed_out_at = NULL, stop_requested_at = NULL, stopped_at = NULL \
              WHERE work_items.state = 'stopped' \
-             OR (work_items.state = 'stopping' AND work_items.lease_until < EXCLUDED.started_at) RETURNING {COLS}"
+             OR (work_items.state = 'stopping' AND work_items.lease_until < EXCLUDED.started_at)"
     ))
     .into_boxed()
     .bind::<Text, _>(i.workspace.as_str())

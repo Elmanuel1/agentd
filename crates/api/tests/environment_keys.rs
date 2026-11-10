@@ -14,7 +14,8 @@ use base64::Engine as _;
 use common::{send_to, Auth, Rig, EGRESS_KEY, KEY, SCOPE, WORK_KEY};
 use serde_json::{json, Value};
 use shared::ports::secrets::SecretKey;
-use work::{Placeholders, WorkTokens, RUNTIME};
+use shared::tenancy::RUNTIME_QUEUE;
+use work::{Placeholders, WorkTokens};
 
 fn secret(work: &Value) -> Value {
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(work["secret"].as_str().unwrap()).unwrap()).unwrap()
@@ -213,7 +214,7 @@ async fn the_runtime_queue_hands_out_cloud_work_with_placeholders_and_never_a_va
     // W-23 before any runtime work; then W-22 once the session's work is on the runtime queue.
     let (st, body) = rig.call("GET", &format!("/v1/environments/{env}"), Auth::Bearer(&runtime), None).await;
     assert_eq!((st, body["error"]["message"].as_str()), (StatusCode::FORBIDDEN, Some(SCOPE)));
-    rig.work.queue(&rig.ctx(), &env, &session, RUNTIME).await.unwrap();
+    rig.work.queue(&rig.ctx(), &env, &session, RUNTIME_QUEUE).await.unwrap();
     let (st, read) = rig.call("GET", &format!("/v1/environments/{env}"), Auth::Bearer(&runtime), None).await;
     assert_eq!((st, read["id"].as_str()), (StatusCode::OK, Some(env.as_str())), "{read}");
     let (_, as_key) = rig.call("GET", &format!("/v1/environments/{env}"), Auth::Key(KEY), None).await;

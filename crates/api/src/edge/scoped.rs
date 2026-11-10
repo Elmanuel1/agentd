@@ -8,9 +8,10 @@ use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource};
+use shared::tenancy::RUNTIME_QUEUE;
 use shared::{wire_response, ApiError, AuthContext, OrgId, SessionCaller, WorkspaceId};
 use work::store::Reach;
-use work::{WorkCaller, WorkReads, WorkState, WorkTokens, RUNTIME};
+use work::{WorkCaller, WorkReads, WorkState, WorkTokens};
 
 use super::auth::{run, run_in_workspace};
 use super::reach::{
@@ -86,14 +87,14 @@ async fn runtime_key(items: &dyn WorkReads, mut req: Request, next: Next) -> Res
             Err(e) => wire_response(&ApiError::internal(e.to_string())),
         };
     }
-    if !environment_route(&method, &path, RUNTIME) {
+    if !environment_route(&method, &path, RUNTIME_QUEUE) {
         return wire_response(&out_of_scope());
     }
     let Some(session) = named_session(&path) else {
-        req.extensions_mut().insert(WorkCaller::Queue { queue: RUNTIME.into(), ctx: None });
+        req.extensions_mut().insert(WorkCaller::Queue { queue: RUNTIME_QUEUE.into(), ctx: None });
         return run(RUNTIME_ACTOR.into(), req, next).await;
     };
-    let item = match items.find_on_queue(RUNTIME, session).await {
+    let item = match items.find_on_queue(RUNTIME_QUEUE, session).await {
         Ok(item) => item,
         Err(e) => return wire_response(&ApiError::internal(e.to_string())),
     };
@@ -102,7 +103,7 @@ async fn runtime_key(items: &dyn WorkReads, mut req: Request, next: Next) -> Res
     }
     let Some(item) = item else { return wire_response(&ApiError::not_found("work not found")) };
     let ctx = runtime_ctx(item.org, item.workspace);
-    req.extensions_mut().insert(WorkCaller::Queue { queue: RUNTIME.into(), ctx: Some(ctx.clone()) });
+    req.extensions_mut().insert(WorkCaller::Queue { queue: RUNTIME_QUEUE.into(), ctx: Some(ctx.clone()) });
     run_in_workspace(ctx, RUNTIME_ACTOR.into(), req, next).await
 }
 

@@ -24,7 +24,7 @@ pub use caller::WorkCaller;
 pub use placeholder::{PlaceholderClaims, Placeholders};
 pub use secret::{CloudVariables, SessionVariables, Variable};
 pub use service::WorkService;
-pub use store::{WorkItem, WorkReads, WorkStore, HOSTED, RUNTIME};
+pub use store::{WorkItem, WorkReads, WorkStore};
 pub use tokens::{WorkClaims, WorkTokens};
 pub use types::{Work, WorkState};
 

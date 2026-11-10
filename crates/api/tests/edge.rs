@@ -140,6 +140,7 @@ fn app() -> Router {
         .route("/v1/environments/{id}", get(writer))
         .route("/v1/environments/{id}/work/poll", get(writer))
         .route("/v1/environments/{id}/work/{work}", get(writer))
+        .route("/v1/environments/{id}/work/{work}/ack", axum::routing::post(writer))
         .route("/v1/organizations/me", get(writer));
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });
     edge::wrap(
@@ -416,7 +417,31 @@ async fn the_runtime_key_reads_only_an_environment_with_runtime_work() {
     let elsewhere = send(bearer("/v1/environments/env_e/work/poll", RUNTIME_KEY)).await;
     assert_eq!(elsewhere.status, StatusCode::FORBIDDEN);
     let off_queue = send(bearer("/v1/sessions/sesn_1", RUNTIME_KEY)).await;
-    assert_eq!(off_queue.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        (off_queue.status, off_queue.body["error"].clone()),
+        (
+            StatusCode::NOT_FOUND,
+            serde_json::json!({"message": "session not found", "type": "not_found_error"})
+        )
+    );
+    let off_work = send(bearer("/v1/environments/runtime/work/sesn_1", RUNTIME_KEY)).await;
+    assert_eq!(
+        off_work.status,
+        StatusCode::FORBIDDEN,
+        "reading one work item is off an environment key's routes"
+    );
+    let ack = Request::builder()
+        .method("POST")
+        .uri("/v1/environments/runtime/work/sesn_1/ack")
+        .header("anthropic-version", "2026-10-21")
+        .header("authorization", format!("Bearer {RUNTIME_KEY}"))
+        .body(Body::empty())
+        .unwrap();
+    let off_ack = send(ack).await;
+    assert_eq!(
+        (off_ack.status, off_ack.body["error"].clone()),
+        (StatusCode::NOT_FOUND, serde_json::json!({"message": "work not found", "type": "not_found_error"}))
+    );
     let on_queue = send(bearer("/v1/sessions/sesn_rt", RUNTIME_KEY)).await;
     assert_eq!((on_queue.status, on_queue.body["actor"].as_str()), (StatusCode::OK, Some("runtime")));
 }

@@ -40,7 +40,6 @@ pub(crate) fn mint(
     if !ids.iter().all(|id| is_id_charset(id)) {
         return Err(KeyError("every id must be in the id charset".into()));
     }
-    // A name for people: 1 to 128 characters, none of them a control character.
     if !(1..=128).contains(&name.chars().count()) || name.chars().any(char::is_control) {
         return Err(KeyError("the name must be 1 to 128 characters, with no control characters".into()));
     }

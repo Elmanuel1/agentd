@@ -68,7 +68,7 @@ impl SessionsService {
         let id = &parse_id(raw_id)?;
         let mut calls = Vec::with_capacity(payloads.len());
         for (i, p) in payloads.iter().enumerate() {
-            let Some(call) = p.answered_call() else {
+            let Some(call) = p.answered_call().filter(|_| p.is_user_event()) else {
                 return Err(ApiError::invalid_request(format!(
                     "events.{i}: a session's work token sends only user.tool_result and user.custom_tool_result"
                 )));

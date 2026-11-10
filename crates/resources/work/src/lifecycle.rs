@@ -9,9 +9,10 @@ use shared::{ApiError, AuthContext, Timestamp, WorkspaceId};
 
 use crate::caller::WorkCaller;
 use crate::service::{backend, not_found, WorkService};
-use crate::store::{Beat, Reach, RUNTIME};
+use crate::store::{Beat, Reach};
 use crate::tokens::WorkClaims;
 use crate::types::{Heartbeat, HeartbeatTag, Work, WorkState};
+use shared::tenancy::RUNTIME_QUEUE;
 
 /// The lease a heartbeat grants when it asks for none, or for 0, as on live;
 /// an acknowledgement holds the item this long before its first heartbeat.
@@ -53,7 +54,7 @@ impl WorkService {
             workspace: item.workspace.clone(),
             api_key_id: String::new(),
         };
-        let variables = match (&self.cloud, item.queue == RUNTIME) {
+        let variables = match (&self.cloud, item.queue == RUNTIME_QUEUE) {
             (Some(cloud), true) => match cloud.of(&ctx, &item.work.id).await {
                 Ok(v) => v,
                 // Its session is gone: the item stops rather than block the queue.

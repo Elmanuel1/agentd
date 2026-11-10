@@ -10,8 +10,6 @@ use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 
 use crate::types::{Work, WorkState};
 
-pub use shared::tenancy::{HOSTED_QUEUE as HOSTED, RUNTIME_QUEUE as RUNTIME};
-
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {
     #[error("work store backend: {0}")]
@@ -117,8 +115,8 @@ pub trait WorkReads: Send + Sync {
 #[async_trait]
 pub trait WorkStore: WorkReads {
     /// Insert `item`, or queue the session's `stopped` item again as `item`
-    /// says; `None` when the session's item is not `stopped` and is left as it is.
-    async fn queue(&self, item: &WorkItem) -> Result<Option<WorkItem>, StoreError>;
+    /// says; `false` when the session's item is not `stopped` and is left as it is.
+    async fn queue(&self, item: &WorkItem) -> Result<bool, StoreError>;
     /// Hand out the oldest queued item of `queue` not handed out within
     /// `reclaim`, marking it handed out at `now`.
     async fn claim(

@@ -7,11 +7,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use shared::tenancy::RUNTIME_QUEUE;
 use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgWorkStore};
 use work::store::{Beat, Reach, Scope};
 use work::types::{Work, WorkData, WorkDataTag, WorkTag};
-use work::{WorkItem, WorkReads, WorkState, WorkStore, RUNTIME};
+use work::{WorkItem, WorkReads, WorkState, WorkStore};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -169,24 +170,28 @@ async fn a_write_misses_an_item_its_path_does_not_reach() {
     let (s, ws) = (store().await, format!("wrkspc_{}", stamp()));
     let w = WorkspaceId::new(&ws);
     let session = format!("sesn_r{}", stamp());
-    s.queue(&queued(&ws, &session, RUNTIME, 1)).await.unwrap();
+    s.queue(&queued(&ws, &session, RUNTIME_QUEUE, 1)).await.unwrap();
     let elsewhere = Reach { queue: Some("env_other".into()), environment: Some("env_other".into()) };
     assert!(s.ack(&w, &session, &elsewhere, Timestamp::now(), at(300)).await.unwrap().is_none());
     assert!(s.stop(&w, &session, &elsewhere, true, Timestamp::now()).await.unwrap().is_none());
     let mut set = BTreeMap::new();
     set.insert("k".to_owned(), "v".to_owned());
-    let on_queue = Reach { queue: Some(RUNTIME.into()), ..Reach::default() };
+    let on_queue = Reach { queue: Some(RUNTIME_QUEUE.into()), ..Reach::default() };
     let updated = s.update_metadata(&w, &session, &on_queue, &set, &[]).await.unwrap().unwrap();
     assert_eq!(updated.work.metadata, set);
     let removed = s.update_metadata(&w, &session, &on_queue, &BTreeMap::new(), &["k".into()]).await.unwrap();
     assert!(removed.unwrap().work.metadata.is_empty());
-    let found = s.find_on_queue(RUNTIME, &session).await.unwrap().unwrap();
+    let found = s.find_on_queue(RUNTIME_QUEUE, &session).await.unwrap().unwrap();
     assert_eq!(found.workspace, w);
-    let owner = s.runtime_owner(&format!("env_{RUNTIME}")).await.unwrap();
+    let owner = s.runtime_owner(&format!("env_{RUNTIME_QUEUE}")).await.unwrap();
     assert!(owner.is_some());
     let listed = s
         .list(
-            &Scope::Environment { workspace: w.clone(), environment: format!("env_{RUNTIME}"), queue: None },
+            &Scope::Environment {
+                workspace: w.clone(),
+                environment: format!("env_{RUNTIME_QUEUE}"),
+                queue: None,
+            },
             &Pagination { limit: 10, offset: 0 },
         )
         .await
@@ -206,12 +211,13 @@ async fn a_session_s_one_item_is_queued_again_only_once_it_is_stopped() {
     s.queue(&queued(&ws, "sesn_run", "env_run", 10)).await.unwrap();
     s.heartbeat(&w, "sesn_run", &any, &beat(None, 300)).await.unwrap().unwrap();
     let held = s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
-    assert_eq!(held, None, "a held item is left as it is");
+    assert!(!held, "a held item is left as it is");
     assert_eq!(s.get(&w, "sesn_run", &any).await.unwrap().unwrap().work.state, WorkState::Active);
     s.stop(&w, "sesn_run", &any, true, Timestamp::now()).await.unwrap().unwrap();
     let mut next = queued(&ws, "sesn_run", "runtime", 0);
     next.work.environment_id = "env_moved".into();
-    let again = s.queue(&next).await.unwrap().unwrap();
+    assert!(s.queue(&next).await.unwrap());
+    let again = s.get(&w, "sesn_run", &any).await.unwrap().unwrap();
     // The same item, reused: its creation stays, everything a run set is reset, and the run's queue,
     // environment and start are the new run's.
     let first = queued(&ws, "sesn_run", "env_run", 10);
