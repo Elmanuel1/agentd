@@ -25,12 +25,12 @@ impl std::fmt::Debug for ApiKeysService {
     }
 }
 
-fn key_error(e: StoreError) -> KeyError {
+pub(crate) fn key_error(e: StoreError) -> KeyError {
     KeyError(e.to_string())
 }
 
 /// A name for people: 1 to 128 characters, none of them a control character.
-fn name_ok(name: &str) -> bool {
+pub(crate) fn name_ok(name: &str) -> bool {
     (1..=128).contains(&name.chars().count()) && !name.chars().any(char::is_control)
 }
 

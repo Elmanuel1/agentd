@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use shared::{OrgId, Timestamp, WorkspaceId};
 
-use crate::types::ApiKey;
+use crate::types::{ApiKey, EnvironmentKey};
 
 /// Store-level errors.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -32,4 +32,17 @@ pub trait ApiKeysStore: Send + Sync {
         workspace: &WorkspaceId,
         at: Timestamp,
     ) -> Result<usize, StoreError>;
+}
+
+/// Persistence port for environment keys; a key is found by its digest.
+#[async_trait]
+pub trait EnvironmentKeysStore: Send + Sync {
+    /// Insert a new key with its digest.
+    async fn insert(&self, key: &EnvironmentKey, digest: &[u8]) -> Result<(), StoreError>;
+    /// The unrevoked key whose digest is `digest`.
+    async fn find_active(&self, digest: &[u8]) -> Result<Option<EnvironmentKey>, StoreError>;
+    /// Every key, revoked ones included, oldest first.
+    async fn list(&self) -> Result<Vec<EnvironmentKey>, StoreError>;
+    /// Revoke `id` at `at`; `false` when no unrevoked key has it.
+    async fn revoke(&self, id: &str, at: Timestamp) -> Result<bool, StoreError>;
 }

@@ -28,6 +28,7 @@ pub use entities::agents::PgAgentsStore;
 pub use entities::api_keys::PgApiKeysStore;
 pub use entities::deployments::PgDeploymentsStore;
 pub use entities::dreams::PgDreamsStore;
+pub use entities::environment_keys::PgEnvironmentKeysStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
 pub use entities::memory::PgMemoryStore;
@@ -36,6 +37,7 @@ pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
+pub use entities::work_items::PgWorkStore;
 pub use entities::workspaces::PgWorkspacesStore;
 
 /// Shared diesel-async connection pool (tokio-postgres). All entity stores go
@@ -99,6 +101,7 @@ from_backend!(
     dreams::store::StoreError,
     memory::store::StoreError,
     organizations::workspaces::StoreError,
+    work::store::StoreError,
 );
 
 /// Serialize a snake_case enum to its wire string for a filter column

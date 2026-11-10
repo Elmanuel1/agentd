@@ -34,11 +34,17 @@ pub(crate) fn secret_name(prefix: &str, key: &SecretKey) -> String {
 /// The tags a created secret carries: what the IAM policy's conditions and an
 /// operator's inventory read.
 pub(crate) fn tags(key: &SecretKey) -> Vec<Tag> {
+    let kind = key.is_environment_variable().then_some(CREDENTIAL_TYPE);
     [("workspace", key.workspace()), ("vault", key.vault()), ("managed-by", "agentd")]
         .into_iter()
+        .chain(kind)
         .map(|(k, v)| Tag::builder().key(k).value(v).build())
         .collect()
 }
+
+/// The tag an `environment_variable` credential's secret carries: the egress
+/// swap's IAM policy reaches secrets with it and no others.
+pub(crate) const CREDENTIAL_TYPE: (&str, &str) = ("credential_type", "environment_variable");
 
 #[cfg(test)]
 mod tests {
@@ -48,6 +54,20 @@ mod tests {
     fn a_name_is_the_prefix_then_the_key() {
         let key = SecretKey::new("wrkspc_01a", "vlt_01b", "cred_01c").unwrap();
         assert_eq!(secret_name("agentd/prod", &key), "agentd/prod/wrkspc_01a/vlt_01b/cred_01c");
+    }
+
+    #[test]
+    fn only_an_environment_variable_secret_carries_the_credential_type_tag() {
+        let key = SecretKey::new("wrkspc_01a", "vlt_01b", "cred_01c").unwrap();
+        let names = |k: &SecretKey| {
+            tags(k)
+                .iter()
+                .map(|t| format!("{}={}", t.key().unwrap_or(""), t.value().unwrap_or("")))
+                .collect::<Vec<_>>()
+        };
+        assert!(!names(&key).iter().any(|t| t.starts_with("credential_type")));
+        let tagged = names(&key.environment_variable());
+        assert!(tagged.contains(&"credential_type=environment_variable".to_owned()), "{tagged:?}");
     }
 
     #[test]

@@ -3478,6 +3478,7 @@ dependencies = [
  "tower",
  "tracing",
  "vaults",
+ "work",
 ]
 
 [[package]]
@@ -4366,13 +4367,13 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "parking_lot",
- "rand 0.8.6",
+ "chrono",
  "serde",
  "serde_json",
  "shared",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

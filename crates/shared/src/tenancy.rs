@@ -73,6 +73,22 @@ pub struct AdminContext {
     pub admin_key_id: String,
 }
 
+/// Set by the edge when the caller is a session's work token: it reaches
+/// that session and what the session itself reaches, nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCaller {
+    /// The session.
+    pub session: String,
+}
+
+/// Set by the edge when the caller is an environment key: a worker's
+/// poller, which reaches one work queue and the sessions on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentCaller {
+    /// The queue: a self-hosted environment's id, or the runtime queue.
+    pub queue: String,
+}
+
 impl AuthContext {
     /// Audit actor for mutations performed under this context.
     pub fn actor(&self) -> crate::Actor {

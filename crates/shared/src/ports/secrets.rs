@@ -31,6 +31,7 @@ pub struct SecretKey {
     workspace: String,
     vault: String,
     credential: String,
+    environment_variable: bool,
 }
 
 impl SecretKey {
@@ -45,7 +46,20 @@ impl SecretKey {
             workspace: workspace.to_owned(),
             vault: vault.to_owned(),
             credential: credential.to_owned(),
+            environment_variable: false,
         })
+    }
+
+    /// The same key, for an `environment_variable` credential: its secret is
+    /// tagged so that only the egress swap's policy reaches it.
+    #[must_use]
+    pub fn environment_variable(self) -> Self {
+        Self { environment_variable: true, ..self }
+    }
+
+    /// Whether the secret is an `environment_variable` credential's.
+    pub fn is_environment_variable(&self) -> bool {
+        self.environment_variable
     }
 
     pub fn workspace(&self) -> &str {
