@@ -168,18 +168,19 @@ async fn a_write_misses_an_item_its_path_does_not_reach() {
     }
     let (s, ws) = (store().await, format!("wrkspc_{}", stamp()));
     let w = WorkspaceId::new(&ws);
-    s.insert(&queued(&ws, "sesn_r", RUNTIME, 1)).await.unwrap();
+    let session = format!("sesn_r{}", stamp());
+    s.insert(&queued(&ws, &session, RUNTIME, 1)).await.unwrap();
     let elsewhere = Reach { queue: Some("env_other".into()), environment: Some("env_other".into()) };
-    assert!(s.ack(&w, "sesn_r", &elsewhere, Timestamp::now(), at(300)).await.unwrap().is_none());
-    assert!(s.stop(&w, "sesn_r", &elsewhere, true, Timestamp::now()).await.unwrap().is_none());
+    assert!(s.ack(&w, &session, &elsewhere, Timestamp::now(), at(300)).await.unwrap().is_none());
+    assert!(s.stop(&w, &session, &elsewhere, true, Timestamp::now()).await.unwrap().is_none());
     let mut set = BTreeMap::new();
     set.insert("k".to_owned(), "v".to_owned());
     let on_queue = Reach { queue: Some(RUNTIME.into()), ..Reach::default() };
-    let updated = s.update_metadata(&w, "sesn_r", &on_queue, &set, &[]).await.unwrap().unwrap();
+    let updated = s.update_metadata(&w, &session, &on_queue, &set, &[]).await.unwrap().unwrap();
     assert_eq!(updated.work.metadata, set);
-    let removed = s.update_metadata(&w, "sesn_r", &on_queue, &BTreeMap::new(), &["k".into()]).await.unwrap();
+    let removed = s.update_metadata(&w, &session, &on_queue, &BTreeMap::new(), &["k".into()]).await.unwrap();
     assert!(removed.unwrap().work.metadata.is_empty());
-    let found = s.find_on_queue(RUNTIME, "sesn_r").await.unwrap().unwrap();
+    let found = s.find_on_queue(RUNTIME, &session).await.unwrap().unwrap();
     assert_eq!(found.workspace, w);
     let owner = s.runtime_owner(&format!("env_{RUNTIME}")).await.unwrap();
     assert!(owner.is_some());
@@ -190,6 +191,6 @@ async fn a_write_misses_an_item_its_path_does_not_reach() {
         )
         .await
         .unwrap();
-    assert_eq!(listed.iter().map(|i| i.work.id.as_str()).collect::<Vec<_>>(), ["sesn_r"]);
-    s.stop(&w, "sesn_r", &on_queue, true, Timestamp::now()).await.unwrap();
+    assert_eq!(listed.iter().map(|i| i.work.id.as_str()).collect::<Vec<_>>(), [&session]);
+    s.stop(&w, &session, &on_queue, true, Timestamp::now()).await.unwrap();
 }
