@@ -10,11 +10,25 @@ use shared::ports::keys::{AdminKeySource, EnvironmentGrant, EnvironmentKeySource
 use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
 use shared::{AdminContext, AuthContext, OrgId, WorkspaceId};
 
-/// Secrets held in memory, by key.
+/// Secrets held in memory, by key, with the keys put as `environment_variable` credentials'.
 #[derive(Debug, Default)]
-pub struct MemorySecretStore(Mutex<BTreeMap<String, SecretString>>);
+pub struct MemorySecretStore(
+    Mutex<BTreeMap<String, SecretString>>,
+    Mutex<std::collections::BTreeSet<String>>,
+    std::sync::atomic::AtomicUsize,
+);
 
 impl MemorySecretStore {
+    /// How many secrets have been read.
+    pub fn reads(&self) -> usize {
+        self.2.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether `key`'s secret was put as an `environment_variable` credential's, which AWS tags.
+    pub fn tagged(&self, key: &SecretKey) -> bool {
+        self.1.lock().contains(&key.to_string())
+    }
+
     /// The value at `key`, as the store holds it.
     pub fn exposed(&self, key: &SecretKey) -> Option<String> {
         self.0.lock().get(&key.to_string()).map(|s| s.expose_secret().to_owned())
@@ -34,11 +48,15 @@ impl MemorySecretStore {
 #[async_trait]
 impl SecretStore for MemorySecretStore {
     async fn put(&self, key: &SecretKey, secret: &SecretString) -> Result<(), SecretError> {
+        if key.is_environment_variable() {
+            self.1.lock().insert(key.to_string());
+        }
         self.0.lock().insert(key.to_string(), secret.clone());
         Ok(())
     }
 
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
+        self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.0.lock().get(&key.to_string()).cloned().ok_or_else(|| SecretError::NotFound(key.to_string()))
     }
 

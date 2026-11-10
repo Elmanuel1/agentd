@@ -6,8 +6,11 @@ customer-managed KMS key and tagged `workspace`, `vault` and
 `managed-by=agentd`. Admin keys are secrets too: each is
 `PREFIX/system/admin_keys/<digest>`, holding only a peppered digest, the key
 id and org, and tagged with what `agentd admin-keys list` shows. The pepper
-every key digest is keyed with is `PREFIX/system/api_key_pepper`. All of them
-are under the same KMS key, so the same policy covers them. Only agentd's
+every key digest is keyed with is `PREFIX/system/api_key_pepper`; beside it are
+`PREFIX/system/work_token_key`, `PREFIX/system/egress_key` and
+`PREFIX/system/runtime_key`. An `environment_variable` credential's secret is
+also tagged `credential_type=environment_variable`. All of them are under the
+same KMS key, so the same policy covers them. Only agentd's
 role, and an operator running `agentd keys` or `agentd admin-keys` as it, can
 read them. Sandboxes and runners cannot read them or
 use the key.
@@ -30,8 +33,8 @@ region and account is tighter and loses nothing.
 
 - `agentd-secrets-policy.json`, on agentd's role:
   - `CreateSecret` under `PREFIX/` only with the `managed-by=agentd` tag, only
-    agentd's tag keys (`workspace`, `vault`, `managed-by`, and for admin keys
-    `org`, `admin-key-id`, `key-name`, `key-hint`), and only under `KMS_KEY_ARN`
+    agentd's tag keys (`workspace`, `vault`, `managed-by`, `credential_type`,
+    and for admin keys `org`, `admin-key-id`, `key-name`, `key-hint`), and only under `KMS_KEY_ARN`
     (`secretsmanager:KmsKeyArn`, as in AWS's
     [identity-based policy examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_iam-policies.html);
     agentd always sends the key ARN).

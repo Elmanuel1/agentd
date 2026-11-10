@@ -10,7 +10,8 @@ use crate::AwsSecretStore;
 
 impl AwsSecretStore {
     /// Tag `key`'s secret `credential_type=environment_variable`; tagging
-    /// one that already carries it changes nothing.
+    /// one that already carries it changes nothing. `managed-by=agentd` goes
+    /// with it, as agentd's IAM policy requires of every tag it writes.
     pub async fn tag_environment_variable(&self, key: &SecretKey) -> Result<(), SecretError> {
         let name = self.secret_name(key);
         let (k, v) = CREDENTIAL_TYPE;
@@ -18,6 +19,7 @@ impl AwsSecretStore {
             .tag_resource()
             .secret_id(&name)
             .tags(Tag::builder().key(k).value(v).build())
+            .tags(Tag::builder().key("managed-by").value("agentd").build())
             .send()
             .await
             .map_err(|e| failure("secretsmanager:TagResource", &name, &e))?;

@@ -45,7 +45,19 @@ impl WorkService {
             api_key_id: String::new(),
         };
         let variables = match (&self.cloud, item.queue == RUNTIME) {
-            (Some(cloud), true) => cloud.of(&ctx, &item.work.id).await?,
+            (Some(cloud), true) => match cloud.of(&ctx, &item.work.id).await {
+                Ok(v) => v,
+                // Its session is gone: the item stops rather than block the queue.
+                Err(e) if e.status == 404 => {
+                    let any = Reach::default();
+                    self.store
+                        .stop(&item.workspace, &item.work.id, &any, true, Timestamp::now())
+                        .await
+                        .map_err(backend)?;
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            },
             _ => BTreeMap::new(),
         };
         let claims = WorkClaims {
