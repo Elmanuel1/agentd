@@ -38,8 +38,8 @@ impl PgWorkStore {
 
 #[async_trait]
 impl WorkStore for PgWorkStore {
-    async fn queue(&self, i: &WorkItem) -> Result<bool, StoreError> {
-        Ok(insert(i).execute(&mut self.write().await?).await.map_err(diesel_be)? > 0)
+    async fn queue(&self, i: &WorkItem) -> Result<(), StoreError> {
+        insert(i).execute(&mut self.write().await?).await.map(|_| ()).map_err(diesel_be)
     }
 
     async fn claim(

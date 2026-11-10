@@ -210,13 +210,12 @@ async fn a_session_s_one_item_is_queued_again_only_once_it_is_stopped() {
     let any = Reach::default();
     s.queue(&queued(&ws, "sesn_run", "env_run", 10)).await.unwrap();
     s.heartbeat(&w, "sesn_run", &any, &beat(None, 300)).await.unwrap().unwrap();
-    let held = s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
-    assert!(!held, "a held item is left as it is");
+    s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
     assert_eq!(s.get(&w, "sesn_run", &any).await.unwrap().unwrap().work.state, WorkState::Active);
     s.stop(&w, "sesn_run", &any, true, Timestamp::now()).await.unwrap().unwrap();
     let mut next = queued(&ws, "sesn_run", "runtime", 0);
     next.work.environment_id = "env_moved".into();
-    assert!(s.queue(&next).await.unwrap());
+    s.queue(&next).await.unwrap();
     let again = s.get(&w, "sesn_run", &any).await.unwrap().unwrap();
     // The same item, reused: its creation stays, everything a run set is reset, and the run's queue,
     // environment and start are the new run's.

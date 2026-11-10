@@ -90,8 +90,7 @@ impl WorkService {
             lease_until: None,
             handed_out_at: None,
         };
-        self.store.queue(&item).await.map_err(backend)?;
-        Ok(())
+        self.store.queue(&item).await.map_err(backend)
     }
 
     /// Queue the work of a session whose own sandbox's harness takes it: the

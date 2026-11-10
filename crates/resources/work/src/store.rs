@@ -115,8 +115,9 @@ pub trait WorkReads: Send + Sync {
 #[async_trait]
 pub trait WorkStore: WorkReads {
     /// Insert `item`, or queue the session's `stopped` item again as `item`
-    /// says; `false` when the session's item is not `stopped` and is left as it is.
-    async fn queue(&self, item: &WorkItem) -> Result<bool, StoreError>;
+    /// says (one whose `stopping` lease ran out is `stopped`); a held item is
+    /// left as it is.
+    async fn queue(&self, item: &WorkItem) -> Result<(), StoreError>;
     /// Hand out the oldest queued item of `queue` not handed out within
     /// `reclaim`, marking it handed out at `now`.
     async fn claim(
