@@ -42,11 +42,13 @@ impl WorkService {
         block: Duration,
         reclaim: Duration,
     ) -> Result<Option<Work>, ApiError> {
-        let WorkCaller::Queue { queue, .. } = caller else { return Err(not_found()) };
-        let mut claimed = self.store.claim(queue, reclaim, Timestamp::now()).await.map_err(backend)?;
+        let WorkCaller::Queue { queue, ctx } = caller else { return Err(not_found()) };
+        // A self-hosted environment's key claims in its own workspace only; the runtime key's queue spans them.
+        let ws = ctx.as_ref().map(|c| &c.workspace);
+        let mut claimed = self.store.claim(queue, ws, reclaim, Timestamp::now()).await.map_err(backend)?;
         if claimed.is_none() && !block.is_zero() {
             tokio::time::sleep(block).await;
-            claimed = self.store.claim(queue, reclaim, Timestamp::now()).await.map_err(backend)?;
+            claimed = self.store.claim(queue, ws, reclaim, Timestamp::now()).await.map_err(backend)?;
         }
         let Some(item) = claimed else { return Ok(None) };
         let ctx = AuthContext {

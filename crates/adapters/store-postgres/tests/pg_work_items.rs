@@ -81,18 +81,23 @@ async fn two_claims_take_different_items_and_an_unacknowledged_one_comes_back_af
     s.queue(&queued(&ws, "sesn_old", &q, 20)).await.unwrap();
     s.queue(&queued(&ws, "sesn_new", &q, 10)).await.unwrap();
     let reclaim = Duration::from_secs(5);
-    let first = s.claim(&q, reclaim, Timestamp::now()).await.unwrap().unwrap();
-    let second = s.claim(&q, reclaim, Timestamp::now()).await.unwrap().unwrap();
+    let first = s.claim(&q, None, reclaim, Timestamp::now()).await.unwrap().unwrap();
+    let second = s.claim(&q, None, reclaim, Timestamp::now()).await.unwrap().unwrap();
     assert_eq!((first.work.id.as_str(), second.work.id.as_str()), ("sesn_old", "sesn_new"), "oldest first");
-    assert!(s.claim(&q, reclaim, Timestamp::now()).await.unwrap().is_none(), "both handed out");
+    assert!(s.claim(&q, None, reclaim, Timestamp::now()).await.unwrap().is_none(), "both handed out");
     let counts = s.counts(&Scope::Queue(q.clone()), reclaim, Timestamp::now()).await.unwrap();
     assert_eq!((counts.depth, counts.pending), (0, 2));
-    let again = s.claim(&q, reclaim, at(6)).await.unwrap().unwrap();
+    let elsewhere = WorkspaceId::new(format!("wrkspc_{}", stamp()));
+    assert!(
+        s.claim(&q, Some(&elsewhere), reclaim, at(6)).await.unwrap().is_none(),
+        "another workspace's key claims nothing"
+    );
+    let again = s.claim(&q, Some(&WorkspaceId::new(&ws)), reclaim, at(6)).await.unwrap().unwrap();
     assert_eq!(again.work.id, "sesn_old", "not acknowledged within 5 s: handed out again");
     let reach = Reach { queue: Some(q.clone()), ..Reach::default() };
     let acked = s.ack(&WorkspaceId::new(&ws), "sesn_old", &reach, Timestamp::now(), at(300)).await.unwrap();
     assert_eq!(acked.unwrap().work.state, WorkState::Starting);
-    assert!(s.claim(&q, reclaim, at(60)).await.unwrap().map(|i| i.work.id) != Some("sesn_old".into()));
+    assert!(s.claim(&q, None, reclaim, at(60)).await.unwrap().map(|i| i.work.id) != Some("sesn_old".into()));
 }
 
 #[tokio::test]
@@ -106,7 +111,9 @@ async fn concurrent_claims_never_hand_one_item_out_twice() {
     }
     let claims = (0..8).map(|_| {
         let (s, q) = (s.clone(), q.clone());
-        tokio::spawn(async move { s.claim(&q, Duration::from_secs(5), Timestamp::now()).await.unwrap() })
+        tokio::spawn(
+            async move { s.claim(&q, None, Duration::from_secs(5), Timestamp::now()).await.unwrap() },
+        )
     });
     let mut ids: Vec<String> = Vec::new();
     for c in claims {

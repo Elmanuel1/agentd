@@ -45,21 +45,25 @@ impl WorkStore for PgWorkStore {
     async fn claim(
         &self,
         queue: &str,
+        workspace: Option<&WorkspaceId>,
         reclaim: Duration,
         now: Timestamp,
     ) -> Result<Option<WorkItem>, StoreError> {
         let mut conn = self.write().await?;
         let (queue, free_before) = (queue.to_owned(), before(now, reclaim));
+        let workspace = workspace.map(|w| w.as_str().to_owned());
         let rows: Vec<Row> = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
                 async move {
                     let rows: Vec<Row> = diesel::sql_query(format!(
                         "SELECT {COLS} FROM work_items WHERE queue = $1 AND state = 'queued' \
                          AND (handed_out_at IS NULL OR handed_out_at < $2) \
+                         AND ($3::text IS NULL OR workspace_id = $3) \
                          ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
                     ))
                     .bind::<Text, _>(&queue)
                     .bind::<Timestamptz, _>(free_before)
+                    .bind::<Nullable<Text>, _>(workspace.as_deref())
                     .load(c)
                     .await?;
                     if let Some(r) = <[Row]>::first(&rows) {
