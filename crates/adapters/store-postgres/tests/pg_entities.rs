@@ -326,7 +326,7 @@ async fn pg_sessions_shared_event_log() {
         return;
     }
     use sessions::events::{Event, EventPayload, UserEvent};
-    use sessions::store::{SessionEventLog, SessionsStore};
+    use sessions::store::{SessionEventLog, SessionEventReads, SessionsStore};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
     let log = PgSessionEventLog::new(backend().await);

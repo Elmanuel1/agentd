@@ -3,17 +3,27 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use shared::{Id, Resource, Timestamp};
+use shared::Timestamp;
 
-/// Marker for `work_…` ids.
-#[derive(Debug, Clone, Copy)]
-pub struct WorkResource_;
-impl Resource for WorkResource_ {
-    const PREFIX: &'static str = "work";
-    const LABEL: &'static str = "work";
+impl WorkState {
+    /// The state as stored and served.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Starting => "starting",
+            Self::Active => "active",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    /// The state `raw` names.
+    pub fn parse(raw: &str) -> Option<Self> {
+        [Self::Queued, Self::Starting, Self::Active, Self::Stopping, Self::Stopped]
+            .into_iter()
+            .find(|s| s.as_str() == raw)
+    }
 }
-/// `Id<WorkResource_>` alias.
-pub type WorkId = Id<WorkResource_>;
 
 /// A work item's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,13 +67,16 @@ pub enum WorkTag {
     Work,
 }
 
-/// A unit of work: one session's sandbox.
+/// A unit of work: one session's sandbox. As on live, its id is the
+/// session's id, one item per session, reused for every run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Work {
-    /// `work_…`.
-    pub id: WorkId,
+    /// The session's id.
+    pub id: String,
     /// When a worker acknowledged it.
     pub acknowledged_at: Option<Timestamp>,
+    /// Always `null`, as live serves it.
+    pub actor: Option<String>,
     /// Created.
     pub created_at: Timestamp,
     /// The session.
@@ -77,7 +90,7 @@ pub struct Work {
     /// The worker's credential payload: set only on the poll that hands the
     /// work out, `null` on every other read.
     pub secret: Option<String>,
-    /// When it started running.
+    /// When it was queued, as live sets it.
     pub started_at: Option<Timestamp>,
     /// Its state.
     pub state: WorkState,
@@ -108,7 +121,7 @@ pub struct Heartbeat {
     /// The work's state.
     pub state: WorkState,
     /// The lease's time to live.
-    pub ttl_seconds: u64,
+    pub ttl_seconds: i64,
     /// Constant tag.
     #[serde(rename = "type")]
     pub tag: HeartbeatTag,

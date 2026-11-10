@@ -18,7 +18,9 @@ pub mod auth;
 pub mod contract;
 pub mod limits;
 pub mod methods;
+pub mod reach;
 pub mod request_id;
+pub mod scoped;
 
 use std::sync::Arc;
 

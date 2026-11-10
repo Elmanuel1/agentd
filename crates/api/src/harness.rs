@@ -18,8 +18,7 @@ use serde::Deserialize;
 use sessions::events::{Rubric, UserEvent};
 use sessions::types::{SessionId, SessionResource, ThreadId};
 use sessions::{EventPayload, HarnessContract, SessionsService};
-use shared::{ApiError, ApiJson, AuthContext, Module, RouteError};
-use work::WorkScope;
+use shared::{ApiError, ApiJson, AuthContext, Module, RouteError, SessionCaller};
 
 /// The services the harness routes write through.
 #[derive(Debug, Clone)]
@@ -41,9 +40,9 @@ pub fn module(harness: Harness) -> Module {
 }
 
 /// `id` when the caller is that session's harness.
-fn own(scope: Option<Extension<WorkScope>>, id: &str) -> Result<SessionId, RouteError> {
+fn own(scope: Option<Extension<SessionCaller>>, id: &str) -> Result<SessionId, RouteError> {
     match scope {
-        Some(Extension(WorkScope(claims))) if claims.session == id => {
+        Some(Extension(caller)) if caller.session == id => {
             SessionId::parse(id).map_err(|_| RouteError(ApiError::not_found("session not found")))
         }
         _ => Err(RouteError(ApiError::not_found("session not found"))),
@@ -67,7 +66,7 @@ struct Report {
 async fn events(
     Extension(h): Extension<Harness>,
     Extension(ctx): Extension<AuthContext>,
-    scope: Option<Extension<WorkScope>>,
+    scope: Option<Extension<SessionCaller>>,
     Path(id): Path<String>,
     ApiJson(report): ApiJson<Report>,
 ) -> Result<Response, RouteError> {
@@ -84,7 +83,7 @@ async fn events(
 async fn take(
     Extension(h): Extension<Harness>,
     Extension(ctx): Extension<AuthContext>,
-    scope: Option<Extension<WorkScope>>,
+    scope: Option<Extension<SessionCaller>>,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
     let session = own(scope, &id)?;
@@ -96,7 +95,7 @@ async fn take(
 async fn output(
     Extension(h): Extension<Harness>,
     Extension(ctx): Extension<AuthContext>,
-    scope: Option<Extension<WorkScope>>,
+    scope: Option<Extension<SessionCaller>>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
     body: Bytes,
@@ -124,7 +123,7 @@ async fn output(
 async fn file(
     Extension(h): Extension<Harness>,
     Extension(ctx): Extension<AuthContext>,
-    scope: Option<Extension<WorkScope>>,
+    scope: Option<Extension<SessionCaller>>,
     Path((id, file_id)): Path<(String, String)>,
 ) -> Result<Response, RouteError> {
     let session = own(scope, &id)?;

@@ -12,10 +12,12 @@ use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use shared::error::DataEnvelope;
 use shared::page::filters::CreatedRange;
-use shared::{ApiJson, AuthContext, ListQuery, ListSpec, Messages, Page, RouteError, UnknownParams};
+use shared::{
+    ApiJson, AuthContext, ListQuery, ListSpec, Messages, Page, RouteError, SessionCaller, UnknownParams,
+};
 use tokio::sync::broadcast::error::RecvError;
 
-use super::order;
+use super::{environment, order, Worker};
 use crate::events::{Event, EventPayload, SessionEvent};
 use crate::service::SessionsService;
 use crate::store::{EventFilter, Order};
@@ -55,9 +57,13 @@ pub(super) fn router() -> Router {
 async fn list_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
     Path(id): Path<String>,
     query: ListQuery,
 ) -> Result<Response, RouteError> {
+    if let Some(env) = environment(&worker) {
+        svc.get(&ctx, &id).await?.seen_from(Some(env))?;
+    }
     let params = query.map();
     let page = LIST.parse(&params)?;
     let filter = EventFilter {
@@ -72,10 +78,16 @@ async fn list_events(
 async fn send_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
+    token: Option<Extension<SessionCaller>>,
     Path(id): Path<String>,
     ApiJson(body): ApiJson<SendEventsBody>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(DataEnvelope { data: svc.send_events(&ctx, &id, body.events).await? }).into_response())
+    let sent = match token {
+        Some(_) => svc.send_results(&ctx, &id, environment(&worker), body.events).await?,
+        None => svc.send_events(&ctx, &id, environment(&worker), body.events).await?,
+    };
+    Ok(Json(DataEnvelope { data: sent }).into_response())
 }
 
 /// One SSE frame per event, named by its `type` (both SDKs skip frames with
@@ -86,9 +98,10 @@ async fn send_events(
 async fn stream_events(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
-    let sub = svc.subscribe(&ctx, &id).await?;
+    let sub = svc.subscribe(&ctx, &id, environment(&worker)).await?;
     // Live opens the stream with a `: connected` comment frame before events.
     let connected = stream::once(async { Ok(SseEvent::default().comment("connected")) });
     let events = stream::unfold((sub, false), |(mut rx, done)| async move {

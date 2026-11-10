@@ -8,7 +8,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use shared::page::filters::{bool_param, CreatedRange};
-use shared::{ApiError, ApiJson, AuthContext, Deleted, ListQuery, ListSpec, Page, RouteError};
+use shared::{
+    ApiError, ApiJson, AuthContext, Deleted, EnvironmentCaller, ListQuery, ListSpec, Page, RouteError,
+};
 
 use crate::service::SessionsService;
 use crate::store::{Order, SessionFilter};
@@ -96,12 +98,21 @@ fn status(raw: &str) -> Result<SessionStatus, ApiError> {
     })
 }
 
+/// Set when the caller is an environment key: its environment's sessions only.
+type Worker = Option<Extension<EnvironmentCaller>>;
+
+/// The environment an environment key reaches.
+fn environment(worker: &Worker) -> Option<&str> {
+    worker.as_ref().map(|Extension(c)| c.queue.as_str())
+}
+
 async fn get_one(
     Extension(svc): Extension<Arc<SessionsService>>,
     Extension(ctx): Extension<AuthContext>,
+    worker: Worker,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    Ok(Json(svc.get(&ctx, &id).await?).into_response())
+    Ok(Json(svc.get(&ctx, &id).await?.seen_from(environment(&worker))?).into_response())
 }
 
 async fn update(

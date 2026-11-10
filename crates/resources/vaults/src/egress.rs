@@ -8,7 +8,7 @@ use std::sync::Arc;
 use shared::{ApiError, WorkspaceId};
 
 use crate::store::{StoreError, VaultCredentialStore};
-use crate::types::{CredentialAuthWire, CredentialNetworking, VaultId};
+use crate::types::{CredentialAuthWire, CredentialNetworking};
 
 /// One environment-variable credential a session may use.
 #[derive(Debug, Clone)]
@@ -54,33 +54,27 @@ impl VaultCredentials {
         ws: &WorkspaceId,
         vault_ids: &[String],
     ) -> Result<Vec<EnvCredential>, ApiError> {
+        let mut listed = self.store.environment_credentials(ws, vault_ids).await.map_err(backend)?;
+        // The first vault in `vault_ids` holding a name wins it.
+        listed.sort_by_key(|c| vault_ids.iter().position(|v| v.as_str() == c.vault_id.as_str()));
         let mut out: Vec<EnvCredential> = Vec::new();
-        for raw in vault_ids {
-            let Ok(vault) = VaultId::parse(raw) else { continue };
-            let listed = match self.store.list_credentials(ws, &vault).await {
-                Ok(l) => l,
-                Err(StoreError::VaultNotFound) => continue,
-                Err(e) => return Err(backend(e)),
+        for c in listed {
+            let CredentialAuthWire::EnvironmentVariable { secret_name, networking, .. } = &c.auth else {
+                continue;
             };
-            for stored in listed {
-                let c = stored.wire;
-                let CredentialAuthWire::EnvironmentVariable { secret_name, networking, .. } = &c.auth else {
-                    continue;
-                };
-                if c.archived_at.is_some() || out.iter().any(|s| &s.name == secret_name) {
-                    continue;
-                }
-                out.push(EnvCredential {
-                    credential_id: c.id.as_str().to_owned(),
-                    vault_id: vault.as_str().to_owned(),
-                    name: secret_name.clone(),
-                    description: c.display_name.clone(),
-                    hosts: match networking {
-                        CredentialNetworking::Unrestricted => None,
-                        CredentialNetworking::Limited { allowed_hosts } => Some(allowed_hosts.clone()),
-                    },
-                });
+            if out.iter().any(|s| &s.name == secret_name) {
+                continue;
             }
+            out.push(EnvCredential {
+                credential_id: c.id.as_str().to_owned(),
+                vault_id: c.vault_id.as_str().to_owned(),
+                name: secret_name.clone(),
+                description: c.display_name.clone(),
+                hosts: match networking {
+                    CredentialNetworking::Unrestricted => None,
+                    CredentialNetworking::Limited { allowed_hosts } => Some(allowed_hosts.clone()),
+                },
+            });
         }
         Ok(out)
     }

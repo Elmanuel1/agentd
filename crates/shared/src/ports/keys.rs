@@ -1,12 +1,12 @@
-//! API keys: where the caller's key is resolved to its tenant. Workspace keys
-//! and admin keys are separate stores; the route a request asks for decides
-//! which one is asked.
+//! API keys: where the caller's key is resolved to its tenant. Workspace keys,
+//! admin keys and environment keys are separate stores; the route a request
+//! asks for, and the key's prefix, decide which one is asked.
 
 pub mod material;
 
 use async_trait::async_trait;
 
-use crate::{AdminContext, AuthContext};
+use crate::{AdminContext, AuthContext, EnvironmentCaller};
 
 /// The key store could not be read. It never carries the key.
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +25,23 @@ pub trait KeySource: Send + Sync {
 pub trait AdminKeySource: Send + Sync {
     /// The organization of `key`; `None` for a key that is unknown or revoked.
     async fn resolve(&self, key: &str) -> Result<Option<AdminContext>, KeyError>;
+}
+
+/// What an environment key grants: one self-hosted environment's queue in
+/// its workspace, or agentd's runtime queue, whose items span workspaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentGrant {
+    /// A self-hosted environment's key.
+    Environment(AuthContext, EnvironmentCaller),
+    /// agentd's runtime key.
+    Runtime,
+}
+
+/// Resolves an environment key to what it grants.
+#[async_trait]
+pub trait EnvironmentKeySource: Send + Sync {
+    /// What `key` grants; `None` for a key that is unknown or revoked.
+    async fn resolve(&self, key: &str) -> Result<Option<EnvironmentGrant>, KeyError>;
 }
 
 /// The server-side secret every stored API key digest is keyed with. Its

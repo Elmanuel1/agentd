@@ -60,6 +60,9 @@ chrono = { workspace = true }
 test-support = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 http-body-util = { workspace = true }
+base64 = { workspace = true }
+aws-sdk-kms = { workspace = true }
+aws-sdk-secretsmanager = { workspace = true }
 
 [lints]
 workspace = true

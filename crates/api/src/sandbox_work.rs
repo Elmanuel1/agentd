@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sessions::types::{Session, SessionId};
 use sessions::SandboxWork;
-use shared::{ApiError, AuthContext};
+use shared::{ApiError, AuthContext, WorkspaceId};
 use work::WorkService;
 
 use crate::egress::SessionEgressPolicy;
@@ -83,19 +83,21 @@ impl SandboxWork for WorkIssuer {
         environment: &serde_json::Value,
     ) -> Result<BTreeMap<String, String>, ApiError> {
         let mut env = self.egress_env(ctx, session, environment).await?;
-        let (work, secret) = self.work.issue(ctx, &session.environment_id, session.id.as_str(), true);
+        let secret = self.work.issue(ctx, &session.environment_id, session.id.as_str()).await?;
         env.extend([
             ("AGENTD_API_URL".to_owned(), self.api_url.clone()),
             ("AGENTD_ENVIRONMENT_ID".to_owned(), session.environment_id.clone()),
-            ("AGENTD_WORK_ID".to_owned(), work.id.as_str().to_owned()),
+            ("AGENTD_WORK_ID".to_owned(), session.id.as_str().to_owned()),
             ("AGENTD_WORK_SECRET".to_owned(), secret),
             ("AGENTD_MODEL_BASE_URL".to_owned(), self.model_base_url.clone()),
         ]);
         Ok(env)
     }
 
-    fn end(&self, session: &SessionId) {
-        self.work.end(session.as_str());
+    async fn end(&self, ws: &WorkspaceId, session: &SessionId) {
+        if let Err(e) = self.work.end_session(ws, session.as_str()).await {
+            tracing::warn!(session = %session, error = %e.message, "work: could not stop the session's work item");
+        }
         if let Some(egress) = &self.egress {
             egress.forget(session.as_str());
         }

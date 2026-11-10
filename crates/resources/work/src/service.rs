@@ -1,48 +1,52 @@
-//! The work API's rules: who may touch a work item, its lifecycle
-//! (queued, starting, active, stopping, stopped) and its heartbeat lease.
+//! The work API's rules: who reaches a work item, and the reads and metadata
+//! writes on it. Its lifecycle (poll, ack, heartbeat, stop) is in
+//! `lifecycle.rs`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
-use shared::{ApiError, AuthContext, Timestamp};
+use shared::{ApiError, AuthContext, Page, Pagination, Timestamp};
 
-use crate::board::{Board, Entry};
+use crate::caller::WorkCaller;
+use crate::secret::CloudVariables;
+use crate::store::{StoreError, WorkItem, WorkStore};
 use crate::tokens::{WorkClaims, WorkTokens};
-use crate::types::{QueueStats, StatsTag, Work, WorkData, WorkDataTag, WorkId, WorkState, WorkTag};
+use crate::types::{QueueStats, StatsTag, Work, WorkData, WorkDataTag, WorkState, WorkTag};
+use shared::tenancy::HOSTED_QUEUE;
 
-/// The lease a heartbeat grants when the worker asks for no particular TTL.
-pub const DEFAULT_TTL: u64 = 90;
-/// The longest lease a heartbeat grants.
-pub const MAX_TTL: u64 = 600;
-/// A handed-out item no one acknowledged goes back to the queue after this.
-pub(crate) const RECLAIM: Duration = Duration::from_millis(5000);
-
-/// Set by the edge when the caller authenticated with a work token: the
-/// caller may touch that work item only.
-#[derive(Debug, Clone)]
-pub struct WorkScope(pub WorkClaims);
-
-/// Work items and their sandbox operations.
-#[derive(Debug)]
+/// Work items over their store.
 pub struct WorkService {
-    board: Arc<Board>,
-    tokens: WorkTokens,
+    pub(crate) store: Arc<dyn WorkStore>,
+    pub(crate) tokens: WorkTokens,
+    pub(crate) api_base_url: String,
+    pub(crate) cloud: Option<CloudVariables>,
+}
+
+impl std::fmt::Debug for WorkService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkService").field("api_base_url", &self.api_base_url).finish_non_exhaustive()
+    }
 }
 
 pub(crate) fn not_found() -> ApiError {
     ApiError::not_found("work not found")
 }
 
+pub(crate) fn backend(e: StoreError) -> ApiError {
+    ApiError::internal(e.to_string())
+}
+
 impl WorkService {
-    /// Sign work tokens with `tokens`.
-    pub fn new(tokens: WorkTokens) -> Self {
-        Self { board: Arc::new(Board::default()), tokens }
+    /// Items in `store`, tokens signed by `tokens`; a work secret's
+    /// `api_base_url` is `api_base_url`.
+    pub fn new(store: Arc<dyn WorkStore>, tokens: WorkTokens, api_base_url: impl Into<String>) -> Self {
+        Self { store, tokens, api_base_url: api_base_url.into(), cloud: None }
     }
 
-    /// The board, shared with the remote sandbox.
-    pub fn board(&self) -> Arc<Board> {
-        self.board.clone()
+    /// Give runtime hand-outs their `environment_variables` from `cloud`.
+    #[must_use]
+    pub fn with_cloud_variables(self, cloud: CloudVariables) -> Self {
+        Self { cloud: Some(cloud), ..self }
     }
 
     /// The token signer, shared with the edge.
@@ -50,120 +54,111 @@ impl WorkService {
         &self.tokens
     }
 
-    /// Queue the work of running `session` in `environment_id`; the work and
-    /// its secret. Hosted work is taken by its own sandbox's worker.
-    pub fn issue(
+    /// Queue `session`'s work in `environment_id` on `queue`: its item, with
+    /// the session's id, `started_at` set at once as on live; a held item is
+    /// left as it is.
+    pub async fn queue(
         &self,
         ctx: &AuthContext,
         environment_id: &str,
         session: &str,
-        hosted: bool,
-    ) -> (Work, String) {
+        queue: &str,
+    ) -> Result<(), ApiError> {
+        let now = Timestamp::now();
         let work = Work {
-            id: WorkId::generate(),
+            id: session.to_owned(),
             acknowledged_at: None,
-            created_at: Timestamp::now(),
+            actor: None,
+            created_at: now,
             data: WorkData { id: session.to_owned(), tag: WorkDataTag::Session },
             environment_id: environment_id.to_owned(),
             latest_heartbeat_at: None,
             metadata: BTreeMap::new(),
             secret: None,
-            started_at: None,
+            started_at: Some(now),
             state: WorkState::Queued,
             stop_requested_at: None,
             stopped_at: None,
             tag: WorkTag::Work,
         };
+        let item = WorkItem {
+            workspace: ctx.workspace.clone(),
+            org: ctx.org.clone(),
+            queue: queue.to_owned(),
+            work,
+            last_heartbeat: None,
+            lease_until: None,
+            handed_out_at: None,
+        };
+        self.store.queue(&item).await.map_err(backend)
+    }
+
+    /// Queue the work of a session whose own sandbox's harness takes it: the
+    /// secret that sandbox starts with.
+    pub async fn issue(
+        &self,
+        ctx: &AuthContext,
+        environment_id: &str,
+        session: &str,
+    ) -> Result<String, ApiError> {
+        self.queue(ctx, environment_id, session, HOSTED_QUEUE).await?;
         let claims = WorkClaims {
-            work: work.id.as_str().to_owned(),
             session: session.to_owned(),
             ws: ctx.workspace.as_str().to_owned(),
             org: ctx.org.as_str().to_owned(),
         };
-        let secret = self.tokens.secret(&claims);
-        self.board.insert(Entry::new(work.clone(), ctx.workspace.as_str().to_owned(), hosted));
-        (work, secret)
-    }
-
-    /// Forget `session`'s work (its sandbox is gone).
-    pub fn end(&self, session: &str) {
-        self.board.remove_session(session);
-    }
-
-    /// The work item `raw` in `env`, if `ctx` (and `scope`, for a work
-    /// token) may see it.
-    pub(crate) fn find(
-        &self,
-        ctx: &AuthContext,
-        scope: Option<&WorkScope>,
-        env: &str,
-        raw: &str,
-    ) -> Result<WorkId, ApiError> {
-        let id = WorkId::parse(raw).map_err(|_| not_found())?;
-        if scope.is_some_and(|s| s.0.work != raw) {
-            return Err(not_found());
-        }
-        let visible =
-            self.board.with(&id, |e| e.workspace == ctx.workspace.as_str() && e.work.environment_id == env);
-        visible.filter(|v| *v).map(|_| id).ok_or_else(not_found)
+        Ok(self.tokens.secret(&claims, &self.api_base_url, &BTreeMap::new()))
     }
 
     /// `GET …/work/{id}`.
-    pub fn retrieve(
-        &self,
-        ctx: &AuthContext,
-        scope: Option<&WorkScope>,
-        env: &str,
-        raw: &str,
-    ) -> Result<Work, ApiError> {
-        let id = self.find(ctx, scope, env, raw)?;
-        self.board.with(&id, |e| e.work.clone()).ok_or_else(not_found)
+    pub async fn retrieve(&self, caller: &WorkCaller, env: &str, id: &str) -> Result<Work, ApiError> {
+        let (ws, reach) = self.target(caller, env, id)?;
+        let item = self.store.get(&ws, id, &reach).await.map_err(backend)?;
+        item.map(|i| i.work).ok_or_else(not_found)
     }
 
-    /// `GET …/work`: the environment's work, newest first.
-    pub fn list(&self, ctx: &AuthContext, env: &str) -> Vec<Work> {
-        let ws = ctx.workspace.as_str();
-        let mut all =
-            self.board.each(|e| (e.workspace == ws && e.work.environment_id == env).then(|| e.work.clone()));
-        all.sort_by(|a, b| b.created_at.as_datetime().cmp(&a.created_at.as_datetime()));
-        all
+    /// `GET …/work`: the environment's or queue's work, newest first.
+    pub async fn list(
+        &self,
+        caller: &WorkCaller,
+        env: &str,
+        page: &Pagination,
+    ) -> Result<Page<Work>, ApiError> {
+        let items = self.store.list(&crate::caller::scope(caller, env)?, page).await.map_err(backend)?;
+        Ok(Page::from_fetched(items.into_iter().map(|i| i.work).collect(), page))
     }
 
     /// `POST …/work/{id}`: merge metadata (`null` deletes a key).
-    pub fn update(
+    pub async fn update(
         &self,
-        ctx: &AuthContext,
+        caller: &WorkCaller,
         env: &str,
-        raw: &str,
+        id: &str,
         patch: BTreeMap<String, Option<String>>,
     ) -> Result<Work, ApiError> {
-        let id = self.find(ctx, None, env, raw)?;
-        self.board
-            .with(&id, |e| {
-                for (k, v) in patch {
-                    match v {
-                        Some(v) => e.work.metadata.insert(k, v),
-                        None => e.work.metadata.remove(&k),
-                    };
-                }
-                e.work.clone()
-            })
-            .ok_or_else(not_found)
+        if matches!(caller, WorkCaller::Token(_)) {
+            return Err(not_found());
+        }
+        let (ws, reach) = self.target(caller, env, id)?;
+        let remove: Vec<String> = patch.iter().filter(|(_, v)| v.is_none()).map(|(k, _)| k.clone()).collect();
+        let set: BTreeMap<String, String> = patch.into_iter().filter_map(|(k, v)| Some((k, v?))).collect();
+        let item = self.store.update_metadata(&ws, id, &reach, &set, &remove).await.map_err(backend)?;
+        item.map(|i| i.work).ok_or_else(not_found)
     }
 
     /// `GET …/work/stats`.
-    pub fn stats(&self, ctx: &AuthContext, env: &str) -> QueueStats {
-        let all: Vec<(WorkState, bool, Timestamp)> = self.board.each(|e| {
-            (e.workspace == ctx.workspace.as_str() && e.work.environment_id == env && !e.hosted)
-                .then(|| (e.work.state, e.handed_out.is_some(), e.work.created_at))
-        });
-        let queued: Vec<_> = all.iter().filter(|(s, ..)| *s == WorkState::Queued).collect();
-        QueueStats {
-            depth: queued.iter().filter(|(_, out, _)| !out).count() as u64,
-            oldest_queued_at: queued.iter().map(|(.., t)| *t).min_by_key(Timestamp::as_datetime),
-            pending: queued.iter().filter(|(_, out, _)| *out).count() as u64,
+    pub async fn stats(&self, caller: &WorkCaller, env: &str) -> Result<QueueStats, ApiError> {
+        let counts = self
+            .store
+            .counts(&crate::caller::scope(caller, env)?, crate::lifecycle::RECLAIM, Timestamp::now())
+            .await
+            .map_err(backend)?;
+        Ok(QueueStats {
+            depth: counts.depth,
+            oldest_queued_at: counts.oldest_queued_at,
+            pending: counts.pending,
             tag: StatsTag::WorkQueueStats,
             workers_polling: None,
-        }
+        })
     }
 }

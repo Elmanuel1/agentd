@@ -1,8 +1,9 @@
 //! agentd — the Managed-Agents-compatible control plane.
 //!
 //! Boot: read [`Config`] from the environment, connect the backends it
-//! selects, assemble the app, and serve. `agentd keys …` and `agentd
-//! admin-keys …` manage keys instead ([`api::cli`]). Records and blobs live
+//! selects, assemble the app, and serve. `agentd keys …`, `agentd
+//! admin-keys …` and `agentd environment-keys …` manage keys, and `agentd
+//! vault-secrets tag` tags secrets, instead ([`api::cli`]). Records and blobs live
 //! in Postgres and object storage; event streams and the local scheduler live
 //! in the process, so run one replica until a shared event bus and scheduler
 //! replace them.
@@ -29,9 +30,17 @@ async fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "admin-keys" => {
             return api::cli::admin_keys::admin_keys(&config, rest).await
         }
+        Some((cmd, rest)) if cmd == "environment-keys" => {
+            return api::cli::environment_keys::environment_keys(&config, rest).await
+        }
+        Some((cmd, rest)) if cmd == "vault-secrets" => {
+            return api::cli::vault_secrets::vault_secrets(&config, rest).await
+        }
         Some((cmd, rest)) if cmd == "model-key" => return api::model_key::model_key(&config, rest).await,
         Some(_) => {
-            eprintln!("{}\n{}", api::cli::USAGE, api::model_key::USAGE);
+            let cli = api::cli::USAGE;
+            let (env, vault) = (api::cli::environment_keys::USAGE, api::cli::vault_secrets::USAGE);
+            eprintln!("{cli}\n{env}\n{vault}\n{}", api::model_key::USAGE);
             return ExitCode::FAILURE;
         }
     }

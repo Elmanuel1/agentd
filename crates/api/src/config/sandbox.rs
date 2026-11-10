@@ -11,8 +11,11 @@ pub struct SandboxConfig {
     /// it (default `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>`).
     pub api_url: String,
     /// `AGENTD_WORK_TOKEN_KEY` (hex): signs work tokens and egress proxy
-    /// passwords; random per process when unset, which suits one replica.
+    /// passwords in place of `<prefix>/system/work_token_key`.
     pub work_token_key: Option<Vec<u8>>,
+    /// `AGENTD_API_BASE_URL`: agentd's API as a worker reaches it, the work
+    /// secret's `api_base_url` (default `AGENTD_SANDBOX_API_URL`).
+    pub api_base_url: String,
     /// `AGENTD_EGRESS_ADMIN_URL` and `AGENTD_EGRESS_ADMIN_TOKEN`: the egress
     /// service's admin interface and the token it takes. Unset, sandboxes
     /// reach nothing beyond agentd.
@@ -30,6 +33,7 @@ impl std::fmt::Debug for SandboxConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SandboxConfig")
             .field("api_url", &self.api_url)
+            .field("api_base_url", &self.api_base_url)
             .field("egress_admin_url", &self.egress_admin.as_ref().map(|(url, _)| url))
             .field("egress_host", &self.egress_host)
             .field("model_base_url", &self.model_base_url)
@@ -40,10 +44,12 @@ impl std::fmt::Debug for SandboxConfig {
 impl SandboxConfig {
     pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let key = |var: &str| get(var).filter(|v| !v.is_empty());
+        let api_url = get("AGENTD_SANDBOX_API_URL").unwrap_or_else(|| {
+            format!("http://{}:{}", sandbox_reach(get, 0), port(get("AGENTD_ADDR"), 8080))
+        });
         Ok(Self {
-            api_url: get("AGENTD_SANDBOX_API_URL").unwrap_or_else(|| {
-                format!("http://{}:{}", sandbox_reach(get, 0), port(get("AGENTD_ADDR"), 8080))
-            }),
+            api_base_url: key("AGENTD_API_BASE_URL").unwrap_or_else(|| api_url.clone()),
+            api_url,
             egress_admin: match (key("AGENTD_EGRESS_ADMIN_URL"), key("AGENTD_EGRESS_ADMIN_TOKEN")) {
                 (Some(url), Some(token)) => Some((url, token)),
                 (None, None) => None,

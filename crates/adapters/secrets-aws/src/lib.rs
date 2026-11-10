@@ -19,6 +19,8 @@ mod name;
 mod pepper;
 mod reader;
 mod store;
+mod system_secret;
+mod tag;
 
 use std::time::Duration;
 

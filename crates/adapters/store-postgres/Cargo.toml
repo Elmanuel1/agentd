@@ -19,6 +19,7 @@ sessions = { workspace = true }
 dreams = { workspace = true }
 memory = { workspace = true }
 organizations = { workspace = true }
+work = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

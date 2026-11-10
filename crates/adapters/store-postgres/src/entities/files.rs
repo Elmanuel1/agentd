@@ -60,6 +60,12 @@ struct NewFile {
     doc: serde_json::Value,
 }
 
+/// A file's row as the store hands it out, without its bytes.
+fn stored(doc: serde_json::Value) -> Result<StoredFile, StoreError> {
+    let doc: FileDoc = parse_doc(doc)?;
+    Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
+}
+
 #[async_trait]
 impl FilesStore for PgFilesStore {
     async fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> Result<(), StoreError> {
@@ -93,8 +99,7 @@ impl FilesStore for PgFilesStore {
             .await
             .optional()
             .map_err(diesel_be)?;
-        let doc: FileDoc = parse_doc(doc.ok_or(StoreError::NotFound)?)?;
-        Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
+        stored(doc.ok_or(StoreError::NotFound)?)
     }
 
     async fn content(&self, ws: &WorkspaceId, id: &FileId) -> Result<Bytes, StoreError> {
@@ -102,18 +107,20 @@ impl FilesStore for PgFilesStore {
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
-        let existing = self.get(ws, id).await?;
-        {
+        let doc: Option<serde_json::Value> = {
             let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
             diesel::delete(
                 files::table
                     .filter(files::workspace_id.eq(ws.as_str()))
                     .filter(files::file_id.eq(id.as_str())),
             )
-            .execute(&mut conn)
+            .returning(files::doc)
+            .get_result(&mut conn)
             .await
-            .map_err(diesel_be)?;
-        }
+            .optional()
+            .map_err(diesel_be)?
+        };
+        let existing = stored(doc.ok_or(StoreError::NotFound)?)?;
         // The pooled connection is back before the object-store round trip.
         self.blobs.delete(&Self::key(ws, id)).await.map_err(blob_be)?;
         Ok(existing)
@@ -183,13 +190,7 @@ impl FilesStore for PgFilesStore {
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        let mut rows: Vec<StoredFile> = docs
-            .into_iter()
-            .map(|d| {
-                let doc: FileDoc = parse_doc(d)?;
-                Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
-            })
-            .collect::<Result<_, StoreError>>()?;
+        let mut rows: Vec<StoredFile> = docs.into_iter().map(stored).collect::<Result<_, StoreError>>()?;
         let has_more = rows.len() > cursor.limit;
         rows.truncate(cursor.limit);
         Ok((rows, has_more))

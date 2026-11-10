@@ -84,7 +84,8 @@ and the agent's tools not even that.
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the harness calls the model at; its host is reachable under any networking |
 | `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>` | agentd's API as a sandbox's harness reaches it |
 | `AGENTD_SANDBOX_JOIN` | unset | agentd's container and the egress service's, comma-separated, which join each sandbox's network in place of the gateway |
-| `AGENTD_WORK_TOKEN_KEY` | random per process | Hex key that signs work tokens and egress proxy passwords; set it when more than one replica runs |
+| `AGENTD_WORK_TOKEN_KEY` | `<prefix>/system/work_token_key` | Hex key (at least 16 bytes) that signs work tokens and egress proxy passwords in place of the system secret, which is then never read |
+| `AGENTD_API_BASE_URL` | `AGENTD_SANDBOX_API_URL` | agentd's API as a worker reaches it: the work secret's `api_base_url` |
 | `AGENTD_EGRESS_ADMIN_URL` | unset | The egress service's admin interface; unset, sandboxes reach nothing beyond agentd |
 | `AGENTD_EGRESS_ADMIN_TOKEN` | unset | The token that interface takes; set with the URL |
 | `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | The egress proxy's address; its port is the one the gateway relays |
@@ -158,6 +159,11 @@ creates the secret, or puts a new value when it exists, with one
 `ClientRequestToken`, so a retry never adds a second version. A secret deleted
 inside its recovery window is restored and written again. Archiving a
 credential deletes its secret with the recovery window. Reads are not cached.
+An `environment_variable` credential's secret is also tagged
+`credential_type=environment_variable` when it is created, so that the egress
+swap's IAM policy reaches those secrets and no others; `agentd vault-secrets
+tag` tags the ones created before (1 Postgres read, then one `TagResource`
+each; tagging one twice changes nothing).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -178,12 +184,64 @@ and the AWS error code, never a value or an AWS message. The AWS SDK's
 `debug` and `trace` events, which can print request and response bodies, are
 dropped from every log whatever `RUST_LOG` says.
 
+## System secrets
+
+agentd keeps four values once per deployment as `<prefix>/system/<name>`,
+under the same KMS key as the credentials, read at boot and created the first
+time; another replica, or the next boot, reads the same values:
+
+| Name | What it is |
+|---|---|
+| `api_key_pepper` | 32 random bytes, hex: keys every API key and environment key digest |
+| `work_token_key` | 32 random bytes, hex: signs work tokens, so a token outlives the process that minted it (`AGENTD_WORK_TOKEN_KEY` replaces it) |
+| `egress_key` | 32 random bytes, hex: signs `environment_variable` placeholders, which the egress swap checks |
+| `runtime_key` | agentd's runtime key, an `sk-ant-oat01-` environment key for the runtime queue |
+
+## Work
+
+Each session has one work item, its id the session's, in the Postgres
+`work_items` table, reused for every run. An item waits on a queue: a
+`self_hosted` environment's own (its environment id), the runtime queue
+(`runtime`) for `cloud` sessions, or the hosted queue of sessions whose own
+sandbox's harness takes the item, which no poll hands out. A worker's poller
+polls `GET /v1/environments/{queue}/work/poll` with its environment key and
+gets the oldest queued item not handed out in the last `reclaim_older_than_ms`
+(default 5000), with its work secret; the item is handed out again if no one
+acknowledges it in that time. A heartbeat with no `desired_ttl_seconds`, or 0,
+grants a 300 s lease; any other integer is granted and echoed as given. An
+item with no heartbeats stays `active`; a `stopping` item whose lease runs out
+is served as `stopped`. Archiving, deleting or terminating a session stops its
+item (`stopping` while a worker holds it) and keeps it.
+
+The work secret is base64url JSON with live's nine keys in live's order:
+`version` (1), `session_ingress_token` (`""`), `api_base_url`, `sources` and
+`auth` (`[]`), `sessions_token` (the item's work token), `claude_code_args`
+(`{}`), `environment_variables` and `use_code_sessions` (`true`). For a
+`cloud` session, `environment_variables` maps the `secret_name` of each
+unarchived `environment_variable` credential in its vaults (the first vault in
+`vault_ids` wins a name) to a placeholder, never the value; for a
+`self_hosted` session it is `{}`. A placeholder is `agentd-ph-` then
+`<base64url JSON {session, ws, vault, credential}>.<base64url HMAC-SHA256>`,
+keyed with HMAC-SHA256(`egress_key`, `"placeholder"`), so the swap finds the
+credential's secret from it and refuses one copied into another session.
+
+A work token reaches its own item (read, ack, heartbeat, stop), its own
+session (read, events, stream, and `POST …/events` with `user.tool_result`
+and `user.custom_tool_result` for the session's unanswered calls only), the
+files its session mounts (read and download, though no API key can download
+an upload), the outputs it saves (`POST /v1/files`, scoped to its session and
+downloadable, whatever `scope_id` says; it deletes only those), its agents'
+skills, and the memory stores its session attaches (a write to one attached
+`read_only` is a 403). Anything else does not exist for it. Every token
+request reads its item, and a token whose item is `stopped` is a 401.
+
 ## API keys
 
-There are two kinds of key, and the route decides which one a request needs:
-`/v1/organizations` routes take admin keys only, every other route takes
-workspace keys only. Both are 86 base64url characters from 64 random bytes
-after their prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
+There are three kinds of key, told apart by prefix, and the route decides
+which one a request needs: `/v1/organizations` routes take admin keys only,
+every other route workspace keys and environment keys, and the work tokens
+described under [Work](#work). Every key is 86 base64url characters from 64
+random bytes after its prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
 keyed with a pepper agentd keeps as `<prefix>/system/api_key_pepper` in
 Secrets Manager (created on first use), so the stored digests alone verify
 nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
@@ -197,6 +255,20 @@ cached, so a revoke holds from the next request.
   the unrevoked row with that digest. Secrets under
   `<prefix>/system/api_keys/` are never read: reissue each of those keys with
   `agentd keys create`, and switch callers to the new keys before deploying.
+- **Environment keys** (`sk-ant-oat01-…`, `envkey_…`) are a worker's poller's
+  Bearer token, as live issues them in its Console: each acts for one org,
+  workspace and `self_hosted` environment, and is a row in the Postgres
+  `environment_keys` table, its digest under a unique index. As on live, one
+  sent as `x-api-key` is a 401 `invalid x-api-key`; it reaches its
+  environment's work list, poll, stats, ack, heartbeat and stop, and the
+  reads, events and stream of its environment's sessions (any other
+  session is a 404); every other route is live's 403 `permission_error`
+  ("OAuth token does not meet scope requirement …"). A workspace key on
+  `work/poll` is a 401 `Invalid bearer token`. agentd's own runtime key
+  (`<prefix>/system/runtime_key`) reaches the runtime queue's routes the same
+  way, across workspaces, and also `GET /v1/environments/{id}` for an
+  environment with a work item on the runtime queue, so a launcher can apply
+  its networking; any other environment is the same 403.
 - **Admin keys** (`sk-ant-admin01-…`, `adminkey_…`) act for one org. Each is a
   Secrets Manager secret, `<prefix>/system/admin_keys/<digest>`, under the
   same KMS key as the credentials, holding the digest, its id and org; the
@@ -210,6 +282,10 @@ agentd keys revoke <apikey_id>
 agentd admin-keys create --org <org_id> [--name <name>]                       # prints the key once, on stdout
 agentd admin-keys list                                                        # id, org, status, hint, created, name
 agentd admin-keys revoke <adminkey_id>
+agentd environment-keys create --org <org_id> --workspace <workspace_id> --environment <env_id> [--name <name>]   # prints the key once
+agentd environment-keys list                                                  # id, org, workspace, environment, status, hint, created, name
+agentd environment-keys revoke <envkey_id>
+agentd vault-secrets tag                                                      # tags existing environment_variable secrets
 ```
 
 The commands read the same configuration as the server, so `DATABASE_URL` is

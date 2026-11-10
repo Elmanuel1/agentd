@@ -5,8 +5,10 @@
 //! →Int8, `timestamptz`→Timestamptz, `jsonb`→Jsonb, `boolean`→Bool.
 
 mod api_keys_table;
+mod environment_keys_table;
 mod workspaces_table;
 pub use api_keys_table::api_keys;
+pub use environment_keys_table::environment_keys;
 pub use workspaces_table::workspaces;
 
 diesel::table! {

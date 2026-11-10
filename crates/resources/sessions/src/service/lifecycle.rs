@@ -60,11 +60,11 @@ impl SessionsService {
         };
         self.launch_sandbox(ctx, &session, environment).await?;
         if let Err(e) = self.store.insert(&ctx.workspace, session.clone()).await {
-            self.stop_sandbox(&session.id).await;
+            self.stop_sandbox(&ctx.workspace, &session.id).await;
             return Err(map_store(e));
         }
         if !initial.is_empty() {
-            self.send_events(ctx, session.id.as_str(), initial).await?;
+            self.send_events(ctx, session.id.as_str(), None, initial).await?;
         }
         Ok(session)
     }
@@ -134,7 +134,7 @@ impl SessionsService {
             // events, so keeping its channel would leak the entry (and its
             // ring buffer) for the process lifetime.
             self.channels.lock().remove(&id);
-            self.stop_sandbox(&id).await;
+            self.stop_sandbox(&ctx.workspace, &id).await;
         }
         Ok(s)
     }
@@ -156,7 +156,7 @@ impl SessionsService {
         if let Some(tx) = self.channels.lock().remove(&id) {
             let _ = tx.send(last);
         }
-        self.stop_sandbox(&id).await;
+        self.stop_sandbox(&ctx.workspace, &id).await;
         Ok(deleted)
     }
 }

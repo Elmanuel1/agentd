@@ -148,7 +148,7 @@ impl FilesService {
         Ok((file.meta, self.bytes(ctx, raw_id).await?))
     }
 
-    async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
+    pub(crate) async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
         let id = parse_id(raw_id)?;
         self.store.content(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))
     }
@@ -188,7 +188,7 @@ fn parse_id(raw: &str) -> Result<FileId, ApiError> {
 }
 
 /// Live (files/30): ``File `file_…` not found.``
-fn map_store(e: StoreError, raw_id: &str) -> ApiError {
+pub(crate) fn map_store(e: StoreError, raw_id: &str) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found(format!("File `{raw_id}` not found.")),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),

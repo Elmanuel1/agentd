@@ -50,6 +50,12 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
         stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
         admin_keys: Arc::new(StaticAdminKeys::default()),
+        environment_keys: Arc::new(test_support::NoEnvironmentKeys),
+        system: api::SystemKeys {
+            work_token_key: vec![1; 32],
+            egress_key: vec![2; 32],
+            api_base_url: "http://agentd.test".into(),
+        },
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         runtime: Some(runtime),

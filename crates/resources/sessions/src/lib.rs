@@ -25,7 +25,7 @@ use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
 pub use service::{HarnessContract, SandboxWork, SessionDeps, SessionsService, Subscription};
-pub use store::{SessionEventLog, SessionsStore};
+pub use store::{SessionEventLog, SessionEventReads, SessionsStore};
 pub use types::{Session, SessionId, SessionStatus};
 
 /// The sessions module: its routes, behind the Managed Agents beta.

@@ -85,6 +85,40 @@ impl EventPayload {
     pub fn is_user_event(&self) -> bool {
         matches!(self, Self::User(_))
     }
+
+    /// Whether it is a call: a custom tool's when `custom`, else a built-in tool's.
+    pub fn is_call(&self, custom: bool) -> bool {
+        match self {
+            Self::Agent(AgentEvent::ToolUse { .. }) => !custom,
+            Self::Agent(AgentEvent::CustomToolUse { .. }) => custom,
+            _ => false,
+        }
+    }
+
+    /// Whether a session waiting on a tool takes it: an answer or an interrupt.
+    pub fn answers_or_interrupts(&self) -> bool {
+        matches!(
+            self,
+            Self::User(
+                UserEvent::ToolConfirmation { .. }
+                    | UserEvent::CustomToolResult { .. }
+                    | UserEvent::ToolResult { .. }
+                    | UserEvent::Interrupt {}
+            )
+        )
+    }
+
+    /// The call a result answers, and whether it is a custom tool's.
+    pub fn answered_call(&self) -> Option<(&EventId, bool)> {
+        match self {
+            Self::User(UserEvent::ToolResult { tool_use_id, .. })
+            | Self::Agent(AgentEvent::ToolResult { tool_use_id, .. }) => Some((tool_use_id, false)),
+            Self::User(UserEvent::CustomToolResult { custom_tool_use_id, .. }) => {
+                Some((custom_tool_use_id, true))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The full wire event: envelope + flattened payload.

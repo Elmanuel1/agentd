@@ -23,13 +23,15 @@ const BODY_LEN: usize = 86 + 2;
 
 type HmacSha256 = hmac::Hmac<Sha256>;
 
-/// The two kinds of key, told apart by prefix.
+/// The kinds of key, told apart by prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
     /// A workspace key, `sk-ant-api03-…`.
     Workspace,
     /// An organization admin key, `sk-ant-admin01-…`.
     Admin,
+    /// An environment key, `sk-ant-oat01-…`, as live issues it.
+    Environment,
 }
 
 impl KeyKind {
@@ -39,6 +41,7 @@ impl KeyKind {
         match self {
             Self::Workspace => "sk-ant-api03-",
             Self::Admin => "sk-ant-admin01-",
+            Self::Environment => "sk-ant-oat01-",
         }
     }
 }
@@ -105,7 +108,7 @@ mod tests {
 
     #[test]
     fn a_key_has_the_anthropic_shape_and_is_never_repeated() {
-        for kind in [KeyKind::Workspace, KeyKind::Admin] {
+        for kind in [KeyKind::Workspace, KeyKind::Admin, KeyKind::Environment] {
             let (a, b) = (generate(kind), generate(kind));
             let a = a.expose_secret();
             assert!(well_formed(kind, a), "{}", a.len());
