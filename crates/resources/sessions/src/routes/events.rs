@@ -83,10 +83,10 @@ async fn send_events(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<SendEventsBody>,
 ) -> Result<Response, RouteError> {
-    if token.is_some() {
-        svc.guard_worker_results(&ctx.workspace, &id, &body.events).await?;
-    }
-    let sent = svc.send_events(&ctx, &id, environment(&worker), body.events).await?;
+    let sent = match token {
+        Some(_) => svc.send_results(&ctx, &id, environment(&worker), body.events).await?,
+        None => svc.send_events(&ctx, &id, environment(&worker), body.events).await?,
+    };
     Ok(Json(DataEnvelope { data: sent }).into_response())
 }
 

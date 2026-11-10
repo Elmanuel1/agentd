@@ -172,6 +172,33 @@ async fn a_token_sends_only_results_for_its_session_s_unanswered_calls() {
 }
 
 #[tokio::test]
+async fn of_two_results_sent_at_once_for_one_call_only_one_is_saved() {
+    // L-9: the check and the append hold the session's append lock.
+    let Some(rig) = Rig::new().await else { return };
+    let env = rig.environment("self_hosted").await;
+    let session = rig.session(&env, json!({})).await;
+    rig.work.queue(&rig.ctx(), &env, &session, &env).await.unwrap();
+    let token = rig.token(&session);
+    let path = format!("/v1/sessions/{session}/events");
+    let (ws, id) = (WorkspaceId::new(&rig.ws), SessionId::parse(&session).unwrap());
+    for _ in 0..10 {
+        let call = append(&rig, &session, tool_use()).await;
+        let result = json!([{"type": "user.tool_result", "tool_use_id": call, "content": [{"type": "text", "text": "ok"}]}]);
+        let (a, b) = tokio::join!(
+            rig.call("POST", &path, Auth::Bearer(&token), events(result.clone())),
+            rig.call("POST", &path, Auth::Bearer(&token), events(result)),
+        );
+        let mut statuses = [a.0, b.0];
+        statuses.sort();
+        assert_eq!(statuses, [StatusCode::OK, StatusCode::BAD_REQUEST], "{} {}", a.1, b.1);
+        let saved = rig.stores.session_events.events(&ws, &id).await.unwrap();
+        let answers =
+            saved.iter().filter(|e| e.payload.answered_call().is_some_and(|(c, _)| c.as_str() == call));
+        assert_eq!(answers.count(), 1, "one result saved for {call}");
+    }
+}
+
+#[tokio::test]
 async fn a_session_waiting_on_a_tool_takes_only_answers_and_interrupts() {
     // W-19.
     let Some(rig) = Rig::new().await else { return };

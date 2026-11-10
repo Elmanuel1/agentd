@@ -4,10 +4,10 @@
 
 use std::collections::HashSet;
 
-use shared::{ApiError, Pagination, WorkspaceId};
+use shared::{ApiError, AuthContext, Pagination, WorkspaceId};
 
-use super::{map_store, parse_id, SessionsService};
-use crate::events::{EventId, EventPayload, SessionEvent, StopReason};
+use super::{map_store, SessionsService};
+use crate::events::{Event, EventId, EventPayload, SessionEvent, StopReason};
 use crate::store::{EventFilter, Order};
 use crate::types::{Session, SessionStatus};
 
@@ -56,40 +56,54 @@ impl SessionsService {
         )))
     }
 
-    /// A session's work token sends only `user.tool_result` for its
-    /// session's `agent.tool_use` calls and `user.custom_tool_result` for its
-    /// `agent.custom_tool_use` calls, each not yet answered.
-    pub async fn guard_worker_results(
+    /// `POST /v1/sessions/{id}/events` from a session's work token: only
+    /// `user.tool_result` for its session's `agent.tool_use` calls and
+    /// `user.custom_tool_result` for its `agent.custom_tool_use` calls, each
+    /// not yet answered. The check and the append hold the session's append
+    /// lock, so of two results for one call the later is refused.
+    pub async fn send_results(
         &self,
-        ws: &WorkspaceId,
+        ctx: &AuthContext,
         raw_id: &str,
-        payloads: &[EventPayload],
-    ) -> Result<(), ApiError> {
-        let id = &parse_id(raw_id)?;
+        environment: Option<&str>,
+        payloads: Vec<EventPayload>,
+    ) -> Result<Vec<Event>, ApiError> {
         let mut calls = Vec::with_capacity(payloads.len());
         for (i, p) in payloads.iter().enumerate() {
-            let Some(call) = p.answered_call().filter(|_| p.is_user_event()) else {
+            let Some((call, custom)) = p.answered_call().filter(|_| p.is_user_event()) else {
                 return Err(ApiError::invalid_request(format!(
                     "events.{i}: a session's work token sends only user.tool_result and user.custom_tool_result"
                 )));
             };
-            calls.push(call);
+            calls.push((call.clone(), custom));
         }
-        let ids: Vec<EventId> = calls.iter().map(|(id, _)| (*id).clone()).collect();
-        let found = self.events.tool_calls(ws, id, &ids).await.map_err(map_store)?;
-        let done: HashSet<&EventId> =
-            found.iter().filter_map(|e| e.payload.answered_call()).map(|(t, _)| t).collect();
-        for (i, (call, custom)) in calls.iter().enumerate() {
-            let first = calls.iter().take(i).all(|(earlier, _)| earlier != call);
-            let open = first
-                && found.iter().any(|e| e.id == **call && e.payload.is_call(*custom))
-                && !done.contains(call);
-            if !open {
-                return Err(ApiError::invalid_request(format!(
-                    "events.{i}: {call} is not a call of this session waiting on its result"
-                )));
-            }
+        let id = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let ids: Vec<EventId> = calls.iter().map(|(call, _)| call.clone()).collect();
+        let events: Vec<Event> = payloads.into_iter().map(Event::new).collect();
+        let check = |found: &[Event]| open_calls(&calls, found);
+        self.events.append_answers(&ctx.workspace, &id, &ids, &events, &check).await.map_err(map_store)??;
+        for ev in &events {
+            self.broadcast(&id, ev);
         }
-        Ok(())
+        Ok(events)
     }
+}
+
+/// Each of `calls` (a call's id, and whether it is a custom tool's) is named
+/// once and is a call in `found` that no result in `found` answers.
+fn open_calls(calls: &[(EventId, bool)], found: &[Event]) -> Result<(), ApiError> {
+    let done: HashSet<&EventId> =
+        found.iter().filter_map(|e| e.payload.answered_call()).map(|(t, _)| t).collect();
+    for (i, (call, custom)) in calls.iter().enumerate() {
+        let first = calls.iter().take(i).all(|(earlier, _)| earlier != call);
+        let open = first
+            && found.iter().any(|e| e.id == *call && e.payload.is_call(*custom))
+            && !done.contains(call);
+        if !open {
+            return Err(ApiError::invalid_request(format!(
+                "events.{i}: {call} is not a call of this session waiting on its result"
+            )));
+        }
+    }
+    Ok(())
 }

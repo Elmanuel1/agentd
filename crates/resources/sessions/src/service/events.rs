@@ -17,14 +17,7 @@ impl SessionsService {
         environment: Option<&str>,
         payloads: Vec<EventPayload>,
     ) -> Result<Vec<Event>, ApiError> {
-        let id = parse_id(raw_id)?;
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
-        guard_writable(&session)?;
-        if session.status == SessionStatus::Terminated {
-            return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
-        }
-        validate_sendable("events", &payloads)?;
-        self.guard_waiting(&ctx.workspace, &session, &payloads).await?;
+        let id = self.sendable(ctx, raw_id, environment, &payloads).await?;
         let mut out = Vec::with_capacity(payloads.len());
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.
@@ -48,6 +41,25 @@ impl SessionsService {
             out.push(ev);
         }
         Ok(out)
+    }
+
+    /// The session `payloads` are sent to, once it takes them.
+    pub(super) async fn sendable(
+        &self,
+        ctx: &AuthContext,
+        raw_id: &str,
+        environment: Option<&str>,
+        payloads: &[EventPayload],
+    ) -> Result<SessionId, ApiError> {
+        let id = parse_id(raw_id)?;
+        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
+        guard_writable(&session)?;
+        if session.status == SessionStatus::Terminated {
+            return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
+        }
+        validate_sendable("events", payloads)?;
+        self.guard_waiting(&ctx.workspace, &session, payloads).await?;
+        Ok(id)
     }
 
     /// `GET /v1/sessions/{id}/events`: one page of the history (the

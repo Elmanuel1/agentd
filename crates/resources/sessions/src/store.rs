@@ -1,9 +1,9 @@
 //! Session persistence: session rows ([`SessionsStore`]) and the append-only
-//! event log ([`SessionEventLog`]).
+//! event log ([`SessionEventLog`], read through [`SessionEventReads`]).
 
 use async_trait::async_trait;
 use shared::page::filters::CreatedRange;
-use shared::{Pagination, WorkspaceId};
+use shared::{ApiError, Pagination, WorkspaceId};
 
 use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
@@ -94,15 +94,12 @@ pub trait SessionsStore: Send + Sync {
     ) -> Result<Vec<Session>, StoreError>;
 }
 
-/// A session's append-only event log. It has its own lifecycle: the engine
-/// appends to it while the session row is unchanged, and the events list and
-/// stream read it on its own.
+/// Refuses results, given the calls they answer and the results already saved.
+pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<(), ApiError> + Send + Sync + 'a;
+
+/// A session's event log, read.
 #[async_trait]
-pub trait SessionEventLog: Send + Sync {
-    /// Append an event to the log of an existing session.
-    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
-    /// Replace an event in place (processed_at stamping).
-    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
+pub trait SessionEventReads: Send + Sync {
     /// Full event history, append order.
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
     /// The client events the agent has not taken yet, append order.
@@ -115,13 +112,28 @@ pub trait SessionEventLog: Send + Sync {
         filter: &EventFilter,
         page: &Pagination,
     ) -> Result<Vec<Event>, StoreError>;
-    /// The events whose id is one of `calls`, and the results that answer them.
-    async fn tool_calls(
+}
+
+/// A session's append-only event log. It has its own lifecycle: the engine
+/// appends to it while the session row is unchanged, and the events list and
+/// stream read it on its own.
+#[async_trait]
+pub trait SessionEventLog: SessionEventReads {
+    /// Append an event to the log of an existing session.
+    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
+    /// Replace an event in place (processed_at stamping).
+    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
+    /// Under the session's append lock: `check` reads the events whose id is
+    /// one of `calls` and the results that answer them, and `events` are
+    /// appended only when it passes; otherwise its refusal is returned.
+    async fn append_answers(
         &self,
         ws: &WorkspaceId,
         id: &SessionId,
         calls: &[EventId],
-    ) -> Result<Vec<Event>, StoreError>;
+        events: &[Event],
+        check: &AnswerCheck<'_>,
+    ) -> Result<Result<(), ApiError>, StoreError>;
     /// Delete the whole log.
     async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError>;
 }
