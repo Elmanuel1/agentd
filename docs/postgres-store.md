@@ -55,8 +55,13 @@ docker run --rm --network host \
   -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
   flyway/flyway:11-alpine \
   -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
-  -locations=filesystem:/flyway/sql migrate
+  -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
 ```
+
+`-postgresql.transactional.lock=false` is required. By default Flyway holds its
+lock inside an open transaction on a second connection, and `CREATE INDEX
+CONCURRENTLY` waits for every open transaction to end, so the migration would
+wait on Flyway itself forever.
 
 `docker compose up` does this automatically (the `flyway` service runs
 `migrate` and exits; `agentd` waits for it via

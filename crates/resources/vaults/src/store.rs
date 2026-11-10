@@ -33,9 +33,9 @@ pub enum StoreError {
     Backend(#[source] shared::BackendError),
 }
 
-/// Persistence port.
+/// Persistence port for vault rows.
 #[async_trait]
-pub trait VaultsStore: Send + Sync {
+pub trait VaultStore: Send + Sync {
     /// Insert a vault.
     async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError>;
     /// Fetch a vault.
@@ -46,7 +46,12 @@ pub trait VaultsStore: Send + Sync {
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// All vaults, insertion order.
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
+}
 
+/// Persistence port for credential rows and their secrets, implemented by the
+/// same store as [`VaultStore`]: the vault aggregate keeps one repository.
+#[async_trait]
+pub trait VaultCredentialStore: Send + Sync {
     /// Insert a credential into a vault.
     async fn insert_credential(
         &self,

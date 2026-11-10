@@ -114,12 +114,12 @@ async fn pg_vaults_secret_sealed_to_the_secret_store() {
     if !enabled() {
         return;
     }
-    use vaults::store::VaultsStore;
+    use vaults::store::VaultCredentialStore;
     use vaults::types::CredentialAuthInput;
     use vaults::VaultsService;
     let secrets = Arc::new(MemorySecretStore::default());
     let store = Arc::new(PgVaultsStore::new(backend().await, secrets.clone()));
-    let svc = VaultsService::new(store.clone());
+    let svc = VaultsService::new(store.clone(), store.clone());
     let ctx = ctx_ws(&uniq_ws("vaults"));
     let vault =
         svc.create_vault(&ctx, serde_json::from_value(json!({"display_name": "v"})).unwrap()).await.unwrap();

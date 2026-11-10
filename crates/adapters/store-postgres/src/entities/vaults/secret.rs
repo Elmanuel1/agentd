@@ -16,7 +16,7 @@ impl PgVaultsStore {
     }
 
     /// Seal `auth` as the credential's secret, or delete the secret when `None`.
-    pub(super) async fn put_secret(
+    pub(in crate::entities) async fn put_secret(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -30,7 +30,7 @@ impl PgVaultsStore {
         }
     }
 
-    pub(super) async fn read_secret(
+    pub(in crate::entities) async fn read_secret(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,

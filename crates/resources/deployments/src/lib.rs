@@ -15,6 +15,7 @@
 
 pub mod fire;
 pub mod routes;
+pub mod run_error;
 pub mod service;
 pub mod store;
 pub mod types;
@@ -25,9 +26,10 @@ use shared::beta::BetaGate;
 use shared::Module;
 
 pub use fire::DeploymentFire;
+pub use run_error::RunError;
 pub use service::{DeploymentDeps, DeploymentsService};
 pub use store::DeploymentsStore;
-pub use types::{Deployment, DeploymentId, DeploymentRun, DeploymentRunId, RunError};
+pub use types::{Deployment, DeploymentId, DeploymentRun, DeploymentRunId};
 
 /// The deployments module: its routes, behind the Managed Agents beta, and
 /// its scheduled fires.

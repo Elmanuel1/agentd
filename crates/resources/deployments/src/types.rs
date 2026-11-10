@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use shared::schedule::{CompiledSchedule, CronKind, CronSchedule};
 use shared::{ApiError, ContentBlock, Id, Metadata, Resource, Timestamp};
 
+use crate::run_error::{PausedReason, RunError};
+
 /// Marker for `depl_…`.
 #[derive(Debug, Clone, Copy)]
 pub struct DeploymentResource_;
@@ -52,14 +54,6 @@ pub enum DeploymentStatus {
     Paused,
     /// Terminal.
     Archived,
-}
-
-/// Why a deployment is paused. Live: `{"type":"manual"}`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PausedReason {
-    /// Paused by the API.
-    Manual,
 }
 
 /// The wire schedule block — live fixture:
@@ -111,33 +105,6 @@ pub enum TriggerContext {
     },
     /// `POST /v1/deployments/{id}/run`.
     Manual {},
-}
-
-/// Fire error taxonomy (documented).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunError {
-    /// One of: environment_archived · agent_archived · vault_not_found ·
-    /// session_rate_limited · service_unavailable.
-    #[serde(rename = "type")]
-    pub kind: RunErrorKind,
-    /// Human detail.
-    pub message: String,
-}
-
-/// The fixed error kinds a run can record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunErrorKind {
-    /// Environment archived — fix or archive the deployment.
-    EnvironmentArchived,
-    /// Agent archived — the deployment auto-archives.
-    AgentArchived,
-    /// Vault missing.
-    VaultNotFound,
-    /// Rate limited — no retry; next occurrence tries again.
-    SessionRateLimited,
-    /// Transient service failure.
-    ServiceUnavailable,
 }
 
 /// Full wire deployment (field order per fixture).
@@ -291,19 +258,6 @@ mod tests {
         assert_eq!(s.upcoming_runs_at.len(), 5);
         assert_eq!(s.upcoming_runs_at[0].to_wire(), "2027-01-01T05:00:00.000000Z");
         assert_eq!(s.upcoming_runs_at[4].to_wire(), "2031-01-01T05:00:00.000000Z");
-    }
-
-    #[test]
-    fn run_error_kinds_serialize_to_documented_strings() {
-        for (k, s) in [
-            (RunErrorKind::EnvironmentArchived, "environment_archived"),
-            (RunErrorKind::AgentArchived, "agent_archived"),
-            (RunErrorKind::VaultNotFound, "vault_not_found"),
-            (RunErrorKind::SessionRateLimited, "session_rate_limited"),
-            (RunErrorKind::ServiceUnavailable, "service_unavailable"),
-        ] {
-            assert_eq!(serde_json::to_value(k).unwrap(), s);
-        }
     }
 
     #[test]

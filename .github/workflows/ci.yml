@@ -71,7 +71,7 @@ jobs:
             -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
-            -locations=filesystem:/flyway/sql migrate
+            -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
       - run: cargo test --workspace --locked --no-fail-fast
 
@@ -143,7 +143,7 @@ jobs:
             -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
-            -locations=filesystem:/flyway/sql migrate
+            -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
       - run: echo "127.0.0.1 echo.agentd.test mock-model.agentd.test" | sudo tee -a /etc/hosts
       - name: Start the scripted model
@@ -282,7 +282,7 @@ jobs:
             -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
-            -locations=filesystem:/flyway/sql migrate
+            -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
       - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
       - run: echo "127.0.0.1 mock-model.agentd.test" | sudo tee -a /etc/hosts
       - name: Start the scripted model
