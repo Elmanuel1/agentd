@@ -605,7 +605,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   an optional `updated_at` guard and a `SecretWrite` (`Keep`, `Replace` or `Purge`) and answers whether a row matched;
   `Replace` writes the secret before the row, so a crash between them leaves a fresher token under an old expiry and
   costs one more refresh; `Purge` deletes the secret after the row, as archiving does today; the API's update passes
-  no guard and `Replace`, archiving no guard and `Purge`. One method, in `entities/vault_credentials.rs`. Statements
+  the guard `doc->>'archived_at' IS NULL` and `Replace` (0 rows: today's 409 "cannot update an archived credential",
+  and the secret it wrote is taken back out, as a create does), archiving no guard and `Purge`. One method, in `entities/vault_credentials.rs`. Statements
   per step: 1 `SELECT * FROM credentials WHERE workspace_id = $1 AND
   vault_id = ANY($vault_ids) AND doc->'auth'->>'mcp_server_url' = ANY($urls) AND doc->>'archived_at' IS NULL` for all
   the agent's servers (an archived vault's credentials are archived with it, VA-3); then, for each server the step connects to or
@@ -652,36 +653,39 @@ Every new table and index, production-safe: new tables only, unused until their 
   `PgVaultsStore` in `entities/vaults/archive.rs` (new, beside `vaults/secret.rs`, which holds `put_secret` the same
   way); the `VaultStore` methods in `entities/vaults.rs` call them, so that file, 140 lines after PR 2, shrinks by the
   delete's body. `purge_secrets(ws, vault, ids)` is shared by both. A vault's archive, in order: 1 `SELECT
-  credential_id FROM credentials WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS NULL`;
-  `purge_secrets` for those ids; then one transaction: 1 `SELECT doc FROM vaults WHERE workspace_id = $1 AND
+  credential_id, doc->>'updated_at' FROM credentials WHERE workspace_id = $1 AND vault_id = $2 AND
+  doc->>'archived_at' IS NULL`; `purge_secrets` for those ids; then one transaction: 1 `SELECT doc FROM vaults WHERE workspace_id = $1 AND
   vault_id = $2 FOR UPDATE` (VA-8), whose row decides the answer (none: 404; archived: today's answer, the vault as
   it is); 1 `UPDATE vaults SET doc = jsonb_set(jsonb_set(doc, '{archived_at}', $now), '{updated_at}', $now) WHERE
   workspace_id = $1 AND vault_id = $2`; 1 `UPDATE credentials SET has_secret = false, doc = jsonb_set(jsonb_set(doc,
   '{archived_at}', $now), '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS
-  NULL RETURNING credential_id`; and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from those ids
+  NULL RETURNING credential_id, doc->>'updated_at'` (the `updated_at` from before this write); and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from those ids
   (H-6). When that UPDATE returns an id the pre-read missed (a credential whose create committed before the lock),
-  the transaction rolls back and the archive starts again from the pre-read. Each restart is caused by a new
-  credential, and a vault holds at most 20 (`CREDENTIALS_PER_VAULT_MAX`, archived ones included), so an archive
-  restarts at most 20 times and has no new answer; no archived credential keeps its secret. The service's
-  `get_vault` pre-read goes. A vault's delete, in order: 1 `SELECT credential_id FROM credentials WHERE workspace_id =
+  or an `updated_at` that differs from the pre-read's (an update or a refresh that committed between the purge and
+  the lock, and may have written a secret), the transaction rolls back and the archive starts again from the
+  pre-read. Each restart is caused by a write that committed in that window, one per write; the loop ends once no
+  create, update or refresh lands between a purge and its lock, and has no new answer. So no archived credential
+  keeps its secret. The service's `get_vault` read stays. A vault's delete, in order: 1 `SELECT credential_id FROM credentials WHERE workspace_id =
   $1 AND vault_id = $2` (archived ones included); `purge_secrets` for those ids; then one transaction: 1 `SELECT doc
   FROM vaults WHERE workspace_id = $1 AND vault_id = $2 FOR UPDATE` (none: 404; its doc is the answer), 1 `DELETE
   FROM credentials WHERE workspace_id = $1 AND vault_id = $2 RETURNING credential_id` and 1 `DELETE FROM vaults
-  WHERE workspace_id = $1 AND vault_id = $2`, rolled back and started again when a returned id was not purged, at
-  most 20 times for the same reason. Credential create (VA-7): the service's checks stay as today, before the secret
-  write (`list_credentials`, which issues the store's `require_vault` SELECT and 1 SELECT of the vault's
-  credentials, for the count limit and the duplicate check, with today's answers); the service's `get_vault` read
-  goes, since the locked read below decides the archived refusal; then the secret write; then one transaction in
+  WHERE workspace_id = $1 AND vault_id = $2`, rolled back and started again when a returned id was not purged, once
+  for each credential created in that window. Credential create (VA-7): the service's reads and checks stay as today and in today's order, so
+  every answer keeps its precedence (`get_vault` and its 404 and archived 409 first, then the body checks, then
+  `list_credentials`, which issues the store's `require_vault` SELECT and 1 SELECT of the vault's credentials, for
+  the count limit and the duplicate check); then the secret write; then one transaction in
   `entities/vault_credentials.rs`: 1 `SELECT doc FROM vaults WHERE workspace_id = $1 AND vault_id = $2 FOR SHARE`,
-  which waits for an archive or delete in progress and refuses an archived vault with today's 409 "cannot add
-  credentials to an archived vault" or a missing one with 404, then 1 `INSERT INTO credentials`; the secret is taken
+  which waits for an archive or delete in progress and refuses a vault archived or deleted since the service's read
+  with today's 409 "cannot add credentials to an archived vault" or 404, then 1 `INSERT INTO credentials`; this
+  locked read closes the race and decides nothing the service's read has not already answered; the secret is taken
   back out when the transaction rolls back, as today. A credential's own archive adds, from PR 9, its delivery INSERT
   to its commit. Tests: each of VA-1 to VA-5, VA-3 with a running session that keeps running and gets no credential
   from the archived vault at its next step; a secret delete that fails leaves the vault unarchived, and the retried
   archive finishes; a credential create racing an archive or a delete, in a looped test, is either refused or
   archived (or deleted) with its secret purged, and never left unarchived in an archived vault (VA-7, VA-8); an
   archive and a delete that each find a credential created after their pre-read start again and finish with it
-  purged; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
+  purged; an archive whose credential is updated between its purge and its lock starts again and finishes with no
+  secret left; an update of a credential archived after the update's read answers 409 and leaves no secret; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
 
 #### PR 9. Scheduler and webhooks
 
@@ -699,7 +703,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   credentials sends one `vault.archived` and two `vault_credential.archived` deliveries, each with live's data; each
   other lifecycle event sends one (H-6). The other vault and credential writes take their delivery INSERT into one
   transaction with the write. One function writes every delivery row: `insert_deliveries(conn, rows)` in
-  `store-postgres/src/entities/webhook_deliveries.rs`, which the step commit, `entities/vaults.rs` and
+  `store-postgres/src/entities/webhook_deliveries.rs`, which the step commit, `entities/vaults.rs`,
+  `entities/vaults/archive.rs` (the vault archive and delete) and
   `entities/vault_credentials.rs` call inside their own transactions. The webhooks crate owns the port, builds each body and resolves the
   configured endpoints (D20), and passes built rows in: `VaultStore` and `VaultCredentialStore` methods that write
   gain a `deliveries: Vec<DeliveryRow>` argument. vault
