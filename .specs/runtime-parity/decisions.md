@@ -36,7 +36,7 @@ Anthropic's hosted Managed Agents API. Each row names who decided and when.
 | D16 | An environment key is a Bearer token only, bound to one organization, workspace and environment (or to the runtime queue). | User, 2026-11-08 |
 | D17 | Fan-out signals ("session S changed", "queue Q has work") go over Valkey pub/sub; the log stays the source of truth and each stream falls back to a 5 s timer with up to 1 s of jitter. | User, 2026-11-06; timer and jitter, user, 2026-11-08 ("do it") |
 | D18 | The event log stays on Postgres behind its port, with no partitioning; DynamoDB for large workspaces is the scale-up step behind the same port, planned when its trigger fires (SRE). | User, 2026-11-06; Postgres for now, user, 2026-11-08 ("Yeah. Postgres for now") |
-| D19 | The work secret carries live's keys and values. | User, 2026-11-06 |
+| D19 | The work secret carries live's keys in live's order and types, and live's values except the two only live's Claude Code reads: `session_ingress_token` is `""` and `claude_code_args` is `{}`, since agentd runs no Claude Code. | User, 2026-11-06; the two values, the work API PR (#50), merged by the user 2026-11-10 |
 | D20 | Session webhook endpoints are registered through agentd configuration per organization, since live registers them only in its Console; deliveries follow live exactly. | User, 2026-11-08 (plan approved) |
 | D21 | Starter SLOs as signed off on 2026-11-06, targets in one config file. | User, 2026-11-06 |
 | D22 | No paid model run without the user's OK; CI uses the scripted model. | User, standing |

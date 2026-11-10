@@ -29,7 +29,10 @@ run in the container project (see Out of scope).
 - **Environment key:** an `sk-ant-oat01-` Bearer token that lets a poller poll one queue.
 - **Poller:** the process that polls a queue with an environment key and starts a worker per work item
   (`ant beta:worker poll --on-work`).
-- **Runtime queue:** the work queue of `cloud` sessions, polled with our runtime environment key.
+- **Runtime queue:** the work queue of `cloud` sessions, polled with our runtime environment key; its id in URLs is
+  `runtime`.
+- **Hosted queue:** the queue `hosted`, where a harness-path session's item sits for the harness in its own
+  sandbox; no poll hands one out.
 - **Step:** one pass of a session's loop: read the session's event log, build the prompt, call the model, append the
   resulting events. A tool call ends a step.
 - **Step queue:** the Postgres table of sessions with a step to run; a **loop worker** is an agentd replica in the
@@ -59,19 +62,19 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | W-7 | When a heartbeat has no `desired_ttl_seconds`, or 0, the API shall grant 300 s. |
 | W-21 | When a heartbeat's `desired_ttl_seconds` is any other integer, the API shall grant it and echo it as given. |
 | W-8 | If `desired_ttl_seconds` is not an integer, then the API shall answer 400 `invalid_request_error` "desired_ttl_seconds: Input should be a valid integer, unable to parse string as an integer". |
-| W-9 | When a `stopping` item's lease runs out, the API shall serve it as `stopped`. |
+| W-9 | While a `stopping` item's lease has run out, the API shall serve it as `stopped` on every read, with no reaper task. |
 | W-10 | While an `active` item gets no heartbeats, the API shall keep serving it as `active`. |
 | W-11 | When a session is archived, deleted or terminated, the API shall move its item to `stopping`, or `stopped` when no worker holds it, and keep the item. |
-| W-12 | The API shall issue the work secret with live's keys and values: `version`, `session_ingress_token`, `api_base_url`, `sources`, `auth`, `sessions_token`, `claude_code_args`, `environment_variables`, `use_code_sessions`. |
+| W-12 | The API shall issue the work secret with live's nine keys in live's order and types (`version`, `session_ingress_token`, `api_base_url`, `sources`, `auth`, `sessions_token`, `claude_code_args`, `environment_variables`, `use_code_sessions`), with `session_ingress_token` `""` and `claude_code_args` `{}`, the two values only live's Claude Code reads. |
 | W-13 | When `agentd environment-keys create` runs, the API shall store only the key's peppered digest in `environment_keys`, bound to one organization, workspace and environment, and print the `sk-ant-oat01-` key once. |
 | W-14 | When the API boots with no runtime key in Secrets Manager, the API shall mint one, bound to the runtime queue. |
 | W-15 | If an environment key arrives as `x-api-key`, then the API shall answer 401 `authentication_error` "invalid x-api-key". |
-| W-16 | If an environment key calls a route other than W-22's (runtime key only), its queue's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or a session's `GET`, events, stream and `POST …/events`, then the API shall answer 403 `permission_error` with live's scope message. |
-| W-17 | If an environment key reads a session of another environment, then the API shall answer 404. |
+| W-16 | If an environment key calls a route other than W-22's (runtime key only), its queue's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or the `GET`, events, stream and `POST …/events` of a session it reaches (a self-hosted key's environment's sessions; the runtime key's sessions on the runtime queue), then the API shall answer 403 `permission_error` with live's scope message. |
+| W-17 | If an environment key reads a session it does not reach (W-16), then the API shall answer 404. |
 | W-18 | If a workspace API key calls `work/poll`, then the API shall answer 401 `authentication_error` "Invalid bearer token". |
 | W-22 | When agentd's runtime key calls `GET /v1/environments/{id}` for an environment with a work item on the runtime queue, the API shall serve the environment as it does to a workspace key (D39). |
 | W-23 | If the runtime key calls `GET /v1/environments/{id}` for an environment with no work item on the runtime queue, then the API shall answer 403 `permission_error` with live's scope message. |
-| W-19 | While a session is idle with `requires_action`, the API shall refuse every event but `user.tool_confirmation`, `user.custom_tool_result`, `user.tool_result` and `user.interrupt`, with live's 400 text naming the waiting ids. |
+| W-19 | While a session is idle with `requires_action`, the API shall refuse every event but `user.tool_confirmation`, `user.custom_tool_result`, `user.tool_result` and `user.interrupt`, with live's 400 `invalid_request_error` "Invalid `<type>` event at events[`<i>`]: waiting on responses to events [`<ids>`]; only `user.tool_confirmation`, `user.custom_tool_result`, `user.tool_result`, or `user.interrupt` may be sent", read from the session's latest `session.status_idle`. |
 
 ## 2. Event log
 
@@ -402,8 +405,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   Statements: queue 1 INSERT; claim, one transaction, 1 SELECT of the oldest queued item of the queue not handed out
   in 5 s `FOR UPDATE SKIP LOCKED LIMIT 1` and 1 UPDATE of `handed_out_at`; ack 1 `UPDATE … WHERE state = 'queued'
   RETURNING *`, else 1 SELECT; heartbeat 1 `UPDATE … WHERE state NOT IN ('stopping','stopped') AND
-  coalesce(last_heartbeat, 'NO_HEARTBEAT') = $expected RETURNING *`, else 1 SELECT; stop 1 UPDATE; reaper, a task per
-  replica every 5 s, 1 UPDATE of `stopping` items past their lease; stats 1 SELECT with `count(*) FILTER`. Tests:
+  coalesce(last_heartbeat, 'NO_HEARTBEAT') = $expected RETURNING *`, else 1 SELECT; stop 1 UPDATE; a `stopping` item past its lease
+  is served as `stopped` on read (W-9), with no statement and no reaper; stats 1 SELECT with `count(*) FILTER`. Tests:
   two claims take different items; an unacknowledged item is claimable after 5 s; a stale heartbeat is refused;
   `stopping` past its lease reads `stopped`, `active` stays `active`.
 - **W4.** `work/src/board.rs` removed; `service.rs` and `lifecycle.rs` call the store; `Work.id` is the session id.
@@ -429,8 +432,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   `api/src/cli/environment_keys.rs`, `api/src/edge/reach.rs` (what each scoped credential reaches),
   `edge/auth.rs` (resolution only), `work/src/routes.rs` (poll). Per request 1 SELECT by digest, as for workspace
   keys. Tests (`api/tests/edge.rs`, `api/tests/environment_keys.rs`): one per W-13 to W-18 with live's bodies.
-- **W8.** `sessions/src/service/events.rs`: the session row is already read; no new statement. Tests: refused with
-  live's text; the four answers accepted.
+- **W8.** `sessions/src/service/waiting.rs`: 1 `SELECT session_events … types = ['session.status_idle'] ORDER BY …
+  DESC LIMIT 1` per `POST …/events` to an idle session. Tests: refused with live's text; the four answers accepted.
 - **W9.** `api/src/edge/reach.rs` (W7) allows the runtime key on `GET /v1/environments/{id}`; the environments route
   checks it with 1 `SELECT workspace_id FROM work_items WHERE environment_id = $1 AND queue = 'runtime' LIMIT 1`, then
   serves the environment from that workspace as today (1 SELECT); W2m adds the index `(environment_id) where queue =
@@ -438,7 +441,14 @@ Every new table and index, production-safe: new tables only, unused until their 
   it gets live's 403 for an environment with none; a customer's environment key gets live's 403 for its own
   environment.
 - **L6.** `api/src/edge/reach.rs` (token routes); the memory routes' guard asks sessions which stores a session
-  attaches and how; every token request reads its item (1 SELECT by primary key). Tests: one per L-9 to L-12.
+  attaches and how; every token request reads its item (1 SELECT by primary key). A work token's `POST …/events`: 1 SELECT of the
+  session by key; then one transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, 1 `SELECT
+  session_events WHERE <session> AND (event_id = ANY($3) OR doc->>'tool_use_id' = ANY($3) OR
+  doc->>'custom_tool_use_id' = ANY($3))` of the calls and the results that answer them, and 1 multi-row `INSERT INTO
+  session_events … SELECT … FROM sessions s, unnest($3::text[], $4::jsonb[]) WITH ORDINALITY … WHERE <session>`,
+  which inserts nothing once the session is gone; the lock is held for the check and the insert only. Every other
+  append is the same `INSERT … SELECT … FROM sessions s, unnest(…) WITH ORDINALITY`, with no subquery, and 0 rows
+  means the session is gone. Tests: one per L-9 to L-12; of two results sent at once for one call, only one is saved.
 - **FO1.** `files/src/session.rs` (output upload, delete, download of mounted files) asking `Session::mounts`.
   Download: 1 SELECT of the session, 1 SELECT of the file, 1 object GET. The grader reads a rubric file in the loop,
   server side, so no worker downloads it. Tests (`api/tests/session_token.rs`): its own mounted file is served;
@@ -448,10 +458,12 @@ Every new table and index, production-safe: new tables only, unused until their 
 
 #### PR 5. Event log and streams
 
-- **F1.** `entities/session_events.rs`: append is one multi-row INSERT; `update_processed_at(ws, session,
+- **F1.** `entities/session_events.rs`: append stays L6's one multi-row `INSERT … SELECT … FROM sessions s,
+  unnest(…) WITH ORDINALITY`; `update_processed_at(ws, session,
   ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
-  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. Every append
-  first takes `pg_advisory_xact_lock(hashtext(session))`, so a session's `seq` order is its commit order and a
+  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. The
+  `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append, each
+  taking it first in its transaction, so a session's `seq` order is its commit order and a
   keyset read on `seq` never skips an event that commits late. No migration: `processed_at` stays in `doc`, as
   today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
   concurrent appends to one session are read back in commit order, each once.
@@ -464,7 +476,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   Tests: with signals off, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
   `overloaded_error` and an open one keeps streaming; with a replica URL set, `events.list` reads it and a step
   reads the primary.
-- **E4.** Every event-log access stays behind `SessionEventLog` (D18), and one method deletes events:
+- **E4.** Every event-log access stays behind its port (D18): `SessionEventReads` reads, and `SessionEventLog`,
+  which extends it, appends, stamps and deletes. One method deletes events:
   `SessionEventLog::delete_events_of(&[(workspace, session)])`, 1 `DELETE FROM session_events USING unnest($ws, $ids)
   AS v(workspace_id, session_id) WHERE session_events.workspace_id = v.workspace_id AND session_events.session_id =
   v.session_id`; today's `delete_events` goes. Retention, `sessions/src/retention.rs` (new): every 5 minutes one
@@ -954,7 +967,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | `rules/comment-policy.md` | PASS: no comments planned beyond the SQL claim notes. |
 | `rules/auto-rerun-ci.md` | Not applicable: applies during the build. |
 | Repo `CLAUDE.md` | Not applicable: agentd has none. |
-| Memory: agentd parity, no SDK of our own, harness in sandbox, event log behind its port | PASS: the loop in agentd, workers outside, no agentd-only route; every event-log access goes through `SessionEventLog`, so retention and session delete read sessions through their own store (E4). |
+| Memory: agentd parity, no SDK of our own, harness in sandbox, event log behind its port | PASS: the loop in agentd, workers outside, no agentd-only route; every event-log access goes through its port (`SessionEventReads` and `SessionEventLog`), so retention and session delete read sessions through their own store (E4). |
 | `grill-me` ledger | PASS: no `ASSUMED` row. |
 | `industry-practice` | PASS: section above; one departure from live (D24), with its reason; the handoff prompt for other models is beside live, not a departure from it. |
 | `review/references/code-design.md` and its four parts | PASS: questions on models (`Session::mounts`), no `else`, files at most 200 lines. |
@@ -966,4 +979,4 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | `tech-writing-style`, `no-em-dashes` | PASS: terms defined above; no em dashes; the design stated as fact. |
 | `pr-body` | PASS: each PR's body carries these IDs. |
 | `tosspaper-testing` | Not applicable as written (tosspaper's stage); each agentd PR records its local and CI verification. |
-| SRE skills | PASS: SLOs, sizing, scale-up triggers with metrics and alarms, accepted risks, load test plan, rollout stages, the 2026-11-06 review's findings answered (signals over Valkey, no held lease, one retry layer, reaper as a task, autoscaling on queue depth). |
+| SRE skills | PASS: SLOs, sizing, scale-up triggers with metrics and alarms, accepted risks, load test plan, rollout stages, the 2026-11-06 review's findings answered (signals over Valkey, no held lease, one retry layer, a lapsed `stopping` item served as `stopped` on read, autoscaling on queue depth). |
