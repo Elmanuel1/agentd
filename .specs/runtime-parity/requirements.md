@@ -606,10 +606,13 @@ Every new table and index, production-safe: new tables only, unused until their 
   `archived_at` is null) and a `SecretWrite` (`Keep`, `Replace` or `Purge`), and answers `Matched`, `Changed`, `Archived` or `Missing`; with
   `Replace`, a write that matches no row is settled inside the method, in one place: 1 SELECT of the credential by key
   on the failure path; archived or gone, the method takes out the secret it wrote and answers `Archived` or
-  `Missing`; changed by another writer, it moves the row's `updated_at` (1 `UPDATE credentials SET doc =
-  jsonb_set(doc, '{updated_at}', $now) WHERE … AND doc->>'archived_at' IS NULL`), so that an archive or delete
-  waiting on its lock sees the change and starts again, and answers `Changed`; when that UPDATE matches no row the
-  credential was archived meanwhile, and it takes the secret out and answers `Archived`;
+  `Missing`; changed by another writer, it moves the row's `updated_at` to a new time taken at that write (1 `UPDATE
+  credentials SET doc = jsonb_set(doc, '{updated_at}', $bumped) WHERE … AND doc->>'archived_at' IS NULL`), so that an
+  archive or delete waiting on its lock sees the change and starts again, and answers `Changed`; when that UPDATE
+  matches no row the credential was archived or deleted meanwhile, so it takes the secret out and 1 more SELECT on
+  the failure path answers `Archived` or `Missing`. With `Keep`, a miss runs no failure read and answers `Changed`,
+  so the caller's own read is the only one. Every write this method makes sets `updated_at` to a new time taken at
+  that write, never the guard's value;
   `Replace` writes the secret before the row, so a crash between them leaves a fresher token under an old expiry and
   costs one more refresh; `Purge` deletes the secret after the row, as archiving does today; the API's update passes
   `Unarchived` and `Replace`, and archiving `None` and `Purge`; a refresh passes `UpdatedAt`. The API's update, in
@@ -625,7 +628,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   display_name = $2, has_secret = $3, doc = $4 WHERE workspace_id = $5 AND vault_id = $6 AND credential_id = $7 AND
   doc->>'updated_at' = $read`, the new `doc` carrying `updated_at = $now`); then the POST to `token_endpoint` (10 s
   timeout); then `replace_credential` with `UpdatedAt($now)` and `Replace` (1 `PutSecretValue`, then the same UPDATE
-  recording the new `expires_at`). When that last write matches no row, `replace_credential` settles it as above: `Archived` or `Missing` means the
+  recording the new `expires_at`, with a new `updated_at` taken at that write, so a vault archive that pre-read the
+  claim's time sees the change and starts again). When that last write matches no row, `replace_credential` settles it as above: `Archived` or `Missing` means the
   credential was archived or deleted during the token call (by its own archive or its vault's) and its secret is
   already taken out; `Changed` means an API update came between the claim and the write, the refresh's token is in
   Secrets Manager under the API's row, the loop logs `refresh_overwrote_update` with the credential id, and the
@@ -700,7 +704,10 @@ Every new table and index, production-safe: new tables only, unused until their 
   no secret left; an update of a credential archived after the update's read answers 409 and leaves no secret, and
   of one deleted after it answers 404; a refresh whose token call spans a vault archive, and one that spans the
   credential's own archive, each end with no secret; an API update during a refresh's token call, then a vault
-  archive whose purge comes before the refresh's secret write, ends with no secret; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
+  archive whose purge comes before the refresh's secret write, ends with no secret; a refresh whose final write
+  matches after an archive's pre-read makes that archive start again; a vault archive that commits between a
+  refresh's failure-path SELECT and its bump leaves the bump matching no row, and the refresh takes its secret out
+  and answers `Archived`; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
 
 #### PR 9. Scheduler and webhooks
 
