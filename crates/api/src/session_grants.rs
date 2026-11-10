@@ -47,13 +47,12 @@ impl SessionReach {
 /// The skills of `agent` and of every agent on its roster.
 fn skills(agent: &AgentSnapshot) -> Vec<String> {
     let mut out: Vec<String> = agent.config.skills.iter().map(|s| s.skill_id().to_owned()).collect();
-    if let Some(Multiagent::Coordinator { agents }) = &agent.config.multiagent {
-        for member in agents {
-            if let RosterMember::Snapshot(roster) = member {
-                out.extend(skills(roster));
-            }
-        }
-    }
+    let Some(Multiagent::Coordinator { agents }) = &agent.config.multiagent else { return out };
+    let roster = agents.iter().filter_map(|m| match m {
+        RosterMember::Snapshot(roster) => Some(skills(roster)),
+        _ => None,
+    });
+    out.extend(roster.flatten());
     out
 }
 

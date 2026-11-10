@@ -20,7 +20,7 @@ use std::sync::Arc;
 use shared::beta::BetaGate;
 use shared::Module;
 
-pub use caller::{WorkCaller, WorkScope};
+pub use caller::WorkCaller;
 pub use placeholder::{PlaceholderClaims, Placeholders};
 pub use secret::{CloudVariables, SessionVariables, Variable};
 pub use service::WorkService;

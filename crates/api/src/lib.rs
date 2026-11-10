@@ -40,7 +40,7 @@ pub fn build_router(state: AppState) -> Router {
         keys: state.keys,
         admin_keys: state.admin_keys,
         environment_keys: state.environment_keys,
-        work: Some(state.work),
+        work: state.work,
     };
     edge::wrap(routes, credentials, gates, state.metrics)
 }

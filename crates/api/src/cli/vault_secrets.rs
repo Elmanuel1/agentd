@@ -9,7 +9,7 @@ use std::sync::Arc;
 use secrets_aws::AwsSecretStore;
 use store_postgres::{PgBackend, PgVaultsStore};
 
-use super::as_operator;
+use super::command::as_operator;
 use crate::config::{Config, StoreConfig};
 
 /// How to call it.

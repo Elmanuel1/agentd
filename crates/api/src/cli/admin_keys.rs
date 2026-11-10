@@ -8,25 +8,12 @@ use std::sync::Arc;
 use secrets_aws::{AdminKeyRecord, AwsAdminKeys, AwsSecretStore};
 use shared::ports::secrets::ExposeSecret;
 
-use super::{as_operator, KeysCommand, USAGE};
+use super::{KeysCommand, Kind, USAGE};
 use crate::config::Config;
 
 /// Run `args` (the words after `agentd admin-keys`) against `config`'s Secrets Manager.
 pub async fn admin_keys(config: &Config, args: &[String]) -> ExitCode {
-    let command = match KeysCommand::parse(args, true) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}\n{USAGE}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match as_operator(run(config, command)).await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("agentd admin-keys: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    super::command::run("admin-keys", USAGE, Kind::Admin, args, |c| run(config, c)).await
 }
 
 async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {

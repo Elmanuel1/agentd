@@ -150,7 +150,7 @@ impl DeploymentDeps for RealDeploymentDeps {
                 }
             })
             .collect();
-        self.sessions.send_events(ctx, session.id.as_str(), payloads).await?;
+        self.sessions.send_events(ctx, session.id.as_str(), None, payloads).await?;
         Ok(session.id.as_str().to_owned())
     }
 }

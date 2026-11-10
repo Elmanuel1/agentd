@@ -77,8 +77,8 @@ async fn two_claims_take_different_items_and_an_unacknowledged_one_comes_back_af
         return;
     }
     let (s, q, ws) = (store().await, format!("env_q{}", stamp()), format!("wrkspc_{}", stamp()));
-    s.insert(&queued(&ws, "sesn_old", &q, 20)).await.unwrap();
-    s.insert(&queued(&ws, "sesn_new", &q, 10)).await.unwrap();
+    s.queue(&queued(&ws, "sesn_old", &q, 20)).await.unwrap();
+    s.queue(&queued(&ws, "sesn_new", &q, 10)).await.unwrap();
     let reclaim = Duration::from_secs(5);
     let first = s.claim(&q, reclaim, Timestamp::now()).await.unwrap().unwrap();
     let second = s.claim(&q, reclaim, Timestamp::now()).await.unwrap().unwrap();
@@ -101,7 +101,7 @@ async fn concurrent_claims_never_hand_one_item_out_twice() {
     }
     let (s, q, ws) = (store().await, format!("env_c{}", stamp()), format!("wrkspc_{}", stamp()));
     for i in 0..8 {
-        s.insert(&queued(&ws, &format!("sesn_{i}"), &q, 30 - i)).await.unwrap();
+        s.queue(&queued(&ws, &format!("sesn_{i}"), &q, 30 - i)).await.unwrap();
     }
     let claims = (0..8).map(|_| {
         let (s, q) = (s.clone(), q.clone());
@@ -123,7 +123,7 @@ async fn a_stale_heartbeat_is_refused_and_a_stopping_item_past_its_lease_reads_s
     }
     let (s, ws) = (store().await, format!("wrkspc_{}", stamp()));
     let w = WorkspaceId::new(&ws);
-    s.insert(&queued(&ws, "sesn_h", "env_h", 1)).await.unwrap();
+    s.queue(&queued(&ws, "sesn_h", "env_h", 1)).await.unwrap();
     let any = Reach::default();
     let (first, extended) =
         s.heartbeat(&w, "sesn_h", &any, &beat(Some("NO_HEARTBEAT"), 2)).await.unwrap().unwrap();
@@ -137,7 +137,7 @@ async fn a_stale_heartbeat_is_refused_and_a_stopping_item_past_its_lease_reads_s
         s.heartbeat(&w, "sesn_h", &any, &beat(expected.as_deref(), 2)).await.unwrap().unwrap();
     assert!(!extended && after.work.state == WorkState::Stopping);
     tokio::time::sleep(Duration::from_millis(2100)).await;
-    let read = s.get(&w, "sesn_h").await.unwrap().unwrap();
+    let read = s.get(&w, "sesn_h", &Reach::default()).await.unwrap().unwrap();
     assert_eq!(read.work.state, WorkState::Stopped);
     assert!(read.work.stopped_at.is_some());
 }
@@ -150,11 +150,11 @@ async fn an_active_item_with_no_heartbeats_stays_active_and_a_queued_one_stops_a
     let (s, ws) = (store().await, format!("wrkspc_{}", stamp()));
     let w = WorkspaceId::new(&ws);
     let any = Reach::default();
-    s.insert(&queued(&ws, "sesn_a", "env_a", 1)).await.unwrap();
+    s.queue(&queued(&ws, "sesn_a", "env_a", 1)).await.unwrap();
     s.heartbeat(&w, "sesn_a", &any, &beat(None, 1)).await.unwrap().unwrap();
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    assert_eq!(s.get(&w, "sesn_a").await.unwrap().unwrap().work.state, WorkState::Active);
-    s.insert(&queued(&ws, "sesn_q", "env_a", 1)).await.unwrap();
+    assert_eq!(s.get(&w, "sesn_a", &Reach::default()).await.unwrap().unwrap().work.state, WorkState::Active);
+    s.queue(&queued(&ws, "sesn_q", "env_a", 1)).await.unwrap();
     let stopped = s.stop(&w, "sesn_q", &any, false, Timestamp::now()).await.unwrap().unwrap();
     assert_eq!(stopped.work.state, WorkState::Stopped, "no worker holds a queued item");
     let lapsed = s.stop(&w, "sesn_a", &any, false, Timestamp::now()).await.unwrap().unwrap();
@@ -169,7 +169,7 @@ async fn a_write_misses_an_item_its_path_does_not_reach() {
     let (s, ws) = (store().await, format!("wrkspc_{}", stamp()));
     let w = WorkspaceId::new(&ws);
     let session = format!("sesn_r{}", stamp());
-    s.insert(&queued(&ws, &session, RUNTIME, 1)).await.unwrap();
+    s.queue(&queued(&ws, &session, RUNTIME, 1)).await.unwrap();
     let elsewhere = Reach { queue: Some("env_other".into()), environment: Some("env_other".into()) };
     assert!(s.ack(&w, &session, &elsewhere, Timestamp::now(), at(300)).await.unwrap().is_none());
     assert!(s.stop(&w, &session, &elsewhere, true, Timestamp::now()).await.unwrap().is_none());
@@ -193,4 +193,30 @@ async fn a_write_misses_an_item_its_path_does_not_reach() {
         .unwrap();
     assert_eq!(listed.iter().map(|i| i.work.id.as_str()).collect::<Vec<_>>(), [&session]);
     s.stop(&w, &session, &on_queue, true, Timestamp::now()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_session_s_one_item_is_queued_again_only_once_it_is_stopped() {
+    if !enabled() {
+        return;
+    }
+    let (s, ws) = (store().await, format!("wrkspc_{}", stamp()));
+    let w = WorkspaceId::new(&ws);
+    let any = Reach::default();
+    s.queue(&queued(&ws, "sesn_run", "env_run", 10)).await.unwrap();
+    s.heartbeat(&w, "sesn_run", &any, &beat(None, 300)).await.unwrap().unwrap();
+    let held = s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
+    assert_eq!(held.work.state, WorkState::Active, "a held item is left as it is");
+    s.stop(&w, "sesn_run", &any, true, Timestamp::now()).await.unwrap().unwrap();
+    let again = s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
+    assert_eq!(
+        (again.work.id.as_str(), again.work.state),
+        ("sesn_run", WorkState::Queued),
+        "the same item, reused"
+    );
+    assert!(
+        again.work.stopped_at.is_none()
+            && again.last_heartbeat.is_none()
+            && again.work.acknowledged_at.is_none()
+    );
 }

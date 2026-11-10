@@ -28,13 +28,13 @@ pub struct Credentials {
     pub admin_keys: Arc<dyn AdminKeySource>,
     /// Environment keys, agentd's runtime key among them.
     pub environment_keys: Arc<dyn EnvironmentKeySource>,
-    /// Work tokens and what they reach.
-    pub work: Option<WorkAccess>,
+    /// Work tokens and what they reach, and the work items environment keys reach.
+    pub work: WorkAccess,
 }
 
 impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credentials").field("work", &self.work.is_some()).finish_non_exhaustive()
+        f.debug_struct("Credentials").finish_non_exhaustive()
     }
 }
 
@@ -69,18 +69,10 @@ pub async fn auth(State(creds): State<Credentials>, mut req: Request, next: Next
         return with_tenant(run(actor, req, next).await, tenant);
     }
     if key.starts_with(KeyKind::Environment.prefix()) {
-        return environment_key(
-            creds.environment_keys.as_ref(),
-            creds.work.as_ref(),
-            req,
-            next,
-            &key,
-            bearer,
-        )
-        .await;
+        return environment_key(creds.environment_keys.as_ref(), &creds.work, req, next, &key, bearer).await;
     }
     if key.starts_with(work::tokens::PREFIX) {
-        return work_token(creds.work.as_ref(), req, next, &key).await;
+        return work_token(&creds.work, req, next, &key).await;
     }
     let ctx = match creds.keys.resolve(&key).await {
         Ok(Some(ctx)) => ctx,

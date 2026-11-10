@@ -314,4 +314,17 @@ async fn an_archived_or_deleted_session_s_item_stops_and_is_kept() {
         (StatusCode::OK, Some("stopped")),
         "the item outlives its session"
     );
+    // Terminated by its harness: the item stops too.
+    let ended = rig.session(&env, json!({})).await;
+    let terminated = json!({"events": [{"type": "session.status_terminated"}]});
+    let harness = format!("/v1/sessions/{ended}/harness/events");
+    let (st, body) = rig.call("POST", &harness, Auth::Bearer(&rig.token(&ended)), Some(terminated)).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, stopped) = rig.call("GET", &path(&ended), Auth::Key(KEY), None).await;
+    assert_eq!(stopped["state"], "stopped");
+    // A path that names another environment does not reach the item.
+    let elsewhere = rig.environment("cloud").await;
+    let (st, _) =
+        rig.call("GET", &format!("/v1/environments/{elsewhere}/work/{ended}"), Auth::Key(KEY), None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
 }

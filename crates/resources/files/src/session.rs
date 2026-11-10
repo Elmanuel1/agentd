@@ -11,7 +11,7 @@ use shared::{ApiError, AuthContext, SessionCaller};
 
 use crate::service::map_store;
 use crate::store::StoreError;
-use crate::types::{FileMetadata, FileScope};
+use crate::types::FileMetadata;
 use crate::FilesService;
 
 /// What the files API asks of sessions.
@@ -31,10 +31,6 @@ impl std::fmt::Debug for Mounts {
     }
 }
 
-fn own(meta: &FileMetadata, caller: &SessionCaller) -> bool {
-    matches!(&meta.scope, Some(FileScope::Session { id }) if *id == caller.session)
-}
-
 impl FilesService {
     /// `GET /v1/files/{id}` from a session's token: one of its outputs or a
     /// file it mounts.
@@ -46,7 +42,9 @@ impl FilesService {
         raw_id: &str,
     ) -> Result<FileMetadata, ApiError> {
         let meta = self.metadata(ctx, raw_id).await?;
-        if own(&meta, caller) || mounts.0.mounts(ctx, &caller.session).await?.iter().any(|f| f == raw_id) {
+        if meta.is_output_of(&caller.session)
+            || mounts.0.mounts(ctx, &caller.session).await?.iter().any(|f| f == raw_id)
+        {
             return Ok(meta);
         }
         Err(map_store(StoreError::NotFound, raw_id))
@@ -61,8 +59,8 @@ impl FilesService {
         caller: &SessionCaller,
         raw_id: &str,
     ) -> Result<(FileMetadata, Bytes), ApiError> {
-        self.metadata_for(ctx, mounts, caller, raw_id).await?;
-        self.content(ctx, raw_id).await
+        let meta = self.metadata_for(ctx, mounts, caller, raw_id).await?;
+        Ok((meta, self.bytes(ctx, raw_id).await?))
     }
 
     /// `POST /v1/files` from a session's token: an output, scoped to the
@@ -87,7 +85,7 @@ impl FilesService {
         caller: &SessionCaller,
         raw_id: &str,
     ) -> Result<FileMetadata, ApiError> {
-        if !own(&self.metadata(ctx, raw_id).await?, caller) {
+        if !self.metadata(ctx, raw_id).await?.is_output_of(&caller.session) {
             return Err(map_store(StoreError::NotFound, raw_id));
         }
         self.delete(ctx, raw_id).await

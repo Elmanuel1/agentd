@@ -25,7 +25,7 @@ use shared::{
 };
 use std::time::Duration;
 use tower::ServiceExt;
-use work::store::{Counts, Scope, StoreError};
+use work::store::{Counts, Reach, Scope, StoreError};
 use work::{Work, WorkItem, WorkReads, WorkState};
 
 const KEY: &str = "sk-edge";
@@ -81,7 +81,7 @@ fn item(session: &str, queue: &str, state: WorkState) -> WorkItem {
 
 #[async_trait::async_trait]
 impl WorkReads for Items {
-    async fn get(&self, _: &WorkspaceId, session: &str) -> Result<Option<WorkItem>, StoreError> {
+    async fn get(&self, _: &WorkspaceId, session: &str, _: &Reach) -> Result<Option<WorkItem>, StoreError> {
         Ok(match session {
             "sesn_1" => Some(item(session, "hosted", WorkState::Active)),
             "sesn_stopped" => Some(item(session, "hosted", WorkState::Stopped)),
@@ -148,11 +148,11 @@ fn app() -> Router {
             keys: Arc::new(keys),
             admin_keys: Arc::new(admin_keys),
             environment_keys: Arc::new(Keys),
-            work: Some(WorkAccess {
+            work: WorkAccess {
                 tokens: work::WorkTokens::new(WORK_KEY),
                 items: Arc::new(Items),
                 grants: Arc::new(NoGrants),
-            }),
+            },
         },
         Arc::from(vec![BetaGate::managed(&["/v1/things"])]),
         Arc::new(api::telemetry::Metrics::global()),

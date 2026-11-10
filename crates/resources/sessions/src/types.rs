@@ -104,5 +104,16 @@ pub struct Session {
     pub deployment_id: Option<String>,
 }
 
+impl Session {
+    /// The session as an environment key of `environment` sees it: any
+    /// session of another environment does not exist for that key.
+    pub fn seen_from(self, environment: Option<&str>) -> Result<Self, shared::ApiError> {
+        match environment {
+            Some(env) if env != self.environment_id => Err(shared::ApiError::not_found("session not found")),
+            _ => Ok(self),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -6,13 +6,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use shared::charset::is_id_charset;
 use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyError, KeyPepper};
 use shared::ports::secrets::{ExposeSecret, SecretString};
 use shared::{AuthContext, EnvironmentCaller, Id, OrgId, Timestamp, WorkspaceId};
 
-use crate::service::{key_error, name_ok};
+use crate::service::{key_error, mint};
 use crate::store::EnvironmentKeysStore;
 use crate::types::{EnvironmentKey, EnvironmentKeyResource};
 
@@ -53,22 +52,15 @@ impl EnvironmentKeysService {
         environment: &str,
         name: &str,
     ) -> Result<(EnvironmentKey, SecretString), KeyError> {
-        if ![org, workspace, environment].into_iter().all(is_id_charset) {
-            return Err(KeyError("the org, workspace and environment ids must be in the id charset".into()));
-        }
-        if !name_ok(name) {
-            return Err(KeyError("the name must be 1 to 128 characters, with no control characters".into()));
-        }
-        let key = material::generate(KeyKind::Environment);
-        let digest = material::digest(&self.pepper, key.expose_secret())
-            .ok_or_else(|| KeyError("the pepper cannot key a digest".into()))?;
+        let (key, digest, hint) =
+            mint(&self.pepper, KeyKind::Environment, &[org, workspace, environment], name)?;
         let record = EnvironmentKey {
             id: Id::<EnvironmentKeyResource>::generate().to_string(),
             org: OrgId::new(org),
             workspace: WorkspaceId::new(workspace),
             environment_id: environment.into(),
             name: name.into(),
-            partial_key_hint: material::hint(key.expose_secret()),
+            partial_key_hint: hint,
             created_at: Timestamp::now(),
             revoked_at: None,
         };

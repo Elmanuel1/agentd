@@ -19,14 +19,12 @@ use shared::{Timestamp, WorkspaceId};
 use self::row::{first, insert, keyed, Row, COLS, KEY, REACH};
 use crate::{diesel_be, pool_be, PgBackend, PooledConnection};
 
-/// Postgres-backed work items.
 #[derive(Debug, Clone)]
 pub struct PgWorkStore {
     backend: PgBackend,
 }
 
 impl PgWorkStore {
-    /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
@@ -44,9 +42,16 @@ pub(super) fn before(now: Timestamp, by: Duration) -> chrono::DateTime<chrono::U
 
 #[async_trait]
 impl WorkStore for PgWorkStore {
-    async fn insert(&self, i: &WorkItem) -> Result<(), StoreError> {
-        insert(i).execute(&mut self.write().await?).await.map_err(diesel_be)?;
-        Ok(())
+    async fn queue(&self, i: &WorkItem) -> Result<WorkItem, StoreError> {
+        let mut conn = self.write().await?;
+        let rows: Vec<Row> = insert(i).load(&mut conn).await.map_err(diesel_be)?;
+        if let Some(queued) = first(rows) {
+            return Ok(queued);
+        }
+        let held = Self::reached(&mut conn, &i.workspace, &i.work.id, &Reach::default()).await?;
+        held.ok_or_else(|| {
+            StoreError::Backend(shared::BackendError::new(std::io::Error::other("work item gone")))
+        })
     }
 
     async fn claim(

@@ -64,7 +64,7 @@ impl SessionsService {
             return Err(map_store(e));
         }
         if !initial.is_empty() {
-            self.send_events(ctx, session.id.as_str(), initial).await?;
+            self.send_events(ctx, session.id.as_str(), None, initial).await?;
         }
         Ok(session)
     }

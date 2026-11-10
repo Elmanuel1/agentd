@@ -25,10 +25,6 @@ pub enum WorkCaller {
     Token(WorkClaims),
 }
 
-/// Set by the edge when the caller authenticated with a work token.
-#[derive(Debug, Clone)]
-pub struct WorkScope(pub WorkClaims);
-
 impl WorkService {
     /// The workspace and reach of item `id` at environment `env` for `caller`.
     pub(crate) fn target(

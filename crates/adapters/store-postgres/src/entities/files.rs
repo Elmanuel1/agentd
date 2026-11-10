@@ -102,18 +102,21 @@ impl FilesStore for PgFilesStore {
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError> {
-        let existing = self.get(ws, id).await?;
-        {
+        let doc: Option<serde_json::Value> = {
             let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
             diesel::delete(
                 files::table
                     .filter(files::workspace_id.eq(ws.as_str()))
                     .filter(files::file_id.eq(id.as_str())),
             )
-            .execute(&mut conn)
+            .returning(files::doc)
+            .get_result(&mut conn)
             .await
-            .map_err(diesel_be)?;
-        }
+            .optional()
+            .map_err(diesel_be)?
+        };
+        let doc: FileDoc = parse_doc(doc.ok_or(StoreError::NotFound)?)?;
+        let existing = StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id };
         // The pooled connection is back before the object-store round trip.
         self.blobs.delete(&Self::key(ws, id)).await.map_err(blob_be)?;
         Ok(existing)

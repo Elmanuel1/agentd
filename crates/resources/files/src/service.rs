@@ -148,7 +148,7 @@ impl FilesService {
         Ok((file.meta, self.bytes(ctx, raw_id).await?))
     }
 
-    async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
+    pub(crate) async fn bytes(&self, ctx: &AuthContext, raw_id: &str) -> Result<Bytes, ApiError> {
         let id = parse_id(raw_id)?;
         self.store.content(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id))
     }

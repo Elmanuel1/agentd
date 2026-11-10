@@ -95,7 +95,7 @@ async fn stream_events(
     Path((id, tid)): Path<(String, String)>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
     let scope = svc.thread_scope(&ctx, &id, &tid).await?;
-    let sub = svc.subscribe(&ctx, &id).await?;
+    let sub = svc.subscribe(&ctx, &id, None).await?;
     let connected = stream::once(async { Ok(SseEvent::default().comment("connected")) });
     let events = stream::unfold((sub, scope), |(mut rx, scope)| async move {
         loop {

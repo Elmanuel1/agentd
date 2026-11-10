@@ -12,11 +12,29 @@ use super::row::{first, item, CountsRow, OwnerRow, Row, COLS};
 use super::{before, PgWorkStore};
 use crate::{diesel_be, pool_be};
 
+/// `$1` a workspace and `$2` an environment, or both null; `$3` a queue, or null.
+const SCOPE: &str =
+    "($1::text IS NULL OR (workspace_id = $1 AND environment_id = $2)) AND ($3::text IS NULL OR queue = $3)";
+
+fn binds(scope: &Scope) -> (Option<&str>, Option<&str>, Option<&str>) {
+    match scope {
+        Scope::Environment { workspace, environment, queue } => {
+            (Some(workspace.as_str()), Some(environment.as_str()), queue.as_deref())
+        }
+        Scope::Queue(queue) => (None, None, Some(queue.as_str())),
+    }
+}
+
 #[async_trait]
 impl WorkReads for PgWorkStore {
-    async fn get(&self, ws: &WorkspaceId, session: &str) -> Result<Option<WorkItem>, StoreError> {
+    async fn get(
+        &self,
+        ws: &WorkspaceId,
+        session: &str,
+        reach: &Reach,
+    ) -> Result<Option<WorkItem>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        Self::reached(&mut conn, ws, session, &Reach::default()).await
+        Self::reached(&mut conn, ws, session, reach).await
     }
 
     async fn find_on_queue(&self, queue: &str, session: &str) -> Result<Option<WorkItem>, StoreError> {
@@ -33,15 +51,9 @@ impl WorkReads for PgWorkStore {
 
     async fn list(&self, scope: &Scope, page: &Pagination) -> Result<Vec<WorkItem>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let (ws, env, queue) = match scope {
-            Scope::Environment { workspace, environment, queue } => {
-                (Some(workspace.as_str()), Some(environment.as_str()), queue.as_deref())
-            }
-            Scope::Queue(queue) => (None, None, Some(queue.as_str())),
-        };
+        let (ws, env, queue) = binds(scope);
         let rows: Vec<Row> = diesel::sql_query(format!(
-            "SELECT {COLS} FROM work_items WHERE ($1::text IS NULL OR (workspace_id = $1 AND environment_id = $2)) \
-             AND ($3::text IS NULL OR queue = $3) ORDER BY created_at DESC, session_id DESC LIMIT $4 OFFSET $5"
+            "SELECT {COLS} FROM work_items WHERE {SCOPE} ORDER BY created_at DESC, session_id DESC LIMIT $4 OFFSET $5"
         ))
         .bind::<Nullable<Text>, _>(ws)
         .bind::<Nullable<Text>, _>(env)
@@ -56,20 +68,13 @@ impl WorkReads for PgWorkStore {
 
     async fn counts(&self, scope: &Scope, reclaim: Duration, now: Timestamp) -> Result<Counts, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // A workspace's view of an environment leaves out hosted items, which no poll hands out.
-        let (ws, env, queue) = match scope {
-            Scope::Environment { workspace, environment, queue } => {
-                (Some(workspace.as_str()), Some(environment.as_str()), queue.as_deref())
-            }
-            Scope::Queue(queue) => (None, None, Some(queue.as_str())),
-        };
-        let out: CountsRow = diesel::sql_query(
+        // No poll hands out a hosted item, so none is counted.
+        let (ws, env, queue) = binds(scope);
+        let out: CountsRow = diesel::sql_query(format!(
             "SELECT count(*) FILTER (WHERE handed_out_at IS NULL OR handed_out_at < $4) AS depth, \
              count(*) FILTER (WHERE handed_out_at >= $4) AS pending, min(created_at) AS oldest \
-             FROM work_items WHERE state = 'queued' \
-             AND ($1::text IS NULL OR (workspace_id = $1 AND environment_id = $2 AND queue <> 'hosted')) \
-             AND ($3::text IS NULL OR queue = $3)",
-        )
+             FROM work_items WHERE state = 'queued' AND queue <> 'hosted' AND {SCOPE}"
+        ))
         .bind::<Nullable<Text>, _>(ws)
         .bind::<Nullable<Text>, _>(env)
         .bind::<Nullable<Text>, _>(queue)

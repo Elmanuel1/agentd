@@ -15,10 +15,8 @@ pub const RUNTIME: &str = "runtime";
 /// Sessions whose own sandbox's harness takes their work; no poll hands it out.
 pub const HOSTED: &str = "hosted";
 
-/// Store-level errors.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {
-    /// The backing store failed.
     #[error("work store backend: {0}")]
     Backend(#[source] shared::BackendError),
 }
@@ -26,13 +24,10 @@ pub enum StoreError {
 /// A work item with what agentd keeps beside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkItem {
-    /// Its workspace.
     pub workspace: WorkspaceId,
-    /// Its organization.
     pub org: OrgId,
     /// The queue it waits on.
     pub queue: String,
-    /// The wire object.
     pub work: Work,
     /// The latest heartbeat as handed to the worker.
     pub last_heartbeat: Option<String>,
@@ -72,9 +67,7 @@ pub struct Reach {
 pub enum Scope {
     /// One workspace's items of one environment, on one queue when set.
     Environment {
-        /// The workspace.
         workspace: WorkspaceId,
-        /// The environment.
         environment: String,
         /// Only this queue's items.
         queue: Option<String>,
@@ -90,13 +83,10 @@ pub struct Beat {
     pub expected: Option<String>,
     /// This heartbeat, as handed back.
     pub stamp: String,
-    /// When it lands.
     pub at: Timestamp,
-    /// The lease it grants.
     pub lease_until: Timestamp,
 }
 
-/// A queue's counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
     /// Queued and not handed out.
@@ -107,16 +97,19 @@ pub struct Counts {
     pub oldest_queued_at: Option<Timestamp>,
 }
 
-/// Reads of work items.
 #[async_trait]
 pub trait WorkReads: Send + Sync {
-    /// `session`'s item.
-    async fn get(&self, ws: &WorkspaceId, session: &str) -> Result<Option<WorkItem>, StoreError>;
+    /// `session`'s item, when `reach` reaches it.
+    async fn get(
+        &self,
+        ws: &WorkspaceId,
+        session: &str,
+        reach: &Reach,
+    ) -> Result<Option<WorkItem>, StoreError>;
     /// `session`'s item on `queue`, in any workspace.
     async fn find_on_queue(&self, queue: &str, session: &str) -> Result<Option<WorkItem>, StoreError>;
-    /// One page of `scope`'s items, newest first.
+    /// Newest first.
     async fn list(&self, scope: &Scope, page: &Pagination) -> Result<Vec<WorkItem>, StoreError>;
-    /// `scope`'s queued counts.
     async fn counts(&self, scope: &Scope, reclaim: Duration, now: Timestamp) -> Result<Counts, StoreError>;
     /// The organization and workspace of an item on the runtime queue in
     /// `environment`, if there is one.
@@ -126,8 +119,9 @@ pub trait WorkReads: Send + Sync {
 /// Persistence port for work items: its writes, and its reads.
 #[async_trait]
 pub trait WorkStore: WorkReads {
-    /// Insert `item`.
-    async fn insert(&self, item: &WorkItem) -> Result<(), StoreError>;
+    /// Insert `item`, or queue the session's `stopped` item again as `item`
+    /// says; a session's item that is not `stopped` is left as it is.
+    async fn queue(&self, item: &WorkItem) -> Result<WorkItem, StoreError>;
     /// Hand out the oldest queued item of `queue` not handed out within
     /// `reclaim`, marking it handed out at `now`.
     async fn claim(

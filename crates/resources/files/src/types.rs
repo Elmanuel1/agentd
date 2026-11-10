@@ -61,6 +61,11 @@ pub enum FileScope {
 }
 
 impl FileMetadata {
+    /// Whether it is an output `session` saved.
+    pub fn is_output_of(&self, session: &str) -> bool {
+        matches!(&self.scope, Some(FileScope::Session { id }) if id == session)
+    }
+
     /// The wire object: the beta shape has no `expires_at`.
     pub fn wire(&self, beta: bool) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or_default();

@@ -9,14 +9,16 @@ use crate::types::{OutcomeId, SessionId, SessionStatus};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
+    /// `environment` is an environment key's, which reaches its environment's sessions only.
     pub async fn send_events(
         &self,
         ctx: &AuthContext,
         raw_id: &str,
+        environment: Option<&str>,
         payloads: Vec<EventPayload>,
     ) -> Result<Vec<Event>, ApiError> {
         let id = parse_id(raw_id)?;
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
         guard_writable(&session)?;
         if session.status == SessionStatus::Terminated {
             return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
@@ -61,11 +63,17 @@ impl SessionsService {
         self.events.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store)
     }
 
-    /// Subscribe to live events (`GET /v1/sessions/{id}/events/stream`).
-    pub async fn subscribe(&self, ctx: &AuthContext, raw_id: &str) -> Result<Subscription, ApiError> {
+    /// Subscribe to live events (`GET /v1/sessions/{id}/events/stream`);
+    /// `environment` as for [`Self::send_events`].
+    pub async fn subscribe(
+        &self,
+        ctx: &AuthContext,
+        raw_id: &str,
+        environment: Option<&str>,
+    ) -> Result<Subscription, ApiError> {
         let id = parse_id(raw_id)?;
         // Existence check under the caller's workspace.
-        self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
         let rx =
             self.channels.lock().entry(id.clone()).or_insert_with(|| broadcast::channel(1024).0).subscribe();
         Ok(Subscription { rx, channels: self.channels.clone(), id })

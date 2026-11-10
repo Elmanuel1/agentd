@@ -53,11 +53,6 @@ impl WorkService {
         &self.tokens
     }
 
-    /// The store, which the edge reads a token's item from.
-    pub fn store(&self) -> Arc<dyn WorkStore> {
-        self.store.clone()
-    }
-
     /// Queue `session`'s work in `environment_id` on `queue`: its item, with
     /// the session's id, `started_at` set at once as on live.
     pub async fn queue(
@@ -93,8 +88,7 @@ impl WorkService {
             lease_until: None,
             handed_out_at: None,
         };
-        self.store.insert(&item).await.map_err(backend)?;
-        Ok(work)
+        Ok(self.store.queue(&item).await.map_err(backend)?.work)
     }
 
     /// Queue the work of a session whose own sandbox's harness takes it,
@@ -117,10 +111,8 @@ impl WorkService {
     /// `GET …/work/{id}`.
     pub async fn retrieve(&self, caller: &WorkCaller, env: &str, id: &str) -> Result<Work, ApiError> {
         let (ws, reach) = self.target(caller, env, id)?;
-        let item = self.store.get(&ws, id).await.map_err(backend)?.ok_or_else(not_found)?;
-        let reached = reach.environment.as_ref() == Some(&item.work.environment_id)
-            || reach.queue.as_ref() == Some(&item.queue);
-        reached.then_some(item.work).ok_or_else(not_found)
+        let item = self.store.get(&ws, id, &reach).await.map_err(backend)?;
+        item.map(|i| i.work).ok_or_else(not_found)
     }
 
     /// `GET …/work`: the environment's or queue's work, newest first.
@@ -130,9 +122,6 @@ impl WorkService {
         env: &str,
         page: &Pagination,
     ) -> Result<Page<Work>, ApiError> {
-        if matches!(caller, WorkCaller::Token(_)) {
-            return Err(not_found());
-        }
         let items = self.store.list(&crate::caller::scope(caller, env)?, page).await.map_err(backend)?;
         Ok(Page::from_fetched(items.into_iter().map(|i| i.work).collect(), page))
     }
@@ -157,9 +146,6 @@ impl WorkService {
 
     /// `GET …/work/stats`.
     pub async fn stats(&self, caller: &WorkCaller, env: &str) -> Result<QueueStats, ApiError> {
-        if matches!(caller, WorkCaller::Token(_)) {
-            return Err(not_found());
-        }
         let counts = self
             .store
             .counts(&crate::caller::scope(caller, env)?, crate::lifecycle::RECLAIM, Timestamp::now())

@@ -17,6 +17,43 @@ use shared::{AdminContext, AuthContext};
 use test_support::{StaticAdminKeys, StaticKeySource};
 use tower::ServiceExt;
 
+use api::edge::reach::{Grants, SessionGrants};
+use api::edge::scoped::WorkAccess;
+use shared::{ApiError, OrgId, Pagination, Timestamp, WorkspaceId};
+use work::store::{Counts, Reach, Scope, StoreError};
+use work::{WorkItem, WorkReads};
+
+/// No work items: these tests send no work token or environment key.
+struct NoWork;
+
+#[async_trait::async_trait]
+impl WorkReads for NoWork {
+    async fn get(&self, _: &WorkspaceId, _: &str, _: &Reach) -> Result<Option<WorkItem>, StoreError> {
+        Ok(None)
+    }
+    async fn find_on_queue(&self, _: &str, _: &str) -> Result<Option<WorkItem>, StoreError> {
+        Ok(None)
+    }
+    async fn list(&self, _: &Scope, _: &Pagination) -> Result<Vec<WorkItem>, StoreError> {
+        Ok(vec![])
+    }
+    async fn counts(&self, _: &Scope, _: std::time::Duration, _: Timestamp) -> Result<Counts, StoreError> {
+        Ok(Counts::default())
+    }
+    async fn runtime_owner(&self, _: &str) -> Result<Option<(OrgId, WorkspaceId)>, StoreError> {
+        Ok(None)
+    }
+}
+
+struct NoGrants;
+
+#[async_trait::async_trait]
+impl SessionGrants for NoGrants {
+    async fn grants(&self, _: &AuthContext, _: &str) -> Result<Grants, ApiError> {
+        Ok(Grants::default())
+    }
+}
+
 const WORKSPACE_KEY: &str = "sk-ant-api03-edge";
 const ADMIN_KEY: &str = "sk-ant-admin01-edge";
 
@@ -40,7 +77,11 @@ fn app() -> Router {
             keys: Arc::new(keys),
             admin_keys: Arc::new(admin_keys),
             environment_keys: Arc::new(test_support::NoEnvironmentKeys),
-            work: None,
+            work: WorkAccess {
+                tokens: work::WorkTokens::new(b"admin-edge".to_vec()),
+                items: Arc::new(NoWork),
+                grants: Arc::new(NoGrants),
+            },
         },
         Arc::from(vec![]),
         Arc::new(api::telemetry::Metrics::global()),

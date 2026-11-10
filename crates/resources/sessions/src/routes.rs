@@ -101,20 +101,9 @@ fn status(raw: &str) -> Result<SessionStatus, ApiError> {
 /// Set when the caller is an environment key: its environment's sessions only.
 type Worker = Option<Extension<EnvironmentCaller>>;
 
-/// An environment key reaches its own environment's sessions; to it any
-/// other session does not exist.
-async fn in_environment(
-    svc: &SessionsService,
-    ctx: &AuthContext,
-    worker: &Worker,
-    id: &str,
-) -> Result<(), RouteError> {
-    let Some(Extension(caller)) = worker else { return Ok(()) };
-    let session = svc.get(ctx, id).await?;
-    if session.environment_id != caller.queue {
-        return Err(RouteError(ApiError::not_found("session not found")));
-    }
-    Ok(())
+/// The environment an environment key reaches.
+fn environment(worker: &Worker) -> Option<&str> {
+    worker.as_ref().map(|Extension(c)| c.queue.as_str())
 }
 
 async fn get_one(
@@ -123,11 +112,7 @@ async fn get_one(
     worker: Worker,
     Path(id): Path<String>,
 ) -> Result<Response, RouteError> {
-    let session = svc.get(&ctx, &id).await?;
-    if worker.is_some_and(|Extension(c)| c.queue != session.environment_id) {
-        return Err(RouteError(ApiError::not_found("session not found")));
-    }
-    Ok(Json(session).into_response())
+    Ok(Json(svc.get(&ctx, &id).await?.seen_from(environment(&worker))?).into_response())
 }
 
 async fn update(

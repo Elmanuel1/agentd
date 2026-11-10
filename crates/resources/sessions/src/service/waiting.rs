@@ -11,30 +11,6 @@ use crate::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, Stop
 use crate::store::{EventFilter, Order};
 use crate::types::{Session, SessionStatus};
 
-/// The events a session waiting on a tool still takes.
-fn answers_or_interrupt(p: &EventPayload) -> bool {
-    matches!(
-        p,
-        EventPayload::User(
-            UserEvent::ToolConfirmation { .. }
-                | UserEvent::CustomToolResult { .. }
-                | UserEvent::ToolResult { .. }
-                | UserEvent::Interrupt {}
-        )
-    )
-}
-
-/// The call a result answers, and whether it is a custom tool's.
-fn answered(p: &EventPayload) -> Option<(&EventId, bool)> {
-    match p {
-        EventPayload::User(UserEvent::ToolResult { tool_use_id, .. }) => Some((tool_use_id, false)),
-        EventPayload::User(UserEvent::CustomToolResult { custom_tool_use_id, .. }) => {
-            Some((custom_tool_use_id, true))
-        }
-        _ => None,
-    }
-}
-
 impl SessionsService {
     /// Live: while `session` is idle with `requires_action`, any event but
     /// an answer or an interrupt is refused, naming the waiting events.
@@ -44,7 +20,7 @@ impl SessionsService {
         session: &Session,
         payloads: &[EventPayload],
     ) -> Result<(), ApiError> {
-        let Some((i, refused)) = payloads.iter().enumerate().find(|(_, p)| !answers_or_interrupt(p)) else {
+        let Some((i, refused)) = payloads.iter().enumerate().find(|(_, p)| !p.answers_or_interrupts()) else {
             return Ok(());
         };
         if session.status != SessionStatus::Idle {
@@ -92,7 +68,7 @@ impl SessionsService {
         let id = &parse_id(raw_id)?;
         let mut calls = Vec::with_capacity(payloads.len());
         for (i, p) in payloads.iter().enumerate() {
-            let Some(call) = answered(p) else {
+            let Some(call) = p.answered_call() else {
                 return Err(ApiError::invalid_request(format!(
                     "events.{i}: a session's work token sends only user.tool_result and user.custom_tool_result"
                 )));

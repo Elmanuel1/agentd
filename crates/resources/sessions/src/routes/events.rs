@@ -17,7 +17,7 @@ use shared::{
 };
 use tokio::sync::broadcast::error::RecvError;
 
-use super::{in_environment, order, Worker};
+use super::{environment, order, Worker};
 use crate::events::{Event, EventPayload, SessionEvent};
 use crate::service::SessionsService;
 use crate::store::{EventFilter, Order};
@@ -61,7 +61,9 @@ async fn list_events(
     Path(id): Path<String>,
     query: ListQuery,
 ) -> Result<Response, RouteError> {
-    in_environment(&svc, &ctx, &worker, &id).await?;
+    if let Some(env) = environment(&worker) {
+        svc.get(&ctx, &id).await?.seen_from(Some(env))?;
+    }
     let params = query.map();
     let page = LIST.parse(&params)?;
     let filter = EventFilter {
@@ -81,11 +83,11 @@ async fn send_events(
     Path(id): Path<String>,
     ApiJson(body): ApiJson<SendEventsBody>,
 ) -> Result<Response, RouteError> {
-    in_environment(&svc, &ctx, &worker, &id).await?;
     if token.is_some() {
         svc.guard_worker_results(&ctx.workspace, &id, &body.events).await?;
     }
-    Ok(Json(DataEnvelope { data: svc.send_events(&ctx, &id, body.events).await? }).into_response())
+    let sent = svc.send_events(&ctx, &id, environment(&worker), body.events).await?;
+    Ok(Json(DataEnvelope { data: sent }).into_response())
 }
 
 /// One SSE frame per event, named by its `type` (both SDKs skip frames with
@@ -99,8 +101,7 @@ async fn stream_events(
     worker: Worker,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, RouteError> {
-    in_environment(&svc, &ctx, &worker, &id).await?;
-    let sub = svc.subscribe(&ctx, &id).await?;
+    let sub = svc.subscribe(&ctx, &id, environment(&worker)).await?;
     // Live opens the stream with a `: connected` comment frame before events.
     let connected = stream::once(async { Ok(SseEvent::default().comment("connected")) });
     let events = stream::unfold((sub, false), |(mut rx, done)| async move {

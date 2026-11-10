@@ -30,8 +30,29 @@ pub(crate) fn key_error(e: StoreError) -> KeyError {
 }
 
 /// A name for people: 1 to 128 characters, none of them a control character.
-pub(crate) fn name_ok(name: &str) -> bool {
+fn name_ok(name: &str) -> bool {
     (1..=128).contains(&name.chars().count()) && !name.chars().any(char::is_control)
+}
+
+/// A new key of `kind`, its stored digest and its hint, once `ids` are in the
+/// id charset and `name` is a name for people.
+pub(crate) fn mint(
+    pepper: &KeyPepper,
+    kind: KeyKind,
+    ids: &[&str],
+    name: &str,
+) -> Result<(SecretString, Vec<u8>, String), KeyError> {
+    if !ids.iter().all(|id| is_id_charset(id)) {
+        return Err(KeyError("every id must be in the id charset".into()));
+    }
+    if !name_ok(name) {
+        return Err(KeyError("the name must be 1 to 128 characters, with no control characters".into()));
+    }
+    let key = material::generate(kind);
+    let digest = material::digest(pepper, key.expose_secret())
+        .ok_or_else(|| KeyError("the pepper cannot key a digest".into()))?;
+    let hint = material::hint(key.expose_secret());
+    Ok((key, digest, hint))
 }
 
 impl ApiKeysService {
@@ -48,21 +69,13 @@ impl ApiKeysService {
         workspace: &str,
         name: &str,
     ) -> Result<(ApiKey, SecretString), KeyError> {
-        if !is_id_charset(org) || !is_id_charset(workspace) {
-            return Err(KeyError("the org and workspace ids must be in the id charset".into()));
-        }
-        if !name_ok(name) {
-            return Err(KeyError("the name must be 1 to 128 characters, with no control characters".into()));
-        }
-        let key = material::generate(KeyKind::Workspace);
-        let digest = material::digest(&self.pepper, key.expose_secret())
-            .ok_or_else(|| KeyError("the pepper cannot key a digest".into()))?;
+        let (key, digest, hint) = mint(&self.pepper, KeyKind::Workspace, &[org, workspace], name)?;
         let record = ApiKey {
             id: Id::<ApiKeyResource>::generate().to_string(),
             org: OrgId::new(org),
             workspace: WorkspaceId::new(workspace),
             name: name.into(),
-            partial_key_hint: material::hint(key.expose_secret()),
+            partial_key_hint: hint,
             created_at: Timestamp::now(),
             revoked_at: None,
         };

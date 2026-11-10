@@ -11,14 +11,12 @@ use shared::{OrgId, Timestamp, WorkspaceId};
 use crate::schema::environment_keys;
 use crate::{diesel_be, pool_be, PgBackend};
 
-/// Postgres-backed environment keys (Diesel).
 #[derive(Debug, Clone)]
 pub struct PgEnvironmentKeysStore {
     backend: PgBackend,
 }
 
 impl PgEnvironmentKeysStore {
-    /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }

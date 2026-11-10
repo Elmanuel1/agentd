@@ -9,7 +9,8 @@ use axum::middleware::Next;
 use axum::response::Response;
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource};
 use shared::{wire_response, ApiError, AuthContext, OrgId, SessionCaller, WorkspaceId};
-use work::{WorkCaller, WorkReads, WorkScope, WorkState, WorkTokens, RUNTIME};
+use work::store::Reach;
+use work::{WorkCaller, WorkReads, WorkState, WorkTokens, RUNTIME};
 
 use super::auth::{run, run_in_workspace};
 use super::reach::{
@@ -40,7 +41,7 @@ impl std::fmt::Debug for WorkAccess {
 /// worker does not use is a 403.
 pub(super) async fn environment_key(
     keys: &dyn EnvironmentKeySource,
-    work: Option<&WorkAccess>,
+    work: &WorkAccess,
     req: Request,
     next: Next,
     key: &str,
@@ -63,10 +64,7 @@ pub(super) async fn environment_key(
             req.extensions_mut().insert(WorkCaller::Queue { queue, ctx: Some(ctx.clone()) });
             run_in_workspace(ctx, actor, req, next).await
         }
-        Ok(Some(EnvironmentGrant::Runtime)) => match work {
-            Some(work) => runtime_key(work.items.as_ref(), req, next).await,
-            None => wire_response(&out_of_scope()),
-        },
+        Ok(Some(EnvironmentGrant::Runtime)) => runtime_key(work.items.as_ref(), req, next).await,
     }
 }
 
@@ -100,7 +98,10 @@ async fn runtime_key(items: &dyn WorkReads, mut req: Request, next: Next) -> Res
         Err(e) => return wire_response(&ApiError::internal(e.to_string())),
     };
     let Some(item) = item else {
-        let what = if path.starts_with("/v1/sessions/") { "session not found" } else { "work not found" };
+        let what = match path.starts_with("/v1/sessions/") {
+            true => "session not found",
+            false => "work not found",
+        };
         return wire_response(&ApiError::not_found(what));
     };
     let ctx = runtime_ctx(item.org, item.workspace);
@@ -110,20 +111,14 @@ async fn runtime_key(items: &dyn WorkReads, mut req: Request, next: Next) -> Res
 
 /// A session's work token: valid while its item is not `stopped`, on its
 /// routes only, reaching what its session grants.
-pub(super) async fn work_token(
-    work: Option<&WorkAccess>,
-    mut req: Request,
-    next: Next,
-    key: &str,
-) -> Response {
+pub(super) async fn work_token(work: &WorkAccess, mut req: Request, next: Next, key: &str) -> Response {
     let invalid = || wire_response(&ApiError::authentication("invalid work token"));
-    let Some(work) = work else { return invalid() };
     let Some(claims) = work.tokens.verify(key).filter(|c| work_route(req.method(), req.uri().path(), c))
     else {
         return invalid();
     };
     let ws = WorkspaceId::new(claims.ws.clone());
-    match work.items.get(&ws, &claims.session).await {
+    match work.items.get(&ws, &claims.session, &Reach::default()).await {
         Ok(Some(item)) if item.work.state != WorkState::Stopped => {}
         Ok(_) => return invalid(),
         Err(e) => return wire_response(&ApiError::internal(e.to_string())),
@@ -139,7 +134,6 @@ pub(super) async fn work_token(
     }
     let session = claims.session.clone();
     req.extensions_mut().insert(SessionCaller { session: session.clone() });
-    req.extensions_mut().insert(WorkCaller::Token(claims.clone()));
-    req.extensions_mut().insert(WorkScope(claims));
+    req.extensions_mut().insert(WorkCaller::Token(claims));
     run_in_workspace(ctx, session, req, next).await
 }

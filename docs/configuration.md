@@ -239,8 +239,9 @@ request reads its item, and a token whose item is `stopped` is a 401.
 
 There are three kinds of key, told apart by prefix, and the route decides
 which one a request needs: `/v1/organizations` routes take admin keys only,
-every other route workspace keys, environment keys and work tokens. Both are 86 base64url characters from 64 random bytes
-after their prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
+every other route workspace keys and environment keys, and the work tokens
+described under [Work](#work). Every key is 86 base64url characters from 64
+random bytes after its prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
 keyed with a pepper agentd keeps as `<prefix>/system/api_key_pepper` in
 Secrets Manager (created on first use), so the stored digests alone verify
 nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
