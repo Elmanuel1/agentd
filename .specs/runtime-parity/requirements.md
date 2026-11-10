@@ -208,6 +208,7 @@ Decision D29; evidence B15 to B17, B23.
 | VA-4 | If a credential update changes an `mcp_oauth` credential's `token_endpoint`, then the API shall refuse it with live's status and message (B17). |
 | VA-5 | When a credential update sets a new `access_token` without `expires_at`, the API shall keep the stored expiry (B17). |
 | VA-6 | When `mcp_oauth_validate` is called for an `mcp_oauth` credential, the API shall send `initialize` to its `mcp_server_url` with its access token and answer `vault_credential_validation` with `valid` on success, `invalid` when the server answers 401 or 403, and `unknown` otherwise, with `validated_at` (B23). |
+| VA-7 | When a credential is created in a vault, the API shall lock the vault's row for share in the transaction that inserts the credential and refuse the create when the vault is archived or gone, and a vault's archive and delete shall lock the row for update first, so that no credential is ever created in a vault being archived or deleted (D40). |
 
 ## 9. Webhooks
 
@@ -331,7 +332,7 @@ numbers are taken at merge time. "Reuses" names work already written on local br
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
 | 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-20 | branch `self-hosted-work` |
 | 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
-| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-27, VA-1 to VA-6 | |
+| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-27, VA-1 to VA-7 | |
 | 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-6 | |
 | 10 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
 | 11 | Conformance, SLOs and docs: the Java SDK suite, SLO alerts, scale-up alarms, the load test, docs and runbook | code | J1, SRE | J-1 | |
@@ -649,15 +650,27 @@ Every new table and index, production-safe: new tables only, unused until their 
   `vaults/secret.rs`, so `entities/vaults.rs` does not grow). It purges first through `purge_secrets(ws, vault,
   ids)`, a private store helper in the same file that `delete_vault` calls too, so a retry finds and purges
   the rest: 1 `SELECT credential_id FROM credentials WHERE workspace_id = $1 AND vault_id = $2 AND
-  doc->>'archived_at' IS NULL`; 1 secret delete per credential; then one transaction: 1 `UPDATE vaults SET doc =
+  doc->>'archived_at' IS NULL`; 1 secret delete per credential; then one transaction: 1 `SELECT doc FROM vaults WHERE
+  workspace_id = $1 AND vault_id = $2 FOR UPDATE` (VA-7), 1 `UPDATE vaults SET doc =
   jsonb_set(jsonb_set(doc, '{archived_at}', $now), '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2
   AND doc->>'archived_at' IS NULL RETURNING doc` (0 rows: 1 SELECT on the failure path tells an archived vault, answered as today, from a missing
   one, 404), 1 `UPDATE credentials SET has_secret = false, doc = jsonb_set(jsonb_set(doc, '{archived_at}', $now),
   '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS NULL RETURNING
-  credential_id`, and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from those ids (H-6); the service's `get_vault` pre-read goes. A credential's own
+  credential_id`, and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from those ids (H-6); after the commit, 1 secret delete for
+  each returned id missing from the pre-read (a credential whose create committed before the lock), with a failure
+  logged as `archive_purge_failed` and its credential ids; the service's `get_vault` pre-read goes. Credential create
+  (VA-7) becomes one transaction in `entities/vaults/credential.rs`: 1 `SELECT doc FROM vaults WHERE workspace_id =
+  $1 AND vault_id = $2 FOR SHARE`, which waits for an archive or delete in progress and refuses an archived vault
+  with today's 409 "cannot add credentials to an archived vault" or a missing one with 404, then 1 `INSERT INTO
+  credentials`; it replaces the store's `require_vault` SELECT, and the secret is written before it and taken back
+  out on a rollback, as today. Vault delete takes the same lock: purge first, then one transaction of 1 `SELECT doc
+  FROM vaults … FOR UPDATE`, 1 `DELETE FROM credentials … RETURNING credential_id` and 1 `DELETE FROM vaults …
+  RETURNING doc`, then 1 secret delete for each returned id missing from the pre-read. A credential's own
   archive adds, from PR 9, its delivery INSERT to its commit. Tests: each of VA-1, VA-2, VA-3, VA-4 and VA-5, VA-3 with
   a running session that keeps running and gets no credential from the archived vault at its next step; a secret
-  delete that fails leaves the vault unarchived, and the retried archive finishes; `mcp_oauth_validate` answers `valid` against a scripted
+  delete that fails leaves the vault unarchived, and the retried archive finishes; a credential create racing an
+  archive or a delete, in a looped test, is either refused or archived (or deleted) with its secret purged, and never
+  left unarchived in an archived vault (VA-7); `mcp_oauth_validate` answers `valid` against a scripted
   server that accepts the token, `invalid` on 401, `unknown` when unreachable.
 
 #### PR 9. Scheduler and webhooks
@@ -680,13 +693,12 @@ Every new table and index, production-safe: new tables only, unused until their 
   module call inside their own transactions. The webhooks crate owns the port, builds each body and resolves the
   configured endpoints (D20), and passes built rows in: `VaultStore` and `VaultCredentialStore` methods that write
   gain a `deliveries: Vec<DeliveryRow>` argument. vault
-  create, 1 `INSERT INTO vaults` and 1 delivery INSERT; credential create, the service's vault read and credential list and the
-  store's `require_vault` SELECT as today, the secret write first, then 1 `INSERT INTO credentials` and 1 delivery
-  INSERT, with the secret taken back out when that transaction rolls back, as today; credential delete, 1 SELECT of the row as today, then the secret delete first, as the vault's
+  create, 1 `INSERT INTO vaults` and 1 delivery INSERT; credential create, the service's credential list as today, the secret write
+  first, then VA1's transaction (the vault row `FOR SHARE`, 1 `INSERT INTO credentials`) with 1 delivery INSERT added, with the secret taken back out when that transaction rolls back, as today; credential delete, 1 SELECT of the row as today, then the secret delete first, as the vault's
   archive and delete purge first and as `delete_credential` already tolerates a missing secret, then 1 `DELETE FROM
-  credentials … RETURNING doc` and 1 delivery INSERT; vault delete, 1 SELECT of the vault and 1 SELECT of its credential ids, `purge_secrets`
-  with those ids first, then 1 `DELETE FROM credentials WHERE workspace_id = $1 AND vault_id = $2 RETURNING credential_id`, 1 `DELETE FROM
-  vaults … RETURNING doc` and 1 multi-row delivery INSERT, with one `vault_credential.deleted` per credential when
+  credentials … RETURNING doc` and 1 delivery INSERT; vault delete, 1 SELECT of its credential ids and `purge_secrets` with those ids first, then
+  VA1's transaction (the vault row `FOR UPDATE`, 1 `DELETE FROM credentials … RETURNING credential_id`, 1 `DELETE FROM
+  vaults … RETURNING doc`) with 1 multi-row delivery INSERT added, with one `vault_credential.deleted` per credential when
   B30's capture shows live sends them. Tests: each write's delivery lands in its commit and none lands when the write
   fails.
 
@@ -850,9 +862,8 @@ session (E4).
 |---|---|---|
 | A revoked `environment_variable` credential keeps working in a running `cloud` session for up to 5 minutes (CF-6) | 5 minutes, per session object | live documents a shorter re-resolution, or a customer needs immediate revocation |
 | The Cloudflare launcher's AWS read key is a static key (G8) | `GetSecretValue` on tagged secrets only, from Cloudflare's IP ranges, rotated every 90 days | Cloudflare documents a Worker identity AWS accepts |
-| An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) can have its secret overwritten by the refresh (MC2) | 10 s per refresh, logged as `refresh_overwrote_update`; when the API's update carried a token from a new authorization, that token is lost, the next refresh on the old grant may fail with `vault_credential.refresh_failed`, and the user updates the credential again | a customer reports a lost update, or the log shows it more than rarely |
-| A crash between a session delete's commit and its event delete leaves that session's events (E4) | one session per crash; no API can reach them, since the session answers 404 | the DynamoDB plan, which moves deletes to the store's expiry |
-| A credential created in a vault while the vault's archive or delete runs (VA1, H1): committed before the archive's credentials UPDATE, it is archived and gets its event but keeps its secret, since the purge used the earlier id list; committed after, it stays unarchived with its secret in an archived vault; under a vault delete its secret is left with no row | the milliseconds between the purge's id read and the commit | listing an archived vault's credentials shows an unarchived one, or a vault delete is followed by a credential create on the same vault id in the logs |
+| An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) can have its secret overwritten by the refresh (MC2); kept, user, 2026-11-09 (D41) | 10 s per refresh, logged as `refresh_overwrote_update`; when the API's update carried a token from a new authorization, that token is lost, the next refresh on the old grant may fail with `vault_credential.refresh_failed`, and the user updates the credential again | a customer reports a lost update, or the log shows it more than rarely |
+| A crash between a session delete's commit and its event delete leaves that session's events (E4); kept, user, 2026-11-09 (D41) | one session per crash; no API can reach them, since the session answers 404 | the DynamoDB plan, which moves deletes to the store's expiry |
 | A loop worker that dies after an MCP server answered a call and before its step commits the result makes the next step call the tool again (MC-25) | one repeated call per crash; the step that calls a tool commits its result at once, with no model call in between | the MCP spec gains idempotency keys, or a customer reports a repeated side effect |
 | A sandbox whose networking cannot be read never starts, and its session waits on its tool call until a `user.interrupt` (CF-12) | 10 minutes of retries per work item | the networking read fails outside a Cloudflare or agentd outage |
 | On Cloudflare under `unrestricted` networking, a placeholder in traffic other than HTTP on port 80 and HTTPS on port 443 reaches its host unchanged, so the call fails there (CF-5) | tools that call credentialed APIs on other ports or protocols; under `limited` the network refuses such traffic | a customer needs a credential on another port |
