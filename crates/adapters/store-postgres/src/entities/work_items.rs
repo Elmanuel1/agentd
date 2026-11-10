@@ -3,6 +3,7 @@
 //! other write is one guarded `UPDATE … RETURNING`, read again only when it
 //! misses, to tell the caller what the item holds.
 
+mod filter;
 mod reads;
 mod row;
 
@@ -16,7 +17,8 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
-use self::row::{before, binds, first, insert, keyed, Row, COLS, KEY, REACH, SCOPE};
+use self::filter::{before, binds, keyed, KEY, REACH, SCOPE};
+use self::row::{first, insert, Row, COLS};
 use crate::{diesel_be, pool_be, PgBackend, PooledConnection};
 
 #[derive(Debug, Clone)]
