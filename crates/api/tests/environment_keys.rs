@@ -103,6 +103,32 @@ async fn a_self_hosted_worker_polls_acks_heartbeats_and_stops_its_environment_s_
     assert_eq!((after["lease_extended"].as_bool(), after["state"].as_str()), (Some(false), Some("stopping")));
 }
 
+#[tokio::test]
+async fn an_environment_key_takes_no_work_of_another_workspace() {
+    // Environments are the org's: another workspace's session can wait on the same environment.
+    let Some(rig) = Rig::new().await else { return };
+    let env = rig.environment("self_hosted").await;
+    let key = rig.environment_key(&env).await;
+    let other = shared::AuthContext {
+        org: shared::OrgId::new(&rig.org),
+        workspace: shared::WorkspaceId::new(&rig.ws_b),
+        api_key_id: "apikey_01b".into(),
+    };
+    let theirs = format!("sesn_b{}", common::stamp());
+    rig.work.queue(&other, &env, &theirs, &env).await.unwrap();
+    let base = format!("/v1/environments/{env}/work");
+    let (st, polled) = rig.call("GET", &format!("{base}/poll"), Auth::Bearer(&key), None).await;
+    assert_eq!((st, polled), (StatusCode::OK, Value::Null), "the key's workspace has no work");
+    let (_, stats) = rig.call("GET", &format!("{base}/stats"), Auth::Bearer(&key), None).await;
+    assert_eq!(stats["depth"].as_u64(), Some(0));
+    let (st, item) = rig.call("GET", &format!("{base}/{theirs}"), Auth::Key(common::KEY_B), None).await;
+    assert_eq!(
+        (st, item["state"].as_str()),
+        (StatusCode::OK, Some("queued")),
+        "still waiting for its own workspace's worker"
+    );
+}
+
 fn urlencode(s: &str) -> String {
     s.replace(':', "%3A").replace('+', "%2B")
 }

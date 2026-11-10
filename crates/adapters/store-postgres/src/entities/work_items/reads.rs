@@ -9,22 +9,9 @@ use diesel_async::RunQueryDsl;
 use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 
 use super::row::before;
-use super::row::{first, item, CountsRow, OwnerRow, Row, COLS};
+use super::row::{binds, first, item, CountsRow, OwnerRow, Row, COLS, SCOPE};
 use super::PgWorkStore;
 use crate::{diesel_be, pool_be};
-
-/// `$1` a workspace and `$2` an environment, or both null; `$3` a queue, or null.
-const SCOPE: &str =
-    "($1::text IS NULL OR (workspace_id = $1 AND environment_id = $2)) AND ($3::text IS NULL OR queue = $3)";
-
-fn binds(scope: &Scope) -> (Option<&str>, Option<&str>, Option<&str>) {
-    match scope {
-        Scope::Environment { workspace, environment, queue } => {
-            (Some(workspace.as_str()), Some(environment.as_str()), queue.as_deref())
-        }
-        Scope::Queue(queue) => (None, None, Some(queue.as_str())),
-    }
-}
 
 #[async_trait]
 impl WorkReads for PgWorkStore {

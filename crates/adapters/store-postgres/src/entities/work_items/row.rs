@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use ::work::store::WorkItem;
-use ::work::store::{Reach, StoreError};
+use ::work::store::{Reach, Scope, StoreError};
 use ::work::types::{Work, WorkData, WorkDataTag, WorkState, WorkTag};
 use chrono::{DateTime, Utc};
 use diesel::pg::Pg;
@@ -149,6 +149,19 @@ pub(super) fn insert(i: &WorkItem) -> BoxedSqlQuery<'_, Pg, diesel::query_builde
     .bind::<Nullable<Timestamptz>, _>(i.handed_out_at.map(|t| t.as_datetime()))
     .bind::<Nullable<Timestamptz>, _>(w.stop_requested_at.map(|t| t.as_datetime()))
     .bind::<Nullable<Timestamptz>, _>(w.stopped_at.map(|t| t.as_datetime()))
+}
+
+/// `$1` a workspace and `$2` an environment, or both null; `$3` a queue, or null.
+pub(super) const SCOPE: &str =
+    "($1::text IS NULL OR (workspace_id = $1 AND environment_id = $2)) AND ($3::text IS NULL OR queue = $3)";
+
+pub(super) fn binds(scope: &Scope) -> (Option<&str>, Option<&str>, Option<&str>) {
+    match scope {
+        Scope::Environment { workspace, environment, queue } => {
+            (Some(workspace.as_str()), Some(environment.as_str()), queue.as_deref())
+        }
+        Scope::Queue(queue) => (None, None, Some(queue.as_str())),
+    }
 }
 
 /// `sql`, keyed by workspace and session (`$1`, `$2`) and reaching `reach` (`$3`, `$4`).

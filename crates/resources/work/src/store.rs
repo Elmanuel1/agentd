@@ -118,12 +118,11 @@ pub trait WorkStore: WorkReads {
     /// says (one whose `stopping` lease ran out is `stopped`); a held item is
     /// left as it is.
     async fn queue(&self, item: &WorkItem) -> Result<(), StoreError>;
-    /// Hand out the oldest queued item of `queue`, in `workspace` when one
-    /// is named, not handed out within `reclaim`, marking it handed out at `now`.
+    /// Hand out the oldest queued item of `scope` not handed out within
+    /// `reclaim`, marking it handed out at `now`.
     async fn claim(
         &self,
-        queue: &str,
-        workspace: Option<&WorkspaceId>,
+        scope: &Scope,
         reclaim: Duration,
         now: Timestamp,
     ) -> Result<Option<WorkItem>, StoreError>;

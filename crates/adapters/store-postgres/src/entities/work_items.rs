@@ -9,14 +9,14 @@ mod row;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ::work::store::{Beat, Reach, StoreError, WorkItem, WorkStore};
+use ::work::store::{Beat, Reach, Scope, StoreError, WorkItem, WorkStore};
 use async_trait::async_trait;
 use diesel::sql_types::{Array, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
-use self::row::{before, first, insert, keyed, Row, COLS, KEY, REACH};
+use self::row::{before, binds, first, insert, keyed, Row, COLS, KEY, REACH, SCOPE};
 use crate::{diesel_be, pool_be, PgBackend, PooledConnection};
 
 #[derive(Debug, Clone)]
@@ -44,26 +44,26 @@ impl WorkStore for PgWorkStore {
 
     async fn claim(
         &self,
-        queue: &str,
-        workspace: Option<&WorkspaceId>,
+        scope: &Scope,
         reclaim: Duration,
         now: Timestamp,
     ) -> Result<Option<WorkItem>, StoreError> {
         let mut conn = self.write().await?;
-        let (queue, free_before) = (queue.to_owned(), before(now, reclaim));
-        let workspace = workspace.map(|w| w.as_str().to_owned());
+        let (ws, env, queue) = binds(scope);
+        let owned = |v: Option<&str>| v.map(str::to_owned);
+        let (ws, env, queue, free_before) = (owned(ws), owned(env), owned(queue), before(now, reclaim));
         let rows: Vec<Row> = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
                 async move {
                     let rows: Vec<Row> = diesel::sql_query(format!(
-                        "SELECT {COLS} FROM work_items WHERE queue = $1 AND state = 'queued' \
-                         AND (handed_out_at IS NULL OR handed_out_at < $2) \
-                         AND ($3::text IS NULL OR workspace_id = $3) \
+                        "SELECT {COLS} FROM work_items WHERE {SCOPE} AND state = 'queued' \
+                         AND (handed_out_at IS NULL OR handed_out_at < $4) \
                          ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
                     ))
-                    .bind::<Text, _>(&queue)
+                    .bind::<Nullable<Text>, _>(ws.as_deref())
+                    .bind::<Nullable<Text>, _>(env.as_deref())
+                    .bind::<Nullable<Text>, _>(queue.as_deref())
                     .bind::<Timestamptz, _>(free_before)
-                    .bind::<Nullable<Text>, _>(workspace.as_deref())
                     .load(c)
                     .await?;
                     if let Some(r) = <[Row]>::first(&rows) {

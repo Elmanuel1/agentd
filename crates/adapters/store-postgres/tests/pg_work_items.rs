@@ -81,23 +81,34 @@ async fn two_claims_take_different_items_and_an_unacknowledged_one_comes_back_af
     s.queue(&queued(&ws, "sesn_old", &q, 20)).await.unwrap();
     s.queue(&queued(&ws, "sesn_new", &q, 10)).await.unwrap();
     let reclaim = Duration::from_secs(5);
-    let first = s.claim(&q, None, reclaim, Timestamp::now()).await.unwrap().unwrap();
-    let second = s.claim(&q, None, reclaim, Timestamp::now()).await.unwrap().unwrap();
+    let first = s.claim(&Scope::Queue(q.clone()), reclaim, Timestamp::now()).await.unwrap().unwrap();
+    let second = s.claim(&Scope::Queue(q.clone()), reclaim, Timestamp::now()).await.unwrap().unwrap();
     assert_eq!((first.work.id.as_str(), second.work.id.as_str()), ("sesn_old", "sesn_new"), "oldest first");
-    assert!(s.claim(&q, None, reclaim, Timestamp::now()).await.unwrap().is_none(), "both handed out");
+    assert!(
+        s.claim(&Scope::Queue(q.clone()), reclaim, Timestamp::now()).await.unwrap().is_none(),
+        "both handed out"
+    );
     let counts = s.counts(&Scope::Queue(q.clone()), reclaim, Timestamp::now()).await.unwrap();
     assert_eq!((counts.depth, counts.pending), (0, 2));
-    let elsewhere = WorkspaceId::new(format!("wrkspc_{}", stamp()));
+    let in_ws = |w: String| Scope::Environment {
+        workspace: WorkspaceId::new(w),
+        environment: format!("env_{q}"),
+        queue: Some(q.clone()),
+    };
+    let elsewhere = in_ws(format!("wrkspc_{}", stamp()));
     assert!(
-        s.claim(&q, Some(&elsewhere), reclaim, at(6)).await.unwrap().is_none(),
+        s.claim(&elsewhere, reclaim, at(6)).await.unwrap().is_none(),
         "another workspace's key claims nothing"
     );
-    let again = s.claim(&q, Some(&WorkspaceId::new(&ws)), reclaim, at(6)).await.unwrap().unwrap();
+    let again = s.claim(&in_ws(ws.clone()), reclaim, at(6)).await.unwrap().unwrap();
     assert_eq!(again.work.id, "sesn_old", "not acknowledged within 5 s: handed out again");
     let reach = Reach { queue: Some(q.clone()), ..Reach::default() };
     let acked = s.ack(&WorkspaceId::new(&ws), "sesn_old", &reach, Timestamp::now(), at(300)).await.unwrap();
     assert_eq!(acked.unwrap().work.state, WorkState::Starting);
-    assert!(s.claim(&q, None, reclaim, at(60)).await.unwrap().map(|i| i.work.id) != Some("sesn_old".into()));
+    assert!(
+        s.claim(&Scope::Queue(q.clone()), reclaim, at(60)).await.unwrap().map(|i| i.work.id)
+            != Some("sesn_old".into())
+    );
 }
 
 #[tokio::test]
@@ -111,9 +122,9 @@ async fn concurrent_claims_never_hand_one_item_out_twice() {
     }
     let claims = (0..8).map(|_| {
         let (s, q) = (s.clone(), q.clone());
-        tokio::spawn(
-            async move { s.claim(&q, None, Duration::from_secs(5), Timestamp::now()).await.unwrap() },
-        )
+        tokio::spawn(async move {
+            s.claim(&Scope::Queue(q.clone()), Duration::from_secs(5), Timestamp::now()).await.unwrap()
+        })
     });
     let mut ids: Vec<String> = Vec::new();
     for c in claims {
@@ -216,6 +227,7 @@ async fn a_session_s_one_item_is_queued_again_only_once_it_is_stopped() {
     let w = WorkspaceId::new(&ws);
     let any = Reach::default();
     s.queue(&queued(&ws, "sesn_run", "env_run", 10)).await.unwrap();
+    let created = s.get(&w, "sesn_run", &any).await.unwrap().unwrap().work.created_at;
     s.heartbeat(&w, "sesn_run", &any, &beat(None, 300)).await.unwrap().unwrap();
     s.queue(&queued(&ws, "sesn_run", "env_run", 0)).await.unwrap();
     assert_eq!(s.get(&w, "sesn_run", &any).await.unwrap().unwrap().work.state, WorkState::Active);
@@ -226,14 +238,10 @@ async fn a_session_s_one_item_is_queued_again_only_once_it_is_stopped() {
     let again = s.get(&w, "sesn_run", &any).await.unwrap().unwrap();
     // The same item, reused: its creation stays, everything a run set is reset, and the run's queue,
     // environment and start are the new run's.
-    let first = queued(&ws, "sesn_run", "env_run", 10);
     let mut expected = next.clone();
-    expected.work.created_at = again.work.created_at;
-    assert!(
-        (again.work.created_at.as_datetime() - first.work.created_at.as_datetime()).num_seconds().abs() <= 1
-    );
+    expected.work.created_at = created;
     expected.work.started_at = again.work.started_at;
-    assert!(again.work.started_at.is_some_and(|t| t.as_datetime() >= first.work.created_at.as_datetime()));
+    assert!(again.work.started_at.is_some_and(|t| t.as_datetime() > created.as_datetime()), "started anew");
     assert_eq!(again, expected);
     s.stop(&w, "sesn_run", &any, true, Timestamp::now()).await.unwrap();
 }
