@@ -603,14 +603,19 @@ Every new table and index, production-safe: new tables only, unused until their 
   service: `VaultService::refresh_mcp_oauth(&WorkspaceId, &VaultId, &CredentialId)`, which takes the session's
   workspace from the step, not an API `AuthContext`; `VaultCredentialStore::replace_credential(ws, vault, cred, guard, secret)` takes
   a `CredentialGuard` (`None`; `UpdatedAt(value)`, the row's `updated_at` equals it; `Unarchived`, the row's
-  `archived_at` is null) and a `SecretWrite` (`Keep`, `Replace` or `Purge`) and answers whether a row matched;
+  `archived_at` is null) and a `SecretWrite` (`Keep`, `Replace` or `Purge`), and answers `Matched`, `Changed`, `Archived` or `Missing`; with
+  `Replace`, a write that matches no row is settled inside the method, in one place: 1 SELECT of the credential by key
+  on the failure path; archived or gone, the method takes out the secret it wrote and answers `Archived` or
+  `Missing`; changed by another writer, it moves the row's `updated_at` (1 `UPDATE credentials SET doc =
+  jsonb_set(doc, '{updated_at}', $now) WHERE … AND doc->>'archived_at' IS NULL`), so that an archive or delete
+  waiting on its lock sees the change and starts again, and answers `Changed`; when that UPDATE matches no row the
+  credential was archived meanwhile, and it takes the secret out and answers `Archived`;
   `Replace` writes the secret before the row, so a crash between them leaves a fresher token under an old expiry and
   costs one more refresh; `Purge` deletes the secret after the row, as archiving does today; the API's update passes
   `Unarchived` and `Replace`, and archiving `None` and `Purge`; a refresh passes `UpdatedAt`. The API's update, in
-  order: `get_credential` (1 SELECT by key, 1 `GetSecretValue`), as today; 1 `PutSecretValue`; 1 `UPDATE credentials
-  … AND doc->>'archived_at' IS NULL`; on 0 rows, the secret it wrote is taken back out, as a create does, and 1
-  SELECT of the credential by key on the failure path tells a missing one (today's 404 "credential not found") from
-  an archived one (today's 409 "cannot update an archived credential"). One method, in `entities/vault_credentials.rs`. Statements
+  order: `get_credential` (1 SELECT by key, 1 `GetSecretValue`), as today; then `replace_credential` (1
+  `PutSecretValue`, 1 `UPDATE credentials … AND doc->>'archived_at' IS NULL`), whose `Missing` is today's 404
+  "credential not found" and `Archived` today's 409 "cannot update an archived credential". One method, in `entities/vault_credentials.rs`. Statements
   per step: 1 `SELECT * FROM credentials WHERE workspace_id = $1 AND
   vault_id = ANY($vault_ids) AND doc->'auth'->>'mcp_server_url' = ANY($urls) AND doc->>'archived_at' IS NULL` for all
   the agent's servers (an archived vault's credentials are archived with it, VA-3); then, for each server the step connects to or
@@ -620,12 +625,11 @@ Every new table and index, production-safe: new tables only, unused until their 
   display_name = $2, has_secret = $3, doc = $4 WHERE workspace_id = $5 AND vault_id = $6 AND credential_id = $7 AND
   doc->>'updated_at' = $read`, the new `doc` carrying `updated_at = $now`); then the POST to `token_endpoint` (10 s
   timeout); then `replace_credential` with `UpdatedAt($now)` and `Replace` (1 `PutSecretValue`, then the same UPDATE
-  recording the new `expires_at`). When that last UPDATE matches no row, 1 SELECT of the credential by key, on the failure path only, tells why: when
-  the row is archived or gone, the credential was archived or deleted during the token call (by its own archive or
-  its vault's), and the loop deletes the secret it just wrote, so no archived credential keeps a secret; otherwise an
-  API update came between the claim and the write, the refresh's token is in Secrets Manager under the API's row,
-  the loop logs `refresh_overwrote_update` with the credential id, and the user's next update applies (an accepted
-  risk under SRE, D41). A claim that matches no row (MC-23) re-reads with
+  recording the new `expires_at`). When that last write matches no row, `replace_credential` settles it as above: `Archived` or `Missing` means the
+  credential was archived or deleted during the token call (by its own archive or its vault's) and its secret is
+  already taken out; `Changed` means an API update came between the claim and the write, the refresh's token is in
+  Secrets Manager under the API's row, the loop logs `refresh_overwrote_update` with the credential id, and the
+  user's next update applies (an accepted risk under SRE, D41). A claim that matches no row (MC-23) re-reads with
   `get_credential` (1 SELECT by primary key, 1 `GetSecretValue`) and uses the token when unexpired; otherwise the
   step ends with its row due again in 1 s. A failed refresh records `mcp_authentication_failed_error`; H1 (PR 9)
   adds the `vault_credential.refresh_failed` delivery. Tests: an expired token is refreshed, stored, its new expiry
@@ -663,10 +667,10 @@ Every new table and index, production-safe: new tables only, unused until their 
   doc->>'archived_at' IS NULL`; `purge_secrets` for those ids; then one transaction: 1 `SELECT doc FROM vaults WHERE workspace_id = $1 AND
   vault_id = $2 FOR UPDATE` (VA-8), whose row decides the answer (none: 404; archived: today's answer, the vault as
   it is); 1 `SELECT credential_id, doc->>'updated_at' FROM credentials WHERE workspace_id = $1 AND vault_id = $2 AND
-  doc->>'archived_at' IS NULL FOR UPDATE`, compared with the pre-read; 1 `UPDATE vaults SET doc =
+  doc->>'archived_at' IS NULL ORDER BY credential_id FOR NO KEY UPDATE`, compared with the pre-read; 1 `UPDATE vaults SET doc =
   jsonb_set(jsonb_set(doc, '{archived_at}', $now), '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2`; 1 `UPDATE credentials SET has_secret = false, doc = jsonb_set(jsonb_set(doc,
   '{archived_at}', $now), '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS
-  NULL RETURNING credential_id`; and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from those ids
+  NULL`; and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from the locked SELECT's ids
   (H-6). When the locked credentials SELECT shows an id the pre-read missed (a credential whose create committed
   before the lock), or an `updated_at` that differs from the pre-read's (an update or a refresh that committed between the purge and
   the lock, and may have written a secret), the transaction rolls back and the archive starts again from the
@@ -695,7 +699,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   purged; an archive or a delete whose credential is updated between its purge and its lock starts again and finishes with
   no secret left; an update of a credential archived after the update's read answers 409 and leaves no secret, and
   of one deleted after it answers 404; a refresh whose token call spans a vault archive, and one that spans the
-  credential's own archive, each end with no secret; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
+  credential's own archive, each end with no secret; an API update during a refresh's token call, then a vault
+  archive whose purge comes before the refresh's secret write, ends with no secret; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
 
 #### PR 9. Scheduler and webhooks
 
