@@ -611,8 +611,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   archive or delete waiting on its lock sees the change and starts again, and answers `Changed`; when that UPDATE
   matches no row the credential was archived or deleted meanwhile, so it takes the secret out and 1 more SELECT on
   the failure path answers `Archived` or `Missing`. With `Keep`, a miss runs no failure read and answers `Changed`,
-  so the caller's own read is the only one. Every write this method makes sets `updated_at` to a new time taken at
-  that write, never the guard's value;
+  so the caller's own read is the only one. The main UPDATE writes the caller's `cred`, whose `updated_at`
+  the caller sets to a new time taken for that write, never the guard's value (the refresh takes one for its claim
+  and another for its final write); the method takes `$bumped` itself;
   `Replace` writes the secret before the row, so a crash between them leaves a fresher token under an old expiry and
   costs one more refresh; `Purge` deletes the secret after the row, as archiving does today; the API's update passes
   `Unarchived` and `Replace`, and archiving `None` and `Purge`; a refresh passes `UpdatedAt`. The API's update, in
