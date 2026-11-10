@@ -117,6 +117,33 @@ pub(super) fn first(rows: Vec<Row>) -> Option<WorkItem> {
     rows.into_iter().next().map(item)
 }
 
+/// The `INSERT` of `i`.
+pub(super) fn insert(i: &WorkItem) -> BoxedSqlQuery<'_, Pg, diesel::query_builder::SqlQuery> {
+    let w = &i.work;
+    let metadata = serde_json::to_value(&w.metadata).unwrap_or_default();
+    diesel::sql_query(format!(
+        "INSERT INTO work_items ({COLS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
+             $14, $15, $16)"
+    ))
+    .into_boxed()
+    .bind::<Text, _>(i.workspace.as_str())
+    .bind::<Text, _>(&w.id)
+    .bind::<Text, _>(i.org.as_str())
+    .bind::<Text, _>(&w.environment_id)
+    .bind::<Text, _>(&i.queue)
+    .bind::<Text, _>(w.state.as_str())
+    .bind::<Jsonb, _>(metadata)
+    .bind::<Timestamptz, _>(w.created_at.as_datetime())
+    .bind::<Nullable<Timestamptz>, _>(w.acknowledged_at.map(|t| t.as_datetime()))
+    .bind::<Nullable<Timestamptz>, _>(w.started_at.map(|t| t.as_datetime()))
+    .bind::<Nullable<Timestamptz>, _>(w.latest_heartbeat_at.map(|t| t.as_datetime()))
+    .bind::<Nullable<Text>, _>(i.last_heartbeat.as_deref())
+    .bind::<Nullable<Timestamptz>, _>(i.lease_until.map(|t| t.as_datetime()))
+    .bind::<Nullable<Timestamptz>, _>(i.handed_out_at.map(|t| t.as_datetime()))
+    .bind::<Nullable<Timestamptz>, _>(w.stop_requested_at.map(|t| t.as_datetime()))
+    .bind::<Nullable<Timestamptz>, _>(w.stopped_at.map(|t| t.as_datetime()))
+}
+
 /// `sql`, keyed by workspace and session (`$1`, `$2`) and reaching `reach` (`$3`, `$4`).
 pub(super) fn keyed<'a>(
     sql: String,
