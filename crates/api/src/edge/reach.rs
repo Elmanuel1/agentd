@@ -48,7 +48,7 @@ pub(super) fn work_route(method: &Method, path: &str, claims: &WorkClaims) -> bo
         ["v1", "sessions", s, "harness", ..] => own(s),
         ["v1", "files"] => post,
         ["v1", "files", _] => get || delete,
-        ["v1", "files", _, "content"] | ["v1", "skills", _, "versions", _] => get,
+        ["v1", "files", _, "content"] | ["v1", "skills", _] | ["v1", "skills", _, "versions", _] => get,
         ["v1", "skills", _, "versions", _, "content"] => get,
         ["v1", "memory_stores", _, "memories"] => get || post,
         ["v1", "memory_stores", _, "memories", _] => get || post || delete,

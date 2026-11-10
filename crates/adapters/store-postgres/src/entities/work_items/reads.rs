@@ -8,8 +8,9 @@ use diesel::sql_types::{BigInt, Nullable, Text, Timestamptz};
 use diesel_async::RunQueryDsl;
 use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 
+use super::row::before;
 use super::row::{first, item, CountsRow, OwnerRow, Row, COLS};
-use super::{before, PgWorkStore};
+use super::PgWorkStore;
 use crate::{diesel_be, pool_be};
 
 /// `$1` a workspace and `$2` an environment, or both null; `$3` a queue, or null.

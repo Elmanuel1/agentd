@@ -15,6 +15,10 @@ use crate::service::{key_error, mint};
 use crate::store::EnvironmentKeysStore;
 use crate::types::{EnvironmentKey, EnvironmentKeyResource};
 
+/// The queues agentd keeps for itself (`work::RUNTIME`, `work::HOSTED`): a
+/// key bound to one would reach other workspaces' work.
+const RESERVED_QUEUES: [&str; 2] = ["runtime", "hosted"];
+
 /// Environment keys over a store, digested with one pepper.
 #[derive(Clone)]
 pub struct EnvironmentKeysService {
@@ -52,6 +56,11 @@ impl EnvironmentKeysService {
         environment: &str,
         name: &str,
     ) -> Result<(EnvironmentKey, SecretString), KeyError> {
+        if RESERVED_QUEUES.contains(&environment) {
+            return Err(KeyError(format!(
+                "`{environment}` names one of agentd's own queues, not an environment"
+            )));
+        }
         let (key, digest, hint) =
             mint(&self.pepper, KeyKind::Environment, &[org, workspace, environment], name)?;
         let record = EnvironmentKey {

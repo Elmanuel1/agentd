@@ -16,7 +16,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
-use self::row::{first, insert, keyed, Row, COLS, KEY, REACH};
+use self::row::{before, first, insert, keyed, Row, COLS, KEY, REACH};
 use crate::{diesel_be, pool_be, PgBackend, PooledConnection};
 
 #[derive(Debug, Clone)]
@@ -34,10 +34,6 @@ impl PgWorkStore {
     async fn write(&self) -> Result<PooledConnection, StoreError> {
         self.backend.diesel.write().await.map_err(pool_be)
     }
-}
-
-pub(super) fn before(now: Timestamp, by: Duration) -> chrono::DateTime<chrono::Utc> {
-    now.as_datetime() - chrono::Duration::from_std(by).unwrap_or_default()
 }
 
 #[async_trait]

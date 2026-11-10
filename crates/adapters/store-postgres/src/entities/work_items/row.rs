@@ -10,6 +10,8 @@ use diesel::pg::Pg;
 use diesel::query_builder::BoxedSqlQuery;
 use diesel::sql_types::{BigInt, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::RunQueryDsl;
+use std::time::Duration;
+
 use shared::{OrgId, Timestamp, WorkspaceId};
 
 use super::PgWorkStore;
@@ -177,5 +179,26 @@ impl PgWorkStore {
                 .await
                 .map_err(diesel_be)?;
         Ok(first(rows))
+    }
+}
+
+/// `by` before `now`; a span reaching before the Unix epoch is the epoch, so
+/// no item handed out since is taken for free.
+pub(super) fn before(now: Timestamp, by: Duration) -> chrono::DateTime<chrono::Utc> {
+    let at = chrono::Duration::from_std(by).ok().and_then(|by| now.as_datetime().checked_sub_signed(by));
+    at.filter(|at| *at > chrono::DateTime::UNIX_EPOCH).unwrap_or(chrono::DateTime::UNIX_EPOCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reclaim_window_too_long_to_subtract_frees_nothing() {
+        let now = Timestamp::now();
+        assert_eq!(now.as_datetime() - before(now, Duration::from_secs(5)), chrono::Duration::seconds(5));
+        for huge in [Duration::from_millis(u64::MAX), Duration::from_millis(1_000_000_000_000_000)] {
+            assert_eq!(before(now, huge), chrono::DateTime::UNIX_EPOCH);
+        }
     }
 }

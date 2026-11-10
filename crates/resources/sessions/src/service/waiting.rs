@@ -92,7 +92,9 @@ impl SessionsService {
             })
             .collect();
         for (i, (call, custom)) in calls.iter().enumerate() {
-            let open = found.iter().any(|e| e.id == **call && is_call(e, *custom)) && !done.contains(call);
+            let first = calls.iter().take(i).all(|(earlier, _)| earlier != call);
+            let open =
+                first && found.iter().any(|e| e.id == **call && is_call(e, *custom)) && !done.contains(call);
             if !open {
                 return Err(ApiError::invalid_request(format!(
                     "events.{i}: {call} is not a call of this session waiting on its result"

@@ -20,6 +20,7 @@ fn a_work_token_reaches_its_own_item_session_and_the_worker_s_routes() {
         (&get, "/v1/files/file_1"),
         (&post, "/v1/files"),
         (&del, "/v1/files/file_1"),
+        (&get, "/v1/skills/skill_1"),
         (&get, "/v1/skills/skill_1/versions/1"),
         (&get, "/v1/skills/skill_1/versions/1/content"),
         (&get, "/v1/memory_stores/memstore_1/memories"),
@@ -124,6 +125,8 @@ async fn a_token_reaches_only_its_session_s_skills_and_stores_and_writes_only_re
     };
     assert_eq!(check(Method::GET, "/v1/skills/skill_a/versions/1").await, Ok(()));
     assert_eq!(check(Method::GET, "/v1/skills/skill_b/versions/1").await, Err(404));
+    assert_eq!(check(Method::GET, "/v1/skills/skill_a").await, Ok(()));
+    assert_eq!(check(Method::GET, "/v1/skills/skill_b").await, Err(404));
     assert_eq!(check(Method::POST, "/v1/memory_stores/memstore_rw/memories").await, Ok(()));
     assert_eq!(check(Method::GET, "/v1/memory_stores/memstore_ro/memories").await, Ok(()));
     assert_eq!(check(Method::POST, "/v1/memory_stores/memstore_ro/memories").await, Err(403));

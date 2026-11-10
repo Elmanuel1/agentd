@@ -19,8 +19,17 @@ pub const DEFAULT_TTL: i64 = 300;
 /// A handed-out item no one acknowledged is handed out again after this.
 pub const RECLAIM: Duration = Duration::from_millis(5000);
 
+/// `seconds` after `at`, held within the range Postgres keeps: a lease too
+/// long to write never runs out, and one too far in the past has.
 fn after(at: Timestamp, seconds: i64) -> Timestamp {
-    Timestamp::from_datetime(at.as_datetime() + chrono::Duration::seconds(seconds))
+    let lease = chrono::Duration::try_seconds(seconds).and_then(|d| at.as_datetime().checked_add_signed(d));
+    let latest = chrono::DateTime::<chrono::Utc>::MAX_UTC;
+    let held = match lease {
+        Some(l) => l.clamp(chrono::DateTime::UNIX_EPOCH, latest),
+        None if seconds > 0 => latest,
+        None => chrono::DateTime::UNIX_EPOCH,
+    };
+    Timestamp::from_datetime(held)
 }
 
 impl WorkService {
@@ -138,5 +147,19 @@ impl WorkService {
     pub async fn end_session(&self, ws: &WorkspaceId, session: &str) -> Result<(), ApiError> {
         self.store.stop(ws, session, &Reach::default(), false, Timestamp::now()).await.map_err(backend)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lease_stays_within_what_postgres_keeps() {
+        let now = Timestamp::now();
+        assert_eq!(after(now, 300).as_datetime() - now.as_datetime(), chrono::Duration::seconds(300));
+        assert_eq!(after(now, i64::MAX).as_datetime(), chrono::DateTime::<chrono::Utc>::MAX_UTC);
+        assert_eq!(after(now, i64::MIN).as_datetime(), chrono::DateTime::UNIX_EPOCH);
+        assert!(after(now, -1).as_datetime() < now.as_datetime(), "a negative TTL is granted as given");
     }
 }

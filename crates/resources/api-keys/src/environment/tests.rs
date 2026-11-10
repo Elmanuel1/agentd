@@ -58,6 +58,9 @@ async fn a_workspace_key_or_a_malformed_id_is_refused() {
     assert!(keys.create("org a", "wrkspc_a", "env_a", "w").await.is_err());
     assert!(keys.create("org_a", "wrkspc_a", "env/a", "w").await.is_err());
     assert!(keys.create("org_a", "wrkspc_a", "env_a", "").await.is_err());
+    for reserved in ["runtime", "hosted"] {
+        assert!(keys.create("org_a", "wrkspc_a", reserved, "w").await.is_err(), "{reserved}");
+    }
 }
 
 #[tokio::test]
