@@ -153,10 +153,17 @@ async fn a_token_sends_only_results_for_its_session_s_unanswered_calls() {
     let unknown = json!([{"type": "user.tool_result", "tool_use_id": "sevt_01notacall"}]);
     let twice = json!([{"type": "user.tool_result", "tool_use_id": call}, {"type": "user.tool_result", "tool_use_id": call}]);
     let agent = json!([{"type": "agent.tool_result", "tool_use_id": call, "content": []}]);
-    for refused in [message, custom, unknown, twice, agent] {
+    for refused in [message, custom, unknown, twice] {
         let (st, body) = rig.call("POST", &path, Auth::Bearer(&token), events(refused.clone())).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{refused}: {body}");
     }
+    // The gate refuses an agent's event itself, before any read.
+    let (st, body) = rig.call("POST", &path, Auth::Bearer(&token), events(agent)).await;
+    let gate = "events.0: a session's work token sends only user.tool_result and user.custom_tool_result";
+    assert_eq!(
+        (st, body["error"].clone()),
+        (StatusCode::BAD_REQUEST, json!({"type": "invalid_request_error", "message": gate}))
+    );
     let result = json!([{"type": "user.tool_result", "tool_use_id": call, "content": [{"type": "text", "text": "ok"}]}]);
     let (st, body) = rig.call("POST", &path, Auth::Bearer(&token), events(result.clone())).await;
     assert_eq!(st, StatusCode::OK, "{body}");

@@ -55,15 +55,15 @@ impl WorkService {
     }
 
     /// Queue `session`'s work in `environment_id` on `queue`: its item, with
-    /// the session's id, `started_at` set at once as on live. `false` when the
-    /// session's item is held and was left as it is.
+    /// the session's id, `started_at` set at once as on live; a held item is
+    /// left as it is.
     pub async fn queue(
         &self,
         ctx: &AuthContext,
         environment_id: &str,
         session: &str,
         queue: &str,
-    ) -> Result<bool, ApiError> {
+    ) -> Result<(), ApiError> {
         let now = Timestamp::now();
         let work = Work {
             id: session.to_owned(),
@@ -90,7 +90,8 @@ impl WorkService {
             lease_until: None,
             handed_out_at: None,
         };
-        self.store.queue(&item).await.map_err(backend)
+        self.store.queue(&item).await.map_err(backend)?;
+        Ok(())
     }
 
     /// Queue the work of a session whose own sandbox's harness takes it: the
