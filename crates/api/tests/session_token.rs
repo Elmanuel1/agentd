@@ -195,13 +195,17 @@ async fn of_two_results_sent_at_once_for_one_call_only_one_is_saved() {
         assert_eq!(st, StatusCode::BAD_REQUEST, "{refused}");
         let message = format!("events.0: {call} is not a call of this session waiting on its result");
         assert_eq!(refused["error"], json!({"type": "invalid_request_error", "message": message}));
-        assert_eq!(
-            (saved["data"][0]["type"].clone(), saved["data"][0]["tool_use_id"].clone()),
-            (json!("user.tool_result"), json!(call))
-        );
-        let saved = rig.stores.session_events.events(&ws, &id).await.unwrap();
+        let expected = json!([{
+            "type": "user.tool_result",
+            "id": saved["data"][0]["id"],
+            "tool_use_id": call,
+            "content": [{"type": "text", "text": "ok"}],
+            "is_error": false,
+        }]);
+        assert_eq!(saved["data"], expected);
+        let log = rig.stores.session_events.events(&ws, &id).await.unwrap();
         let answers =
-            saved.iter().filter(|e| e.payload.answered_call().is_some_and(|(c, _)| c.as_str() == call));
+            log.iter().filter(|e| e.payload.answered_call().is_some_and(|(c, _)| c.as_str() == call));
         assert_eq!(answers.count(), 1, "one result saved for {call}");
     }
 }
