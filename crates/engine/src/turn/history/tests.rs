@@ -1,5 +1,5 @@
 use serde_json::json;
-use sessions::events::{EventId, ModelUsage};
+use sessions::events::{EventId, ModelUsage, SpanModelUsage};
 use shared::Timestamp;
 
 use super::*;
@@ -46,7 +46,7 @@ fn end(start: &Event) -> Event {
     ev(SpanEvent::ModelRequestEnd {
         model_request_start_id: start.id.clone(),
         is_error: false,
-        model_usage: ModelUsage::default(),
+        model_usage: SpanModelUsage::default(),
     })
 }
 

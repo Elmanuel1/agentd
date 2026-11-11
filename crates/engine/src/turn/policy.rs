@@ -24,8 +24,11 @@ pub enum Disposition {
         /// How the permission was reached.
         evaluation: Option<Value>,
     },
-    /// Wait for the client to confirm.
-    Ask,
+    /// Wait for the client to confirm; `evaluation` as for `Allow`.
+    Ask {
+        /// How the permission was reached.
+        evaluation: Option<Value>,
+    },
     /// The client runs it (`agent.custom_tool_use`).
     Custom,
     /// A coordinator tool: delegation to the roster.
@@ -101,11 +104,13 @@ impl Toolbox {
 }
 
 /// `always_allow` runs; `always_ask` waits for the client; `auto` runs, as
-/// live evaluates it for toolset tools inside the sandbox, and says so.
+/// live evaluates it for toolset tools inside the sandbox. Each says so.
 fn from_policy(policy: PermissionPolicy) -> Disposition {
     match policy {
-        PermissionPolicy::AlwaysAllow => Disposition::Allow { evaluation: None },
-        PermissionPolicy::AlwaysAsk => Disposition::Ask,
+        PermissionPolicy::AlwaysAllow => {
+            Disposition::Allow { evaluation: Some(json!({"type": "always_allow"})) }
+        }
+        PermissionPolicy::AlwaysAsk => Disposition::Ask { evaluation: Some(json!({"type": "always_ask"})) },
         PermissionPolicy::Auto => Disposition::Allow {
             evaluation: Some(json!({"type": "auto", "evaluated_permission": {"type": "allow"}})),
         },
@@ -182,9 +187,21 @@ mod tests {
                 "send_to_agent"
             ]
         );
-        assert_eq!(b.disposition("bash"), Some(&Disposition::Ask));
+        let asked = Disposition::Ask { evaluation: Some(json!({"type": "always_ask"})) };
+        assert_eq!(b.disposition("bash"), Some(&asked));
         assert!(matches!(b.disposition("read"), Some(Disposition::Allow { evaluation: Some(_) })));
         assert_eq!(b.disposition("lookup"), Some(&Disposition::Custom));
         assert_eq!(b.disposition("web_fetch"), None);
+    }
+
+    #[test]
+    fn a_policy_decision_names_its_policy_as_live_does() {
+        let toolset = |policy| Tool::AgentToolset {
+            configs: Vec::new(),
+            default_config: ToolDefaultConfig { enabled: true, permission_policy: policy },
+        };
+        let allowed = Toolbox::for_agent(&agent(vec![toolset(PermissionPolicy::AlwaysAllow)]), false);
+        let evaluation = Some(json!({"type": "always_allow"}));
+        assert_eq!(allowed.disposition("bash"), Some(&Disposition::Allow { evaluation }));
     }
 }

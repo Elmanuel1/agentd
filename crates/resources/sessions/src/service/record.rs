@@ -52,7 +52,7 @@ impl SessionsService {
         }
         match &payload {
             EventPayload::Span(SpanEvent::ModelRequestEnd { model_usage, .. }) => {
-                self.add_usage(ws, session, &usage(model_usage)).await?;
+                self.add_usage(ws, session, &usage(&model_usage.tokens)).await?;
             }
             EventPayload::Span(SpanEvent::OutcomeEvaluationEnd {
                 outcome_id,

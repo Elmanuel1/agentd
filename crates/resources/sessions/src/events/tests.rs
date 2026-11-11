@@ -27,16 +27,20 @@ fn model_request_end_wire_shape() {
     let ev = Event::new(EventPayload::Span(SpanEvent::ModelRequestEnd {
         model_request_start_id: start.clone(),
         is_error: false,
-        model_usage: ModelUsage {
-            cache_read_input_tokens: 6656,
-            input_tokens: 3571,
-            output_tokens: 727,
-            cache_creation_input_tokens: 0,
+        model_usage: SpanModelUsage {
+            tokens: ModelUsage {
+                cache_read_input_tokens: 6656,
+                input_tokens: 3571,
+                output_tokens: 727,
+                cache_creation_input_tokens: 0,
+            },
+            speed: Some(agents::types::ModelSpeed::Standard),
         },
     }));
     let v = serde_json::to_value(&ev).unwrap();
     assert_eq!(v["type"], "span.model_request_end");
     assert_eq!(v["model_usage"]["input_tokens"], 3571);
+    assert_eq!(v["model_usage"]["speed"], "standard", "live's poll replay, 2026-11-11");
     assert_eq!(v["model_request_start_id"], start.as_str());
     assert_eq!(v["processed_at"], serde_json::Value::Null);
 }

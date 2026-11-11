@@ -1,3 +1,4 @@
+use agents::types::ModelSpeed;
 use serde::{Deserialize, Serialize};
 
 use super::EventId;
@@ -66,4 +67,15 @@ pub struct ModelUsage {
     pub input_tokens: u64,
     /// Output tokens.
     pub output_tokens: u64,
+}
+
+/// `span.model_request_end`'s usage: the call's tokens and the speed it ran at.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpanModelUsage {
+    /// The call's tokens.
+    #[serde(flatten)]
+    pub tokens: ModelUsage,
+    /// The speed it ran at; none for a call that ended with no reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<ModelSpeed>,
 }

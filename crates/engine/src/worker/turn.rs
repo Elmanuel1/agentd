@@ -90,3 +90,12 @@ pub(super) fn batch(read: Vec<EventId>, before: Vec<Event>, after: Vec<Event>) -
     let then = after.into_iter().enumerate().map(|(j, e)| timed(n + 1 + j, e));
     Batch { read, at: tick(n), events: first.chain(then).collect() }
 }
+
+/// A call's opening write: the client events it takes are stamped after
+/// `running`, except the worker's results, which arrived before it.
+pub(super) fn opening(read: Vec<EventId>, arrived: bool, running: Vec<Event>, after: Vec<Event>) -> Batch {
+    match arrived {
+        true => batch(read, Vec::new(), running.into_iter().chain(after).collect()),
+        false => batch(read, running, after),
+    }
+}

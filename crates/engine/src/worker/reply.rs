@@ -2,7 +2,8 @@
 //! the step ends. Built-in calls are parked for the session's worker; the
 //! client answers confirmations and custom tools.
 
-use sessions::events::{AgentEvent, Event, EventId, SpanEvent, StopReason};
+use agents::types::ModelSpeed;
+use sessions::events::{AgentEvent, Event, EventId, EventPayload, SpanEvent, SpanModelUsage, StopReason};
 use sessions::steps::StepEnd;
 use sessions::types::{OutcomeEvaluation, Session};
 
@@ -58,11 +59,8 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
     if !text.is_empty() {
         events.push(turn.event(AgentEvent::Message { content: text }));
     }
-    events.push(turn.event(SpanEvent::ModelRequestEnd {
-        model_request_start_id: start.clone(),
-        is_error: false,
-        model_usage: r.usage.clone(),
-    }));
+    // As on live: the reply's calls, its end, then what the calls lead to.
+    let (mut calls, mut after) = (Vec::new(), Vec::new());
     let (mut waiting, mut parked, mut unknown) = (Vec::new(), false, false);
     let mut evaluation = None;
     for (_, name, input) in r.tool_uses() {
@@ -70,11 +68,11 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
             Some(Disposition::Custom) => {
                 turn.event(AgentEvent::CustomToolUse { name: name.to_owned(), input: input.clone() })
             }
-            Some(Disposition::Ask) => turn.event(AgentEvent::ToolUse {
+            Some(Disposition::Ask { evaluation }) => turn.event(AgentEvent::ToolUse {
                 name: name.to_owned(),
                 input: input.clone(),
                 evaluated_permission: Some("ask".into()),
-                evaluation: None,
+                evaluation: evaluation.clone(),
             }),
             Some(Disposition::Allow { evaluation }) => turn.event(AgentEvent::ToolUse {
                 name: name.to_owned(),
@@ -93,14 +91,17 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 });
                 let primary = Thread::primary(c.session).turn();
                 let (end, eval) = grade::verdict(&primary, outcome, input, r.usage.clone());
-                let recorded = grade::recorded(turn, &call.id);
-                events.extend([call, recorded, end]);
+                after.extend([grade::recorded(turn, &call.id), end]);
+                calls.push(call);
                 evaluation = Some(eval);
                 continue;
             }
             Some(Disposition::Delegate) => {
                 unknown = true;
-                events.extend(super::team::delegate(turn, c.session, c.log, name, input));
+                let (call, led): (Vec<Event>, Vec<Event>) =
+                    super::team::delegate(turn, c.session, c.log, name, input).into_iter().partition(is_call);
+                calls.extend(call);
+                after.extend(led);
                 continue;
             }
             None => {
@@ -111,12 +112,12 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                     evaluated_permission: Some("allow".into()),
                     evaluation: None,
                 });
-                let result = turn.event(AgentEvent::ToolResult {
+                after.push(turn.event(AgentEvent::ToolResult {
                     tool_use_id: call.id.clone(),
                     content: vec![ContentBlock::text(format!("Unknown tool `{name}`."))],
                     is_error: true,
-                });
-                events.extend([call, result]);
+                }));
+                calls.push(call);
                 continue;
             }
         };
@@ -125,8 +126,16 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         if !for_worker || !cloud {
             waiting.push(call.id.clone());
         }
-        events.push(call);
+        calls.push(call);
     }
+    events.extend(calls);
+    events.push(turn.event(SpanEvent::ModelRequestEnd {
+        model_request_start_id: start.clone(),
+        is_error: false,
+        // agentd asks every call at standard speed.
+        model_usage: SpanModelUsage { tokens: r.usage.clone(), speed: Some(ModelSpeed::Standard) },
+    }));
+    events.extend(after);
     let end = match (parked, unknown || more) {
         (true, _) => StepEnd::Requeue,
         (false, true) => StepEnd::Again,
@@ -138,4 +147,9 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         (true, true) => None,
     };
     Led { events, end, idle, evaluation }
+}
+
+/// A call the reply makes, which live writes before the reply's end.
+fn is_call(e: &Event) -> bool {
+    matches!(e.payload, EventPayload::Agent(AgentEvent::ToolUse { .. } | AgentEvent::CustomToolUse { .. }))
 }

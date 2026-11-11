@@ -35,6 +35,9 @@ pub(super) enum Interrupt {
 pub(super) struct Taken {
     /// The client events not yet processed, which the step stamps.
     pub(super) taken: Vec<EventId>,
+    /// They are all the worker's `user.tool_result`s, which live stamps on
+    /// arrival, before the turn runs again.
+    pub(super) arrived: bool,
     /// Events the taken ones lead to: a `cloud` session's worker results,
     /// shown as the agent's (L-4), and the refusals of denied calls.
     pub(super) answers: Vec<Event>,
@@ -67,6 +70,8 @@ pub(super) fn take(
     let queued: Vec<&Event> =
         log.iter().filter(|e| e.processed_at.is_none() && e.payload.is_user_event()).collect();
     let taken: Vec<EventId> = queued.iter().map(|e| e.id.clone()).collect();
+    let arrived = !queued.is_empty()
+        && queued.iter().all(|e| matches!(e.payload, EventPayload::User(UserEvent::ToolResult { .. })));
     let now = Timestamp::now();
     let seen: Vec<Event> = log
         .iter()
@@ -145,7 +150,7 @@ pub(super) fn take(
         Some((t, h)) => (t.clone(), h),
         None => (primary.clone(), history_of(&primary)),
     };
-    Taken { taken, answers, allowed, thread, history, read, interrupt }
+    Taken { taken, arrived, answers, allowed, thread, history, read, interrupt }
 }
 
 /// The thread of the call `answer` answers.

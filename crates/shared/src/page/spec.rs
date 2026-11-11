@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use super::{decode_cursor, Pagination, DEFAULT_LIMIT};
+use super::{decode_cursor, Pagination, BETA, DEFAULT_LIMIT};
 use crate::error::ApiError;
 
 /// How a list answers a query param it does not read.
@@ -53,7 +53,7 @@ impl ListSpec {
     /// Check the query and parse its `limit` and `page`.
     pub fn parse(&self, params: &HashMap<String, String>) -> Result<Pagination, ApiError> {
         for key in params.keys().map(String::as_str) {
-            if key == "limit" || key == "page" || self.filters.contains(&key) {
+            if key == "limit" || key == "page" || key == BETA || self.filters.contains(&key) {
                 continue;
             }
             match self.unknown {
@@ -116,6 +116,7 @@ mod tests {
     fn managed_lists_reject_unknown_params_and_cap_at_100() {
         let spec = ListSpec::managed(&["include_archived"]);
         assert_eq!(spec.parse(&q(&[("include_archived", "true")])).unwrap().limit, 20);
+        assert_eq!(spec.parse(&q(&[("beta", "true")])).unwrap().limit, 20, "the SDK's beta flag");
         let err = spec.parse(&q(&[("bogus", "1")])).unwrap_err();
         assert_eq!(err.message, "Failed to parse request body: unknown field \"bogus\"");
         let err = spec.parse(&q(&[("limit", "101")])).unwrap_err();
