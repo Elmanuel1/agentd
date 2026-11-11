@@ -198,13 +198,4 @@ fn the_primary_thread_leaves_out_answers_to_another_threads_calls() {
     assert_eq!(primary.len(), 1);
 }
 
-#[test]
-fn an_interrupt_halts_the_thread_until_the_client_sends_more() {
-    let s1 = start();
-    let mut interrupt = ev(UserEvent::Interrupt {});
-    interrupt.processed_at = Some(shared::Timestamp::now());
-    let h = build(&[user("go"), s1.clone(), interrupt.clone()]);
-    assert!(h.halted && !h.awaits_model(), "an interrupted turn does not call the model again");
-    let h = build(&[user("go"), s1, interrupt, user("again")]);
-    assert!(!h.halted && h.awaits_model());
-}
+mod interrupts;
