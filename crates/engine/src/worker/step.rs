@@ -84,7 +84,7 @@ impl Loop {
         let cloud = item.as_ref().is_none_or(|i| i.queue == RUNTIME_QUEUE);
         let turn = Turn { thread: primary_thread_id(id), agent: session.agent.config.name.clone() };
         let idle = session.status == SessionStatus::Idle;
-        let Taken { taken, mirrored, history, interrupt } = take(&log, &turn, cloud);
+        let Taken { taken, answers, allowed, history, interrupt } = take(&log, &turn, cloud);
         if interrupt != Interrupt::None {
             if interrupt == Interrupt::Second {
                 let stopped =
@@ -98,12 +98,13 @@ impl Loop {
             return Ok(());
         }
         if !history.awaits_model() {
-            self.commit(claim, StepEnd::Done, &taken, &mirrored, &session).await?;
+            let end = if allowed { StepEnd::Requeue } else { StepEnd::Done };
+            self.commit(claim, end, &taken, &answers, &session).await?;
             return Ok(());
         }
         if over_budget(&session) {
             session.status = SessionStatus::Idle;
-            let mut events = mirrored;
+            let mut events = answers;
             events.extend(turn.idle(&session, StopReason::BudgetReached {}));
             self.commit(claim, StepEnd::Done, &taken, &events, &session).await?;
             return Ok(());
@@ -122,7 +123,7 @@ impl Loop {
         }
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let mut opening = if idle { turn.running() } else { Vec::new() };
-        opening.extend(mirrored);
+        opening.extend(answers);
         opening.push(start.clone());
         if !self.write(claim, &taken, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
