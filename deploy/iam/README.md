@@ -11,8 +11,8 @@ every key digest is keyed with is `PREFIX/system/api_key_pepper`; beside it are
 `PREFIX/system/runtime_key`. An `environment_variable` credential's secret is
 also tagged `credential_type=environment_variable`. All of them are under the
 same KMS key, so the same policy covers them. Only agentd's
-role, and an operator running `agentd keys` or `agentd admin-keys` as it, can
-read them. Sandboxes and runners cannot read them or
+role, and an operator running `agentd keys`, `agentd admin-keys`, `agentd
+environment-keys` or `agentd vault-secrets` as it, can read them. Sandboxes and runners cannot read them or
 use the key.
 
 ## Placeholders
@@ -38,6 +38,9 @@ region and account is tighter and loses nothing.
     (`secretsmanager:KmsKeyArn`, as in AWS's
     [identity-based policy examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_iam-policies.html);
     agentd always sends the key ARN).
+  - `TagResource` on `PREFIX/` secrets, only with the `managed-by=agentd` tag
+    and the same tag keys, for the tags a secret gets at create and for
+    `agentd vault-secrets tag`.
   - `GetSecretValue`, `DescribeSecret` and `DeleteSecret` on `PREFIX/`
     secrets. These are scoped by name only: a tag condition fails for a secret
     that does not exist, so AWS would answer `AccessDenied` where agentd needs

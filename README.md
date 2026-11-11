@@ -33,7 +33,7 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
    ├─ crates/resources (one per resource, vertical slices):
    │    agents · environments · vaults(+credentials) · memory(+versions)
    │    files · skills · sessions(+events/SSE) · deployments(+runs) · dreams(+runs)
-   │    api-keys (workspace keys) · organizations (Admin API: me, workspaces; admin keys only)
+   │    api-keys (workspace and environment keys) · organizations (Admin API: me, workspaces; admin keys only)
    ├─ shared           ids · limits (exact strings) · error envelope · cron/DST engine · ports
    ├─ engine           the loop (ModelClient/ToolExecutor/Grader ports, jailed tools)
    ├─ scheduler-local  SchedulerPort backends (Local; Temporal = same contract)
