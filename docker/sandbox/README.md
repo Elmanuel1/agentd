@@ -1,7 +1,9 @@
 # Session sandbox image
 
-Each session runs in one container of this image (`AGENTD_RUNTIME=docker`,
-`AGENTD_SANDBOX_IMAGE=agentd-sandbox`). The session's agent loop, its
+Each session on the harness path, one agentd's own loop does not serve
+(`AGENTD_LOOP_WORKSPACES`, [docs/configuration.md](../../docs/configuration.md#the-loop)),
+runs in one container of this image
+(`AGENTD_RUNTIME=docker`, `AGENTD_SANDBOX_IMAGE=agentd-sandbox`). The session's agent loop, its
 harness, runs inside the container; agentd keeps the API, the event log and
 the container's lifecycle. The container's first process is the harness
 (`python3 -m agentd_harness`, from `harness/`): it acknowledges the session's
