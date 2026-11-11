@@ -705,7 +705,7 @@ async fn a_loop_replica_serves_no_route() {
 
 #[tokio::test]
 async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
-    // S-4: only a deleted session ends its step; a failed read retries it.
+    // Only a deleted session ends its step; a failed read retries it.
     let Some(rig) = Rig::with_sandbox().await else { return };
     let env = rig.environment("cloud").await;
     let model = Scripted::new(Vec::new());
