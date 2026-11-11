@@ -18,6 +18,9 @@ use crate::model::ModelClient;
 mod reply;
 mod step;
 mod take;
+mod team;
+mod turn;
+mod usage;
 mod watch;
 
 /// How long an idle worker waits for a signal before it looks again.

@@ -402,3 +402,62 @@ async fn a_harness_session_moves_to_the_loop_at_its_next_turn_and_a_failed_stop_
         rig.call("GET", &format!("/v1/environments/{env}/work/{old}"), Auth::Key(KEY), None).await;
     assert_eq!(item["state"], "queued", "its work moved to the runtime queue: {item}");
 }
+
+#[tokio::test]
+async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
+    // L-15.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let env = rig.environment("cloud").await;
+    let name = format!("helper-{}", common::stamp());
+    let model = Scripted::new(vec![
+        Say::Tool("send_to_agent", json!({"agent_name": name, "message": "do it"})),
+        Say::Text("waiting on the helper"),
+        Say::Text("done by the helper"),
+        Say::Text("all done"),
+    ]);
+    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let helper = json!({"name": name, "model": "claude-haiku-4-5"});
+    let (_, helper) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(helper))).await;
+    let coord = json!({
+        "name": format!("coord-{}", common::stamp()), "model": "claude-haiku-4-5",
+        "multiagent": {"type": "coordinator", "agents": [{"type": "agent", "id": helper["id"], "version": helper["version"]}]},
+    });
+    let (st, coord) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(coord))).await;
+    assert_eq!(st, StatusCode::OK, "{coord}");
+    let body = json!({"agent": coord["id"], "environment_id": env});
+    let (_, created) = send_to(&app, request("POST", "/v1/sessions", Auth::Key(KEY), Some(body))).await;
+    let s = created["id"].as_str().unwrap().to_owned();
+    send(&app, &s, message("run it")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let t = types(&events);
+    for kind in ["session.thread_created", "agent.thread_message_sent", "agent.thread_message_received"] {
+        assert!(t.contains(&kind), "{kind} in {t:?}");
+    }
+    assert_eq!(
+        t.iter().filter(|k| **k == "session.status_idle").count(),
+        1,
+        "the session idles once, at the end: {t:?}"
+    );
+    assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    let thread =
+        events.iter().find(|e| e["type"] == "session.thread_created").unwrap()["session_thread_id"].clone();
+    let uri = format!("/v1/sessions/{s}/threads/{}/events", thread.as_str().unwrap());
+    let (st, page) = send_to(&app, request("GET", &uri, Auth::Key(KEY), None)).await;
+    assert_eq!(st, StatusCode::OK, "{page}");
+    let on_thread = page["data"].as_array().unwrap();
+    assert!(
+        on_thread
+            .iter()
+            .any(|e| e["type"] == "agent.message" && e["content"][0]["text"] == "done by the helper"),
+        "the helper's events are on its thread: {page}"
+    );
+    let asked = model.asked.lock();
+    assert_eq!(asked.len(), 4);
+    assert_eq!(asked[2].agent, name, "the third call is the helper's");
+    let heard = asked[3]
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, Block::Text { text } if text.starts_with(&format!("Message from {name}"))));
+    assert!(heard, "the coordinator hears the helper's reply");
+}

@@ -6,9 +6,11 @@ use std::collections::HashMap;
 use sessions::events::{
     AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, UserEvent,
 };
+use sessions::types::{primary_thread_id, Session};
 use shared::{ContentBlock, Timestamp};
 
-use super::reply::Turn;
+use super::team::{threads, Thread};
+use super::turn::Turn;
 use crate::turn::history::{rebuild, thread_events, History};
 
 /// The result a denied call gets when the client gave no reason.
@@ -37,7 +39,10 @@ pub(super) struct Taken {
     pub(super) answers: Vec<Event>,
     /// A confirmation allowed a call, which the session's worker now runs.
     pub(super) allowed: bool,
-    /// The primary thread's conversation, with the taken events in it.
+    /// The thread the step runs: the primary when it awaits the model, else
+    /// the oldest thread that does.
+    pub(super) thread: Thread,
+    /// That thread's conversation, with the taken events in it.
     pub(super) history: History,
     /// The interrupts among the taken events.
     pub(super) interrupt: Interrupt,
@@ -47,8 +52,10 @@ fn is_interrupt(e: &Event) -> bool {
     matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
 }
 
-/// Read `log` for `turn`.
-pub(super) fn take(log: &[Event], turn: &Turn, cloud: bool) -> Taken {
+/// Read `log` of `session`.
+pub(super) fn take(log: &[Event], session: &Session, cloud: bool) -> Taken {
+    let primary = Thread { id: primary_thread_id(&session.id), agent: session.agent.clone(), primary: true };
+    let turn = &primary.turn();
     let queued: Vec<&Event> =
         log.iter().filter(|e| e.processed_at.is_none() && e.payload.is_user_event()).collect();
     let taken: Vec<EventId> = queued.iter().map(|e| e.id.clone()).collect();
@@ -108,12 +115,33 @@ pub(super) fn take(log: &[Event], turn: &Turn, cloud: bool) -> Taken {
             _ => None,
         })
         .collect();
+    // An answer belongs to the thread of the call it answers.
+    let answers: Vec<Event> =
+        answers.into_iter().map(|a| Event { session_thread_id: thread_of(log, &a), ..a }).collect();
     let read: Vec<Event> = seen.into_iter().chain(answers.iter().cloned()).collect();
-    let mut history = rebuild(&thread_events(&read, None), &HashMap::new());
-    for call in history.unanswered.iter_mut().filter(|u| confirmed.iter().any(|c| c.as_str() == u.id)) {
-        call.asked = false;
-    }
-    Taken { taken, answers, allowed, history, interrupt }
+    let history_of = |t: &Thread| {
+        let scope = (!t.primary).then(|| t.id.clone());
+        let mut history = rebuild(&thread_events(&read, scope.as_ref()), &HashMap::new());
+        for call in history.unanswered.iter_mut().filter(|u| confirmed.iter().any(|c| c.as_str() == u.id)) {
+            call.asked = false;
+        }
+        history
+    };
+    let candidates = threads(session, &read);
+    let chosen = candidates.iter().map(|t| (t, history_of(t))).find(|(_, h)| h.awaits_model());
+    let (thread, history) = match chosen {
+        Some((t, h)) => (t.clone(), h),
+        None => (primary.clone(), history_of(&primary)),
+    };
+    Taken { taken, answers, allowed, thread, history, interrupt }
+}
+
+/// The thread of the call `answer` answers.
+fn thread_of(log: &[Event], answer: &Event) -> Option<sessions::types::ThreadId> {
+    let EventPayload::Agent(AgentEvent::ToolResult { tool_use_id, .. }) = &answer.payload else {
+        return None;
+    };
+    log.iter().find(|e| e.id == *tool_use_id).and_then(|e| e.session_thread_id.clone())
 }
 
 /// The error results live posts for the built-in calls an interrupt cut off.

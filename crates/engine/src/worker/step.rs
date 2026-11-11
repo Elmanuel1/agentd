@@ -8,13 +8,16 @@ use std::collections::HashSet;
 use sessions::events::{EventId, SessionEvent, SpanEvent, StopReason};
 use sessions::signals::Signal;
 use sessions::steps::{Claim, StepEnd, StepWrite};
-use sessions::types::{primary_thread_id, Session, SessionStatus};
+use sessions::types::{Session, SessionStatus};
 use shared::tenancy::RUNTIME_QUEUE;
 use shared::{BackendError, Timestamp};
 use work::store::Reach;
 
-use super::reply::{batch, charged, led, over_budget, spent, status, Batch, Turn};
+use super::reply::{led, Call};
 use super::take::{cut_off, take, Interrupt, Taken};
+use super::team::settle;
+use super::turn::{batch, Batch};
+use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
 use crate::model::budget::Admit;
@@ -75,9 +78,9 @@ impl Loop {
         let item =
             self.stores.work.get(ws, id.as_str(), &Reach::default()).await.map_err(BackendError::new)?;
         let cloud = item.as_ref().is_none_or(|i| i.queue == RUNTIME_QUEUE);
-        let turn = Turn { thread: primary_thread_id(id), agent: session.agent.config.name.clone() };
         let idle = session.status == SessionStatus::Idle;
-        let Taken { taken, answers, allowed, history, interrupt } = take(&log, &turn, cloud);
+        let Taken { taken, answers, allowed, thread, history, interrupt } = take(&log, &session, cloud);
+        let turn = thread.turn();
         if interrupt != Interrupt::None {
             if interrupt == Interrupt::Second {
                 let stopped =
@@ -102,7 +105,8 @@ impl Loop {
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
         }
-        let model = session.agent.config.model.id.clone();
+        let agent = thread.agent.clone();
+        let model = agent.config.model.id.clone();
         let provider = if model.contains('/') { "openrouter" } else { "anthropic" };
         match self.models.budget.admit(provider).await {
             Ok(Admit::Yes) => {}
@@ -122,9 +126,10 @@ impl Loop {
             return Ok(());
         }
         session.status = SessionStatus::Running;
-        let tools = Toolbox::for_agent(&session.agent, false);
-        let effort = session
-            .agent
+        let roster = session.agent.config.multiagent.as_ref().map(|m| m.roster_agents()).unwrap_or_default();
+        let coordinator = thread.primary && !roster.is_empty();
+        let tools = Toolbox::for_agent(&agent, coordinator);
+        let effort = agent
             .config
             .model
             .effort
@@ -132,8 +137,8 @@ impl Loop {
             .and_then(|e| serde_json::to_value(e).ok()?.as_str().map(str::to_owned));
         let request = ModelRequest {
             model,
-            agent: session.agent.config.name.clone(),
-            system: system_prompt(&session.agent, &[], &[]),
+            agent: agent.config.name.clone(),
+            system: system_prompt(&agent, &[], if coordinator { &roster } else { &[] }),
             messages: history.messages,
             tools: tools.tools.clone(),
             max_tokens: self.models.max_tokens,
@@ -183,11 +188,17 @@ impl Loop {
                 let known: HashSet<&EventId> = log.iter().map(|e| &e.id).collect();
                 let later = self.stores.log.unprocessed_events(ws, id).await.map_err(BackendError::new)?;
                 let more = later.iter().any(|e| !known.contains(&e.id));
-                let mut out = led(&turn, &reply, &start_id, &tools, cloud, more);
-                session.status = status(out.idle.as_ref());
-                if let Some(stop) = out.idle.take() {
-                    out.events.extend(turn.idle(&session, stop));
-                }
+                let call = Call {
+                    turn: &turn,
+                    start: &start_id,
+                    tools: &tools,
+                    cloud,
+                    more,
+                    session: &session,
+                    log: &log,
+                };
+                let mut out = led(&call, &reply);
+                settle(&mut out, &turn, &thread, &mut session, &log, &reply);
                 (batch(Vec::new(), Vec::new(), out.events), out.end)
             }
         };
