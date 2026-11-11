@@ -514,3 +514,32 @@ async fn an_outcome_is_graded_on_its_own_thread_until_satisfied() {
     let (_, got) = send_to(&app, request("GET", &format!("/v1/sessions/{s}"), Auth::Key(KEY), None)).await;
     assert_eq!(got["outcome_evaluations"][0]["result"], "satisfied");
 }
+
+#[tokio::test]
+async fn an_interrupt_answers_a_waiting_built_in_call_with_live_s_text_and_a_second_stops_the_work() {
+    // L-6, L-7.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let model = Scripted::new(vec![Say::Tool("bash", json!({"command": "sleep 100"}))]);
+    let (app, _worker) = on_loop(&rig, model, an_hour_ago()).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, toolset(ALLOW)).await;
+    send(&app, &s, message("wait")).await;
+    let events = events_until(&app, &s, "agent.tool_use", 1).await;
+    let call = events.iter().find(|e| e["type"] == "agent.tool_use").unwrap().clone();
+    let twice = json!({"events": [{"type": "user.interrupt"}, {"type": "user.interrupt"}]});
+    let (st, body) = send(&app, &s, twice).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let cut = events.iter().find(|e| e["type"] == "agent.tool_result").unwrap();
+    assert_eq!(
+        (cut["tool_use_id"].clone(), cut["is_error"].clone(), cut["content"][0]["text"].clone()),
+        (
+            call["id"].clone(),
+            json!(true),
+            json!("Tool execution was interrupted before completion. Please retry.")
+        )
+    );
+    assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    let (_, item) = rig.call("GET", &format!("/v1/environments/{env}/work/{s}"), Auth::Key(KEY), None).await;
+    assert_eq!(item["state"], "stopped", "the second interrupt force-stopped the work: {item}");
+}
