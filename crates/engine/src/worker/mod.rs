@@ -9,7 +9,7 @@ use sessions::signals::{Signal, Signals};
 use sessions::steps::Steps;
 use sessions::store::{SessionEventLog, SessionsStore};
 use tokio::sync::Semaphore;
-use work::WorkStore;
+use work::WorkService;
 
 use crate::model::budget::ModelBudget;
 use crate::model::retry::Retry;
@@ -38,7 +38,7 @@ pub struct Stores {
     /// The event log.
     pub log: Arc<dyn SessionEventLog>,
     /// The work items, where the session's worker runs its built-in calls.
-    pub work: Arc<dyn WorkStore>,
+    pub work: Arc<WorkService>,
 }
 
 /// The model a step calls.

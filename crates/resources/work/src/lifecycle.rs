@@ -154,15 +154,26 @@ impl WorkService {
         session: &str,
         self_hosted: bool,
     ) -> Result<(), ApiError> {
-        let item = self.store.get(&ctx.workspace, session, &Reach::default()).await.map_err(backend)?;
-        if item.is_some_and(|i| i.queue == HOSTED_QUEUE) {
-            self.store
-                .stop(&ctx.workspace, session, &Reach::default(), true, Timestamp::now())
-                .await
-                .map_err(backend)?;
+        if self.queue_of(&ctx.workspace, session).await?.is_some_and(|q| q == HOSTED_QUEUE) {
+            self.halt(&ctx.workspace, session).await?;
         }
-        let queue = if self_hosted { environment_id } else { RUNTIME_QUEUE };
+        let queue = match self_hosted {
+            true => environment_id,
+            false => RUNTIME_QUEUE,
+        };
         self.queue(ctx, environment_id, session, queue).await
+    }
+
+    /// The queue the session's item is on, when it has one.
+    pub async fn queue_of(&self, ws: &WorkspaceId, session: &str) -> Result<Option<String>, ApiError> {
+        let item = self.store.get(ws, session, &Reach::default()).await.map_err(backend)?;
+        Ok(item.map(|i| i.queue))
+    }
+
+    /// The session's item stops at once, whether a worker holds it or not.
+    pub async fn halt(&self, ws: &WorkspaceId, session: &str) -> Result<(), ApiError> {
+        self.store.stop(ws, session, &Reach::default(), true, Timestamp::now()).await.map_err(backend)?;
+        Ok(())
     }
 
     /// The session was archived, deleted or terminated: its item stops, and

@@ -30,7 +30,7 @@ use signals_valkey::ValkeySignals;
 use store_postgres::PgError;
 
 use crate::config::{
-    BlobsConfig, Config, KeysConfig, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
+    BlobsConfig, Config, KeysConfig, Role, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
 };
 
 /// How often the local scheduler checks for due fires (cron is minute-grained).
@@ -67,6 +67,8 @@ pub struct Backends {
     pub load: Arc<dyn DatabaseLoad>,
     /// The workspaces whose sessions the loop serves.
     pub on_loop: LoopWorkspaces,
+    /// What this replica runs; a `loop` replica serves no route.
+    pub role: Role,
 }
 
 /// The deployment's own keys, read from Secrets Manager once at boot.
@@ -178,7 +180,9 @@ impl Backends {
             }
         };
         if role.runs_loop() {
-            drop(crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref()).await?);
+            drop(
+                crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref(), &system).await?,
+            );
         }
         let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
             RuntimeConfig::Docker { .. } if !role.serves_api() => None,
@@ -208,6 +212,7 @@ impl Backends {
             signals,
             load,
             on_loop: config.agent_loop.workspaces.clone(),
+            role,
         })
     }
 }

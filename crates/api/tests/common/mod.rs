@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use api::config::Role;
 use api::session_grants::SessionReach;
 use api::{build_router, AppState, Backends, Stores, SystemKeys};
 use api_keys::EnvironmentKeysService;
@@ -63,6 +64,7 @@ pub struct Streaming {
     pub load: Arc<dyn DatabaseLoad>,
     /// The workspaces whose sessions the loop serves.
     pub on_loop: LoopWorkspaces,
+    pub role: Role,
 }
 
 impl Default for Streaming {
@@ -72,6 +74,7 @@ impl Default for Streaming {
             signals: Arc::new(LocalSignals::default()),
             load: Arc::new(Unloaded),
             on_loop: LoopWorkspaces::default(),
+            role: Role::All,
         }
     }
 }
@@ -103,6 +106,7 @@ fn app(
         signals: streaming.signals,
         load: streaming.load,
         on_loop: streaming.on_loop,
+        role: streaming.role,
     };
     build_router(AppState::build(backends).unwrap())
 }

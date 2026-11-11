@@ -11,7 +11,7 @@ pub mod openai;
 pub mod retry;
 pub mod router;
 
-pub use router::{ModelRouter, ProviderConfig};
+pub use router::{ModelRouter, Provider as ModelProvider, ProviderConfig};
 
 /// Who said a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -12,7 +12,9 @@ use sessions::signals::Signals;
 use shared::ports::secrets::SecretStore;
 use signals_valkey::ValkeyBudget;
 
-use crate::backends::{BootError, Stores};
+use work::{WorkService, WorkTokens};
+
+use crate::backends::{BootError, Stores, SystemKeys};
 use crate::config::Config;
 use crate::model_key::{self, ANTHROPIC, OPENROUTER};
 
@@ -25,6 +27,7 @@ pub async fn spawn(
     stores: &Stores,
     signals: Arc<dyn Signals>,
     secrets: &dyn SecretStore,
+    system: &SystemKeys,
 ) -> Result<tokio::task::JoinHandle<()>, BootError> {
     let c = &config.agent_loop;
     let key = |e: String| BootError::Loop(format!("model key: {e}"));
@@ -51,7 +54,11 @@ pub async fn spawn(
         steps: stores.steps.clone(),
         sessions: stores.sessions.clone(),
         log: stores.session_events.clone(),
-        work: stores.work.clone(),
+        work: Arc::new(WorkService::new(
+            stores.work.clone(),
+            WorkTokens::new(system.work_token_key.clone()),
+            system.api_base_url.clone(),
+        )),
     };
     let settings = Settings {
         owner: format!("loop-{}", uuid::Uuid::new_v4()),

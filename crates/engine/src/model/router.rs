@@ -10,6 +10,33 @@ use super::anthropic::AnthropicModel;
 use super::openai::OpenAiCompatModel;
 use super::{ModelClient, ModelError, ModelRequest, ModelResponse};
 
+/// The provider a model id routes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    /// The Messages API, for any id without a `/`.
+    Anthropic,
+    /// An OpenAI-compatible API (OpenRouter), for `vendor/model` ids.
+    OpenAiCompat,
+}
+
+impl Provider {
+    pub fn of(model: &str) -> Self {
+        match model.contains('/') {
+            true => Self::OpenAiCompat,
+            false => Self::Anthropic,
+        }
+    }
+
+    /// Its name in `agentd model-key set --provider`, which also keys its
+    /// share of the account-wide budget.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAiCompat => "openrouter",
+        }
+    }
+}
+
 /// The providers config enables. Its `Debug` leaves the keys out.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProviderConfig {
@@ -62,9 +89,9 @@ impl ModelRouter {
     }
 
     fn pick(&self, model: &str) -> Result<&Arc<dyn ModelClient>, ModelError> {
-        let (chosen, provider) = match model.contains('/') {
-            true => (self.openai_compat.as_ref(), "OpenAI-compatible"),
-            false => (self.anthropic.as_ref(), "Anthropic"),
+        let (chosen, provider) = match Provider::of(model) {
+            Provider::OpenAiCompat => (self.openai_compat.as_ref(), "OpenAI-compatible"),
+            Provider::Anthropic => (self.anthropic.as_ref(), "Anthropic"),
         };
         chosen.ok_or_else(|| {
             ModelError::Fatal(format!("no {provider} provider is configured for model `{model}`"))

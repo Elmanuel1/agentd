@@ -3,14 +3,15 @@
 
 use ::sessions::steps::{Claim, StepEnd, StepWrite};
 use ::sessions::store::StoreError;
-use ::sessions::types::{Session, SessionId};
+use ::sessions::types::Session;
 use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel::OptionalExtension;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use shared::{Timestamp, WorkspaceId};
+use shared::Timestamp;
 
 use super::super::session_events::{insert, lock, stamp};
+use super::super::work_items::stop::requeue;
 use super::rows::Doc;
 use super::{HELD, KEY};
 use crate::{diesel_be, enum_str, pool_be, to_doc, PgBackend};
@@ -145,7 +146,7 @@ pub(super) async fn commit(
                 }
                 land(c, claim, &write).await?;
                 if end == StepEnd::Requeue {
-                    requeue(c, &claim.workspace, &claim.session).await?;
+                    requeue(c, &claim.workspace, claim.session.as_str()).await?;
                 }
                 Ok(true)
             }
@@ -169,23 +170,4 @@ pub(super) async fn defer(backend: &PgBackend, claim: &Claim, seconds: i64) -> R
         .await
         .map(drop)
         .map_err(diesel_be)
-}
-
-/// The session's stopped work item, queued again on its own queue for a
-/// worker to run the calls the step parked.
-async fn requeue(
-    c: &mut AsyncPgConnection,
-    ws: &WorkspaceId,
-    id: &SessionId,
-) -> Result<(), diesel::result::Error> {
-    diesel::sql_query(format!(
-        "UPDATE work_items SET state = 'queued', stop_requested_at = NULL, stopped_at = NULL, acknowledged_at = NULL,
-         handed_out_at = NULL, lease_until = NULL, latest_heartbeat_at = NULL, last_heartbeat = NULL, started_at = now()
-         WHERE {KEY} AND (state = 'stopped' OR (state = 'stopping' AND lease_until < now()))"
-    ))
-    .bind::<Text, _>(ws.as_str())
-    .bind::<Text, _>(id.as_str())
-    .execute(c)
-    .await
-    .map(drop)
 }

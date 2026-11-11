@@ -108,6 +108,22 @@ pub(super) fn first(rows: Vec<Row>) -> Option<WorkItem> {
     rows.into_iter().next().map(item)
 }
 
+/// The columns that queue an item again, as started at `at`.
+pub(super) fn queued(at: &str) -> String {
+    format!(
+        "state = 'queued', started_at = {at}, acknowledged_at = NULL, latest_heartbeat_at = NULL, \
+         last_heartbeat = NULL, lease_until = NULL, handed_out_at = NULL, stop_requested_at = NULL, stopped_at = NULL"
+    )
+}
+
+/// An item that may be queued again at `at`: `stopped`, or `stopping` with
+/// its lease run out.
+pub(super) fn requeuable(at: &str) -> String {
+    format!(
+        "(work_items.state = 'stopped' OR (work_items.state = 'stopping' AND work_items.lease_until < {at}))"
+    )
+}
+
 /// The `INSERT` of `i`, which queues a `stopped` item of its session again
 /// (one whose `stopping` lease ran out is `stopped`); any other is untouched.
 pub(super) fn insert(i: &WorkItem) -> BoxedSqlQuery<'_, Pg, diesel::query_builder::SqlQuery> {
@@ -116,11 +132,9 @@ pub(super) fn insert(i: &WorkItem) -> BoxedSqlQuery<'_, Pg, diesel::query_builde
     diesel::sql_query(format!(
         "INSERT INTO work_items ({COLS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
              $14, $15, $16) ON CONFLICT (workspace_id, session_id) DO UPDATE SET queue = EXCLUDED.queue, \
-             environment_id = EXCLUDED.environment_id, state = 'queued', started_at = EXCLUDED.started_at, \
-             acknowledged_at = NULL, latest_heartbeat_at = NULL, last_heartbeat = NULL, lease_until = NULL, \
-             handed_out_at = NULL, stop_requested_at = NULL, stopped_at = NULL \
-             WHERE work_items.state = 'stopped' \
-             OR (work_items.state = 'stopping' AND work_items.lease_until < EXCLUDED.started_at)"
+             environment_id = EXCLUDED.environment_id, {} WHERE {}",
+        queued("EXCLUDED.started_at"),
+        requeuable("EXCLUDED.started_at")
     ))
     .into_boxed()
     .bind::<Text, _>(i.workspace.as_str())

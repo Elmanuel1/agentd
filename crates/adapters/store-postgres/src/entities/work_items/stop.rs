@@ -1,13 +1,13 @@
 //! Stopping a work item: on its own, or inside the transaction that deletes
-//! its session.
+//! its session; and queuing a stopped one again inside a loop step's commit.
 
 use ::work::store::{Reach, WorkItem};
-use diesel::sql_types::{Bool, Timestamptz};
+use diesel::sql_types::{Bool, Text, Timestamptz};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
 use super::filter::{keyed, KEY, REACH};
-use super::row::{first, Row, COLS};
+use super::row::{first, queued, requeuable, Row, COLS};
 
 /// `stopped` when `force` or no worker holds the item, else `stopping`.
 pub(crate) async fn stop(
@@ -36,4 +36,23 @@ pub(crate) async fn stop(
     .load(conn)
     .await?;
     Ok(first(rows))
+}
+
+/// The session's stopped item, queued again on its own queue, for a worker
+/// to run the calls a loop step parked.
+pub(crate) async fn requeue(
+    conn: &mut AsyncPgConnection,
+    ws: &WorkspaceId,
+    session: &str,
+) -> Result<(), diesel::result::Error> {
+    diesel::sql_query(format!(
+        "UPDATE work_items SET {} WHERE {KEY} AND {}",
+        queued("now()"),
+        requeuable("now()")
+    ))
+    .bind::<Text, _>(ws.as_str())
+    .bind::<Text, _>(session)
+    .execute(conn)
+    .await
+    .map(drop)
 }

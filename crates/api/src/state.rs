@@ -72,6 +72,7 @@ impl AppState {
             signals,
             load,
             on_loop,
+            role,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
@@ -148,6 +149,10 @@ impl AppState {
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
+        let modules = match role.serves_api() {
+            true => modules,
+            false => Vec::new(),
+        };
         let work = WorkAccess { tokens: work.tokens().clone(), items: stores.work_reads, grants: reach };
         Ok(Self { keys, admin_keys, environment_keys, modules, metrics, work })
     }

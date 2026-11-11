@@ -25,23 +25,28 @@ pub(super) struct Thread {
 }
 
 impl Thread {
+    /// The session's primary thread, which runs the session's agent.
+    pub(super) fn primary(session: &Session) -> Self {
+        Self {
+            id: primary_thread_id(&session.id),
+            agent: session.agent.clone(),
+            primary: true,
+            grading: None,
+        }
+    }
+
     pub(super) fn turn(&self) -> Turn {
         Turn { thread: self.id.clone(), agent: self.agent.config.name.clone(), scoped: !self.primary }
     }
 }
 
-fn roster(session: &Session) -> Vec<&AgentSnapshot> {
+pub(super) fn roster(session: &Session) -> Vec<&AgentSnapshot> {
     session.agent.config.multiagent.as_ref().map(|m| m.roster_agents()).unwrap_or_default()
 }
 
 /// The primary thread, then every thread the log opened, oldest first.
 pub(super) fn threads(session: &Session, log: &[Event]) -> Vec<Thread> {
-    let primary = Thread {
-        id: primary_thread_id(&session.id),
-        agent: session.agent.clone(),
-        primary: true,
-        grading: None,
-    };
+    let primary = Thread::primary(session);
     let roster = roster(session);
     let opened = log.iter().filter_map(|e| match (&e.payload, &e.session_thread_id) {
         (EventPayload::Session(SessionEvent::ThreadCreated { agent_name }), Some(id)) => {

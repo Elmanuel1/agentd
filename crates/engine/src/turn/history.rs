@@ -139,16 +139,13 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History 
                 content,
                 from_agent_name,
                 from_session_thread_id,
-            }) => {
-                if ev.session_thread_id.is_none() {
-                    b.text(format!(
-                        "Message from {from_agent_name} (thread {from_session_thread_id}):\n{}",
-                        texts(content)
-                    ));
-                } else {
-                    b.text(texts(content));
-                }
-            }
+            }) => match ev.session_thread_id {
+                None => b.text(format!(
+                    "Message from {from_agent_name} (thread {from_session_thread_id}):\n{}",
+                    texts(content)
+                )),
+                Some(_) => b.text(texts(content)),
+            },
             EventPayload::User(UserEvent::Interrupt {}) if ev.processed_at.is_some() => b.halted = true,
             EventPayload::User(u) if ev.processed_at.is_some() => match u {
                 UserEvent::Message { content } => {

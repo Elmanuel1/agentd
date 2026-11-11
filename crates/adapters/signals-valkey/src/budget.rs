@@ -64,7 +64,10 @@ impl ModelBudget for ValkeyBudget {
         let (made, used) = counted.map_err(BackendError::new)?.map_err(BackendError::new)?;
         let over = self.requests.is_some_and(|max| made > max)
             || self.tokens.is_some_and(|max| used.unwrap_or(0) >= max);
-        Ok(if over { Admit::Later(left) } else { Admit::Yes })
+        Ok(match over {
+            true => Admit::Later(left),
+            false => Admit::Yes,
+        })
     }
 
     async fn spend(&self, provider: &str, input_tokens: u64) -> Result<(), BackendError> {

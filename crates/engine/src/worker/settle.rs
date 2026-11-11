@@ -5,7 +5,7 @@
 
 use sessions::events::{Event, StopReason};
 use sessions::steps::StepEnd;
-use sessions::types::{primary_thread_id, Session, SessionStatus};
+use sessions::types::{Session, SessionStatus};
 
 use super::grade::{active, begin};
 use super::reply::Led;
@@ -23,13 +23,7 @@ pub(super) fn settle(
     log: &[Event],
     r: &ModelResponse,
 ) {
-    let primary = Thread {
-        id: primary_thread_id(&session.id),
-        agent: session.agent.clone(),
-        primary: true,
-        grading: None,
-    }
-    .turn();
+    let primary = Thread::primary(session).turn();
     let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
     let others =
         threads(session, &seen).into_iter().any(|t| !t.primary && t.id != turn.thread && busy(&seen, &t.id));

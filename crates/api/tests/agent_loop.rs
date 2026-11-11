@@ -10,11 +10,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
+use api::config::Role;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::Router;
 use common::{request, send_to, Auth, Rig, Streaming, KEY};
-use engine::model::budget::Unlimited;
+use engine::model::budget::{Admit, ModelBudget, Unlimited};
 use engine::model::retry::Retry;
 use engine::model::{Block, ModelClient, ModelError, ModelRequest, ModelResponse, StopKind};
 use engine::worker::{Loop, Models, Settings, Stores as LoopStores};
@@ -24,7 +25,7 @@ use sessions::events::ModelUsage;
 use sessions::signals::{LocalSignals, Signals};
 use sessions::steps::LoopWorkspaces;
 use shared::ports::RuntimeError;
-use shared::{Timestamp, WorkspaceId};
+use shared::{BackendError, Timestamp, WorkspaceId};
 
 /// One scripted answer.
 enum Say {
@@ -85,14 +86,66 @@ fn an_hour_ago() -> Timestamp {
     Timestamp::from_datetime(Timestamp::now().as_datetime() - chrono::Duration::hours(1))
 }
 
+/// The step queue's row for a session.
+#[derive(diesel::QueryableByName)]
+struct Step {
+    #[diesel(sql_type = diesel::sql_types::Bool)]
+    leased: bool,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    due_in: i64,
+}
+
+async fn db() -> store_postgres::PgBackend {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    store_postgres::PgBackend::connect(&url).await.unwrap()
+}
+
+/// `session`'s step, if one is queued: whether it is leased, and the seconds
+/// until it is due.
+async fn step_of(session: &str) -> Option<Step> {
+    let pg = db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "SELECT lease_until IS NOT NULL AS leased, \
+         extract(epoch FROM due_at - now())::bigint AS due_in FROM loop_steps WHERE session_id = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(session);
+    let rows: Vec<Step> = diesel_async::RunQueryDsl::load(q, &mut *conn).await.unwrap();
+    rows.into_iter().next()
+}
+
+/// A budget that admits nothing: it defers each step, or cannot be read.
+struct Closed(Option<i64>);
+
+#[async_trait]
+impl ModelBudget for Closed {
+    async fn admit(&self, _: &str) -> Result<Admit, BackendError> {
+        self.0.map(Admit::Later).ok_or_else(|| BackendError::new(std::io::Error::other("valkey down")))
+    }
+
+    async fn spend(&self, _: &str, _: u64) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
 /// A replica of the rig's app whose workspace joined the loop at `joined`,
 /// and a loop worker calling `model`, sharing one set of signals. Steps
 /// other tests left behind are cleared first.
 async fn on_loop(rig: &Rig, model: Arc<Scripted>, joined: Timestamp) -> (Router, Worker) {
+    worker(rig, model, joined, 8, Arc::new(Unlimited)).await
+}
+
+/// `on_loop`, with a worker that runs `steps` at once under `budget`.
+async fn worker(
+    rig: &Rig,
+    model: Arc<Scripted>,
+    joined: Timestamp,
+    steps: usize,
+    budget: Arc<dyn ModelBudget>,
+) -> (Router, Worker) {
     let turn = SERIAL.lock().await;
-    let url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
-    let pg = store_postgres::PgBackend::connect(&url).await.unwrap();
+    let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
     // Earlier runs' steps, and the runtime queue's items other tests poll for.
     for leftover in ["DELETE FROM loop_steps", "DELETE FROM work_items WHERE queue = 'runtime'"] {
@@ -106,15 +159,15 @@ async fn on_loop(rig: &Rig, model: Arc<Scripted>, joined: Timestamp) -> (Router,
         steps: rig.stores.steps.clone(),
         sessions: rig.stores.sessions.clone(),
         log: rig.stores.session_events.clone(),
-        work: rig.stores.work.clone(),
+        work: rig.work.clone(),
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
-    let models = Models { client: model, retry, budget: Arc::new(Unlimited), max_tokens: 1000 };
+    let models = Models { client: model, retry, budget, max_tokens: 1000 };
     let settings = Settings {
         owner: format!("test-{}", common::stamp()),
         lease: Duration::from_secs(60),
         per_workspace: 1000,
-        steps: 8,
+        steps,
     };
     (app, Worker { task: Loop::new(stores, models, signals, settings).spawn(), _turn: turn })
 }
@@ -391,9 +444,11 @@ async fn a_harness_session_moves_to_the_loop_at_its_next_turn_and_a_failed_stop_
     rig.sandboxes.fail_stops(Some(RuntimeError::Unavailable("daemon down".into())));
     let (st, body) = send(&app, &fresh, message("hi")).await;
     assert_eq!((st.as_u16(), body["error"]["type"].as_str()), (529, Some("overloaded_error")), "{body}");
+    assert!(step_of(&fresh).await.is_none(), "a failed stop queues no step");
     rig.sandboxes.fail_stops(Some(RuntimeError::Launch("broken".into())));
     let (st, body) = send(&app, &fresh, message("hi")).await;
     assert_eq!((st.as_u16(), body["error"]["type"].as_str()), (500, Some("api_error")), "{body}");
+    assert!(step_of(&fresh).await.is_none(), "a failed stop queues no step");
     let uri = format!("/v1/sessions/{fresh}/events");
     let (_, page) = send_to(&app, request("GET", &uri, Auth::Key(KEY), None)).await;
     assert_eq!(page["data"], json!([]), "a failed stop appends nothing");
@@ -402,6 +457,11 @@ async fn a_harness_session_moves_to_the_loop_at_its_next_turn_and_a_failed_stop_
     let events = events_until(&app, &old, "session.status_idle", 1).await;
     let answer = events.iter().find(|e| e["type"] == "agent.message").unwrap();
     assert_eq!(answer["content"][0]["text"], "from the loop");
+    let (st, body) = send(&app, &fresh, message("hi")).await;
+    assert_eq!(st, StatusCode::OK, "the retry is taken once the stop works: {body}");
+    let events = events_until(&app, &fresh, "session.status_idle", 1).await;
+    let answers = events.iter().filter(|e| e["type"] == "agent.message").count();
+    assert_eq!((answers, types(&events).iter().filter(|t| **t == "user.message").count()), (1, 1));
     let (_, item) =
         rig.call("GET", &format!("/v1/environments/{env}/work/{old}"), Auth::Key(KEY), None).await;
     assert_eq!(item["state"], "queued", "its work moved to the runtime queue: {item}");
@@ -543,4 +603,55 @@ async fn an_interrupt_answers_a_waiting_built_in_call_with_live_s_text_and_a_sec
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
     let (_, item) = rig.call("GET", &format!("/v1/environments/{env}/work/{s}"), Auth::Key(KEY), None).await;
     assert_eq!(item["state"], "stopped", "the second interrupt force-stopped the work: {item}");
+}
+
+#[tokio::test]
+async fn a_worker_runs_no_more_steps_at_once_than_it_is_set_to() {
+    // S-8.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
+    let (app, _worker) = worker(&rig, model.clone(), an_hour_ago(), 4, Arc::new(Unlimited)).await;
+    let env = rig.environment("cloud").await;
+    for _ in 0..5 {
+        let s = session(&app, &env, json!([])).await;
+        send(&app, &s, message("think for a while")).await;
+    }
+    for _ in 0..200 {
+        if model.asked.lock().len() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(model.asked.lock().len(), 4, "a fifth step waits for a free slot");
+}
+
+#[tokio::test]
+async fn a_step_over_the_model_budget_waits_without_calling_the_model() {
+    // M-4: over the budget, the step is due again next minute; with the
+    // budget unreadable, it goes back on the queue.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let env = rig.environment("cloud").await;
+    for (budget, due) in [(Closed(Some(42)), 30..=42), (Closed(None), -1..=1)] {
+        let model = Scripted::new(Vec::new());
+        let (app, worker) = worker(&rig, model.clone(), an_hour_ago(), 8, Arc::new(budget)).await;
+        let s = session(&app, &env, json!([])).await;
+        send(&app, &s, message("hi")).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let step = step_of(&s).await.expect("the step stays queued");
+        assert!(!step.leased && due.contains(&step.due_in), "due in {}s", step.due_in);
+        assert!(model.asked.lock().is_empty(), "no model call");
+        drop(worker);
+    }
+}
+
+#[tokio::test]
+async fn a_loop_replica_serves_no_route() {
+    // R-1: only `api` and `all` replicas serve the API.
+    let Some(rig) = Rig::new().await else { return };
+    let app = rig.replica(&rig.stores, Streaming { role: Role::Loop, ..Streaming::default() });
+    let (st, _) = send_to(&app, request("GET", "/v1/agents", Auth::Key(KEY), None)).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = send_to(&rig.app, request("GET", "/v1/agents", Auth::Key(KEY), None)).await;
+    assert_eq!(st, StatusCode::OK);
 }

@@ -12,6 +12,8 @@ use secrets_aws::AwsSecretStore;
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore};
 use vaults::types::{CredentialAuthInput, CredentialNetworking, InjectionLocation, SecretString};
 
+use engine::model::ModelProvider;
+
 use crate::config::Config;
 
 /// A model provider, its key stored at `PREFIX/operator/models/<name>`.
@@ -26,11 +28,17 @@ pub struct Provider {
 }
 
 /// OpenRouter, an OpenAI-compatible API, the default.
-pub const OPENROUTER: Provider =
-    Provider { name: "openrouter", variable: "OPENROUTER_API_KEY", host: "openrouter.ai" };
+pub const OPENROUTER: Provider = Provider {
+    name: ModelProvider::OpenAiCompat.name(),
+    variable: "OPENROUTER_API_KEY",
+    host: "openrouter.ai",
+};
 /// The Anthropic Messages API.
-pub const ANTHROPIC: Provider =
-    Provider { name: "anthropic", variable: "ANTHROPIC_API_KEY", host: "api.anthropic.com" };
+pub const ANTHROPIC: Provider = Provider {
+    name: ModelProvider::Anthropic.name(),
+    variable: "ANTHROPIC_API_KEY",
+    host: "api.anthropic.com",
+};
 
 /// Where OpenRouter's key is stored, which the egress service also reads.
 pub const KEY: (&str, &str, &str) = ("operator", "models", OPENROUTER.name);

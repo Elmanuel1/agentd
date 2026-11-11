@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use sessions::events::{
     AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, UserEvent,
 };
-use sessions::types::{primary_thread_id, Session};
+use sessions::types::Session;
 use shared::{ContentBlock, Timestamp};
 
 use super::grade::{active, conversation};
@@ -57,12 +57,7 @@ fn is_interrupt(e: &Event) -> bool {
 
 /// Read `log` of `session`.
 pub(super) fn take(log: &[Event], session: &Session, cloud: bool) -> Taken {
-    let primary = Thread {
-        id: primary_thread_id(&session.id),
-        agent: session.agent.clone(),
-        primary: true,
-        grading: None,
-    };
+    let primary = Thread::primary(session);
     let turn = &primary.turn();
     let queued: Vec<&Event> =
         log.iter().filter(|e| e.processed_at.is_none() && e.payload.is_user_event()).collect();

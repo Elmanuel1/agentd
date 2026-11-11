@@ -8,21 +8,22 @@ use std::collections::HashSet;
 use sessions::events::{Event, EventId, SpanEvent, StopReason};
 use sessions::signals::Signal;
 use sessions::steps::{Claim, StepEnd, StepWrite};
+use sessions::store::StoreError;
 use sessions::types::{Session, SessionStatus};
 use shared::tenancy::RUNTIME_QUEUE;
-use shared::{BackendError, Timestamp};
-use work::store::Reach;
+use shared::BackendError;
 
 use super::grade;
 use super::reply::{led, Call};
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
+use super::team::roster;
 use super::turn::{batch, Batch};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
 use crate::model::budget::Admit;
-use crate::model::{ModelError, ModelRequest};
+use crate::model::{ModelError, ModelProvider, ModelRequest};
 use crate::turn::policy::Toolbox;
 use crate::turn::prompt::system_prompt;
 
@@ -72,23 +73,22 @@ impl Loop {
 
     async fn run(&self, claim: &Claim) -> Result<(), BackendError> {
         let (ws, id) = (&claim.workspace, &claim.session);
-        let Ok(mut session) = self.stores.sessions.get(ws, id).await else {
+        let mut session = match self.stores.sessions.get(ws, id).await {
+            Ok(session) => session,
             // Gone: the delete took its step with it.
-            return Ok(());
+            Err(StoreError::NotFound) => return Ok(()),
+            Err(e) => return Err(BackendError::new(e)),
         };
         let log = self.stores.log.events(ws, id).await.map_err(BackendError::new)?;
-        let item =
-            self.stores.work.get(ws, id.as_str(), &Reach::default()).await.map_err(BackendError::new)?;
-        let cloud = item.as_ref().is_none_or(|i| i.queue == RUNTIME_QUEUE);
+        let queue = self.stores.work.queue_of(ws, id.as_str()).await.map_err(BackendError::new)?;
+        let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
         let Taken { taken, answers, allowed, thread, history, read, interrupt } = take(&log, &session, cloud);
         let turn = thread.turn();
+        if interrupt == Interrupt::Second {
+            self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
+        }
         if interrupt != Interrupt::None {
-            if interrupt == Interrupt::Second {
-                let stopped =
-                    self.stores.work.stop(ws, id.as_str(), &Reach::default(), true, Timestamp::now()).await;
-                stopped.map_err(BackendError::new)?;
-            }
             session.status = SessionStatus::Idle;
             let mut events = cut_off(&turn, &history);
             events.extend(turn.idle(&session, StopReason::EndTurn {}));
@@ -96,7 +96,10 @@ impl Loop {
             return Ok(());
         }
         if !history.awaits_model() {
-            let end = if allowed { StepEnd::Requeue } else { StepEnd::Done };
+            let end = match allowed {
+                true => StepEnd::Requeue,
+                false => StepEnd::Done,
+            };
             self.commit(claim, end, &batch(taken, Vec::new(), answers), &session).await?;
             return Ok(());
         }
@@ -109,7 +112,7 @@ impl Loop {
         }
         let agent = thread.agent.clone();
         let model = agent.config.model.id.clone();
-        let provider = if model.contains('/') { "openrouter" } else { "anthropic" };
+        let provider = ModelProvider::of(&model).name();
         match self.models.budget.admit(provider).await {
             Ok(Admit::Yes) => {}
             Ok(Admit::Later(seconds)) => {
@@ -122,7 +125,10 @@ impl Loop {
         }
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
-        let mut running = if idle { turn.running() } else { Vec::new() };
+        let mut running = match idle {
+            true => turn.running(),
+            false => Vec::new(),
+        };
         let ongoing =
             thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
         running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
@@ -131,8 +137,12 @@ impl Loop {
             return Ok(());
         }
         session.status = SessionStatus::Running;
-        let roster = session.agent.config.multiagent.as_ref().map(|m| m.roster_agents()).unwrap_or_default();
+        let roster = roster(&session);
         let coordinator = thread.primary && !roster.is_empty();
+        let delegates = match coordinator {
+            true => roster.as_slice(),
+            false => &[],
+        };
         let tools = match &thread.grading {
             Some(_) => grade::tools(),
             None => Toolbox::for_agent(&agent, coordinator),
@@ -146,7 +156,7 @@ impl Loop {
         let request = ModelRequest {
             model,
             agent: agent.config.name.clone(),
-            system: system_prompt(&agent, &[], if coordinator { &roster } else { &[] }),
+            system: system_prompt(&agent, &[], delegates),
             messages: history.messages,
             tools: tools.tools.clone(),
             max_tokens: self.models.max_tokens,

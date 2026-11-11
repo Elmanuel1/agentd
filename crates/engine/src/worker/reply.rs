@@ -4,9 +4,10 @@
 
 use sessions::events::{AgentEvent, Event, EventId, SpanEvent, StopReason};
 use sessions::steps::StepEnd;
-use sessions::types::{primary_thread_id, OutcomeEvaluation, Session};
+use sessions::types::{OutcomeEvaluation, Session};
 
 use super::grade::{self, Outcome};
+use super::team::Thread;
 use super::turn::Turn;
 use shared::ContentBlock;
 
@@ -90,11 +91,7 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                     evaluated_permission: Some("allow".into()),
                     evaluation: None,
                 });
-                let primary = Turn {
-                    thread: primary_thread_id(&c.session.id),
-                    agent: c.session.agent.config.name.clone(),
-                    scoped: false,
-                };
+                let primary = Thread::primary(c.session).turn();
                 let (end, eval) = grade::verdict(&primary, outcome, input, r.usage.clone());
                 let recorded = grade::recorded(turn, &call.id);
                 events.extend([call, recorded, end]);

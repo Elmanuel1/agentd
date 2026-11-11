@@ -76,7 +76,7 @@ step's 10 minute deadline.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only; `all` does both. Retention, the local scheduler and sandbox launches run in `api` and `all` |
+| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention, the local scheduler and sandbox launches run in `api` and `all` |
 | `AGENTD_LOOP_WORKSPACES` | unset | `wrkspc_…@<RFC 3339 time>,…`: the workspaces whose sessions the loop serves, each with the time it joined |
 | `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |

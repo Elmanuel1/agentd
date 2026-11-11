@@ -66,6 +66,7 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,
         on_loop: sessions::steps::LoopWorkspaces::default(),
+        role: api::config::Role::All,
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

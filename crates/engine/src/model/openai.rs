@@ -90,7 +90,8 @@ fn push_message(out: &mut Vec<Value>, m: &Message) {
         Role::User => {
             for b in &m.content {
                 if let Block::ToolResult { tool_use_id, content, is_error } = b {
-                    let content = if *is_error { format!("Error: {content}") } else { content.clone() };
+                    let content =
+                        is_error.then(|| format!("Error: {content}")).unwrap_or_else(|| content.clone());
                     out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": content}));
                 }
             }
