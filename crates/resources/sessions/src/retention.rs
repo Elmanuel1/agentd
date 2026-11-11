@@ -103,25 +103,25 @@ impl Retention {
                 session_id: String::new(),
             },
         };
-        self.lock.exclusive(LOCK, Box::pin(self.walk(start, cutoff))).await
-    }
-
-    async fn walk(&self, mut after: ArchivedCursor, to: Timestamp) -> Result<(), StoreError> {
-        loop {
-            let page = self.sessions.archived_between(&after, to, PAGE).await?;
-            let Some(last) = page.last() else {
-                return Ok(());
-            };
-            after = ArchivedCursor {
-                archived_at: last.archived_at.clone(),
-                session_id: last.session.to_string(),
-            };
-            let ids: Vec<_> = page.iter().map(|s| (s.workspace.clone(), s.session.clone())).collect();
-            self.events.delete_events_of(&ids).await?;
-            if page.len() < PAGE {
-                return Ok(());
+        let walk = async move {
+            let mut after = start;
+            loop {
+                let page = self.sessions.archived_between(&after, cutoff, PAGE).await?;
+                let Some(last) = page.last() else {
+                    return Ok(());
+                };
+                after = ArchivedCursor {
+                    archived_at: last.archived_at.clone(),
+                    session_id: last.session.to_string(),
+                };
+                let ids: Vec<_> = page.iter().map(|s| (s.workspace.clone(), s.session.clone())).collect();
+                self.events.delete_events_of(&ids).await?;
+                if page.len() < PAGE {
+                    return Ok(());
+                }
             }
-        }
+        };
+        self.lock.exclusive(LOCK, Box::pin(walk)).await
     }
 
     /// Try a run every [`EVERY`]; `done` hears each run this replica completes.
