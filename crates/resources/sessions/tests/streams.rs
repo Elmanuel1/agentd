@@ -29,7 +29,7 @@ use tokio::sync::broadcast::error::RecvError;
 /// The log as the tail reads it: `head`, then each scripted read in turn,
 /// then empty reads.
 struct Scripted {
-    head: Head,
+    head: Mutex<Result<Head, StoreError>>,
     reads: Mutex<VecDeque<Result<Option<Tail>, StoreError>>>,
     asked: Mutex<Vec<(i64, Vec<i64>)>>,
 }
@@ -63,7 +63,7 @@ impl SessionEventReads for Scripted {
         self.reads.lock().pop_front().unwrap_or(Ok(Some(Tail::default())))
     }
     async fn head(&self, _: &WorkspaceId, _: &SessionId) -> Result<Head, StoreError> {
-        Ok(self.head.clone())
+        self.head.lock().clone()
     }
 }
 
@@ -165,7 +165,11 @@ fn rig(head: Head, archived: bool, reads: Vec<Result<Option<Tail>, StoreError>>)
     let mut session: sessions::Session =
         serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
     session.archived_at = archived.then(Timestamp::now);
-    let log = Arc::new(Scripted { head, reads: Mutex::new(reads.into()), asked: Mutex::default() });
+    let log = Arc::new(Scripted {
+        head: Mutex::new(Ok(head)),
+        reads: Mutex::new(reads.into()),
+        asked: Mutex::default(),
+    });
     let signals = Arc::new(LocalSignals::default());
     let service = SessionsService::new(
         Arc::new(OneSession(session.clone())),
@@ -228,13 +232,13 @@ async fn a_client_event_first_read_processed_is_sent_queued_then_processed() {
 #[tokio::test]
 async fn a_client_event_queued_before_the_stream_opened_is_sent_once_processed() {
     let e = message();
+    let done = processed(&e);
     let head = Head { seq: 7, queued: vec![7] };
-    let rig =
-        rig(head, false, vec![read(false, vec![(7, e.clone())]), read(false, vec![(7, processed(&e))])]);
+    let rig = rig(head, false, vec![read(false, vec![(7, e.clone())]), read(false, vec![(7, done.clone())])]);
     let mut sub = rig.subscribe().await;
     rig.signal().await;
     rig.signal().await;
-    assert!(next(&mut sub).await.unwrap().processed_at.is_some(), "only its processed form");
+    assert_eq!(next(&mut sub).await.unwrap(), done, "only its processed form");
     assert_eq!(rig.log.asked.lock()[..2], [(7, vec![7]), (7, vec![7])]);
 }
 
@@ -291,4 +295,37 @@ async fn missed_signals_wake_every_tail() {
         rig.signals.publish(&other).await.unwrap();
     }
     assert_eq!(next(&mut sub).await.unwrap(), e, "the lagged listener woke this session's tail");
+}
+
+#[tokio::test]
+async fn a_second_stream_of_a_session_shares_its_tail_until_both_leave() {
+    let (one, two) = (message(), message());
+    let rig = rig(
+        Head::default(),
+        false,
+        vec![read(false, vec![(1, one.clone())]), read(false, vec![(2, two.clone())])],
+    );
+    let (mut a, mut b) = (rig.subscribe().await, rig.subscribe().await);
+    rig.signal().await;
+    assert_eq!((next(&mut a).await.unwrap(), next(&mut b).await.unwrap()), (one.clone(), one));
+    drop(a);
+    rig.signal().await;
+    assert_eq!(next(&mut b).await.unwrap(), two, "the tail stays while one stream is open");
+    assert_eq!(rig.log.asked.lock().len(), 2, "one tail read the log, for both streams");
+    drop(b);
+    rig.signal().await;
+    assert_eq!(rig.log.asked.lock().len(), 2, "the tail went with its last stream");
+}
+
+#[tokio::test]
+async fn a_failed_head_read_refuses_the_stream_and_the_next_one_starts_its_own_tail() {
+    let e = message();
+    let rig = rig(Head::default(), false, vec![read(false, vec![(1, e.clone())])]);
+    *rig.log.head.lock() = Err(StoreError::Backend(BackendError::new(std::io::Error::other("down"))));
+    let refused = rig.service.subscribe(&rig.ctx, rig.session.id.as_str(), None).await;
+    assert_eq!(refused.unwrap_err().status, 500);
+    *rig.log.head.lock() = Ok(Head::default());
+    let mut sub = rig.subscribe().await;
+    rig.signal().await;
+    assert_eq!(next(&mut sub).await.unwrap(), e);
 }

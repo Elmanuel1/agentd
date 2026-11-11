@@ -13,6 +13,10 @@ use super::PgSessionEventLog;
 use crate::schema::{session_events, sessions};
 use crate::{diesel_be, parse_doc, pool_be, DocRow};
 
+/// A client event the agent has not taken yet.
+const QUEUED: &str =
+    "doc->>'processed_at' IS NULL AND (doc->>'type' LIKE 'user.%' OR doc->>'type' = 'system.message')";
+
 impl PgSessionEventLog {
     async fn require_session(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
@@ -46,12 +50,9 @@ impl SessionEventReads for PgSessionEventLog {
 
     async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let rows: Vec<DocRow> = diesel::sql_query(
-            "SELECT doc FROM session_events
-             WHERE workspace_id = $1 AND session_id = $2 AND doc->>'processed_at' IS NULL
-               AND (doc->>'type' LIKE 'user.%' OR doc->>'type' = 'system.message')
-             ORDER BY seq",
-        )
+        let rows: Vec<DocRow> = diesel::sql_query(format!(
+            "SELECT doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND {QUEUED} ORDER BY seq"
+        ))
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
         .load(&mut conn)
@@ -145,12 +146,10 @@ impl SessionEventReads for PgSessionEventLog {
 
     async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let head: HeadRow = diesel::sql_query(
-            "SELECT coalesce(max(seq), 0) AS seq, coalesce(array_agg(seq ORDER BY seq) FILTER (
-                 WHERE doc->>'processed_at' IS NULL AND (doc->>'type' LIKE 'user.%' OR doc->>'type' = 'system.message')
-             ), '{}') AS queued
-             FROM session_events WHERE workspace_id = $1 AND session_id = $2",
-        )
+        let head: HeadRow = diesel::sql_query(format!(
+            "SELECT coalesce(max(seq), 0) AS seq, coalesce(array_agg(seq ORDER BY seq) FILTER (WHERE {QUEUED}), '{{}}')
+             AS queued FROM session_events WHERE workspace_id = $1 AND session_id = $2"
+        ))
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
         .get_result(&mut conn)

@@ -68,6 +68,8 @@ impl Signals for ValkeySignals {
 /// [`RECONNECT`] whenever the connection drops.
 async fn subscribe(client: Client, received: broadcast::Sender<Signal>) {
     let mut retry = tokio::time::interval(RECONNECT);
+    // After a long subscription, one attempt at once, then one per RECONNECT.
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         retry.tick().await;
         let connected = client.get_async_pubsub().await;
