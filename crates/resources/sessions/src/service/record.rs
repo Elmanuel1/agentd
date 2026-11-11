@@ -6,18 +6,8 @@
 use shared::{ApiError, Usage, WorkspaceId};
 
 use super::{HarnessContract, SessionsService};
-use crate::events::{Event, EventPayload, ModelUsage, SessionEvent, SpanEvent};
+use crate::events::{Event, EventPayload, SessionEvent, SpanEvent};
 use crate::types::{OutcomeEvaluation, SessionId, SessionStatus, ThreadId};
-
-fn usage(u: &ModelUsage) -> Usage {
-    Usage {
-        cache_creation: None,
-        cache_read_input_tokens: u.cache_read_input_tokens,
-        input_tokens: u.input_tokens,
-        output_tokens: u.output_tokens,
-        list_cost: None,
-    }
-}
 
 impl SessionsService {
     /// Record `payload`, which the session's harness sent for `thread` (the
@@ -52,7 +42,7 @@ impl SessionsService {
         }
         match &payload {
             EventPayload::Span(SpanEvent::ModelRequestEnd { model_usage, .. }) => {
-                self.add_usage(ws, session, &usage(model_usage)).await?;
+                self.add_usage(ws, session, &Usage::from(&model_usage.tokens)).await?;
             }
             EventPayload::Span(SpanEvent::OutcomeEvaluationEnd {
                 outcome_id,
@@ -62,7 +52,7 @@ impl SessionsService {
                 usage: grader,
                 ..
             }) => {
-                self.add_usage(ws, session, &usage(grader)).await?;
+                self.add_usage(ws, session, &Usage::from(grader)).await?;
                 let eval = OutcomeEvaluation {
                     outcome_id: outcome_id.clone(),
                     result: *result,

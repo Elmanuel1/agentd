@@ -14,19 +14,19 @@ const NUDGES: usize = 3;
 
 /// The grader on `thread` ended `NUDGES` model calls with no tool call, so
 /// with no verdict: with text, or with nothing at all. A call's tool calls
-/// follow its `span.model_request_end`.
+/// come before its `span.model_request_end`.
 pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
-    let (mut ended, mut idle) = (0, false);
+    let (mut ended, mut called) = (0, false);
     for e in log.iter().filter(|e| e.session_thread_id.as_ref() == Some(thread)) {
         match e.payload {
+            EventPayload::Agent(AgentEvent::ToolUse { .. }) => called = true,
             EventPayload::Span(SpanEvent::ModelRequestEnd { .. }) => {
-                ended += usize::from(std::mem::replace(&mut idle, true))
+                ended += usize::from(!std::mem::replace(&mut called, false))
             }
-            EventPayload::Agent(AgentEvent::ToolUse { .. }) => idle = false,
             _ => {}
         }
     }
-    ended + usize::from(idle) >= NUDGES
+    ended >= NUDGES
 }
 
 /// The round's end when the grader stalled: it fails.

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{EventId, ModelUsage};
+use super::{EventId, ModelUsage, SpanModelUsage};
 use crate::types::OutcomeId;
 
 /// The span events (`type` `span.*`).
@@ -21,7 +21,7 @@ pub enum SpanEvent {
         #[serde(default)]
         is_error: bool,
         /// Usage.
-        model_usage: ModelUsage,
+        model_usage: SpanModelUsage,
     },
     /// Grader began an iteration.
     #[serde(rename = "span.outcome_evaluation_start")]

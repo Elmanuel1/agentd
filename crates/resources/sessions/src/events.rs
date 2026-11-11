@@ -17,7 +17,7 @@ mod span;
 mod user;
 
 pub use agent::AgentEvent;
-pub use fields::{ConfirmationResult, ModelUsage, Rubric, StopReason};
+pub use fields::{ConfirmationResult, ModelUsage, Rubric, SpanModelUsage, StopReason};
 pub use session::SessionEvent;
 pub use span::SpanEvent;
 pub use user::UserEvent;

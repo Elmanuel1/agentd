@@ -87,3 +87,15 @@ fn limit_validation_matches_live_message() {
     params.insert("limit".to_string(), "100".to_string());
     assert_eq!(Pagination::from_params(&params).unwrap().limit, 100);
 }
+
+#[test]
+fn the_beta_flag_passes_and_an_unknown_param_still_fails() {
+    // Live: the SDKs and `ant` send `?beta=true` on every beta call.
+    let params: HashMap<String, String> = [("beta".to_string(), "true".to_string())].into();
+    assert!(reject_unknown_params(&params, &["version"]).is_ok());
+    let params: HashMap<String, String> = [("bogus".to_string(), "1".to_string())].into();
+    assert_eq!(
+        reject_unknown_params(&params, &["version"]).unwrap_err().message,
+        "Failed to parse request body: unknown field \"bogus\""
+    );
+}

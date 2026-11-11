@@ -17,7 +17,7 @@ use super::reply::{led, Call};
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
 use super::team::roster;
-use super::turn::{batch, Batch};
+use super::turn::{batch, opening, Batch};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
@@ -83,7 +83,7 @@ impl Loop {
         let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
         let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
-        let Taken { taken, answers, allowed, thread, history, read, interrupt } =
+        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } =
             take(&log, &session, cloud, &rubrics);
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
@@ -126,7 +126,7 @@ impl Loop {
         let ongoing =
             thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
         running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
-        let opening = batch(taken, running, answers.into_iter().chain([start]).collect());
+        let opening = opening(taken, arrived, running, answers.into_iter().chain([start]).collect());
         if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
         }

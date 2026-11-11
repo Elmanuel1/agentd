@@ -239,10 +239,11 @@ async fn send(app: &Router, session: &str, body: Value) -> (StatusCode, Value) {
     send_to(app, request("POST", &format!("/v1/sessions/{session}/events"), Auth::Key(KEY), Some(body))).await
 }
 
-/// The session's events, once one of type `until` (or any of them) is there.
+/// The session's events, once one of type `until` (or any of them) is there,
+/// listed as the SDKs list them, with `beta=true`.
 async fn events_until(app: &Router, session: &str, until: &str, count: usize) -> Vec<Value> {
     for _ in 0..200 {
-        let uri = format!("/v1/sessions/{session}/events?limit=1000");
+        let uri = format!("/v1/sessions/{session}/events?beta=true&limit=1000");
         let (_, page) = send_to(app, request("GET", &uri, Auth::Key(KEY), None)).await;
         let events = page["data"].as_array().cloned().unwrap_or_default();
         if events.iter().filter(|e| e["type"] == until).count() >= count {
@@ -250,7 +251,7 @@ async fn events_until(app: &Router, session: &str, until: &str, count: usize) ->
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let uri = format!("/v1/sessions/{session}/events?limit=1000");
+    let uri = format!("/v1/sessions/{session}/events?beta=true&limit=1000");
     let (_, page) = send_to(app, request("GET", &uri, Auth::Key(KEY), None)).await;
     panic!("no {count} `{until}` in {session}'s log: {page}");
 }
@@ -312,8 +313,21 @@ async fn a_self_hosted_built_in_call_idles_requires_action_and_its_result_contin
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     let call = events.iter().find(|e| e["type"] == "agent.tool_use").unwrap().clone();
     assert_eq!(call["evaluated_permission"], "allow");
-    let tail: Vec<&str> = types(&events).into_iter().rev().take(3).collect();
-    assert_eq!(tail, ["session.status_idle", "session.usage", "session.thread_status_idle"]);
+    assert_eq!(call["evaluation"], json!({"type": "always_allow"}));
+    // Live's poll replay, 2026-11-11: the call, then the reply's end.
+    let tail: Vec<&str> = types(&events).into_iter().rev().take(5).collect();
+    assert_eq!(
+        tail,
+        [
+            "session.status_idle",
+            "session.usage",
+            "session.thread_status_idle",
+            "span.model_request_end",
+            "agent.tool_use"
+        ]
+    );
+    let end = events.iter().find(|e| e["type"] == "span.model_request_end").unwrap();
+    assert_eq!(end["model_usage"]["speed"], "standard");
     let idle = events.last().unwrap();
     assert_eq!(idle["stop_reason"], json!({"type": "requires_action", "event_ids": [call["id"]]}));
     let (_, item) = rig.call("GET", &format!("/v1/environments/{env}/work/{s}"), Auth::Key(KEY), None).await;
@@ -332,13 +346,15 @@ async fn a_self_hosted_built_in_call_idles_requires_action_and_its_result_contin
     let events = events_until(&app, &s, "session.status_idle", 2).await;
     let at = types(&events).iter().position(|t| *t == "user.tool_result").unwrap();
     assert_eq!(
-        types(&events)[at - 2..=at + 1],
+        types(&events)[at - 1..=at + 3],
         [
+            "session.status_idle",
+            "user.tool_result",
             "session.status_running",
             "session.thread_status_running",
-            "user.tool_result",
             "span.model_request_start"
-        ]
+        ],
+        "live stamps the worker's result on arrival"
     );
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
     assert!(model.asked.lock()[1].messages.iter().any(|m| m
@@ -398,6 +414,7 @@ async fn asked_and_custom_tools_wait_for_the_client() {
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     let ask = events.iter().find(|e| e["type"] == "agent.tool_use").unwrap().clone();
     assert_eq!(ask["evaluated_permission"], "ask");
+    assert_eq!(ask["evaluation"], json!({"type": "always_ask"}));
     let deny = json!({"events": [{"type": "user.tool_confirmation", "tool_use_id": ask["id"], "result": "deny", "deny_message": "not that"}]});
     let (st, body) = send(&app, &s, deny).await;
     assert_eq!(st, StatusCode::OK, "{body}");
