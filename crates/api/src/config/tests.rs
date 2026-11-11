@@ -197,3 +197,21 @@ fn a_retention_period_is_a_positive_number_of_days() {
         assert_eq!(err.var, "AGENTD_EVENT_RETENTION_DAYS");
     }
 }
+
+#[test]
+fn the_role_and_the_loop_s_settings_come_from_config() {
+    let c = config(&[]).unwrap();
+    assert_eq!(c.agent_loop.role, Role::All);
+    assert!(c.agent_loop.role.runs_loop() && c.agent_loop.role.serves_api());
+    assert_eq!((c.agent_loop.per_workspace, c.agent_loop.attempts, c.agent_loop.steps), (32, 5, 256));
+    let api = config(&[("AGENTD_ROLE", "api")]).unwrap();
+    assert!(!api.agent_loop.role.runs_loop(), "an api replica claims no step");
+    let worker =
+        config(&[("AGENTD_ROLE", "loop"), ("AGENTD_LOOP_WORKSPACES", "wrkspc_a@2026-12-01T00:00:00Z")])
+            .unwrap();
+    assert!(!worker.agent_loop.role.serves_api());
+    let joined = worker.agent_loop.workspaces.joined(&shared::WorkspaceId::new("wrkspc_a"));
+    assert_eq!(joined.map(|t| t.to_wire()).as_deref(), Some("2026-12-01T00:00:00.000000Z"));
+    assert_eq!(config(&[("AGENTD_ROLE", "worker")]).unwrap_err().var, "AGENTD_ROLE");
+    assert_eq!(config(&[("AGENTD_LOOP_WORKSPACES", "wrkspc_a")]).unwrap_err().var, "AGENTD_LOOP_WORKSPACES");
+}

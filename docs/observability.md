@@ -14,6 +14,7 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 |---|---|---|---|---|
 | Inbound HTTP, every route and unknown paths | `telemetry::http::observe`, a layer on every route | `GET /v1/agents/{id}` with method, route, status code and request id; W3C `traceparent` is honoured | `http.server.request.duration` (s) by method, route template, status code; `http.server.active_requests` | `error` on 5xx, with the cause |
 | Event streams | the same layer, on `text/event-stream` responses | inside the request span | `agentd.sse.active_streams`, held until the client disconnects | |
+| The step queue | `telemetry::steps`, a count every 10 s on every replica | | `agentd.loop.steps_due` and `agentd.loop.steps_leased`, the queue's due and leased steps; every replica reads the same table, so take the maximum, not the sum | `warn` |
 | Event retention | `sessions::retention`, every 5 minutes on the replica that holds its lock | | `agentd.retention.last_success` (s), when this replica last completed a run, while `AGENTD_EVENT_RETENTION_DAYS` is set | `warn` |
 | Postgres statements | `telemetry::db`, diesel `Instrumentation` on every pooled connection | `SELECT postgres` and so on, under the request | `db.client.operation.duration` (s) by operation and outcome | `error`; a unique violation is `debug` (it is a 409) |
 | Postgres connections | the pool's setup hook | | a failed `CONNECT` in `db.client.operation.duration`; `db.client.connection.count` (idle, used), `.max`, `.pending_requests` | `error` |

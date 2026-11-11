@@ -77,3 +77,32 @@ impl ModelBudget for ValkeyBudget {
         spent.map_err(BackendError::new)?.map_err(BackendError::new)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_third_request_in_a_minute_over_a_budget_of_two_waits_for_the_next_minute() {
+        let Ok(url) = std::env::var("AGENTD_VALKEY_URL") else { return };
+        let provider = format!("test-{}", std::process::id());
+        let budget = ValkeyBudget::connect(&url, Some(2), None).unwrap();
+        assert_eq!(budget.admit(&provider).await.unwrap(), Admit::Yes);
+        assert_eq!(budget.admit(&provider).await.unwrap(), Admit::Yes);
+        assert!(matches!(budget.admit(&provider).await.unwrap(), Admit::Later(s) if (1..=60).contains(&s)));
+        let tokens = ValkeyBudget::connect(&url, None, Some(100)).unwrap();
+        let other = format!("{provider}-tokens");
+        assert_eq!(tokens.admit(&other).await.unwrap(), Admit::Yes);
+        tokens.spend(&other, 100).await.unwrap();
+        assert!(
+            matches!(tokens.admit(&other).await.unwrap(), Admit::Later(_)),
+            "the minute's tokens are spent"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_valkey_down_the_budget_answers_an_error_so_the_step_waits() {
+        let budget = ValkeyBudget::connect("redis://127.0.0.1:1", Some(2), None).unwrap();
+        assert!(budget.admit("anthropic").await.is_err());
+    }
+}
