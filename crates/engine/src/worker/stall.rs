@@ -3,7 +3,7 @@
 //! model calls without end.
 
 use serde_json::json;
-use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage};
+use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent};
 use sessions::types::{OutcomeEvaluation, ThreadId};
 
 use super::grade::{verdict, Outcome, VERDICT};
@@ -12,14 +12,21 @@ use super::turn::Turn;
 /// Turns a grader may end without its verdict before its round fails.
 const NUDGES: usize = 3;
 
-/// The grader on `thread` ended `NUDGES` turns without its verdict; each
-/// left its text as an `agent.message` on its thread.
+/// The grader on `thread` ended `NUDGES` model calls with no tool call, so
+/// with no verdict: with text, or with nothing at all. A call's tool calls
+/// follow its `span.model_request_end`.
 pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
-    let ended = log.iter().filter(|e| {
-        e.session_thread_id.as_ref() == Some(thread)
-            && matches!(e.payload, EventPayload::Agent(AgentEvent::Message { .. }))
-    });
-    ended.count() >= NUDGES
+    let (mut ended, mut idle) = (0, false);
+    for e in log.iter().filter(|e| e.session_thread_id.as_ref() == Some(thread)) {
+        match e.payload {
+            EventPayload::Span(SpanEvent::ModelRequestEnd { .. }) => {
+                ended += usize::from(std::mem::replace(&mut idle, true))
+            }
+            EventPayload::Agent(AgentEvent::ToolUse { .. }) => idle = false,
+            _ => {}
+        }
+    }
+    ended + usize::from(idle) >= NUDGES
 }
 
 /// The round's end when the grader stalled: it fails.

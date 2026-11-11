@@ -36,6 +36,8 @@ enum Say {
     Tool(&'static str, Value),
     /// Pend until the call is cancelled.
     Hold,
+    /// End the turn with no content at all.
+    Empty,
     Fail(ModelError),
 }
 
@@ -64,6 +66,7 @@ impl ModelClient for Scripted {
                 (vec![Block::ToolUse { id: "toolu_1".into(), name: name.into(), input }], StopKind::ToolUse)
             }
             Say::Hold => return std::future::pending().await,
+            Say::Empty => (Vec::new(), StopKind::EndTurn),
             Say::Fail(e) => return Err(e),
         };
         Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.004) })
@@ -723,7 +726,7 @@ async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
 #[tokio::test]
 async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the_round() {
     // L-5: the rubric file's text is graded against; a grader that ends three
-    // turns without `submit_verdict` fails the round.
+    // turns without `submit_verdict`, with text or with nothing, fails the round.
     let Some(rig) = Rig::with_sandbox().await else { return };
     let env = rig.environment("cloud").await;
     let (st, file) = rig.upload(Auth::Key(KEY), "rubric.md", "### Tone\nWarm and specific.", None).await;
@@ -731,8 +734,8 @@ async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the
     let model = Scripted::new(vec![
         Say::Text("draft"),
         Say::Text("hmm"),
-        Say::Text("still reading"),
-        Say::Text("looks fine"),
+        Say::Empty,
+        Say::Empty,
         Say::Text("summary"),
     ]);
     let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
