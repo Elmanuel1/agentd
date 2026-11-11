@@ -72,7 +72,7 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 name: name.to_owned(),
                 input: input.clone(),
                 evaluated_permission: Some("ask".into()),
-                evaluation: evaluation.clone(),
+                evaluation: Some(evaluation.clone()),
             }),
             Some(Disposition::Allow { evaluation }) => turn.event(AgentEvent::ToolUse {
                 name: name.to_owned(),
@@ -99,7 +99,9 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
             Some(Disposition::Delegate) => {
                 unknown = true;
                 let (call, led): (Vec<Event>, Vec<Event>) =
-                    super::team::delegate(turn, c.session, c.log, name, input).into_iter().partition(is_call);
+                    super::team::delegate(turn, c.session, c.log, name, input)
+                        .into_iter()
+                        .partition(|e| matches!(e.payload, EventPayload::Agent(AgentEvent::ToolUse { .. })));
                 calls.extend(call);
                 after.extend(led);
                 continue;
@@ -147,9 +149,4 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         (true, true) => None,
     };
     Led { events, end, idle, evaluation }
-}
-
-/// A call the reply makes, which live writes before the reply's end.
-fn is_call(e: &Event) -> bool {
-    matches!(e.payload, EventPayload::Agent(AgentEvent::ToolUse { .. } | AgentEvent::CustomToolUse { .. }))
 }

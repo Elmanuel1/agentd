@@ -69,6 +69,18 @@ pub struct ModelUsage {
     pub output_tokens: u64,
 }
 
+impl From<&ModelUsage> for shared::Usage {
+    fn from(u: &ModelUsage) -> Self {
+        Self {
+            cache_creation: None,
+            cache_read_input_tokens: u.cache_read_input_tokens,
+            input_tokens: u.input_tokens,
+            output_tokens: u.output_tokens,
+            list_cost: None,
+        }
+    }
+}
+
 /// `span.model_request_end`'s usage: the call's tokens and the speed it ran at.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpanModelUsage {

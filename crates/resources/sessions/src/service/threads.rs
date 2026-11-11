@@ -137,13 +137,7 @@ pub fn threads_projection(session: &Session, events: &[Event]) -> Vec<SessionThr
         if let EventPayload::Span(SpanEvent::ModelRequestEnd { model_usage, .. }) = &ev.payload {
             let owner = tid.unwrap_or(&primary);
             if let Some(t) = threads.iter_mut().find(|x| &x.id == owner) {
-                t.usage.add(&Usage {
-                    cache_creation: None,
-                    cache_read_input_tokens: model_usage.tokens.cache_read_input_tokens,
-                    input_tokens: model_usage.tokens.input_tokens,
-                    output_tokens: model_usage.tokens.output_tokens,
-                    list_cost: None,
-                });
+                t.usage.add(&Usage::from(&model_usage.tokens));
             }
         }
     }

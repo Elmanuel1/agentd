@@ -24,6 +24,8 @@ mod stall;
 mod step;
 mod take;
 mod team;
+#[cfg(test)]
+mod tests;
 mod turn;
 mod usage;
 mod watch;

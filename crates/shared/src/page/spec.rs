@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use super::{decode_cursor, Pagination, BETA, DEFAULT_LIMIT};
+use super::{decode_cursor, reject_unknown_params, Pagination, DEFAULT_LIMIT};
 use crate::error::ApiError;
 
 /// How a list answers a query param it does not read.
@@ -52,20 +52,16 @@ impl ListSpec {
 
     /// Check the query and parse its `limit` and `page`.
     pub fn parse(&self, params: &HashMap<String, String>) -> Result<Pagination, ApiError> {
-        for key in params.keys().map(String::as_str) {
-            if key == "limit" || key == "page" || key == BETA || self.filters.contains(&key) {
-                continue;
+        match self.unknown {
+            UnknownParams::Reject => {
+                let read: Vec<&str> =
+                    ["limit", "page"].into_iter().chain(self.filters.iter().copied()).collect();
+                reject_unknown_params(params, &read)?;
             }
-            match self.unknown {
-                UnknownParams::Reject => {
-                    return Err(ApiError::invalid_request(format!(
-                        "Failed to parse request body: unknown field \"{key}\""
-                    )))
+            UnknownParams::Ignore(rejected) => {
+                if let Some(key) = params.keys().find(|k| rejected.contains(&k.as_str())) {
+                    return Err(ApiError::invalid_request(format!("{key}: unknown field")));
                 }
-                UnknownParams::Ignore(rejected) if rejected.contains(&key) => {
-                    return Err(ApiError::invalid_request(format!("{key}: unknown field")))
-                }
-                UnknownParams::Ignore(_) => {}
             }
         }
         let limit = match params.get("limit") {

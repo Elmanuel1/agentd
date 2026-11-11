@@ -24,10 +24,10 @@ pub enum Disposition {
         /// How the permission was reached.
         evaluation: Option<Value>,
     },
-    /// Wait for the client to confirm; `evaluation` as for `Allow`.
+    /// Wait for the client to confirm; `evaluation` names the policy.
     Ask {
         /// How the permission was reached.
-        evaluation: Option<Value>,
+        evaluation: Value,
     },
     /// The client runs it (`agent.custom_tool_use`).
     Custom,
@@ -110,7 +110,7 @@ fn from_policy(policy: PermissionPolicy) -> Disposition {
         PermissionPolicy::AlwaysAllow => {
             Disposition::Allow { evaluation: Some(json!({"type": "always_allow"})) }
         }
-        PermissionPolicy::AlwaysAsk => Disposition::Ask { evaluation: Some(json!({"type": "always_ask"})) },
+        PermissionPolicy::AlwaysAsk => Disposition::Ask { evaluation: json!({"type": "always_ask"}) },
         PermissionPolicy::Auto => Disposition::Allow {
             evaluation: Some(json!({"type": "auto", "evaluated_permission": {"type": "allow"}})),
         },
@@ -187,7 +187,7 @@ mod tests {
                 "send_to_agent"
             ]
         );
-        let asked = Disposition::Ask { evaluation: Some(json!({"type": "always_ask"})) };
+        let asked = Disposition::Ask { evaluation: json!({"type": "always_ask"}) };
         assert_eq!(b.disposition("bash"), Some(&asked));
         assert!(matches!(b.disposition("read"), Some(Disposition::Allow { evaluation: Some(_) })));
         assert_eq!(b.disposition("lookup"), Some(&Disposition::Custom));

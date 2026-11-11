@@ -136,7 +136,7 @@ impl Pagination {
 }
 
 /// The query flag the SDKs and `ant` send on every beta call, which live accepts.
-pub(crate) const BETA: &str = "beta";
+const BETA: &str = "beta";
 
 /// Reject any query param not in `allowed` (or [`BETA`]), matching the live 400
 /// `Failed to parse request body: unknown field "X"`. Callers pass exactly the
