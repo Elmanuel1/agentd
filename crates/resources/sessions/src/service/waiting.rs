@@ -76,7 +76,8 @@ impl SessionsService {
             };
             calls.push((call.clone(), custom));
         }
-        let id = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let session = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let id = session.id.clone();
         let ids: Vec<EventId> = calls.iter().map(|(call, _)| call.clone()).collect();
         let events: Vec<Event> = payloads.into_iter().map(Event::new).collect();
         let check = |found: &[Event]| {
@@ -95,7 +96,11 @@ impl SessionsService {
             }
             Ok(())
         };
-        self.events.append_answers(&ctx.workspace, &id, &ids, &events, &check).await.map_err(map_store)??;
+        let wake = self.wake_for(ctx, &session).await?;
+        self.events
+            .append_answers(&ctx.workspace, &id, &ids, &events, &check, wake)
+            .await
+            .map_err(map_store)??;
         self.publish(&ctx.workspace, &id).await;
         Ok(events)
     }

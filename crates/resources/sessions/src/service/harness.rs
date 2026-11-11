@@ -5,7 +5,7 @@ use shared::{ApiError, Timestamp, Usage, WorkspaceId};
 
 use super::{map_store, HarnessContract, SessionsService};
 use crate::events::{Event, EventId, EventPayload, SessionEvent, StopReason};
-use crate::store::StoreError;
+use crate::store::{StoreError, Wake};
 use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadId};
 
 /// The same service implements it, so every write to the log signals the
@@ -31,7 +31,10 @@ impl HarnessContract for SessionsService {
         ev.session_thread_id = thread.cloned();
         // Agent-side events are processed by construction.
         ev.processed_at = Some(Timestamp::now());
-        self.events.append_events(ws, session, std::slice::from_ref(&ev)).await.map_err(map_store)?;
+        self.events
+            .append_events(ws, session, std::slice::from_ref(&ev), Wake::No)
+            .await
+            .map_err(map_store)?;
         self.publish(ws, session).await;
         Ok(ev)
     }

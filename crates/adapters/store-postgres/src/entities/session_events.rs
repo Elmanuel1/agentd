@@ -4,7 +4,7 @@
 mod reads;
 
 use ::sessions::events::{Event, EventId};
-use ::sessions::store::{AnswerCheck, SessionEventLog, StoreError};
+use ::sessions::store::{AnswerCheck, SessionEventLog, StoreError, Wake};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
 use diesel::sql_types::{Array, BigInt, Jsonb, Text};
@@ -12,6 +12,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use shared::{ApiError, Timestamp, WorkspaceId};
 
+use super::loop_steps::enqueue;
 use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
 /// Postgres-backed session event log (Diesel).
@@ -34,6 +35,7 @@ impl SessionEventLog for PgSessionEventLog {
         ws: &WorkspaceId,
         id: &SessionId,
         events: &[Event],
+        wake: Wake,
     ) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
@@ -44,7 +46,7 @@ impl SessionEventLog for PgSessionEventLog {
                 if insert(c, ws, id, &ids, docs).await? != ids.len() {
                     return Err(diesel::result::Error::NotFound);
                 }
-                Ok(())
+                enqueue(c, ws, id, wake).await
             }
             .scope_boxed()
         })
@@ -60,21 +62,7 @@ impl SessionEventLog for PgSessionEventLog {
         at: Timestamp,
     ) -> Result<Vec<Event>, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let ids: Vec<&str> = ids.iter().map(EventId::as_str).collect();
-        let mut rows: Vec<SeqDocRow> = diesel::sql_query(
-            "UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', to_jsonb($4::text))
-             WHERE workspace_id = $1 AND session_id = $2 AND event_id = ANY($3) AND doc->>'processed_at' IS NULL
-             RETURNING seq, doc",
-        )
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .bind::<Array<Text>, _>(&ids)
-        .bind::<Text, _>(at.to_wire())
-        .load(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        rows.sort_by_key(|r| r.seq);
-        rows.into_iter().map(|r| parse_doc(r.doc)).collect()
+        stamp(&mut conn, ws, id, ids, at).await.map_err(diesel_be)?.into_iter().map(parse_doc).collect()
     }
 
     async fn append_answers(
@@ -84,6 +72,7 @@ impl SessionEventLog for PgSessionEventLog {
         calls: &[EventId],
         events: &[Event],
         check: &AnswerCheck<'_>,
+        wake: Wake,
     ) -> Result<Result<(), ApiError>, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let calls: Vec<&str> = calls.iter().map(EventId::as_str).collect();
@@ -110,7 +99,7 @@ impl SessionEventLog for PgSessionEventLog {
                 if insert(c, ws, id, &ids, docs).await? != events.len() {
                     return Err(diesel::result::Error::NotFound);
                 }
-                Ok(Ok(()))
+                enqueue(c, ws, id, wake).await.map(Ok)
             }
             .scope_boxed()
         })
@@ -154,6 +143,30 @@ fn log_be(e: diesel::result::Error) -> StoreError {
     }
 }
 
+/// Stamp `at` on those of `ids` not processed yet; their docs, in log order.
+pub(crate) async fn stamp(
+    c: &mut AsyncPgConnection,
+    ws: &WorkspaceId,
+    id: &SessionId,
+    ids: &[EventId],
+    at: Timestamp,
+) -> Result<Vec<serde_json::Value>, diesel::result::Error> {
+    let ids: Vec<&str> = ids.iter().map(EventId::as_str).collect();
+    let mut rows: Vec<SeqDocRow> = diesel::sql_query(
+        "UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', to_jsonb($4::text))
+         WHERE workspace_id = $1 AND session_id = $2 AND event_id = ANY($3) AND doc->>'processed_at' IS NULL
+         RETURNING seq, doc",
+    )
+    .bind::<Text, _>(ws.as_str())
+    .bind::<Text, _>(id.as_str())
+    .bind::<Array<Text>, _>(&ids)
+    .bind::<Text, _>(at.to_wire())
+    .load(c)
+    .await?;
+    rows.sort_by_key(|r| r.seq);
+    Ok(rows.into_iter().map(|r| r.doc).collect())
+}
+
 /// One event read with its log position.
 #[derive(diesel::QueryableByName)]
 struct SeqDocRow {
@@ -163,7 +176,7 @@ struct SeqDocRow {
     doc: serde_json::Value,
 }
 
-async fn insert(
+pub(crate) async fn insert(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     id: &SessionId,

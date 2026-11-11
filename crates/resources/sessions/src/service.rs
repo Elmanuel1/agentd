@@ -15,12 +15,14 @@ use shared::limits::ModelCatalog;
 use shared::ports::Runtime;
 use shared::ApiError;
 
+use crate::steps::LoopWorkspaces;
 use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
 use crate::types::{Session, SessionId};
 
 mod events;
 mod harness;
 mod lifecycle;
+mod on_loop;
 mod ports;
 mod record;
 mod resources;
@@ -49,6 +51,8 @@ pub struct SessionsService {
     sandbox: Option<Arc<dyn Runtime>>,
     /// Issues each sandbox's work item, which its harness runs.
     work: Option<Arc<dyn SandboxWork>>,
+    /// The workspaces whose sessions the loop serves.
+    on_loop: LoopWorkspaces,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -76,7 +80,15 @@ impl SessionsService {
             streams: Streams::default(),
             sandbox: None,
             work: None,
+            on_loop: LoopWorkspaces::default(),
         }
+    }
+
+    /// Serve the sessions of `workspaces` on the loop.
+    #[must_use]
+    pub fn with_loop(mut self, workspaces: LoopWorkspaces) -> Self {
+        self.on_loop = workspaces;
+        self
     }
 
     /// Stream through `streams`, for every replica.

@@ -95,6 +95,17 @@ pub trait SessionsStore: Send + Sync {
     ) -> Result<Vec<Session>, StoreError>;
 }
 
+/// Whether an append puts its session on the step queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// It does not: an agent's own event, or a session the harness serves.
+    No,
+    /// It does, in the append's commit.
+    Step,
+    /// It wakes the step the session already has, and queues none.
+    IfQueued,
+}
+
 /// Refuses results, given the calls they answer and the results already saved.
 pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<(), ApiError> + Send + Sync + 'a;
 
@@ -157,6 +168,7 @@ pub trait SessionEventLog: SessionEventReads {
         ws: &WorkspaceId,
         id: &SessionId,
         events: &[Event],
+        wake: Wake,
     ) -> Result<(), StoreError>;
     /// Stamp `at` on those of `ids` not processed yet; the events it stamped,
     /// in log order.
@@ -177,6 +189,7 @@ pub trait SessionEventLog: SessionEventReads {
         calls: &[EventId],
         events: &[Event],
         check: &AnswerCheck<'_>,
+        wake: Wake,
     ) -> Result<Result<(), ApiError>, StoreError>;
     /// Delete the whole log of each session.
     async fn delete_events_of(&self, sessions: &[(WorkspaceId, SessionId)]) -> Result<(), StoreError>;

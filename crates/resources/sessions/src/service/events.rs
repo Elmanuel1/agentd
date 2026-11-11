@@ -4,7 +4,7 @@ use shared::{ApiError, AuthContext, Pagination};
 use super::{guard_writable, map_store, parse_id, SessionsService};
 use crate::events::{Event, EventPayload, UserEvent};
 use crate::store::EventFilter;
-use crate::types::{OutcomeId, SessionId, SessionStatus};
+use crate::types::{OutcomeId, Session, SessionStatus};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
@@ -16,7 +16,8 @@ impl SessionsService {
         environment: Option<&str>,
         payloads: Vec<EventPayload>,
     ) -> Result<Vec<Event>, ApiError> {
-        let id = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let session = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let id = session.id.clone();
         let mut out = Vec::with_capacity(payloads.len());
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.
@@ -39,7 +40,8 @@ impl SessionsService {
         if out.is_empty() {
             return Ok(out);
         }
-        self.events.append_events(&ctx.workspace, &id, &out).await.map_err(map_store)?;
+        let wake = self.wake_for(ctx, &session).await?;
+        self.events.append_events(&ctx.workspace, &id, &out, wake).await.map_err(map_store)?;
         self.publish(&ctx.workspace, &id).await;
         Ok(out)
     }
@@ -50,7 +52,7 @@ impl SessionsService {
         raw_id: &str,
         environment: Option<&str>,
         payloads: &[EventPayload],
-    ) -> Result<SessionId, ApiError> {
+    ) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
         guard_writable(&session)?;
@@ -59,7 +61,7 @@ impl SessionsService {
         }
         validate_sendable("events", payloads)?;
         self.guard_waiting(&ctx.workspace, &session, payloads).await?;
-        Ok(id)
+        Ok(session)
     }
 
     /// `GET /v1/sessions/{id}/events`: one page of the history (the

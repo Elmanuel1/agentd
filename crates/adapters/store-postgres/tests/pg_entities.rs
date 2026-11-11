@@ -326,7 +326,7 @@ async fn pg_sessions_shared_event_log() {
         return;
     }
     use sessions::events::{Event, EventPayload, UserEvent};
-    use sessions::store::{SessionEventLog, SessionEventReads, SessionsStore};
+    use sessions::store::{SessionEventLog, SessionEventReads, SessionsStore, Wake};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
     let log = PgSessionEventLog::new(backend().await);
@@ -339,7 +339,7 @@ async fn pg_sessions_shared_event_log() {
 
     let e1 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
     let e2 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-    log.append_events(&ws, &session.id, &[e1.clone(), e2.clone()]).await.unwrap();
+    log.append_events(&ws, &session.id, &[e1.clone(), e2.clone()], Wake::No).await.unwrap();
 
     let events = log.events(&ws, &session.id).await.unwrap();
     assert_eq!(events, vec![e1.clone(), e2.clone()], "log returns append order (by seq)");
@@ -451,7 +451,7 @@ async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
         return;
     }
     use sessions::events::{Event, EventPayload, UserEvent};
-    use sessions::store::{SessionEventLog, SessionsStore, StoreError};
+    use sessions::store::{SessionEventLog, SessionsStore, StoreError, Wake};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
     let log = PgSessionEventLog::new(backend().await);
@@ -470,7 +470,7 @@ async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
 
     store.delete(&ws, &read.id).await.unwrap();
     let late = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-    assert!(matches!(log.append_events(&ws, &read.id, &[late]).await, Err(StoreError::NotFound)));
+    assert!(matches!(log.append_events(&ws, &read.id, &[late], Wake::No).await, Err(StoreError::NotFound)));
 }
 
 #[tokio::test]

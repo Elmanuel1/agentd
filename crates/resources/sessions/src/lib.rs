@@ -17,6 +17,7 @@ pub mod retention;
 pub mod routes;
 pub mod service;
 pub mod signals;
+pub mod steps;
 pub mod store;
 pub mod types;
 

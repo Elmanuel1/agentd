@@ -13,6 +13,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Pagination, Timestamp, WorkspaceId};
 
+use super::loop_steps::forget;
 use super::session_events::lock;
 use super::work_items::stop::stop;
 use crate::schema::sessions;
@@ -134,6 +135,7 @@ impl SessionsStore for PgSessionsStore {
                         return Ok(Err(status.map_or(StoreError::NotFound, |_| StoreError::Conflict)));
                     };
                     stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
+                    forget(c, ws, id).await?;
                     Ok(Ok(doc))
                 }
                 .scope_boxed()

@@ -12,7 +12,7 @@ use crate::service::{backend, not_found, WorkService};
 use crate::store::{Beat, Reach};
 use crate::tokens::WorkClaims;
 use crate::types::{Heartbeat, HeartbeatTag, Work, WorkState};
-use shared::tenancy::RUNTIME_QUEUE;
+use shared::tenancy::{HOSTED_QUEUE, RUNTIME_QUEUE};
 
 /// The lease a heartbeat grants when it asks for none, or for 0, as on live;
 /// an acknowledgement holds the item this long before its first heartbeat.
@@ -142,6 +142,27 @@ impl WorkService {
         let (ws, reach) = self.target(caller, env, id)?;
         let item = self.store.stop(&ws, id, &reach, force, Timestamp::now()).await.map_err(backend)?;
         item.map(|i| i.work).ok_or_else(not_found)
+    }
+
+    /// Put the work of a session the loop serves on its queue: its
+    /// environment's for `self_hosted`, the runtime queue for `cloud`. An item
+    /// the harness holds is stopped first, so it queues again there.
+    pub async fn queue_for_loop(
+        &self,
+        ctx: &AuthContext,
+        environment_id: &str,
+        session: &str,
+        self_hosted: bool,
+    ) -> Result<(), ApiError> {
+        let item = self.store.get(&ctx.workspace, session, &Reach::default()).await.map_err(backend)?;
+        if item.is_some_and(|i| i.queue == HOSTED_QUEUE) {
+            self.store
+                .stop(&ctx.workspace, session, &Reach::default(), true, Timestamp::now())
+                .await
+                .map_err(backend)?;
+        }
+        let queue = if self_hosted { environment_id } else { RUNTIME_QUEUE };
+        self.queue(ctx, environment_id, session, queue).await
     }
 
     /// The session was archived, deleted or terminated: its item stops, and

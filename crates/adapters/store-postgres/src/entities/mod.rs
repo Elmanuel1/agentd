@@ -8,6 +8,7 @@ pub mod dreams;
 pub mod environment_keys;
 pub mod environments;
 pub mod files;
+pub mod loop_steps;
 pub mod memory;
 pub mod run_lock;
 pub mod session_events;

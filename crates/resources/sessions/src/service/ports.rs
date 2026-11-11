@@ -82,6 +82,15 @@ pub trait SandboxWork: Send + Sync {
         session: &Session,
         environment: &serde_json::Value,
     ) -> Result<BTreeMap<String, String>, ApiError>;
+    /// Put a loop session's work on its queue (its environment's for
+    /// `self_hosted`, the runtime queue for `cloud`), taking it from the
+    /// harness first when the harness holds it.
+    async fn queue(
+        &self,
+        ctx: &AuthContext,
+        session: &Session,
+        environment: &serde_json::Value,
+    ) -> Result<(), ApiError>;
     /// The session's sandbox is gone: its work item stops.
     async fn end(&self, ws: &WorkspaceId, session: &SessionId);
     /// The session is gone and its work item already stopped: only what is

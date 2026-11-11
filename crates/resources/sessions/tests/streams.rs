@@ -19,7 +19,7 @@ use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, U
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
     AnswerCheck, DatabaseLoad, EventFilter, Head, SessionEventLog, SessionEventReads, SessionFilter,
-    SessionsStore, StoreError, Tail,
+    SessionsStore, StoreError, Tail, Wake,
 };
 use sessions::{SessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
@@ -69,7 +69,13 @@ impl SessionEventReads for Scripted {
 
 #[async_trait]
 impl SessionEventLog for Scripted {
-    async fn append_events(&self, _: &WorkspaceId, _: &SessionId, _: &[Event]) -> Result<(), StoreError> {
+    async fn append_events(
+        &self,
+        _: &WorkspaceId,
+        _: &SessionId,
+        _: &[Event],
+        _: Wake,
+    ) -> Result<(), StoreError> {
         unimplemented!()
     }
     async fn update_processed_at(
@@ -88,6 +94,7 @@ impl SessionEventLog for Scripted {
         _: &[EventId],
         _: &[Event],
         _: &AnswerCheck<'_>,
+        _: Wake,
     ) -> Result<Result<(), ApiError>, StoreError> {
         unimplemented!()
     }
