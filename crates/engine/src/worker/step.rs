@@ -13,7 +13,6 @@ use sessions::types::{Session, SessionStatus};
 use shared::tenancy::RUNTIME_QUEUE;
 use shared::BackendError;
 
-use super::grade;
 use super::reply::{led, Call};
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
@@ -22,6 +21,7 @@ use super::turn::{batch, Batch};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
+use super::{grade, rubrics};
 use crate::model::budget::Admit;
 use crate::model::{ModelError, ModelProvider, ModelRequest};
 use crate::turn::policy::Toolbox;
@@ -83,7 +83,9 @@ impl Loop {
         let queue = self.stores.work.queue_of(ws, id.as_str()).await.map_err(BackendError::new)?;
         let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
-        let Taken { taken, answers, allowed, thread, history, read, interrupt } = take(&log, &session, cloud);
+        let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
+        let Taken { taken, answers, allowed, thread, history, read, interrupt } =
+            take(&log, &session, cloud, &rubrics);
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
             self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
@@ -206,11 +208,11 @@ impl Loop {
                     grading: thread.grading.as_ref(),
                 };
                 let mut out = led(&call, &reply);
+                settle(&mut out, &turn, &thread, &mut session, &read, &reply);
                 if let Some(eval) = out.evaluation.take() {
                     session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
                     session.outcome_evaluations.push(eval);
                 }
-                settle(&mut out, &turn, &thread, &mut session, &read, &reply);
                 (batch(Vec::new(), Vec::new(), out.events), out.end)
             }
         };

@@ -56,7 +56,12 @@ fn is_interrupt(e: &Event) -> bool {
 }
 
 /// Read `log` of `session`.
-pub(super) fn take(log: &[Event], session: &Session, cloud: bool) -> Taken {
+pub(super) fn take(
+    log: &[Event],
+    session: &Session,
+    cloud: bool,
+    rubrics: &HashMap<String, String>,
+) -> Taken {
     let primary = Thread::primary(session);
     let turn = &primary.turn();
     let queued: Vec<&Event> =
@@ -124,9 +129,9 @@ pub(super) fn take(log: &[Event], session: &Session, cloud: bool) -> Taken {
     let read: Vec<Event> = seen.into_iter().chain(answers.iter().cloned()).collect();
     let history_of = |t: &Thread| {
         let scope = (!t.primary).then(|| t.id.clone());
-        let mut history = rebuild(&thread_events(&read, scope.as_ref()), &HashMap::new());
+        let mut history = rebuild(&thread_events(&read, scope.as_ref()), rubrics);
         if let Some(outcome) = &t.grading {
-            history = conversation(outcome, history);
+            history = conversation(outcome, rubrics, history);
         }
         for call in history.unanswered.iter_mut().filter(|u| confirmed.iter().any(|c| c.as_str() == u.id)) {
             call.asked = false;

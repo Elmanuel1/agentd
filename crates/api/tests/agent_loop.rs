@@ -204,6 +204,7 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, joined: Timestamp, tune: Tune) 
         sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
+        files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000 };
@@ -717,4 +718,39 @@ async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
     let step = step_of(&s).await.expect("the step stays queued");
     assert!(!step.leased && (3..=5).contains(&step.due_in), "due in {}s", step.due_in);
     assert!(model.asked.lock().is_empty());
+}
+
+#[tokio::test]
+async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the_round() {
+    // L-5: the rubric file's text is graded against; a grader that ends three
+    // turns without `submit_verdict` fails the round.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let env = rig.environment("cloud").await;
+    let (st, file) = rig.upload(Auth::Key(KEY), "rubric.md", "### Tone\nWarm and specific.", None).await;
+    assert_eq!(st, StatusCode::OK, "{file}");
+    let model = Scripted::new(vec![
+        Say::Text("draft"),
+        Say::Text("hmm"),
+        Say::Text("still reading"),
+        Say::Text("looks fine"),
+        Say::Text("summary"),
+    ]);
+    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let s = session(&app, &env, json!([])).await;
+    let outcome = json!({"events": [{"type": "user.define_outcome", "description": "Write a poem.", "rubric": {"type": "file", "file_id": file["id"]}}]});
+    let (st, body) = send(&app, &s, outcome).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let end = events.iter().find(|e| e["type"] == "span.outcome_evaluation_end").unwrap();
+    assert_eq!(end["result"], "failed", "{end}");
+    let asked = model.asked.lock().clone();
+    assert_eq!(asked.len(), 5, "three grader turns, then one more primary turn");
+    let rubric = |r: &ModelRequest| {
+        r.messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b, Block::Text { text } if text.contains("Warm and specific.")))
+    };
+    assert!(rubric(&asked[0]), "the agent reads the rubric");
+    assert!(rubric(&asked[1]), "the grader reads the rubric");
 }

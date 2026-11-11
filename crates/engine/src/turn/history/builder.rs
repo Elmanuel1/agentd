@@ -6,6 +6,9 @@ use std::collections::HashSet;
 use super::{History, Unanswered};
 use crate::model::{Block, Message, Role};
 
+/// What the model reads for an input with no text.
+const NO_TEXT: &str = "(no text)";
+
 #[derive(Default)]
 pub(super) struct Builder {
     pub(super) messages: Vec<Message>,
@@ -31,7 +34,10 @@ impl Builder {
         }
     }
 
+    /// The Messages API refuses an empty text block, so an input with no
+    /// text (an image only, say) still reaches the model, as `(no text)`.
     pub(super) fn text(&mut self, text: String) {
+        let text = Some(text).filter(|t| !t.is_empty()).unwrap_or_else(|| NO_TEXT.to_owned());
         self.texts.push(Block::Text { text });
     }
 

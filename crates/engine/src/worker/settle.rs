@@ -7,7 +7,7 @@ use sessions::events::{Event, StopReason};
 use sessions::steps::StepEnd;
 use sessions::types::{Session, SessionStatus};
 
-use super::grade::{active, begin};
+use super::grade::{active, begin, no_verdict, stalled};
 use super::reply::Led;
 use super::team::{busy, reply, threads, Thread};
 use super::turn::{thread_idle, Turn};
@@ -29,8 +29,15 @@ pub(super) fn settle(
         threads(session, &seen).into_iter().any(|t| !t.primary && t.id != turn.thread && busy(&seen, &t.id));
     let outcome = active(&seen).filter(|o| o.open.is_none());
     match (out.idle.take(), thread.primary, thread.grading.is_some()) {
-        // The grader ended a step without its verdict: the next step asks for it.
-        (Some(StopReason::EndTurn {}), false, true) => out.end = StepEnd::Again,
+        // The grader ended a step without its verdict: the next step asks for
+        // it, until the grader has stalled and the round fails.
+        (Some(StopReason::EndTurn {}), false, true) => {
+            out.end = StepEnd::Again;
+            let Some(o) = thread.grading.as_ref().filter(|_| stalled(&seen, &turn.thread)) else { return };
+            let (end, eval) = no_verdict(&primary, o, r.usage.clone());
+            out.events.push(end);
+            out.evaluation = Some(eval);
+        }
         (Some(stop @ StopReason::EndTurn {}), false, false) => {
             out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.events.extend(reply(turn, &primary, &final_text(r)));

@@ -56,3 +56,18 @@ fn a_response_maps_text_tool_use_stop_and_usage() {
     assert_eq!(r.content.len(), 2);
     assert_eq!(r.usage.cache_creation_input_tokens, 6);
 }
+
+#[test]
+fn an_empty_system_prompt_sends_no_system_block() {
+    // The API refuses an empty system text block that carries a cache mark.
+    let req = ModelRequest {
+        model: "claude-haiku-4-5".into(),
+        agent: "a".into(),
+        system: String::new(),
+        messages: vec![Message { role: Role::User, content: vec![Block::text("hi")] }],
+        tools: Vec::new(),
+        max_tokens: 10,
+        effort: None,
+    };
+    assert!(body(&req).get("system").is_none());
+}

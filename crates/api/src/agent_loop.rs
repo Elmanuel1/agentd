@@ -12,6 +12,7 @@ use sessions::signals::Signals;
 use shared::ports::secrets::SecretStore;
 use signals_valkey::ValkeyBudget;
 
+use files::FilesService;
 use work::{WorkService, WorkTokens};
 
 use crate::backends::{BootError, Stores, SystemKeys};
@@ -42,6 +43,10 @@ pub async fn spawn(
         (Some(url), Some(_)) => {
             Arc::new(ValkeyBudget::connect(url, c.rpm, c.itpm).map_err(|e| BootError::Loop(e.to_string()))?)
         }
+        (None, Some(_)) => {
+            tracing::warn!("loop: AGENTD_MODEL_RPM or AGENTD_MODEL_ITPM is set without AGENTD_VALKEY_URL; no model budget applies");
+            Arc::new(Unlimited)
+        }
         _ => Arc::new(Unlimited),
     };
     let models = Models {
@@ -59,6 +64,7 @@ pub async fn spawn(
             WorkTokens::new(system.work_token_key.clone()),
             system.api_base_url.clone(),
         )),
+        files: Arc::new(FilesService::new(stores.files.clone())),
     };
     let settings = Settings {
         owner: format!("loop-{}", uuid::Uuid::new_v4()),

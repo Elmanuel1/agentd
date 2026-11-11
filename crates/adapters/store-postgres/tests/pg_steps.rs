@@ -448,3 +448,51 @@ async fn the_counts_see_due_and_leased_steps() {
         .await
         .unwrap();
 }
+
+#[derive(diesel::QueryableByName)]
+struct DueIn {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    seconds: i64,
+}
+
+#[tokio::test]
+async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one() {
+    // M-1: a lapsed lease in a busy workspace holds up no other workspace,
+    // and the deferral leaves a step due later as it was.
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    let (busy, other) = (uniq_ws("lapsed"), uniq_ws("free"));
+    let (a, b, c, o) =
+        (r.session(&busy).await, r.session(&busy).await, r.session(&busy).await, r.session(&other).await);
+    for s in [&a, &b, &c] {
+        r.wake(&busy, &s.id).await;
+    }
+    let held = r.claim_of("w1", 60, &a.id).await.unwrap();
+    r.claim_of("w1", 1, &b.id).await.unwrap();
+    let later = r.claim_of("w1", 60, &c.id).await.unwrap();
+    r.steps.defer(&later, 60).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    r.wake(&other, &o.id).await;
+    let mut seen_o = false;
+    for _ in 0..200 {
+        let Some(claim) = r.steps.claim("w2", 60, 1).await.unwrap() else { continue };
+        assert_ne!(claim.session, b.id, "the busy workspace's lapsed step waits");
+        seen_o |= claim.session == o.id;
+        r.steps.defer(&claim, 0).await.unwrap();
+        if seen_o {
+            break;
+        }
+    }
+    assert!(seen_o, "another workspace runs");
+    let mut conn = r.pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "SELECT extract(epoch FROM due_at - now())::bigint AS seconds FROM loop_steps WHERE session_id = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(c.id.as_str());
+    let due: DueIn = diesel_async::RunQueryDsl::get_result(q, &mut *conn).await.unwrap();
+    assert!(due.seconds > 50, "a step deferred for a minute stays deferred: {}s", due.seconds);
+    let w = StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged };
+    r.steps.commit(&held, StepEnd::Done, w).await.unwrap();
+}

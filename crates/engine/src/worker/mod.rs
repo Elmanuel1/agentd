@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use files::FilesService;
 use sessions::signals::{Signal, Signals};
 use sessions::steps::Steps;
 use sessions::store::{SessionEventLog, SessionsStore};
@@ -17,6 +18,7 @@ use crate::model::ModelClient;
 
 mod grade;
 mod reply;
+mod rubrics;
 mod settle;
 mod step;
 mod take;
@@ -39,6 +41,8 @@ pub struct Stores {
     pub log: Arc<dyn SessionEventLog>,
     /// The work items, where the session's worker runs its built-in calls.
     pub work: Arc<WorkService>,
+    /// The files outcomes name as rubrics.
+    pub files: Arc<FilesService>,
 }
 
 /// The model a step calls.

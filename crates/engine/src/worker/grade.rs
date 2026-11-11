@@ -4,6 +4,8 @@
 //! `_end`; its built-in calls go to the session's worker without idling the
 //! session. The primary thread then takes one more turn on the verdict.
 
+use std::collections::HashMap;
+
 use agents::AgentSnapshot;
 use serde_json::{json, Value};
 use sessions::events::{AgentEvent, Event, EventId, EventPayload, ModelUsage, Rubric, SpanEvent, UserEvent};
@@ -18,6 +20,8 @@ use crate::turn::policy::{Disposition, Toolbox};
 
 /// Rounds when `max_iterations` is left out (documented default).
 const DEFAULT_MAX_ITERATIONS: u32 = 3;
+/// Turns a grader may end without its verdict before its round fails.
+const NUDGES: usize = 3;
 /// The grader's verdict tool.
 pub(super) const VERDICT: &str = "submit_verdict";
 
@@ -28,7 +32,7 @@ const GRADER_SYSTEM: &str = "You are an outcome grader. You grade a deliverable 
 pub(super) struct Outcome {
     pub(super) id: OutcomeId,
     description: String,
-    rubric: String,
+    rubric: Rubric,
     max_iterations: u32,
     pub(super) iteration: u32,
     /// The open round's `span.outcome_evaluation_start`.
@@ -60,10 +64,7 @@ pub(super) fn active(log: &[Event]) -> Option<Outcome> {
                 max_iterations,
                 outcome_id: Some(id),
             }) => {
-                let rubric = match rubric {
-                    Rubric::Text { content } => content.clone(),
-                    Rubric::File { file_id } => format!("(the rubric file {file_id})"),
-                };
+                let rubric = rubric.clone();
                 let max_iterations = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
                 current = Some(Outcome {
                     id: id.clone(),
@@ -123,10 +124,18 @@ pub(super) fn tools() -> Toolbox {
 
 /// The grader's conversation: the task and rubric, then its own steps, with
 /// a nudge after a step that called nothing.
-pub(super) fn conversation(outcome: &Outcome, mut history: History) -> History {
+pub(super) fn conversation(
+    outcome: &Outcome,
+    rubrics: &HashMap<String, String>,
+    mut history: History,
+) -> History {
+    let rubric = match &outcome.rubric {
+        Rubric::Text { content } => content.as_str(),
+        Rubric::File { file_id } => rubrics.get(file_id).map(String::as_str).unwrap_or_default(),
+    };
     let task = format!(
-        "The task the agent was given:\n\n{}\n\nThe rubric:\n\n{}\n\nGrade the deliverable as it is now in the sandbox.",
-        outcome.description, outcome.rubric
+        "The task the agent was given:\n\n{}\n\nThe rubric:\n\n{rubric}\n\nGrade the deliverable as it is now in the sandbox.",
+        outcome.description
     );
     history.messages.insert(0, Message { role: Role::User, content: vec![Block::text(task)] });
     if history.messages.last().is_some_and(|m| m.role == Role::Assistant) && history.unanswered.is_empty() {
@@ -185,6 +194,23 @@ pub(super) fn verdict(
         iteration: outcome.iteration,
     };
     (end, eval)
+}
+
+/// The grader on `thread` ended `NUDGES` turns without its verdict; each
+/// left its text as an `agent.message` on its thread.
+pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
+    let ended = log.iter().filter(|e| {
+        e.session_thread_id.as_ref() == Some(thread)
+            && matches!(e.payload, EventPayload::Agent(AgentEvent::Message { .. }))
+    });
+    ended.count() >= NUDGES
+}
+
+/// The round's end when the grader stalled: it fails.
+pub(super) fn no_verdict(primary: &Turn, outcome: &Outcome, usage: ModelUsage) -> (Event, OutcomeEvaluation) {
+    let input = json!({"result": "failed", "findings": [{
+        "criterion": "verdict", "finding": format!("The grader ended {NUDGES} turns without calling `{VERDICT}`.")}]});
+    verdict(primary, outcome, &input, usage)
 }
 
 /// The verdict call's own answer, on the grader's thread.

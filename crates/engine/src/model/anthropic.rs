@@ -41,10 +41,14 @@ pub fn body(req: &ModelRequest) -> Value {
     let mut body = json!({
         "model": req.model,
         "max_tokens": req.max_tokens,
-        "system": [{"type": "text", "text": req.system, "cache_control": {"type": "ephemeral"}}],
         "messages": messages,
         "metadata": {"user_id": req.agent},
     });
+    // The API refuses an empty system text block, and a cache mark on one.
+    if !req.system.is_empty() {
+        let system = json!([{"type": "text", "text": req.system, "cache_control": {"type": "ephemeral"}}]);
+        crate::json::set(&mut body, "system", system);
+    }
     let mut tools: Vec<Value> = req
         .tools
         .iter()

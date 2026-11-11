@@ -48,7 +48,8 @@ pub(super) async fn claim(
                 .await?;
                 if busy.leased >= per_workspace {
                     diesel::sql_query(
-                        "UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL",
+                        "UPDATE loop_steps SET due_at = greatest(due_at, now() + interval '1 second') \
+                         WHERE workspace_id = $1 AND (lease_until IS NULL OR lease_until < now())",
                     )
                     .bind::<Text, _>(&due.workspace_id)
                     .execute(c)

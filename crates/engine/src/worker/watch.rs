@@ -21,13 +21,17 @@ pub(super) struct Watch {
 
 impl Watch {
     /// Resolve with the interrupts the client sent once there is one; until
-    /// then, pend. Missed signals read the log once more.
+    /// then, pend. The log is read first, for an interrupt sent before the
+    /// watch subscribed, and again on each signal or missed signal.
     pub(super) async fn interrupted(&mut self) -> Vec<EventId> {
+        let mut heard = false;
         loop {
-            match self.rx.recv().await {
-                Ok(s) if s.session != self.id => continue,
-                Ok(_) | Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => return std::future::pending().await,
+            if std::mem::replace(&mut heard, true) {
+                match self.rx.recv().await {
+                    Ok(s) if s.session != self.id => continue,
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return std::future::pending().await,
+                }
             }
             let queued = match self.log.unprocessed_events(&self.ws, &self.id).await {
                 Ok(queued) => queued,
