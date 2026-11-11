@@ -79,28 +79,17 @@ impl Follow {
     }
 
     fn send(&self, cursor: &mut i64, pending: &mut Vec<i64>, seq: i64, ev: Event) {
-        let seen = seq <= *cursor;
-        if seen && ev.processed_at.is_none() {
-            return;
-        }
-        if seen {
-            pending.retain(|p| *p != seq);
-            let _ = self.tail.tx.send(ev);
-            return;
-        }
-        *cursor = seq;
-        if !ev.payload.is_user_event() {
-            let _ = self.tail.tx.send(ev);
-            return;
-        }
-        // A client event is sent queued, then again once processed.
-        if ev.processed_at.is_none() {
+        let fresh = seq > *cursor;
+        *cursor = (*cursor).max(seq);
+        // Live streams a client event once, when it is processed.
+        if fresh && ev.processed_at.is_none() && ev.payload.is_user_event() {
             pending.push(seq);
-            let _ = self.tail.tx.send(ev);
             return;
         }
-        let queued = Event { processed_at: None, ..ev.clone() };
-        let _ = self.tail.tx.send(queued);
+        if !fresh && ev.processed_at.is_none() {
+            return;
+        }
+        pending.retain(|p| *p != seq);
         let _ = self.tail.tx.send(ev);
     }
 

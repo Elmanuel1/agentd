@@ -220,13 +220,22 @@ fn read(archived: bool, events: Vec<(i64, Event)>) -> Result<Option<Tail>, Store
 }
 
 #[tokio::test]
-async fn a_client_event_first_read_processed_is_sent_queued_then_processed() {
-    let e = processed(&message());
-    let rig = rig(Head::default(), false, vec![read(false, vec![(1, e.clone())])]);
+async fn a_client_event_is_sent_once_when_processed_and_never_queued() {
+    let (queued, early) = (message(), processed(&message()));
+    let done = processed(&queued);
+    let reads = vec![
+        read(false, vec![(1, queued.clone()), (2, early.clone())]),
+        read(false, vec![(1, done.clone())]),
+    ];
+    let rig = rig(Head::default(), false, reads);
     let mut sub = rig.subscribe().await;
     rig.signal().await;
-    assert_eq!(next(&mut sub).await.unwrap(), Event { processed_at: None, ..e.clone() });
-    assert_eq!(next(&mut sub).await.unwrap(), e);
+    assert_eq!(next(&mut sub).await.unwrap(), early, "one already processed is sent at once");
+    rig.signal().await;
+    assert_eq!(next(&mut sub).await.unwrap(), done, "the queued one only once processed");
+    rig.signal().await;
+    assert!(tokio::time::timeout(Duration::from_millis(300), sub.recv()).await.is_err(), "and never again");
+    assert_eq!(rig.log.asked.lock()[..3], [(0, vec![]), (2, vec![1]), (2, vec![])]);
 }
 
 #[tokio::test]
@@ -271,7 +280,7 @@ async fn a_session_gone_ends_its_streams_with_session_deleted() {
 
 #[tokio::test]
 async fn a_failed_read_sends_nothing_and_the_next_signal_reads_again() {
-    let e = message();
+    let e = processed(&message());
     let failed = Err(StoreError::Backend(BackendError::new(std::io::Error::other("down"))));
     let rig = rig(Head::default(), false, vec![failed, read(false, vec![(1, e.clone())])]);
     let mut sub = rig.subscribe().await;
@@ -287,7 +296,7 @@ async fn a_failed_read_sends_nothing_and_the_next_signal_reads_again() {
 
 #[tokio::test]
 async fn missed_signals_wake_every_tail() {
-    let e = message();
+    let e = processed(&message());
     let rig = rig(Head::default(), false, vec![read(false, vec![(1, e.clone())])]);
     let mut sub = rig.subscribe().await;
     let other = Signal { workspace: rig.ctx.workspace.clone(), session: SessionId::generate() };
@@ -299,7 +308,7 @@ async fn missed_signals_wake_every_tail() {
 
 #[tokio::test]
 async fn a_second_stream_of_a_session_shares_its_tail_until_both_leave() {
-    let (one, two) = (message(), message());
+    let (one, two) = (processed(&message()), processed(&message()));
     let rig = rig(
         Head::default(),
         false,
@@ -319,7 +328,7 @@ async fn a_second_stream_of_a_session_shares_its_tail_until_both_leave() {
 
 #[tokio::test]
 async fn a_failed_head_read_refuses_the_stream_and_the_next_one_starts_its_own_tail() {
-    let e = message();
+    let e = processed(&message());
     let rig = rig(Head::default(), false, vec![read(false, vec![(1, e.clone())])]);
     *rig.log.head.lock() = Err(StoreError::Backend(BackendError::new(std::io::Error::other("down"))));
     let refused = rig.service.subscribe(&rig.ctx, rig.session.id.as_str(), None).await;

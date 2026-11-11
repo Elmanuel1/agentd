@@ -76,11 +76,25 @@ fn message(text: &str) -> Value {
     json!({"events": [{"type": "user.message", "content": [{"type": "text", "text": text}]}]})
 }
 
+/// The session's harness takes its queued client events, which stamps them processed.
+async fn take(app: &Router, rig: &Rig, session: &str) {
+    let take = format!("/v1/sessions/{session}/harness/take");
+    let (st, taken) = send_to(app, request("POST", &take, Auth::Bearer(&rig.token(session)), None)).await;
+    assert_eq!(st, StatusCode::OK, "{taken}");
+}
+
+/// `event` as it was sent: processed, with its `processed_at` taken off.
+fn as_sent(mut event: Value) -> Value {
+    assert!(event["processed_at"].is_string(), "{event}");
+    event.as_object_mut().unwrap().remove("processed_at");
+    event
+}
+
 /// Within the signal path's reach, well inside the 5 s fallback timer.
 const SIGNALLED: Duration = Duration::from_secs(3);
 
 #[tokio::test]
-async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_queued_then_processed() {
+async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_once_processed() {
     // F-1, over Valkey.
     let Some(rig) = Rig::with_sandbox().await else { return };
     let (Some(a), Some(b)) = (valkey().await, valkey().await) else { return };
@@ -93,18 +107,10 @@ async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_que
     assert_eq!(st, StatusCode::OK, "{first}");
     let (_, second) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("two")))).await;
     let sent = [first["data"][0].clone(), second["data"][0].clone()];
-    assert_eq!(stream.event(SIGNALLED).await, sent[0], "queued, as sent");
-    assert_eq!(stream.event(SIGNALLED).await, sent[1]);
-
-    let take = format!("/v1/sessions/{session}/harness/take");
-    let (st, taken) = send_to(&a, request("POST", &take, Auth::Bearer(&rig.token(&session)), None)).await;
-    assert_eq!(st, StatusCode::OK, "{taken}");
+    assert_eq!(stream.next(SIGNALLED).await, None, "live streams no queued copy");
+    take(&a, &rig, &session).await;
     for queued in &sent {
-        let processed = stream.event(SIGNALLED).await;
-        assert!(processed["processed_at"].is_string(), "{processed}");
-        let mut unstamped = processed.clone();
-        unstamped.as_object_mut().unwrap().remove("processed_at");
-        assert_eq!(&unstamped, queued, "the same event, processed");
+        assert_eq!(&as_sent(stream.event(SIGNALLED).await), queued, "the same event, processed, in order");
     }
 }
 
@@ -119,13 +125,8 @@ async fn a_stream_opened_while_an_event_is_queued_gets_it_once_processed() {
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("early")))).await;
     let mut stream = Sse::open(&b, &session).await;
-    let take = format!("/v1/sessions/{session}/harness/take");
-    let (st, _) = send_to(&a, request("POST", &take, Auth::Bearer(&rig.token(&session)), None)).await;
-    assert_eq!(st, StatusCode::OK);
-    let mut processed = stream.event(SIGNALLED).await;
-    assert!(processed["processed_at"].is_string(), "{processed}");
-    processed.as_object_mut().unwrap().remove("processed_at");
-    assert_eq!(processed, sent["data"][0]);
+    take(&a, &rig, &session).await;
+    assert_eq!(as_sent(stream.event(SIGNALLED).await), sent["data"][0]);
 }
 
 #[tokio::test]
@@ -175,8 +176,9 @@ async fn with_no_signal_between_replicas_an_event_still_arrives_within_six_secon
     let mut stream = Sse::open(&b, &session).await;
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("late")))).await;
+    take(&a, &rig, &session).await;
     let started = tokio::time::Instant::now();
-    assert_eq!(stream.event(Duration::from_millis(6500)).await, sent["data"][0]);
+    assert_eq!(as_sent(stream.event(Duration::from_millis(6500)).await), sent["data"][0]);
     assert!(started.elapsed() > Duration::from_millis(100), "no signal reached the other replica");
 }
 
@@ -205,7 +207,8 @@ async fn while_overloaded_a_new_stream_gets_529_and_an_open_one_keeps_streaming(
     assert_eq!(refused["error"], json!({"type": "overloaded_error", "message": "Overloaded"}), "{refused}");
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&app, request("POST", &events, Auth::Key(KEY), Some(message("still")))).await;
-    assert_eq!(open.event(SIGNALLED).await, sent["data"][0]);
+    take(&app, &rig, &session).await;
+    assert_eq!(as_sent(open.event(SIGNALLED).await), sent["data"][0]);
 }
 
 /// The statements a pool runs, in order.
@@ -246,10 +249,8 @@ async fn with_a_read_replica_only_the_events_list_reads_it() {
     let mut stream = Sse::open(&app, &session).await;
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&app, request("POST", &events, Auth::Key(KEY), Some(message("primary")))).await;
-    assert_eq!(stream.event(SIGNALLED).await, sent["data"][0]);
-    let take = format!("/v1/sessions/{session}/harness/take");
-    send_to(&app, request("POST", &take, Auth::Bearer(&rig.token(&session)), None)).await;
-    assert!(stream.event(SIGNALLED).await["processed_at"].is_string());
+    take(&app, &rig, &session).await;
+    assert_eq!(as_sent(stream.event(SIGNALLED).await), sent["data"][0]);
     assert_eq!(statements.lock().clone(), Vec::<String>::new(), "no send, stamp or stream read the replica");
 
     let (st, listed) = send_to(&app, request("GET", &events, Auth::Key(KEY), None)).await;

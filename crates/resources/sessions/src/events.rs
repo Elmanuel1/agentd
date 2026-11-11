@@ -127,8 +127,7 @@ pub struct Event {
     /// `sevt_…`.
     pub id: EventId,
     /// Set when the agent consumes the event. Live OMITS this field until the
-    /// event is processed (client-sent events appear twice on the stream:
-    /// queued without it, then processed with it).
+    /// event is processed, and streams a client event only once it is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub processed_at: Option<Timestamp>,
     /// The thread the event belongs to: set on thread lifecycle events and
