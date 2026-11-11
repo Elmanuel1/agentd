@@ -30,6 +30,8 @@ pub enum Disposition {
     Custom,
     /// A coordinator tool: delegation to the roster.
     Delegate,
+    /// The grader's verdict.
+    Verdict,
 }
 
 /// The tools of one agent.

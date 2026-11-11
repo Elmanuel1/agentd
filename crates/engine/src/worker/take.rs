@@ -9,6 +9,7 @@ use sessions::events::{
 use sessions::types::{primary_thread_id, Session};
 use shared::{ContentBlock, Timestamp};
 
+use super::grade::{active, conversation};
 use super::team::{threads, Thread};
 use super::turn::Turn;
 use crate::turn::history::{rebuild, thread_events, History};
@@ -44,6 +45,8 @@ pub(super) struct Taken {
     pub(super) thread: Thread,
     /// That thread's conversation, with the taken events in it.
     pub(super) history: History,
+    /// The log as the step reads it: the taken events stamped.
+    pub(super) read: Vec<Event>,
     /// The interrupts among the taken events.
     pub(super) interrupt: Interrupt,
 }
@@ -54,7 +57,12 @@ fn is_interrupt(e: &Event) -> bool {
 
 /// Read `log` of `session`.
 pub(super) fn take(log: &[Event], session: &Session, cloud: bool) -> Taken {
-    let primary = Thread { id: primary_thread_id(&session.id), agent: session.agent.clone(), primary: true };
+    let primary = Thread {
+        id: primary_thread_id(&session.id),
+        agent: session.agent.clone(),
+        primary: true,
+        grading: None,
+    };
     let turn = &primary.turn();
     let queued: Vec<&Event> =
         log.iter().filter(|e| e.processed_at.is_none() && e.payload.is_user_event()).collect();
@@ -122,18 +130,22 @@ pub(super) fn take(log: &[Event], session: &Session, cloud: bool) -> Taken {
     let history_of = |t: &Thread| {
         let scope = (!t.primary).then(|| t.id.clone());
         let mut history = rebuild(&thread_events(&read, scope.as_ref()), &HashMap::new());
+        if let Some(outcome) = &t.grading {
+            history = conversation(outcome, history);
+        }
         for call in history.unanswered.iter_mut().filter(|u| confirmed.iter().any(|c| c.as_str() == u.id)) {
             call.asked = false;
         }
         history
     };
-    let candidates = threads(session, &read);
+    let mut candidates = threads(session, &read);
+    candidates.extend(active(&read).and_then(|o| o.thread(session)));
     let chosen = candidates.iter().map(|t| (t, history_of(t))).find(|(_, h)| h.awaits_model());
     let (thread, history) = match chosen {
         Some((t, h)) => (t.clone(), h),
         None => (primary.clone(), history_of(&primary)),
     };
-    Taken { taken, answers, allowed, thread, history, interrupt }
+    Taken { taken, answers, allowed, thread, history, read, interrupt }
 }
 
 /// The thread of the call `answer` answers.

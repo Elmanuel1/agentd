@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use sessions::events::{AgentEvent, Event, EventPayload, Rubric, SpanEvent, UserEvent};
-use sessions::types::{OutcomeResult, ThreadId};
+use sessions::types::ThreadId;
 use shared::ContentBlock;
 
 pub use super::prompt::{feedback_prompt, outcome_prompt};
@@ -47,12 +47,16 @@ pub struct History {
     pub messages: Vec<Message>,
     /// Tool calls awaiting the client, oldest first.
     pub unanswered: Vec<Unanswered>,
+    /// The client interrupted the turn and has sent nothing since.
+    pub halted: bool,
 }
 
 impl History {
     /// Whether the conversation ends on input the model has not answered.
     pub fn awaits_model(&self) -> bool {
-        self.unanswered.is_empty() && self.messages.last().is_some_and(|m| m.role == Role::User)
+        !self.halted
+            && self.unanswered.is_empty()
+            && self.messages.last().is_some_and(|m| m.role == Role::User)
     }
 }
 
@@ -94,9 +98,7 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History 
         let id = ev.id.as_str().to_owned();
         match &ev.payload {
             EventPayload::Span(SpanEvent::ModelRequestStart {}) => b.step(),
-            EventPayload::Span(SpanEvent::OutcomeEvaluationEnd { result, explanation, .. })
-                if *result != OutcomeResult::Satisfied =>
-            {
+            EventPayload::Span(SpanEvent::OutcomeEvaluationEnd { result, explanation, .. }) => {
                 b.text(feedback_prompt(*result, explanation.as_deref().unwrap_or_default()));
             }
             EventPayload::Agent(AgentEvent::Message { content }) => {
@@ -147,12 +149,18 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History 
                     b.text(texts(content));
                 }
             }
+            EventPayload::User(UserEvent::Interrupt {}) if ev.processed_at.is_some() => b.halted = true,
             EventPayload::User(u) if ev.processed_at.is_some() => match u {
-                UserEvent::Message { content } => b.text(texts(content)),
+                UserEvent::Message { content } => {
+                    b.halted = false;
+                    b.text(texts(content));
+                }
                 UserEvent::SystemMessage { content } => {
+                    b.halted = false;
                     b.text(format!("<system>{}</system>", texts(content)))
                 }
                 UserEvent::DefineOutcome { description, rubric, .. } => {
+                    b.halted = false;
                     let rubric = match rubric {
                         Rubric::Text { content } => content.clone(),
                         Rubric::File { file_id } => rubrics.get(file_id).cloned().unwrap_or_default(),
@@ -163,7 +171,7 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History 
                 | UserEvent::ToolResult { tool_use_id: tid, content, is_error } => {
                     b.result(tid.as_str().to_owned(), texts(content), *is_error);
                 }
-                UserEvent::Interrupt {} | UserEvent::ToolConfirmation { .. } => {}
+                UserEvent::ToolConfirmation { .. } | UserEvent::Interrupt {} => {}
             },
             _ => {}
         }

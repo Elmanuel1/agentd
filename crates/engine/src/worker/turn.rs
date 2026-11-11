@@ -1,6 +1,6 @@
 //! Who a step's events belong to, and how one write's events are timed.
 
-use sessions::events::{Event, EventId, EventPayload, SessionEvent, StopReason};
+use sessions::events::{Event, EventId, EventPayload, SessionEvent, SpanEvent, StopReason};
 use sessions::types::{Session, ThreadId};
 use shared::Timestamp;
 
@@ -36,6 +36,21 @@ impl Turn {
             self.event(SessionEvent::StatusRunning {}),
             self.lifecycle(SessionEvent::ThreadStatusRunning { agent_name: self.agent.clone() }),
         ]
+    }
+
+    /// A call that ended with no reply: its end, and the error when it failed.
+    pub(super) fn failed(&self, start: &EventId, e: Option<&crate::model::ModelError>) -> Vec<Event> {
+        let end = self.event(SpanEvent::ModelRequestEnd {
+            model_request_start_id: start.clone(),
+            is_error: true,
+            model_usage: Default::default(),
+        });
+        let error = e.map(|e| {
+            self.event(SessionEvent::Error {
+                error: serde_json::json!({"type": "model_error", "message": e.to_string()}),
+            })
+        });
+        std::iter::once(end).chain(error).collect()
     }
 
     /// The turn ends as `stop` says: the thread, then the session's usage as

@@ -16,6 +16,7 @@ pub(super) struct Builder {
     pub(super) answered: HashSet<String>,
     pub(super) owed: HashSet<String>,
     pub(super) custom: HashSet<String>,
+    pub(super) halted: bool,
 }
 
 impl Builder {
@@ -79,6 +80,6 @@ impl Builder {
             })
             .collect();
         self.flush();
-        History { messages: self.messages, unanswered }
+        History { messages: self.messages, unanswered, halted: self.halted }
     }
 }

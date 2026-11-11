@@ -4,8 +4,9 @@
 
 use sessions::events::{AgentEvent, Event, EventId, SpanEvent, StopReason};
 use sessions::steps::StepEnd;
-use sessions::types::Session;
+use sessions::types::{primary_thread_id, OutcomeEvaluation, Session};
 
+use super::grade::{self, Outcome};
 use super::turn::Turn;
 use shared::ContentBlock;
 
@@ -18,6 +19,8 @@ pub(super) struct Led {
     pub(super) end: StepEnd,
     /// The stop reason when the turn idles.
     pub(super) idle: Option<StopReason>,
+    /// The grader's verdict, for the session to record.
+    pub(super) evaluation: Option<OutcomeEvaluation>,
 }
 
 /// One model call, as the reply's events need it.
@@ -32,6 +35,8 @@ pub(super) struct Call<'a> {
     pub(super) more: bool,
     pub(super) session: &'a Session,
     pub(super) log: &'a [Event],
+    /// The outcome round the call grades, for the grader's thread.
+    pub(super) grading: Option<&'a Outcome>,
 }
 
 /// The reply's events, and how the step ends.
@@ -58,6 +63,7 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         model_usage: r.usage.clone(),
     }));
     let (mut waiting, mut parked, mut unknown) = (Vec::new(), false, false);
+    let mut evaluation = None;
     for (_, name, input) in r.tool_uses() {
         let call = match tools.disposition(name) {
             Some(Disposition::Custom) => {
@@ -75,6 +81,26 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 evaluated_permission: Some("allow".into()),
                 evaluation: evaluation.clone(),
             }),
+            Some(Disposition::Verdict) => {
+                let Some(outcome) = c.grading else { continue };
+                unknown = true;
+                let call = turn.event(AgentEvent::ToolUse {
+                    name: name.to_owned(),
+                    input: input.clone(),
+                    evaluated_permission: Some("allow".into()),
+                    evaluation: None,
+                });
+                let primary = Turn {
+                    thread: primary_thread_id(&c.session.id),
+                    agent: c.session.agent.config.name.clone(),
+                    scoped: false,
+                };
+                let (end, eval) = grade::verdict(&primary, outcome, input, r.usage.clone());
+                let recorded = grade::recorded(turn, &call.id);
+                events.extend([call, recorded, end]);
+                evaluation = Some(eval);
+                continue;
+            }
             Some(Disposition::Delegate) => {
                 unknown = true;
                 events.extend(super::team::delegate(turn, c.session, c.log, name, input));
@@ -114,5 +140,5 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         (true, false) => Some(StopReason::EndTurn {}),
         (true, true) => None,
     };
-    Led { events, end, idle }
+    Led { events, end, idle, evaluation }
 }

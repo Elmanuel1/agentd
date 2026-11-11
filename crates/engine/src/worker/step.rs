@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use sessions::events::{EventId, SessionEvent, SpanEvent, StopReason};
+use sessions::events::{Event, EventId, SpanEvent, StopReason};
 use sessions::signals::Signal;
 use sessions::steps::{Claim, StepEnd, StepWrite};
 use sessions::types::{Session, SessionStatus};
@@ -13,9 +13,10 @@ use shared::tenancy::RUNTIME_QUEUE;
 use shared::{BackendError, Timestamp};
 use work::store::Reach;
 
+use super::grade;
 use super::reply::{led, Call};
+use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
-use super::team::settle;
 use super::turn::{batch, Batch};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
@@ -60,6 +61,7 @@ impl Loop {
         let change = move |s: &mut Session| {
             s.status = after.status;
             s.usage = after.usage.clone();
+            s.outcome_evaluations = after.outcome_evaluations.clone();
             true
         };
         let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
@@ -79,7 +81,7 @@ impl Loop {
             self.stores.work.get(ws, id.as_str(), &Reach::default()).await.map_err(BackendError::new)?;
         let cloud = item.as_ref().is_none_or(|i| i.queue == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
-        let Taken { taken, answers, allowed, thread, history, interrupt } = take(&log, &session, cloud);
+        let Taken { taken, answers, allowed, thread, history, read, interrupt } = take(&log, &session, cloud);
         let turn = thread.turn();
         if interrupt != Interrupt::None {
             if interrupt == Interrupt::Second {
@@ -120,7 +122,10 @@ impl Loop {
         }
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
-        let running = if idle { turn.running() } else { Vec::new() };
+        let mut running = if idle { turn.running() } else { Vec::new() };
+        let ongoing =
+            thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
+        running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
         let opening = batch(taken, running, answers.into_iter().chain([start]).collect());
         if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
@@ -128,7 +133,10 @@ impl Loop {
         session.status = SessionStatus::Running;
         let roster = session.agent.config.multiagent.as_ref().map(|m| m.roster_agents()).unwrap_or_default();
         let coordinator = thread.primary && !roster.is_empty();
-        let tools = Toolbox::for_agent(&agent, coordinator);
+        let tools = match &thread.grading {
+            Some(_) => grade::tools(),
+            None => Toolbox::for_agent(&agent, coordinator),
+        };
         let effort = agent
             .config
             .model
@@ -154,19 +162,7 @@ impl Loop {
             answer = self.models.retry.call(self.models.client.as_ref(), request) => Ok(answer),
             interrupts = watch.interrupted() => Err(interrupts),
         };
-        let failed = |e: Option<&ModelError>| {
-            let mut events = vec![turn.event(SpanEvent::ModelRequestEnd {
-                model_request_start_id: start_id.clone(),
-                is_error: true,
-                model_usage: Default::default(),
-            })];
-            if let Some(e) = e {
-                events.push(turn.event(SessionEvent::Error {
-                    error: serde_json::json!({"type": "model_error", "message": e.to_string()}),
-                }));
-            }
-            events
-        };
+        let failed = |e: Option<&ModelError>| turn.failed(&start_id, e);
         let (done, end) = match answer {
             // As on live: the call's end, then the interrupt, then the idle.
             Err(interrupts) => {
@@ -192,13 +188,19 @@ impl Loop {
                     turn: &turn,
                     start: &start_id,
                     tools: &tools,
-                    cloud,
+                    // The grader's built-in calls never idle the session (L-5).
+                    cloud: cloud || thread.grading.is_some(),
                     more,
                     session: &session,
-                    log: &log,
+                    log: &read,
+                    grading: thread.grading.as_ref(),
                 };
                 let mut out = led(&call, &reply);
-                settle(&mut out, &turn, &thread, &mut session, &log, &reply);
+                if let Some(eval) = out.evaluation.take() {
+                    session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
+                    session.outcome_evaluations.push(eval);
+                }
+                settle(&mut out, &turn, &thread, &mut session, &read, &reply);
                 (batch(Vec::new(), Vec::new(), out.events), out.end)
             }
         };

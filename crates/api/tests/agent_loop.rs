@@ -338,6 +338,9 @@ async fn an_interrupt_during_the_call_cancels_it_and_idles_the_session() {
     let interrupt = events.iter().find(|e| e["type"] == "user.interrupt").unwrap();
     assert!(interrupt["processed_at"].is_string());
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after = events_until(&app, &s, "session.status_idle", 1).await;
+    assert_eq!(types(&after), types(&events), "nothing runs after the interrupt");
 }
 
 #[tokio::test]
@@ -460,4 +463,54 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
         .flat_map(|m| &m.content)
         .any(|b| matches!(b, Block::Text { text } if text.starts_with(&format!("Message from {name}"))));
     assert!(heard, "the coordinator hears the helper's reply");
+}
+
+#[tokio::test]
+async fn an_outcome_is_graded_on_its_own_thread_until_satisfied() {
+    // L-5.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let env = rig.environment("cloud").await;
+    let verdict = |result: &str| {
+        Say::Tool(
+            "submit_verdict",
+            json!({"result": result, "findings": [{"criterion": "tone", "finding": "too short"}]}),
+        )
+    };
+    let model = Scripted::new(vec![
+        Say::Text("draft"),
+        verdict("needs_revision"),
+        Say::Text("revised"),
+        verdict("satisfied"),
+        Say::Text("summary"),
+    ]);
+    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let s = session(&app, &env, json!([])).await;
+    let outcome = json!({"events": [{"type": "user.define_outcome", "description": "Write a poem.", "rubric": {"type": "text", "content": "### Tone\nWarm."}, "max_iterations": 3}]});
+    let (st, body) = send(&app, &s, outcome).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let t = types(&events);
+    assert_eq!(t.iter().filter(|k| **k == "span.outcome_evaluation_start").count(), 2, "{t:?}");
+    assert!(t.contains(&"span.outcome_evaluation_ongoing"));
+    let ends: Vec<&Value> = events.iter().filter(|e| e["type"] == "span.outcome_evaluation_end").collect();
+    assert_eq!(
+        (ends[0]["result"].as_str(), ends[1]["result"].as_str()),
+        (Some("needs_revision"), Some("satisfied"))
+    );
+    assert_eq!(t.iter().filter(|k| **k == "session.status_idle").count(), 1, "graded without idling: {t:?}");
+    assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    let asked = model.asked.lock().clone();
+    assert_eq!(asked.len(), 5);
+    assert_eq!(asked[1].agent, "grader");
+    assert!(asked[1].system.starts_with("You are an outcome grader"));
+    assert!(
+        asked[2]
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b, Block::Text { text } if text.contains("too short"))),
+        "the agent hears the findings"
+    );
+    let (_, got) = send_to(&app, request("GET", &format!("/v1/sessions/{s}"), Auth::Key(KEY), None)).await;
+    assert_eq!(got["outcome_evaluations"][0]["result"], "satisfied");
 }

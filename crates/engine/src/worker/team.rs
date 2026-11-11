@@ -5,15 +5,12 @@
 
 use agents::AgentSnapshot;
 use serde_json::Value;
-use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent, StopReason};
-use sessions::steps::StepEnd;
-use sessions::types::{primary_thread_id, Session, SessionStatus, ThreadId};
+use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent};
+use sessions::types::{primary_thread_id, Session, ThreadId};
 use shared::ContentBlock;
 
-use super::reply::Led;
-use super::turn::{thread_idle, Turn};
-use super::usage::final_text;
-use crate::model::ModelResponse;
+use super::grade::Outcome;
+use super::turn::Turn;
 use crate::turn::history::SEND_TO_AGENT;
 use crate::turn::policy::LIST_AGENTS;
 
@@ -23,6 +20,8 @@ pub(super) struct Thread {
     pub(super) id: ThreadId,
     pub(super) agent: AgentSnapshot,
     pub(super) primary: bool,
+    /// The outcome round this thread grades, for the grader's thread.
+    pub(super) grading: Option<Outcome>,
 }
 
 impl Thread {
@@ -37,12 +36,17 @@ fn roster(session: &Session) -> Vec<&AgentSnapshot> {
 
 /// The primary thread, then every thread the log opened, oldest first.
 pub(super) fn threads(session: &Session, log: &[Event]) -> Vec<Thread> {
-    let primary = Thread { id: primary_thread_id(&session.id), agent: session.agent.clone(), primary: true };
+    let primary = Thread {
+        id: primary_thread_id(&session.id),
+        agent: session.agent.clone(),
+        primary: true,
+        grading: None,
+    };
     let roster = roster(session);
     let opened = log.iter().filter_map(|e| match (&e.payload, &e.session_thread_id) {
         (EventPayload::Session(SessionEvent::ThreadCreated { agent_name }), Some(id)) => {
             let agent = roster.iter().find(|a| a.config.name == *agent_name)?;
-            Some(Thread { id: id.clone(), agent: (*agent).clone(), primary: false })
+            Some(Thread { id: id.clone(), agent: (*agent).clone(), primary: false, grading: None })
         }
         _ => None,
     });
@@ -121,7 +125,10 @@ fn send(turn: &Turn, session: &Session, log: &[Event], input: &Value) -> Result<
                 let names: Vec<&str> = roster.iter().map(|a| a.config.name.as_str()).collect();
                 format!("`{name}` is not on your roster ({})", names.join(", "))
             })?;
-            (Thread { id: ThreadId::generate(), agent: (*agent).clone(), primary: false }, true)
+            (
+                Thread { id: ThreadId::generate(), agent: (*agent).clone(), primary: false, grading: None },
+                true,
+            )
         }
         (None, None) => return Err(format!("{SEND_TO_AGENT}: give `agent_name` or `session_thread_id`")),
     };
@@ -163,38 +170,4 @@ pub(super) fn reply(from: &Turn, primary: &Turn, text: &str) -> Vec<Event> {
             from_session_thread_id: from.thread.clone(),
         }),
     ]
-}
-
-/// How a thread's turn ends the step: a delegate's final text goes back to
-/// its coordinator, and a turn that ends while other threads still work
-/// leaves the session running.
-pub(super) fn settle(
-    out: &mut Led,
-    turn: &Turn,
-    thread: &Thread,
-    session: &mut Session,
-    log: &[Event],
-    r: &ModelResponse,
-) {
-    let primary =
-        Thread { id: primary_thread_id(&session.id), agent: session.agent.clone(), primary: true }.turn();
-    let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
-    let others =
-        threads(session, &seen).into_iter().any(|t| !t.primary && t.id != turn.thread && busy(&seen, &t.id));
-    match (out.idle.take(), thread.primary, others) {
-        (Some(stop @ StopReason::EndTurn {}), false, _) => {
-            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
-            out.events.extend(reply(turn, &primary, &final_text(r)));
-            out.end = StepEnd::Again;
-        }
-        (Some(stop @ StopReason::EndTurn {}), true, true) => {
-            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
-            out.end = StepEnd::Again;
-        }
-        (Some(stop), _, _) => {
-            session.status = SessionStatus::Idle;
-            out.events.extend(turn.idle(session, stop));
-        }
-        (None, _, _) => {}
-    }
 }

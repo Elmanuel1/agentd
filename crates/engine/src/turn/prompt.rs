@@ -63,7 +63,10 @@ pub fn feedback_prompt(result: OutcomeResult, explanation: &str) -> String {
         OutcomeResult::MaxIterationsReached => format!(
             "The grader's last round still asks for revisions, and no rounds are left:\n\n{explanation}\n\nSummarize where the work stands; it will not be graded again."
         ),
-        _ => format!("{explanation}\n\nRevise the work to address these findings. It will be graded again."),
+        OutcomeResult::NeedsRevision => {
+            format!("{explanation}\n\nRevise the work to address these findings. It will be graded again.")
+        }
+        _ => format!("{explanation}\n\nSummarize where the work stands; it will not be graded again."),
     }
 }
 
