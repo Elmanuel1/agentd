@@ -20,6 +20,7 @@ mod grade;
 mod reply;
 mod rubrics;
 mod settle;
+mod stall;
 mod step;
 mod take;
 mod team;

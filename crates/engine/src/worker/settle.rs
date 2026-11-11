@@ -7,8 +7,9 @@ use sessions::events::{Event, StopReason};
 use sessions::steps::StepEnd;
 use sessions::types::{Session, SessionStatus};
 
-use super::grade::{active, begin, no_verdict, stalled};
+use super::grade::{active, begin};
 use super::reply::Led;
+use super::stall::{no_verdict, stalled};
 use super::team::{busy, reply, threads, Thread};
 use super::turn::{thread_idle, Turn};
 use super::usage::final_text;

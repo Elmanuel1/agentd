@@ -1,7 +1,12 @@
 //! What a model call costs the session, and its budget (L-16, L-18).
 
+use sessions::steps::Claim;
 use sessions::types::Session;
+use shared::BackendError;
 use shared::{MonetaryAmount, Usage};
+
+use super::Loop;
+use crate::model::budget::Admit;
 
 use crate::model::{Block, ModelResponse};
 
@@ -51,4 +56,22 @@ pub(super) fn final_text(r: &ModelResponse) -> String {
         })
         .collect();
     texts.join("\n")
+}
+
+impl Loop {
+    /// The account-wide budget lets `claim`'s step call `provider` now (M-4);
+    /// otherwise the step is deferred, to the next minute or, with the budget
+    /// unreadable, for a second.
+    pub(super) async fn admitted(&self, claim: &Claim, provider: &str) -> Result<bool, BackendError> {
+        let wait = match self.models.budget.admit(provider).await {
+            Ok(Admit::Yes) => return Ok(true),
+            Ok(Admit::Later(seconds)) => seconds,
+            Err(e) => {
+                tracing::warn!(session = %claim.session, error = %e, "loop: the model budget cannot be read; the step waits");
+                1
+            }
+        };
+        self.stores.steps.defer(claim, wait).await.map_err(BackendError::new)?;
+        Ok(false)
+    }
 }

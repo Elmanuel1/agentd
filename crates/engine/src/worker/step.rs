@@ -22,7 +22,6 @@ use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
 use super::{grade, rubrics};
-use crate::model::budget::Admit;
 use crate::model::{ModelError, ModelProvider, ModelRequest};
 use crate::turn::policy::Toolbox;
 use crate::turn::prompt::system_prompt;
@@ -115,15 +114,8 @@ impl Loop {
         let agent = thread.agent.clone();
         let model = agent.config.model.id.clone();
         let provider = ModelProvider::of(&model).name();
-        match self.models.budget.admit(provider).await {
-            Ok(Admit::Yes) => {}
-            Ok(Admit::Later(seconds)) => {
-                return self.stores.steps.defer(claim, seconds).await.map_err(BackendError::new)
-            }
-            Err(e) => {
-                tracing::warn!(session = %id, error = %e, "loop: the model budget cannot be read; the step waits");
-                return self.stores.steps.defer(claim, 1).await.map_err(BackendError::new);
-            }
+        if !self.admitted(claim, provider).await? {
+            return Ok(());
         }
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
