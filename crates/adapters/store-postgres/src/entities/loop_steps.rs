@@ -117,7 +117,7 @@ async fn land(
     write: &StepWrite<'_>,
 ) -> Result<(), diesel::result::Error> {
     let (ws, id) = (&claim.workspace, &claim.session);
-    stamp(c, ws, id, write.read, Timestamp::now()).await?;
+    stamp(c, ws, id, write.read, write.at).await?;
     let ids: Vec<&str> = write.events.iter().map(|e| e.id.as_str()).collect();
     let docs = write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
     if insert(c, ws, id, &ids, docs).await? != ids.len() {

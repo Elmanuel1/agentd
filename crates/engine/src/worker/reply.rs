@@ -191,3 +191,25 @@ pub(super) fn status(idle: Option<&StopReason>) -> SessionStatus {
         None => SessionStatus::Running,
     }
 }
+
+/// The events one write lands, timed in order around the stamp of the
+/// client events it reads, since the events list orders by `processed_at`.
+pub(super) struct Batch {
+    pub(super) read: Vec<EventId>,
+    pub(super) at: Timestamp,
+    pub(super) events: Vec<Event>,
+}
+
+/// `before`, then the stamp of `read`, then `after`, a microsecond apart.
+pub(super) fn batch(read: Vec<EventId>, before: Vec<Event>, after: Vec<Event>) -> Batch {
+    let start = Timestamp::now().as_datetime();
+    let tick = |i: usize| {
+        let micros = i64::try_from(i).unwrap_or(i64::MAX);
+        Timestamp::from_datetime(start + chrono::Duration::microseconds(micros))
+    };
+    let n = before.len();
+    let timed = |i: usize, e: Event| Event { processed_at: Some(tick(i)), ..e };
+    let first = before.into_iter().enumerate().map(|(i, e)| timed(i, e));
+    let then = after.into_iter().enumerate().map(|(j, e)| timed(n + 1 + j, e));
+    Batch { read, at: tick(n), events: first.chain(then).collect() }
+}

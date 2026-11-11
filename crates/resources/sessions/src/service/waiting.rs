@@ -36,7 +36,8 @@ impl SessionsService {
             .events_page(ws, &session.id, &filter, &Pagination { limit: 1, offset: 0 })
             .await
             .map_err(map_store)?;
-        let waiting = last.into_iter().find_map(|e| match e.payload {
+        // The page holds one more than its limit: only the newest idle counts.
+        let waiting = last.into_iter().next().and_then(|e| match e.payload {
             EventPayload::Session(SessionEvent::StatusIdle {
                 stop_reason: StopReason::RequiresAction { event_ids },
                 ..

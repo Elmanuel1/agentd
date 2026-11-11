@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
+chrono = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

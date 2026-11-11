@@ -31,8 +31,10 @@ pub type SessionChange<'a> = dyn Fn(&mut Session) -> bool + Send + Sync + 'a;
 
 /// What one write of a held step lands, in one transaction.
 pub struct StepWrite<'a> {
-    /// The client events the step read, stamped processed now.
+    /// The client events the step read, stamped processed at `at`.
     pub read: &'a [EventId],
+    /// When they were processed, ordered among the events' own times.
+    pub at: shared::Timestamp,
     /// The events it appends, in order.
     pub events: &'a [Event],
     /// What it changes on the session's row.

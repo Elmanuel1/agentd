@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
+use sessions::events::{EventId, SessionEvent, SpanEvent, StopReason};
 use sessions::signals::Signal;
 use sessions::steps::{Claim, StepEnd, StepWrite};
 use sessions::types::{primary_thread_id, Session, SessionStatus};
@@ -13,7 +13,7 @@ use shared::tenancy::RUNTIME_QUEUE;
 use shared::{BackendError, Timestamp};
 use work::store::Reach;
 
-use super::reply::{charged, led, over_budget, spent, status, Turn};
+use super::reply::{batch, charged, led, over_budget, spent, status, Batch, Turn};
 use super::take::{cut_off, take, Interrupt, Taken};
 use super::watch::Watch;
 use super::Loop;
@@ -38,15 +38,9 @@ impl Loop {
         }
     }
 
-    async fn write(
-        &self,
-        claim: &Claim,
-        read: &[EventId],
-        events: &[Event],
-        to: Option<SessionStatus>,
-    ) -> Result<bool, BackendError> {
+    async fn write(&self, claim: &Claim, b: &Batch, to: Option<SessionStatus>) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        let w = StepWrite { read, events, session: &change };
+        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
         let wrote = self.stores.steps.write(claim, lease(self), w).await.map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(wrote)
@@ -56,8 +50,7 @@ impl Loop {
         &self,
         claim: &Claim,
         end: StepEnd,
-        read: &[EventId],
-        events: &[Event],
+        b: &Batch,
         session: &Session,
     ) -> Result<bool, BackendError> {
         let after = session.clone();
@@ -66,7 +59,7 @@ impl Loop {
             s.usage = after.usage.clone();
             true
         };
-        let w = StepWrite { read, events, session: &change };
+        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
         let done = self.stores.steps.commit(claim, end, w).await.map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(done)
@@ -94,19 +87,19 @@ impl Loop {
             session.status = SessionStatus::Idle;
             let mut events = cut_off(&turn, &history);
             events.extend(turn.idle(&session, StopReason::EndTurn {}));
-            self.commit(claim, StepEnd::Done, &taken, &events, &session).await?;
+            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
         }
         if !history.awaits_model() {
             let end = if allowed { StepEnd::Requeue } else { StepEnd::Done };
-            self.commit(claim, end, &taken, &answers, &session).await?;
+            self.commit(claim, end, &batch(taken, Vec::new(), answers), &session).await?;
             return Ok(());
         }
         if over_budget(&session) {
             session.status = SessionStatus::Idle;
             let mut events = answers;
             events.extend(turn.idle(&session, StopReason::BudgetReached {}));
-            self.commit(claim, StepEnd::Done, &taken, &events, &session).await?;
+            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
         }
         let model = session.agent.config.model.id.clone();
@@ -122,10 +115,10 @@ impl Loop {
             }
         }
         let start = turn.event(SpanEvent::ModelRequestStart {});
-        let mut opening = if idle { turn.running() } else { Vec::new() };
-        opening.extend(answers);
-        opening.push(start.clone());
-        if !self.write(claim, &taken, &opening, Some(SessionStatus::Running)).await? {
+        let start_id = start.id.clone();
+        let running = if idle { turn.running() } else { Vec::new() };
+        let opening = batch(taken, running, answers.into_iter().chain([start]).collect());
+        if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
         }
         session.status = SessionStatus::Running;
@@ -158,7 +151,7 @@ impl Loop {
         };
         let failed = |e: Option<&ModelError>| {
             let mut events = vec![turn.event(SpanEvent::ModelRequestEnd {
-                model_request_start_id: start.id.clone(),
+                model_request_start_id: start_id.clone(),
                 is_error: true,
                 model_usage: Default::default(),
             })];
@@ -169,18 +162,17 @@ impl Loop {
             }
             events
         };
-        let (read, events, end) = match answer {
+        let (done, end) = match answer {
+            // As on live: the call's end, then the interrupt, then the idle.
             Err(interrupts) => {
                 session.status = SessionStatus::Idle;
-                let mut events = failed(None);
-                events.extend(turn.idle(&session, StopReason::EndTurn {}));
-                (interrupts, events, StepEnd::Done)
+                (batch(interrupts, failed(None), turn.idle(&session, StopReason::EndTurn {})), StepEnd::Done)
             }
             Ok(Err(e)) => {
                 session.status = SessionStatus::Idle;
                 let mut events = failed(Some(&e));
                 events.extend(turn.idle(&session, StopReason::RetriesExhausted {}));
-                (Vec::new(), events, StepEnd::Done)
+                (batch(Vec::new(), Vec::new(), events), StepEnd::Done)
             }
             Ok(Ok(reply)) => {
                 let (usage, cents) = spent(&reply);
@@ -191,15 +183,15 @@ impl Loop {
                 let known: HashSet<&EventId> = log.iter().map(|e| &e.id).collect();
                 let later = self.stores.log.unprocessed_events(ws, id).await.map_err(BackendError::new)?;
                 let more = later.iter().any(|e| !known.contains(&e.id));
-                let mut out = led(&turn, &reply, &start.id, &tools, cloud, more);
+                let mut out = led(&turn, &reply, &start_id, &tools, cloud, more);
                 session.status = status(out.idle.as_ref());
                 if let Some(stop) = out.idle.take() {
                     out.events.extend(turn.idle(&session, stop));
                 }
-                (Vec::new(), out.events, out.end)
+                (batch(Vec::new(), Vec::new(), out.events), out.end)
             }
         };
-        self.commit(claim, end, &read, &events, &session).await?;
+        self.commit(claim, end, &done, &session).await?;
         Ok(())
     }
 }

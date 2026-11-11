@@ -77,6 +77,7 @@ impl Default for Streaming {
 }
 
 fn app(
+    sandboxes: Arc<FakeRuntime>,
     stores: &Stores,
     keys: Arc<StaticKeySource>,
     env_keys: &EnvironmentKeysService,
@@ -95,7 +96,7 @@ fn app(
         },
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
-        runtime: Some(Arc::new(FakeRuntime::new())),
+        runtime: Some(sandboxes),
         sandbox: sandbox.then(api::config::SandboxConfig::default),
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
@@ -117,6 +118,8 @@ pub enum Auth<'a> {
 
 pub struct Rig {
     pub app: Router,
+    /// The sandboxes every app of the rig launches.
+    pub sandboxes: Arc<FakeRuntime>,
     pub stores: Stores,
     pub keys: Arc<StaticKeySource>,
     pub sandbox: bool,
@@ -169,7 +172,8 @@ impl Rig {
             EnvironmentKeysService::new(stores.environment_keys.clone(), Arc::new(KeyPepper::new(&[9; 32])))
                 .with_runtime_key(&runtime_key);
         let keys = Arc::new(keys);
-        let app = app(&stores, keys.clone(), &env_keys, sandbox, Streaming::default());
+        let sandboxes = Arc::new(FakeRuntime::new());
+        let app = app(sandboxes.clone(), &stores, keys.clone(), &env_keys, sandbox, Streaming::default());
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
@@ -179,17 +183,37 @@ impl Rig {
             WorkService::new(stores.work.clone(), WorkTokens::new(WORK_KEY.to_vec()), "http://agentd.test")
                 .with_cloud_variables(cloud),
         );
-        Some(Self { app, stores, keys, env_keys, runtime_key, work, secrets, org, ws, ws_b, sandbox })
+        Some(Self {
+            app,
+            sandboxes,
+            stores,
+            keys,
+            env_keys,
+            runtime_key,
+            work,
+            secrets,
+            org,
+            ws,
+            ws_b,
+            sandbox,
+        })
     }
 
     /// A fresh app over the same database and keys, as after a restart.
     pub fn restarted(&self) -> Router {
-        app(&self.stores, self.keys.clone(), &self.env_keys, self.sandbox, Streaming::default())
+        app(
+            self.sandboxes.clone(),
+            &self.stores,
+            self.keys.clone(),
+            &self.env_keys,
+            self.sandbox,
+            Streaming::default(),
+        )
     }
 
     /// Another replica over `stores`, streaming as `streaming` says.
     pub fn replica(&self, stores: &Stores, streaming: Streaming) -> Router {
-        app(stores, self.keys.clone(), &self.env_keys, self.sandbox, streaming)
+        app(self.sandboxes.clone(), stores, self.keys.clone(), &self.env_keys, self.sandbox, streaming)
     }
 
     pub fn ctx(&self) -> AuthContext {

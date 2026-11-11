@@ -168,6 +168,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
             60,
             StepWrite {
                 read: std::slice::from_ref(&asked.id),
+                at: Timestamp::now(),
                 events: std::slice::from_ref(&start),
                 session: &running,
             },
@@ -182,7 +183,12 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
         .commit(
             &c,
             StepEnd::Done,
-            StepWrite { read: &[], events: std::slice::from_ref(&last), session: &unchanged },
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: std::slice::from_ref(&last),
+                session: &unchanged,
+            },
         )
         .await
         .unwrap();
@@ -212,17 +218,25 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
     let none: &[Event] = std::slice::from_ref(&late);
     assert!(!r
         .steps
-        .write(&first, 60, StepWrite { read: &[], events: none, session: &unchanged })
+        .write(&first, 60, StepWrite { read: &[], at: Timestamp::now(), events: none, session: &unchanged })
         .await
         .unwrap());
     assert!(!r
         .steps
-        .commit(&first, StepEnd::Done, StepWrite { read: &[], events: none, session: &unchanged })
+        .commit(
+            &first,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: none, session: &unchanged }
+        )
         .await
         .unwrap());
     assert!(r
         .steps
-        .commit(&second, StepEnd::Done, StepWrite { read: &[], events: &[reply()], session: &unchanged })
+        .commit(
+            &second,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged }
+        )
         .await
         .unwrap());
     let events = r.log.events(&ws, &s.id).await.unwrap();
@@ -244,14 +258,22 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
     r.wake(&ws, &s.id).await;
     assert!(r
         .steps
-        .commit(&c, StepEnd::Done, StepWrite { read: &[], events: &[reply()], session: &unchanged })
+        .commit(
+            &c,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged }
+        )
         .await
         .unwrap());
     let next = r.claim_of("w2", 60, &s.id).await.unwrap();
     assert_eq!(next.attempts, c.attempts + 1);
     assert!(r
         .steps
-        .commit(&next, StepEnd::Again, StepWrite { read: &[], events: &[], session: &unchanged })
+        .commit(
+            &next,
+            StepEnd::Again,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged }
+        )
         .await
         .unwrap());
     assert!(r.claim_of("w3", 60, &s.id).await.is_some(), "a step that goes on is due again");
@@ -272,7 +294,11 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
     r.sessions.delete(&ws, &s.id).await.unwrap();
     assert!(!r
         .steps
-        .commit(&c, StepEnd::Done, StepWrite { read: &[], events: &[reply()], session: &unchanged })
+        .commit(
+            &c,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged }
+        )
         .await
         .unwrap());
     assert!(r.claim_of("w2", 60, &s.id).await.is_none());
@@ -307,7 +333,11 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
     assert!(!seen_b, "the busy workspace's next step waits");
     assert!(seen_o, "another workspace runs");
     r.steps
-        .commit(&held, StepEnd::Done, StepWrite { read: &[], events: &[], session: &unchanged })
+        .commit(
+            &held,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged },
+        )
         .await
         .unwrap();
 }
@@ -328,7 +358,11 @@ async fn a_wake_for_a_session_with_no_step_queues_none_when_it_only_wakes() {
     let c = r.claim_of("w1", 60, &s.id).await.unwrap();
     r.log.append_events(&ws, &s.id, &[reply()], Wake::IfQueued).await.unwrap();
     r.steps
-        .commit(&c, StepEnd::Done, StepWrite { read: &[], events: &[], session: &unchanged })
+        .commit(
+            &c,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged },
+        )
         .await
         .unwrap();
     assert!(r.claim_of("w2", 60, &s.id).await.is_some(), "it woke the step the session had");
@@ -374,7 +408,11 @@ async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() 
     r.wake(&ws, &s.id).await;
     let c = r.claim_of("w1", 60, &s.id).await.unwrap();
     r.steps
-        .commit(&c, StepEnd::Requeue, StepWrite { read: &[], events: &[reply()], session: &unchanged })
+        .commit(
+            &c,
+            StepEnd::Requeue,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged },
+        )
         .await
         .unwrap();
     let got = work.get(&ws, s.id.as_str(), &Reach::default()).await.unwrap().unwrap();
@@ -402,7 +440,11 @@ async fn the_counts_see_due_and_leased_steps() {
     let after = r.steps.counts().await.unwrap();
     assert!(after.leased >= 1 && before.due >= 2, "{before:?} {after:?}");
     r.steps
-        .commit(&c, StepEnd::Done, StepWrite { read: &[], events: &[], session: &unchanged })
+        .commit(
+            &c,
+            StepEnd::Done,
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged },
+        )
         .await
         .unwrap();
 }
