@@ -24,7 +24,10 @@ use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 use sessions::signals::{LocalSignals, Signals};
 use sessions::steps::LoopWorkspaces;
+use sessions::store::{SessionFilter, SessionsStore, StoreError};
+use sessions::types::{Session, SessionId};
 use shared::ports::RuntimeError;
+use shared::Pagination;
 use shared::{BackendError, Timestamp, WorkspaceId};
 
 /// One scripted answer.
@@ -133,17 +136,58 @@ impl ModelBudget for Closed {
 /// and a loop worker calling `model`, sharing one set of signals. Steps
 /// other tests left behind are cleared first.
 async fn on_loop(rig: &Rig, model: Arc<Scripted>, joined: Timestamp) -> (Router, Worker) {
-    worker(rig, model, joined, 8, Arc::new(Unlimited)).await
+    worker(rig, model, joined, Tune::default()).await
 }
 
-/// `on_loop`, with a worker that runs `steps` at once under `budget`.
-async fn worker(
-    rig: &Rig,
-    model: Arc<Scripted>,
-    joined: Timestamp,
+/// How a test's worker differs from the default.
+struct Tune {
+    /// Steps it runs at once.
     steps: usize,
     budget: Arc<dyn ModelBudget>,
-) -> (Router, Worker) {
+    /// The session rows it reads, when not the rig's.
+    sessions: Option<Arc<dyn SessionsStore>>,
+}
+
+impl Default for Tune {
+    fn default() -> Self {
+        Self { steps: 8, budget: Arc::new(Unlimited), sessions: None }
+    }
+}
+
+/// Session rows whose reads fail, as with the database down.
+struct Unreadable(Arc<dyn SessionsStore>);
+
+#[async_trait]
+impl SessionsStore for Unreadable {
+    async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
+        self.0.insert(ws, s).await
+    }
+
+    async fn get(&self, _: &WorkspaceId, _: &SessionId) -> Result<Session, StoreError> {
+        Err(StoreError::Backend(BackendError::new(std::io::Error::other("database down"))))
+    }
+
+    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
+        self.0.replace(ws, read, s).await
+    }
+
+    async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
+        self.0.delete(ws, id).await
+    }
+
+    async fn list(
+        &self,
+        ws: &WorkspaceId,
+        filter: &SessionFilter,
+        page: &Pagination,
+    ) -> Result<Vec<Session>, StoreError> {
+        self.0.list(ws, filter, page).await
+    }
+}
+
+/// `on_loop`, with a worker tuned by `tune`.
+async fn worker(rig: &Rig, model: Arc<Scripted>, joined: Timestamp, tune: Tune) -> (Router, Worker) {
+    let Tune { steps, budget, sessions } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -157,7 +201,7 @@ async fn worker(
         rig.replica(&rig.stores, Streaming { signals: signals.clone(), on_loop, ..Streaming::default() });
     let stores = LoopStores {
         steps: rig.stores.steps.clone(),
-        sessions: rig.stores.sessions.clone(),
+        sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
     };
@@ -610,7 +654,8 @@ async fn a_worker_runs_no_more_steps_at_once_than_it_is_set_to() {
     // S-8.
     let Some(rig) = Rig::with_sandbox().await else { return };
     let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
-    let (app, _worker) = worker(&rig, model.clone(), an_hour_ago(), 4, Arc::new(Unlimited)).await;
+    let (app, _worker) =
+        worker(&rig, model.clone(), an_hour_ago(), Tune { steps: 4, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     for _ in 0..5 {
         let s = session(&app, &env, json!([])).await;
@@ -634,7 +679,9 @@ async fn a_step_over_the_model_budget_waits_without_calling_the_model() {
     let env = rig.environment("cloud").await;
     for (budget, due) in [(Closed(Some(42)), 30..=42), (Closed(None), -1..=1)] {
         let model = Scripted::new(Vec::new());
-        let (app, worker) = worker(&rig, model.clone(), an_hour_ago(), 8, Arc::new(budget)).await;
+        let (app, worker) =
+            worker(&rig, model.clone(), an_hour_ago(), Tune { budget: Arc::new(budget), ..Tune::default() })
+                .await;
         let s = session(&app, &env, json!([])).await;
         send(&app, &s, message("hi")).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -654,4 +701,20 @@ async fn a_loop_replica_serves_no_route() {
     assert_eq!(st, StatusCode::NOT_FOUND);
     let (st, _) = send_to(&rig.app, request("GET", "/v1/agents", Auth::Key(KEY), None)).await;
     assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
+    // S-4: only a deleted session ends its step; a failed read retries it.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let env = rig.environment("cloud").await;
+    let model = Scripted::new(Vec::new());
+    let tune = Tune { sessions: Some(Arc::new(Unreadable(rig.stores.sessions.clone()))), ..Tune::default() };
+    let (app, _worker) = worker(&rig, model.clone(), an_hour_ago(), tune).await;
+    let s = session(&app, &env, json!([])).await;
+    send(&app, &s, message("hi")).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let step = step_of(&s).await.expect("the step stays queued");
+    assert!(!step.leased && (3..=5).contains(&step.due_in), "due in {}s", step.due_in);
+    assert!(model.asked.lock().is_empty());
 }

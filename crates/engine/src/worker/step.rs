@@ -27,26 +27,26 @@ use crate::model::{ModelError, ModelProvider, ModelRequest};
 use crate::turn::policy::Toolbox;
 use crate::turn::prompt::system_prompt;
 
-fn lease(l: &Loop) -> i64 {
-    i64::try_from(l.settings.lease.as_secs()).unwrap_or(i64::MAX)
-}
-
 impl Loop {
     /// Run `claim`'s step; a step that fails goes back on the queue for a
     /// retry after a pause.
     pub(super) async fn step(&self, claim: Claim) {
-        if let Err(e) = self.run(&claim).await {
-            tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
-            if let Err(e) = self.stores.steps.defer(&claim, 5).await {
-                tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
-            }
+        let Err(e) = self.run(&claim).await else { return };
+        tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
+        if let Err(e) = self.stores.steps.defer(&claim, 5).await {
+            tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
         }
     }
 
     async fn write(&self, claim: &Claim, b: &Batch, to: Option<SessionStatus>) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
         let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
-        let wrote = self.stores.steps.write(claim, lease(self), w).await.map_err(BackendError::new)?;
+        let wrote = self
+            .stores
+            .steps
+            .write(claim, self.settings.lease_seconds(), w)
+            .await
+            .map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(wrote)
     }

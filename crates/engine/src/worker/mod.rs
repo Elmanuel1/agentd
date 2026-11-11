@@ -82,6 +82,12 @@ pub struct Settings {
     pub steps: usize,
 }
 
+impl Settings {
+    fn lease_seconds(&self) -> i64 {
+        i64::try_from(self.lease.as_secs()).unwrap_or(i64::MAX)
+    }
+}
+
 /// The loop.
 #[derive(Clone)]
 pub struct Loop {
@@ -112,7 +118,7 @@ impl Loop {
             let mut woken = me.signals.subscribe();
             loop {
                 let Ok(permit) = permits.clone().acquire_owned().await else { return };
-                let lease = i64::try_from(me.settings.lease.as_secs()).unwrap_or(i64::MAX);
+                let lease = me.settings.lease_seconds();
                 let claimed =
                     me.stores.steps.claim(&me.settings.owner, lease, me.settings.per_workspace).await;
                 let claim = match claimed {
