@@ -21,6 +21,8 @@ files = { workspace = true }
 skills = { workspace = true }
 sessions = { workspace = true }
 signals-valkey = { workspace = true }
+engine = { workspace = true }
+uuid = { workspace = true }
 deployments = { workspace = true }
 dreams = { workspace = true }
 scheduler-local = { workspace = true }

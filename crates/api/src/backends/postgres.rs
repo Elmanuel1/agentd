@@ -43,6 +43,7 @@ pub(super) async fn connect(
     }
     let load = PgLoad::new(pg.diesel.clone());
     drop(load.clone().spawn());
+    drop(telemetry::steps::watch(&meter, stores.steps.clone()));
     if let Some(period) = retention {
         let last_success = telemetry::retention::last_success(&meter);
         let retention = Retention::new(

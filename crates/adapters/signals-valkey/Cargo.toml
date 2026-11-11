@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 shared = { workspace = true }
 sessions = { workspace = true }
+engine = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 redis = { workspace = true }

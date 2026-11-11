@@ -16,6 +16,7 @@ use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
 use sessions::signals::{LocalSignals, Signals};
+use sessions::steps::LoopWorkspaces;
 use sessions::store::DatabaseLoad;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::material::{self, KeyKind};
@@ -60,12 +61,18 @@ impl DatabaseLoad for Unloaded {
 pub struct Streaming {
     pub signals: Arc<dyn Signals>,
     pub load: Arc<dyn DatabaseLoad>,
+    /// The workspaces whose sessions the loop serves.
+    pub on_loop: LoopWorkspaces,
 }
 
 impl Default for Streaming {
     /// Signals in this app alone, never overloaded.
     fn default() -> Self {
-        Self { signals: Arc::new(LocalSignals::default()), load: Arc::new(Unloaded) }
+        Self {
+            signals: Arc::new(LocalSignals::default()),
+            load: Arc::new(Unloaded),
+            on_loop: LoopWorkspaces::default(),
+        }
     }
 }
 
@@ -94,6 +101,7 @@ fn app(
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: streaming.signals,
         load: streaming.load,
+        on_loop: streaming.on_loop,
     };
     build_router(AppState::build(backends).unwrap())
 }

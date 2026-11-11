@@ -5,6 +5,8 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
+mod budget;
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,6 +17,8 @@ use sessions::signals::{Signal, Signals, CAPACITY};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;
+
+pub use budget::ValkeyBudget;
 
 /// The one channel every session's signals go on.
 const CHANNEL: &str = "agentd:sessions";

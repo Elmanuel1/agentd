@@ -74,6 +74,7 @@ dependencies = [
  "diesel",
  "dreams",
  "egress-proxy",
+ "engine",
  "environments",
  "files",
  "futures",
@@ -107,6 +108,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
  "vaults",
  "work",
 ]
@@ -3499,6 +3501,7 @@ name = "signals-valkey"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "engine",
  "futures",
  "redis",
  "sessions",

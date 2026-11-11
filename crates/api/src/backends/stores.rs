@@ -9,6 +9,7 @@ use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
 use organizations::workspaces::WorkspacesStore;
+use sessions::steps::Steps;
 use sessions::{SessionEventLog, SessionEventReads, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::secrets::SecretStore;
@@ -16,7 +17,7 @@ use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
     PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentKeysStore,
     PgEnvironmentsStore, PgFilesStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore,
-    PgSkillVersionsStore, PgSkillsStore, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
+    PgSkillVersionsStore, PgSkillsStore, PgSteps, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
 };
 use vaults::{VaultCredentialStore, VaultStore};
 use work::{WorkReads, WorkStore};
@@ -58,6 +59,8 @@ pub struct Stores {
     pub work: Arc<dyn WorkStore>,
     /// Work items, as the edge reads them.
     pub work_reads: Arc<dyn WorkReads>,
+    /// The loop's step queue.
+    pub steps: Arc<dyn Steps>,
 }
 
 impl std::fmt::Debug for Stores {
@@ -87,9 +90,10 @@ impl Stores {
             deployments: Arc::new(PgDeploymentsStore::new(backend.clone())),
             workspaces: Arc::new(PgWorkspacesStore::new(backend.clone())),
             api_keys: Arc::new(PgApiKeysStore::new(backend.clone())),
-            environment_keys: Arc::new(PgEnvironmentKeysStore::new(backend)),
+            environment_keys: Arc::new(PgEnvironmentKeysStore::new(backend.clone())),
             work: work.clone(),
             work_reads: work,
+            steps: Arc::new(PgSteps::new(backend)),
         }
     }
 

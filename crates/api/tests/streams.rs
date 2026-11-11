@@ -14,12 +14,11 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::Router;
-use common::{request, send_to, Auth, Rig, Streaming, Unloaded, KEY};
+use common::{request, send_to, Auth, Rig, Streaming, KEY};
 use diesel::connection::{Instrumentation, InstrumentationEvent};
 use http_body_util::BodyExt;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use sessions::signals::LocalSignals;
 use sessions::store::DatabaseLoad;
 use sessions::SessionId;
 use shared::WorkspaceId;
@@ -69,7 +68,7 @@ impl Sse {
 
 async fn valkey() -> Option<Streaming> {
     let url = std::env::var("AGENTD_VALKEY_URL").ok()?;
-    Some(Streaming { signals: Arc::new(ValkeySignals::connect(&url).unwrap()), load: Arc::new(Unloaded) })
+    Some(Streaming { signals: Arc::new(ValkeySignals::connect(&url).unwrap()), ..Streaming::default() })
 }
 
 fn message(text: &str) -> Value {
@@ -195,8 +194,7 @@ async fn while_overloaded_a_new_stream_gets_529_and_an_open_one_keeps_streaming(
     // F-5, with the gate forced.
     let Some(rig) = Rig::with_sandbox().await else { return };
     let gate = Arc::new(Switch(AtomicBool::new(false)));
-    let app = rig
-        .replica(&rig.stores, Streaming { signals: Arc::new(LocalSignals::default()), load: gate.clone() });
+    let app = rig.replica(&rig.stores, Streaming { load: gate.clone(), ..Streaming::default() });
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
     let mut open = Sse::open(&app, &session).await;

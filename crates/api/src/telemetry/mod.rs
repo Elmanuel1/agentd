@@ -19,6 +19,7 @@ pub mod db;
 pub mod http;
 pub mod ports;
 pub mod retention;
+pub mod steps;
 
 use opentelemetry::metrics::{Histogram, Meter, UpDownCounter};
 use opentelemetry::trace::TracerProvider as _;

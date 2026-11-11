@@ -71,6 +71,7 @@ impl AppState {
             metrics,
             signals,
             load,
+            on_loop,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
@@ -86,6 +87,7 @@ impl AppState {
             catalog,
         )
         .with_streams(Streams::new(signals, load))
+        .with_loop(on_loop)
         .with_list_reads(stores.session_event_list);
         // One key signs work tokens and egress passwords, each under its own purpose.
         let key = system.work_token_key.clone();

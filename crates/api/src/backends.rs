@@ -19,6 +19,7 @@ use api_keys::{ApiKeysService, EnvironmentKeysService};
 use scheduler_local::LocalScheduler;
 use secrets_aws::{AwsAdminKeys, AwsSecretStore};
 use sessions::signals::{LocalSignals, Signals};
+use sessions::steps::LoopWorkspaces;
 use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
@@ -64,6 +65,8 @@ pub struct Backends {
     pub signals: Arc<dyn Signals>,
     /// The database's load, which new streams wait on.
     pub load: Arc<dyn DatabaseLoad>,
+    /// The workspaces whose sessions the loop serves.
+    pub on_loop: LoopWorkspaces,
 }
 
 /// The deployment's own keys, read from Secrets Manager once at boot.
@@ -123,6 +126,9 @@ pub enum BootError {
     /// The Valkey the replicas signal through.
     #[error("signals: {0}")]
     Signals(String),
+    /// The loop's model providers or budget.
+    #[error("loop: {0}")]
+    Loop(String),
 }
 
 impl Backends {
@@ -130,6 +136,7 @@ impl Backends {
     /// ticking here.
     pub async fn from_config(config: &Config) -> Result<Self, BootError> {
         let metrics = Arc::new(Metrics::global());
+        let role = config.agent_loop.role;
         let blobs: Arc<dyn BlobStore> = match &config.blobs {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
@@ -142,10 +149,10 @@ impl Backends {
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws.clone()), metrics.clone()));
         let (stores, load, keys) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
-                let retention = config.streams.retention;
+                let retention = config.streams.retention.filter(|_| role.serves_api());
+                let s = secrets.clone();
                 let pg =
-                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, secrets)
-                        .await?;
+                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys)
@@ -164,11 +171,17 @@ impl Backends {
         let scheduler: Arc<dyn SchedulerPort> = match config.scheduler {
             SchedulerConfig::Local => {
                 let local = Arc::new(LocalScheduler::new(fires.clone()));
-                drop(local.clone().spawn(LOCAL_TICK));
+                if role.serves_api() {
+                    drop(local.clone().spawn(LOCAL_TICK));
+                }
                 local
             }
         };
+        if role.runs_loop() {
+            drop(crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref()).await?);
+        }
         let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
+            RuntimeConfig::Docker { .. } if !role.serves_api() => None,
             RuntimeConfig::Docker { image, limits, network } => {
                 let docker = bollard::Docker::connect_with_defaults()
                     .map_err(|e| BootError::Sandbox(e.to_string()))?;
@@ -194,6 +207,7 @@ impl Backends {
             metrics,
             signals,
             load,
+            on_loop: config.agent_loop.workspaces.clone(),
         })
     }
 }
