@@ -23,7 +23,7 @@ use sessions::store::{
 };
 use sessions::{SessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
-use shared::{ApiError, AuthContext, BackendError, OrgId, Pagination, Timestamp, WorkspaceId};
+use shared::{ApiError, AuthContext, BackendError, ErrorType, OrgId, Pagination, Timestamp, WorkspaceId};
 use tokio::sync::broadcast::error::RecvError;
 
 /// The log as the tail reads it: `head`, then each scripted read in turn,
@@ -323,7 +323,9 @@ async fn a_failed_head_read_refuses_the_stream_and_the_next_one_starts_its_own_t
     let rig = rig(Head::default(), false, vec![read(false, vec![(1, e.clone())])]);
     *rig.log.head.lock() = Err(StoreError::Backend(BackendError::new(std::io::Error::other("down"))));
     let refused = rig.service.subscribe(&rig.ctx, rig.session.id.as_str(), None).await;
-    assert_eq!(refused.unwrap_err().status, 500);
+    let err = refused.unwrap_err();
+    let shown = (err.status, err.error_type, err.message.as_str(), err.extra.is_empty());
+    assert_eq!(shown, (500, ErrorType::Api, "down", true));
     *rig.log.head.lock() = Ok(Head::default());
     let mut sub = rig.subscribe().await;
     rig.signal().await;
