@@ -10,7 +10,7 @@ scenarios running together:
 | `streams` | `STREAMS` concurrent event streams; each opens a stream, sends 5 events, deletes the session and checks every event arrived in order, ending with `session.deleted` | `STREAMS` = 50 |
 | `files` | 1 MB uploads, metadata reads, and skill bundle downloads (uploaded files are not downloadable, as live) | `RATE` / 4 per second |
 
-No model is called (agentd's step 1 runs no engine) and nothing reaches AWS: the stack is agentd, Postgres 16 and
+No model is called (the stack lists no workspace in `AGENTD_LOOP_WORKSPACES` and stores no model key) and nothing reaches AWS: the stack is agentd, Postgres 16 and
 S3 on LocalStack (MinIO no longer publishes public images).
 
 ## Run

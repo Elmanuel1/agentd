@@ -7,8 +7,11 @@ object storage. A deployment's fire for one tick is claimed at most once, with
 a native `INSERT … ON CONFLICT DO NOTHING`; a tick whose claim or run fails is
 not retried, so a tick can be lost. Event streams read the log itself: each
 replica tails every session it streams, woken by a Valkey signal
-(`AGENTD_VALKEY_URL`) or a fallback timer, so a stream on any replica sees every
-event. The local scheduler's timers live in the process: run one replica
+(`AGENTD_VALKEY_URL`) or a fallback timer (5 s plus up to 1 s of jitter), so a
+stream on any replica sees every event. A new stream gets 529
+`overloaded_error` while the primary is overloaded: a pool checkout waited over
+1 s in the last 10 s, or its client connections, counted every 10 s, pass 90%
+of `max_connections`. Streams already open keep streaming. The local scheduler's timers live in the process: run one replica
 until a shared scheduler replaces them, since schedules exist only where they
 were created.
 
