@@ -1,11 +1,10 @@
 use shared::limits::{validate_range_u32, values};
 use shared::{ApiError, AuthContext, Pagination};
-use tokio::sync::broadcast;
 
 use super::{guard_writable, map_store, parse_id, SessionsService};
 use crate::events::{Event, EventPayload, UserEvent};
 use crate::store::EventFilter;
-use crate::types::{OutcomeId, SessionId, SessionStatus};
+use crate::types::{OutcomeId, Session, SessionStatus};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
@@ -17,7 +16,8 @@ impl SessionsService {
         environment: Option<&str>,
         payloads: Vec<EventPayload>,
     ) -> Result<Vec<Event>, ApiError> {
-        let id = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let session = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let id = session.id.clone();
         let mut out = Vec::with_capacity(payloads.len());
         for p in payloads {
             // define_outcome gets its server-assigned outcome id on echo.
@@ -35,11 +35,14 @@ impl SessionsService {
                 }),
                 other => other,
             };
-            let ev = Event::new(p);
-            self.events.append_event(&ctx.workspace, &id, ev.clone()).await.map_err(map_store)?;
-            self.broadcast(&id, &ev);
-            out.push(ev);
+            out.push(Event::new(p));
         }
+        if out.is_empty() {
+            return Ok(out);
+        }
+        let wake = self.wake_for(ctx, &session).await?;
+        self.events.append_events(&ctx.workspace, &id, &out, wake).await.map_err(map_store)?;
+        self.publish(&ctx.workspace, &id).await;
         Ok(out)
     }
 
@@ -49,7 +52,7 @@ impl SessionsService {
         raw_id: &str,
         environment: Option<&str>,
         payloads: &[EventPayload],
-    ) -> Result<SessionId, ApiError> {
+    ) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
         guard_writable(&session)?;
@@ -58,7 +61,7 @@ impl SessionsService {
         }
         validate_sendable("events", payloads)?;
         self.guard_waiting(&ctx.workspace, &session, payloads).await?;
-        Ok(id)
+        Ok(session)
     }
 
     /// `GET /v1/sessions/{id}/events`: one page of the history (the
@@ -71,60 +74,7 @@ impl SessionsService {
         page: &Pagination,
     ) -> Result<Vec<Event>, ApiError> {
         let id = parse_id(raw_id)?;
-        self.events.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store)
-    }
-
-    /// Subscribe to live events (`GET /v1/sessions/{id}/events/stream`);
-    /// `environment` as for [`Self::send_events`].
-    pub async fn subscribe(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-        environment: Option<&str>,
-    ) -> Result<Subscription, ApiError> {
-        let id = parse_id(raw_id)?;
-        // Existence check under the caller's workspace.
-        self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
-        let rx =
-            self.channels.lock().entry(id.clone()).or_insert_with(|| broadcast::channel(1024).0).subscribe();
-        Ok(Subscription { rx, channels: self.channels.clone(), id })
-    }
-
-    /// Send `ev` to the session's listeners. A channel no one listens to is
-    /// dropped, so the map holds only sessions someone is streaming.
-    pub(super) fn broadcast(&self, id: &SessionId, ev: &Event) {
-        let mut channels = self.channels.lock();
-        if let Some(tx) = channels.get(id) {
-            if tx.send(ev.clone()).is_err() {
-                channels.remove(id);
-            }
-        }
-    }
-}
-
-/// One listener on a session's events; the session's channel goes when its
-/// last listener does.
-#[derive(Debug)]
-pub struct Subscription {
-    rx: broadcast::Receiver<Event>,
-    channels: super::Channels,
-    id: SessionId,
-}
-
-impl Subscription {
-    /// The next event; an error ends the stream (deleted, or fell behind).
-    pub async fn recv(&mut self) -> Result<Event, broadcast::error::RecvError> {
-        self.rx.recv().await
-    }
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        let mut channels = self.channels.lock();
-        // This receiver is still counted while it drops.
-        if channels.get(&self.id).is_some_and(|tx| tx.receiver_count() <= 1) {
-            channels.remove(&self.id);
-        }
+        self.list_reads.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store)
     }
 }
 

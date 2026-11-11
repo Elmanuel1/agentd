@@ -94,10 +94,24 @@ impl SandboxWork for WorkIssuer {
         Ok(env)
     }
 
+    async fn queue(
+        &self,
+        ctx: &AuthContext,
+        session: &Session,
+        environment: &serde_json::Value,
+    ) -> Result<(), ApiError> {
+        let self_hosted = environment.get("type").and_then(serde_json::Value::as_str) == Some("self_hosted");
+        self.work.queue_for_loop(ctx, &session.environment_id, session.id.as_str(), self_hosted).await
+    }
+
     async fn end(&self, ws: &WorkspaceId, session: &SessionId) {
         if let Err(e) = self.work.end_session(ws, session.as_str()).await {
             tracing::warn!(session = %session, error = %e.message, "work: could not stop the session's work item");
         }
+        self.forget(session);
+    }
+
+    fn forget(&self, session: &SessionId) {
         if let Some(egress) = &self.egress {
             egress.forget(session.as_str());
         }

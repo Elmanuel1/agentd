@@ -14,6 +14,13 @@ impl SessionsService {
         session: &Session,
         environment: serde_json::Value,
     ) -> Result<(), ApiError> {
+        if self.starts_on_loop(ctx, session) {
+            // The loop serves it: its work waits on its queue for a worker.
+            return match &self.work {
+                Some(work) => work.queue(ctx, session, &environment).await,
+                None => Ok(()),
+            };
+        }
         let Some(runtime) = &self.sandbox else {
             return Ok(());
         };
@@ -35,27 +42,46 @@ impl SessionsService {
                 work.end(&ctx.workspace, &session.id).await;
             }
         }
-        match launched {
-            Ok(_) => Ok(()),
-            // A daemon that cannot be reached is transient: 529, which the
-            // SDKs retry.
-            Err(e @ RuntimeError::Unavailable(_)) => Err(ApiError {
-                status: ErrorType::Overloaded.status(),
-                error_type: ErrorType::Overloaded,
-                message: format!("sandbox: {e}"),
-                extra: serde_json::Map::new(),
-            }),
-            Err(e) => Err(ApiError::internal(format!("sandbox: {e}"))),
+        launched.map(drop).map_err(sandbox_error)
+    }
+
+    /// Stop the harness sandbox of a session moving to the loop, answering
+    /// its error: a sandbox that is already gone is stopped.
+    pub(super) async fn halt_sandbox(&self, id: &SessionId) -> Result<(), ApiError> {
+        let Some(runtime) = &self.sandbox else {
+            return Ok(());
+        };
+        let Some(handle) = runtime.handle_for(id.as_str()) else {
+            return Ok(());
+        };
+        match runtime.stop(&handle).await {
+            Ok(()) | Err(RuntimeError::Unknown(_)) => Ok(()),
+            Err(e) => Err(sandbox_error(e)),
         }
     }
 
-    /// Remove the session's sandbox (on archive, delete and terminate). The session's own state is the source
-    /// of truth, so a runtime that cannot be reached is logged, not raised:
-    /// an archive or delete never waits on the sandbox host.
+    /// End the session's sandbox (on archive and terminate): its work item
+    /// stops, then the sandbox goes.
     pub(super) async fn stop_sandbox(&self, ws: &WorkspaceId, id: &SessionId) {
         if let Some(work) = &self.work {
             work.end(ws, id).await;
         }
+        self.remove_runtime(id).await;
+    }
+
+    /// Remove a deleted session's sandbox: its work item stopped with the
+    /// delete.
+    pub(super) async fn remove_sandbox(&self, id: &SessionId) {
+        if let Some(work) = &self.work {
+            work.forget(id);
+        }
+        self.remove_runtime(id).await;
+    }
+
+    /// The session's own state is the source of truth, so a runtime that
+    /// cannot be reached is logged, not raised: an archive or delete never
+    /// waits on the sandbox host.
+    async fn remove_runtime(&self, id: &SessionId) {
         let Some(runtime) = &self.sandbox else {
             return;
         };
@@ -66,5 +92,13 @@ impl SessionsService {
             Ok(()) | Err(RuntimeError::Unknown(_)) => {}
             Err(e) => tracing::warn!(session = %id, error = %e, "sessions: could not remove the sandbox"),
         }
+    }
+}
+
+/// A daemon that cannot be reached is transient: 529, which the SDKs retry.
+fn sandbox_error(e: RuntimeError) -> ApiError {
+    match e {
+        RuntimeError::Unavailable(_) => ApiError::of(ErrorType::Overloaded, format!("sandbox: {e}")),
+        e => ApiError::internal(format!("sandbox: {e}")),
     }
 }

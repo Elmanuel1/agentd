@@ -1,15 +1,21 @@
 //! `SessionsStore` on Postgres via Diesel: the session rows.
 
+mod archived;
+
 use ::sessions::store::{Order, SessionFilter, SessionsStore, StoreError};
-use ::sessions::types::{Session, SessionId};
+use ::sessions::types::{Session, SessionId, SessionStatus};
+use ::work::store::Reach;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 
+use super::loop_steps::forget;
+use super::session_events::lock;
+use super::work_items::stop::stop;
 use crate::schema::sessions;
 use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
@@ -109,18 +115,34 @@ impl SessionsStore for PgSessionsStore {
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        // Delete + return the row in one statement (no separate get).
-        let doc: Option<serde_json::Value> = diesel::delete(
-            sessions::table
-                .filter(sessions::workspace_id.eq(ws.as_str()))
-                .filter(sessions::session_id.eq(id.as_str())),
-        )
-        .returning(sessions::doc)
-        .get_result(&mut conn)
-        .await
-        .optional()
-        .map_err(diesel_be)?;
-        parse_doc(doc.ok_or(StoreError::NotFound)?)
+        let running = enum_str(&SessionStatus::Running);
+        let doc = conn
+            .transaction::<_, diesel::result::Error, _>(|c| {
+                async move {
+                    // An append in flight commits first; a later one finds no session.
+                    lock(c, id).await?;
+                    let key =
+                        sessions::workspace_id.eq(ws.as_str()).and(sessions::session_id.eq(id.as_str()));
+                    let doc: Option<serde_json::Value> =
+                        diesel::delete(sessions::table.filter(key).filter(sessions::status.ne(running)))
+                            .returning(sessions::doc)
+                            .get_result(c)
+                            .await
+                            .optional()?;
+                    let Some(doc) = doc else {
+                        let status: Option<String> =
+                            sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
+                        return Ok(Err(status.map_or(StoreError::NotFound, |_| StoreError::Conflict)));
+                    };
+                    stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
+                    forget(c, ws, id).await?;
+                    Ok(Ok(doc))
+                }
+                .scope_boxed()
+            })
+            .await
+            .map_err(diesel_be)??;
+        parse_doc(doc)
     }
 
     async fn list(

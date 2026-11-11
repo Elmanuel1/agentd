@@ -1,6 +1,8 @@
-"""Client events, as the harness receives them: it follows the session's stream, takes each
-queued client event from agentd (which stamps it processed), and hands it to whoever waits for
-it: new work for the loop, an answer for a tool call that waits, or an interrupt."""
+"""Client events, as the harness receives them: it takes each queued client event from agentd
+(which stamps it processed) and hands it to whoever waits for it: new work for the loop, an
+answer for a tool call that waits, or an interrupt. As on live, the stream shows a client event
+only once it is processed, so the harness takes them on a short poll and follows the stream only
+to learn that the session is gone."""
 
 import threading
 import time
@@ -9,6 +11,8 @@ import anthropic
 import httpx
 
 WORK = ("user.message", "user.define_outcome", "system.message")
+# How often queued client events are taken.
+POLL = 0.5
 
 
 class Interrupted(Exception):
@@ -26,6 +30,18 @@ class Inbox:
 
     def start(self):
         threading.Thread(target=self._follow, daemon=True).start()
+        threading.Thread(target=self._poll, daemon=True).start()
+
+    def _poll(self):
+        """Take queued client events until the session is gone."""
+        while not self.closed:
+            try:
+                self.take()
+            except anthropic.NotFoundError:
+                return
+            except (anthropic.APIError, httpx.HTTPError):
+                pass
+            time.sleep(POLL)
 
     def _follow(self):
         """Follow the stream, reconnecting with a backoff; only the session's end stops it."""
@@ -33,14 +49,10 @@ class Inbox:
         try:
             while True:
                 try:
-                    # A client event sent while no stream was open is taken here.
-                    self.take()
                     for event in self.agentd.stream():
                         wait = 1
                         if event["type"] == "session.deleted":
                             return
-                        if event["type"].startswith(("user.", "system.")) and not event.get("processed_at"):
-                            self.take()
                 except anthropic.NotFoundError:
                     return
                 except (anthropic.APIError, httpx.HTTPError):

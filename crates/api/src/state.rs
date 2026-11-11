@@ -9,7 +9,7 @@ use environments::EnvironmentsService;
 use files::FilesService;
 use memory::MemoriesService;
 use organizations::WorkspacesService;
-use sessions::SessionsService;
+use sessions::{SessionsService, Streams};
 use shared::limits::ModelCatalog;
 use shared::ports::fire::FireError;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
@@ -69,6 +69,10 @@ impl AppState {
             sandbox,
             extra_models,
             metrics,
+            signals,
+            load,
+            on_loop,
+            role,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
@@ -82,7 +86,10 @@ impl AppState {
             stores.session_events,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
             catalog,
-        );
+        )
+        .with_streams(Streams::new(signals, load))
+        .with_loop(on_loop)
+        .with_list_reads(stores.session_event_list);
         // One key signs work tokens and egress passwords, each under its own purpose.
         let key = system.work_token_key.clone();
         let cloud =
@@ -142,6 +149,10 @@ impl AppState {
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
         }
+        let modules = match role.serves_api() {
+            true => modules,
+            false => Vec::new(),
+        };
         let work = WorkAccess { tokens: work.tokens().clone(), items: stores.work_reads, grants: reach };
         Ok(Self { keys, admin_keys, environment_keys, modules, metrics, work })
     }

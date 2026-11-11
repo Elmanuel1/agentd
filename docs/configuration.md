@@ -25,6 +25,9 @@ fakes in test code, never from configuration ([Security](#security)).
 |---|---|---|
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_URL` | required | Postgres connection |
+| `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
+| `AGENTD_VALKEY_URL` | unset (signals stay in the process) | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another; `rediss://` for TLS |
+| `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
 | `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |
@@ -37,9 +40,59 @@ fakes in test code, never from configuration ([Security](#security)).
 | `RUST_LOG` | `info` | Log level |
 
 
+## The loop
+
+The sessions of a workspace listed in `AGENTD_LOOP_WORKSPACES` run on agentd's
+own loop. A client event of such a session puts it on the step queue
+(`loop_steps`) in the same commit. A loop worker claims the step under a lease,
+builds one model call's prompt from the session's event log, and commits what
+the reply leads to:
+- the call's start, the running status and the client events it takes, in one
+  commit before the call;
+- its events, in one commit after it.
+
+Nothing is held in a replica between steps. A step cut off by a crash runs
+again from the log once its lease runs out. A `user.interrupt` sent during a
+call cancels it. Built-in tool calls are parked for the session's worker,
+which takes the session's work item:
+- a `self_hosted` session idles `requires_action` until its worker posts
+  `user.tool_result`;
+- a `cloud` session stays `running`, and its worker's results show as
+  `agent.tool_result`.
+
+A coordinator's `send_to_agent` opens a roster thread that runs in later steps.
+An outcome is graded on the grader's own thread. A workspace's sessions created
+before the time it was listed started on the harness path below; each moves to
+the loop at its next idle turn, once its sandbox is stopped.
+
+The loop calls the model itself, with one key per provider:
+`agentd model-key set --provider anthropic|openrouter` stores it in Secrets
+Manager (`PREFIX/operator/models/<provider>`). A model id with a `/` goes to the
+OpenAI-compatible API at `AGENTD_MODEL_BASE_URL`, and any other id to the
+Messages API at `AGENTD_ANTHROPIC_BASE_URL`. The system prompt and the tool
+list carry prompt-cache marks. A call that fails with 408, 409, 429 or 5xx is
+retried with backoff and jitter, never sooner than `retry-after`, within the
+step's 10 minute deadline.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention, the local scheduler and sandbox launches run in `api` and `all` |
+| `AGENTD_LOOP_WORKSPACES` | unset | `wrkspc_…@<RFC 3339 time>,…`: the workspaces whose sessions the loop serves, each with the time it joined |
+| `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
+| `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
+| `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
+| `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |
+| `AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM` | unset (no limit) | Requests and input tokens per provider and minute, shared by every replica in Valkey (`AGENTD_VALKEY_URL`); a step over it waits for the next minute. Without Valkey there is no limit |
+| `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
+
+A session's list cost adds each call's provider-reported cost, rounded up to
+the cent so a budget is never passed by rounding. A session whose budget is
+spent, or that ran a model with no list price, stops its turn with
+`budget_reached` before its next call.
+
 ## Sandboxes
 
-Each session's agent loop, its harness (`harness/`), runs in the session's
+On the harness path, each session's agent loop, its harness (`harness/`), runs in the session's
 sandbox. It takes the session's work item with the work token agentd starts
 the sandbox with, mounts the session's files and its agents' skills, and runs
 the agent with harness-sim's mini-swe-agent loop. The agent's tools are the
@@ -50,8 +103,8 @@ roster with `send_to_agent`, each delegation a session thread; outcomes are
 graded by an independent grader thread. The harness reads the session through
 the public API and writes its events, the client events it takes and its
 outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
-token reaches. agentd keeps the API, the event log and the sandbox's
-lifecycle, and runs no agent loop; the sandbox takes no inbound connection.
+token reaches. For these sessions agentd keeps the API, the event log and the
+sandbox's lifecycle; the sandbox takes no inbound connection.
 
 A session's `budget` is enforced by the harness. It adds up each model
 request's list cost (OpenRouter's `usage.cost`) across every thread, starting

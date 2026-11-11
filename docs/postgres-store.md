@@ -5,11 +5,12 @@ list, filter, sort, search, paginate, count — is plain SQL, with no second
 search copy to build or keep in sync. Records live in Postgres and blobs in
 object storage. A deployment's fire for one tick is claimed at most once, with
 a native `INSERT … ON CONFLICT DO NOTHING`; a tick whose claim or run fails is
-not retried, so a tick can be lost. Two things still live in the process: the
-event-stream fan-out and the local scheduler's timers. Run one replica until
-a shared event bus and scheduler replace them; with two, a stream misses
-events written on the other replica, and schedules exist only where they were
-created.
+not retried, so a tick can be lost. Event streams read the log itself: each
+replica tails every session it streams, woken by a Valkey signal
+(`AGENTD_VALKEY_URL`) or a fallback timer, so a stream on any replica sees every
+event. The local scheduler's timers live in the process: run one replica
+until a shared scheduler replaces them, since schedules exist only where they
+were created.
 
 ## Versions (Flyway-compatible)
 

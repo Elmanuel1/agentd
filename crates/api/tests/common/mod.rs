@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use api::config::Role;
 use api::session_grants::SessionReach;
 use api::{build_router, AppState, Backends, Stores, SystemKeys};
 use api_keys::EnvironmentKeysService;
@@ -15,6 +16,9 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
+use sessions::signals::{LocalSignals, Signals};
+use sessions::steps::LoopWorkspaces;
+use sessions::store::DatabaseLoad;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::KeyPepper;
@@ -45,11 +49,43 @@ pub fn stamp() -> String {
     format!("{}{}", Timestamp::now().as_datetime().timestamp_micros(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// A database load that never refuses a stream.
+pub struct Unloaded;
+
+impl DatabaseLoad for Unloaded {
+    fn overloaded(&self) -> bool {
+        false
+    }
+}
+
+/// How one app replica streams: its signals and the load it reads.
+pub struct Streaming {
+    pub signals: Arc<dyn Signals>,
+    pub load: Arc<dyn DatabaseLoad>,
+    /// The workspaces whose sessions the loop serves.
+    pub on_loop: LoopWorkspaces,
+    pub role: Role,
+}
+
+impl Default for Streaming {
+    /// Signals in this app alone, never overloaded.
+    fn default() -> Self {
+        Self {
+            signals: Arc::new(LocalSignals::default()),
+            load: Arc::new(Unloaded),
+            on_loop: LoopWorkspaces::default(),
+            role: Role::All,
+        }
+    }
+}
+
 fn app(
+    sandboxes: Arc<FakeRuntime>,
     stores: &Stores,
     keys: Arc<StaticKeySource>,
     env_keys: &EnvironmentKeysService,
     sandbox: bool,
+    streaming: Streaming,
 ) -> Router {
     let backends = Backends {
         stores: stores.clone(),
@@ -63,10 +99,14 @@ fn app(
         },
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
-        runtime: Some(Arc::new(FakeRuntime::new())),
+        runtime: Some(sandboxes),
         sandbox: sandbox.then(api::config::SandboxConfig::default),
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
+        signals: streaming.signals,
+        load: streaming.load,
+        on_loop: streaming.on_loop,
+        role: streaming.role,
     };
     build_router(AppState::build(backends).unwrap())
 }
@@ -82,6 +122,8 @@ pub enum Auth<'a> {
 
 pub struct Rig {
     pub app: Router,
+    /// The sandboxes every app of the rig launches.
+    pub sandboxes: Arc<FakeRuntime>,
     pub stores: Stores,
     pub keys: Arc<StaticKeySource>,
     pub sandbox: bool,
@@ -134,7 +176,8 @@ impl Rig {
             EnvironmentKeysService::new(stores.environment_keys.clone(), Arc::new(KeyPepper::new(&[9; 32])))
                 .with_runtime_key(&runtime_key);
         let keys = Arc::new(keys);
-        let app = app(&stores, keys.clone(), &env_keys, sandbox);
+        let sandboxes = Arc::new(FakeRuntime::new());
+        let app = app(sandboxes.clone(), &stores, keys.clone(), &env_keys, sandbox, Streaming::default());
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
@@ -144,12 +187,37 @@ impl Rig {
             WorkService::new(stores.work.clone(), WorkTokens::new(WORK_KEY.to_vec()), "http://agentd.test")
                 .with_cloud_variables(cloud),
         );
-        Some(Self { app, stores, keys, env_keys, runtime_key, work, secrets, org, ws, ws_b, sandbox })
+        Some(Self {
+            app,
+            sandboxes,
+            stores,
+            keys,
+            env_keys,
+            runtime_key,
+            work,
+            secrets,
+            org,
+            ws,
+            ws_b,
+            sandbox,
+        })
     }
 
     /// A fresh app over the same database and keys, as after a restart.
     pub fn restarted(&self) -> Router {
-        app(&self.stores, self.keys.clone(), &self.env_keys, self.sandbox)
+        app(
+            self.sandboxes.clone(),
+            &self.stores,
+            self.keys.clone(),
+            &self.env_keys,
+            self.sandbox,
+            Streaming::default(),
+        )
+    }
+
+    /// Another replica over `stores`, streaming as `streaming` says.
+    pub fn replica(&self, stores: &Stores, streaming: Streaming) -> Router {
+        app(self.sandboxes.clone(), stores, self.keys.clone(), &self.env_keys, self.sandbox, streaming)
     }
 
     pub fn ctx(&self) -> AuthContext {
@@ -177,28 +245,32 @@ impl Rig {
         auth: Auth<'_>,
         body: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
-        let beta = if uri.starts_with("/v1/memory_stores") {
-            "agent-memory-2026-07-22"
-        } else {
-            "managed-agents-2026-04-01"
-        };
-        let mut b = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", beta);
-        b = match auth {
-            Auth::Key(k) => b.header("x-api-key", k),
-            Auth::Bearer(k) => b.header("authorization", format!("Bearer {k}")),
-        };
-        let body = body.map_or_else(Body::empty, |v| Body::from(v.to_string()));
-        self.send(b.body(body).unwrap()).await
+        self.send(request(method, uri, auth, body)).await
     }
 
     pub async fn send(&self, req: Request<Body>) -> (StatusCode, serde_json::Value) {
         send_to(&self.app, req).await
     }
+}
+
+/// A request as the SDKs send it.
+pub fn request(method: &str, uri: &str, auth: Auth<'_>, body: Option<serde_json::Value>) -> Request<Body> {
+    let beta = if uri.starts_with("/v1/memory_stores") {
+        "agent-memory-2026-07-22"
+    } else {
+        "managed-agents-2026-04-01"
+    };
+    let b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", beta);
+    let b = match auth {
+        Auth::Key(k) => b.header("x-api-key", k),
+        Auth::Bearer(k) => b.header("authorization", format!("Bearer {k}")),
+    };
+    b.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string()))).unwrap()
 }
 
 /// Send `req` to `app`: its status and JSON body (or text).

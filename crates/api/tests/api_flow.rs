@@ -46,6 +46,7 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
     let mut keys = StaticKeySource::default();
     keys.register(KEY, &org, &format!("wrkspc_a{stamp}"), "apikey_01a");
     keys.register(KEY_B, &org, &format!("wrkspc_b{stamp}"), "apikey_01b");
+    let load = Arc::new(store_postgres::PgLoad::new(backend.diesel.clone()));
     let backends = Backends {
         stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
@@ -62,6 +63,10 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
         sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
+        signals: Arc::new(sessions::signals::LocalSignals::default()),
+        load,
+        on_loop: sessions::steps::LoopWorkspaces::default(),
+        role: api::config::Role::All,
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

@@ -29,6 +29,10 @@ pub struct Config {
     pub extra_models: Vec<String>,
     /// How sandboxes reach agentd and the egress service.
     pub sandbox: SandboxConfig,
+    /// Session streams across replicas, and event retention.
+    pub streams: StreamsConfig,
+    /// What this replica runs, and the loop's settings.
+    pub agent_loop: LoopConfig,
 }
 
 /// `AGENTD_BLOBS`.
@@ -91,7 +95,22 @@ impl Config {
             .map(str::to_owned)
             .collect();
         let sandbox = SandboxConfig::from_lookup(&get)?;
-        Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime, telemetry, extra_models, sandbox })
+        let streams = StreamsConfig::from_lookup(&get)?;
+        let agent_loop = LoopConfig::from_lookup(&get)?;
+        Ok(Self {
+            addr,
+            store,
+            blobs,
+            secrets,
+            keys,
+            scheduler,
+            runtime,
+            telemetry,
+            extra_models,
+            sandbox,
+            streams,
+            agent_loop,
+        })
     }
 }
 
@@ -159,15 +178,19 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
     })
 }
 
+mod role;
 mod runtime;
 mod sandbox;
 mod secrets;
 mod store;
+mod streams;
 mod telemetry;
 
+pub use role::{LoopConfig, Role};
 pub use runtime::{RuntimeConfig, DEFAULT_SANDBOX_IMAGE};
 pub use sandbox::SandboxConfig;
 pub use store::StoreConfig;
+pub use streams::StreamsConfig;
 pub use telemetry::TelemetryConfig;
 
 #[cfg(test)]

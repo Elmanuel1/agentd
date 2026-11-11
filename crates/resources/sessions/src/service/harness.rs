@@ -4,12 +4,12 @@ use async_trait::async_trait;
 use shared::{ApiError, Timestamp, Usage, WorkspaceId};
 
 use super::{map_store, HarnessContract, SessionsService};
-use crate::events::{Event, EventPayload, SessionEvent, StopReason};
-use crate::store::StoreError;
+use crate::events::{Event, EventId, EventPayload, SessionEvent, StopReason};
+use crate::store::{StoreError, Wake};
 use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadId};
 
-/// The same service implements it, so the event log and its broadcast have
-/// one source.
+/// The same service implements it, so every write to the log signals the
+/// session's streams.
 #[async_trait]
 impl HarnessContract for SessionsService {
     async fn session(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Session, ApiError> {
@@ -31,8 +31,11 @@ impl HarnessContract for SessionsService {
         ev.session_thread_id = thread.cloned();
         // Agent-side events are processed by construction.
         ev.processed_at = Some(Timestamp::now());
-        self.events.append_event(ws, session, ev.clone()).await.map_err(map_store)?;
-        self.broadcast(session, &ev);
+        self.events
+            .append_events(ws, session, std::slice::from_ref(&ev), Wake::No)
+            .await
+            .map_err(map_store)?;
+        self.publish(ws, session).await;
         Ok(ev)
     }
 
@@ -68,15 +71,15 @@ impl HarnessContract for SessionsService {
     }
 
     async fn drain_user_events(&self, ws: &WorkspaceId, session: &SessionId) -> Result<Vec<Event>, ApiError> {
-        let events = self.events.unprocessed_events(ws, session).await.map_err(map_store)?;
-        let mut drained = Vec::new();
-        for mut ev in events {
-            ev.processed_at = Some(Timestamp::now());
-            self.events.replace_event(ws, session, ev.clone()).await.map_err(map_store)?;
-            // The processed form is re-broadcast (documented: client events
-            // appear twice, queued then processed).
-            self.broadcast(session, &ev);
-            drained.push(ev);
+        let queued = self.events.unprocessed_events(ws, session).await.map_err(map_store)?;
+        if queued.is_empty() {
+            return Ok(queued);
+        }
+        let ids: Vec<EventId> = queued.into_iter().map(|e| e.id).collect();
+        let drained =
+            self.events.update_processed_at(ws, session, &ids, Timestamp::now()).await.map_err(map_store)?;
+        if !drained.is_empty() {
+            self.publish(ws, session).await;
         }
         Ok(drained)
     }

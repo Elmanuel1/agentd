@@ -159,3 +159,5 @@ fn aws_secret_options_come_from_config() {
         assert_eq!(err.var, "AGENTD_SECRETS_RECOVERY_DAYS", "{days}");
     }
 }
+
+mod streams;

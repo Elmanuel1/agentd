@@ -6,13 +6,14 @@
 mod filter;
 mod reads;
 mod row;
+pub(crate) mod stop;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use ::work::store::{Beat, Reach, Scope, StoreError, WorkItem, WorkStore};
 use async_trait::async_trait;
-use diesel::sql_types::{Array, Bool, Jsonb, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
@@ -177,24 +178,6 @@ impl WorkStore for PgWorkStore {
         force: bool,
         now: Timestamp,
     ) -> Result<Option<WorkItem>, StoreError> {
-        // No worker holds a queued item, nor one whose lease ran out.
-        let free = "state = 'queued' OR lease_until < $6";
-        let rows: Vec<Row> = keyed(
-            format!(
-                "UPDATE work_items SET stop_requested_at = coalesce(stop_requested_at, $6), \
-             stopped_at = CASE WHEN state = 'stopped' THEN stopped_at WHEN $5 OR {free} THEN $6 END, \
-             state = CASE WHEN state = 'stopped' OR $5 OR {free} THEN 'stopped' ELSE 'stopping' END \
-             WHERE {KEY} AND {REACH} RETURNING {COLS}"
-            ),
-            ws,
-            session,
-            reach,
-        )
-        .bind::<Bool, _>(force)
-        .bind::<Timestamptz, _>(now.as_datetime())
-        .load(&mut self.write().await?)
-        .await
-        .map_err(diesel_be)?;
-        Ok(first(rows))
+        stop::stop(&mut *self.write().await?, ws, session, reach, force, now).await.map_err(diesel_be)
     }
 }

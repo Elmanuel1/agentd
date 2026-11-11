@@ -36,7 +36,8 @@ impl SessionsService {
             .events_page(ws, &session.id, &filter, &Pagination { limit: 1, offset: 0 })
             .await
             .map_err(map_store)?;
-        let waiting = last.into_iter().find_map(|e| match e.payload {
+        // The page holds one more than its limit: only the newest idle counts.
+        let waiting = last.into_iter().next().and_then(|e| match e.payload {
             EventPayload::Session(SessionEvent::StatusIdle {
                 stop_reason: StopReason::RequiresAction { event_ids },
                 ..
@@ -76,7 +77,8 @@ impl SessionsService {
             };
             calls.push((call.clone(), custom));
         }
-        let id = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let session = self.sendable(ctx, raw_id, environment, &payloads).await?;
+        let id = session.id.clone();
         let ids: Vec<EventId> = calls.iter().map(|(call, _)| call.clone()).collect();
         let events: Vec<Event> = payloads.into_iter().map(Event::new).collect();
         let check = |found: &[Event]| {
@@ -95,10 +97,12 @@ impl SessionsService {
             }
             Ok(())
         };
-        self.events.append_answers(&ctx.workspace, &id, &ids, &events, &check).await.map_err(map_store)??;
-        for ev in &events {
-            self.broadcast(&id, ev);
-        }
+        let wake = self.wake_for(ctx, &session).await?;
+        self.events
+            .append_answers(&ctx.workspace, &id, &ids, &events, &check, wake)
+            .await
+            .map_err(map_store)??;
+        self.publish(&ctx.workspace, &id).await;
         Ok(events)
     }
 }

@@ -9,14 +9,15 @@ use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
 use organizations::workspaces::WorkspacesStore;
-use sessions::{SessionEventLog, SessionsStore};
+use sessions::steps::Steps;
+use sessions::{SessionEventLog, SessionEventReads, SessionsStore};
 use shared::ports::blobs::BlobStore;
 use shared::ports::secrets::SecretStore;
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
     PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentKeysStore,
     PgEnvironmentsStore, PgFilesStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore,
-    PgSkillVersionsStore, PgSkillsStore, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
+    PgSkillVersionsStore, PgSkillsStore, PgSteps, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
 };
 use vaults::{VaultCredentialStore, VaultStore};
 use work::{WorkReads, WorkStore};
@@ -44,6 +45,8 @@ pub struct Stores {
     pub sessions: Arc<dyn SessionsStore>,
     /// Session event logs.
     pub session_events: Arc<dyn SessionEventLog>,
+    /// Session event logs as the events list reads them.
+    pub session_event_list: Arc<dyn SessionEventReads>,
     /// Deployments.
     pub deployments: Arc<dyn DeploymentsStore>,
     /// Workspaces.
@@ -56,6 +59,8 @@ pub struct Stores {
     pub work: Arc<dyn WorkStore>,
     /// Work items, as the edge reads them.
     pub work_reads: Arc<dyn WorkReads>,
+    /// The loop's step queue.
+    pub steps: Arc<dyn Steps>,
 }
 
 impl std::fmt::Debug for Stores {
@@ -69,6 +74,7 @@ impl Stores {
     pub fn postgres(backend: PgBackend, blobs: Arc<dyn BlobStore>, secrets: Arc<dyn SecretStore>) -> Self {
         let vaults = Arc::new(PgVaultsStore::new(backend.clone(), secrets));
         let work = Arc::new(PgWorkStore::new(backend.clone()));
+        let events = Arc::new(PgSessionEventLog::new(backend.clone()));
         Self {
             agents: Arc::new(PgAgentsStore::new(backend.clone())),
             environments: Arc::new(PgEnvironmentsStore::new(backend.clone())),
@@ -79,13 +85,22 @@ impl Stores {
             skills: Arc::new(PgSkillsStore::new(backend.clone(), blobs.clone())),
             skill_versions: Arc::new(PgSkillVersionsStore::new(backend.clone(), blobs)),
             sessions: Arc::new(PgSessionsStore::new(backend.clone())),
-            session_events: Arc::new(PgSessionEventLog::new(backend.clone())),
+            session_events: events.clone(),
+            session_event_list: events,
             deployments: Arc::new(PgDeploymentsStore::new(backend.clone())),
             workspaces: Arc::new(PgWorkspacesStore::new(backend.clone())),
             api_keys: Arc::new(PgApiKeysStore::new(backend.clone())),
-            environment_keys: Arc::new(PgEnvironmentKeysStore::new(backend)),
+            environment_keys: Arc::new(PgEnvironmentKeysStore::new(backend.clone())),
             work: work.clone(),
             work_reads: work,
+            steps: Arc::new(PgSteps::new(backend)),
         }
+    }
+
+    /// The events list on `replica`, every other read and write where it was.
+    #[must_use]
+    pub fn reading_events_from(mut self, replica: PgBackend) -> Self {
+        self.session_event_list = Arc::new(PgSessionEventLog::new(replica));
+        self
     }
 }

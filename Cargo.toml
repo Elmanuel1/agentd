@@ -26,6 +26,8 @@ members = [
     "crates/adapters/aws-common",
     "crates/adapters/sandbox-docker",
     "crates/adapters/egress-proxy",
+    "crates/adapters/signals-valkey",
+    "crates/engine",
 ]
 
 [workspace.package]
@@ -58,6 +60,8 @@ secrets-aws = { path = "crates/adapters/secrets-aws" }
 aws-common = { path = "crates/adapters/aws-common" }
 sandbox-docker = { path = "crates/adapters/sandbox-docker" }
 egress-proxy = { path = "crates/adapters/egress-proxy" }
+signals-valkey = { path = "crates/adapters/signals-valkey" }
+engine = { path = "crates/engine" }
 
 # external
 serde = { version = "1", features = ["derive"] }
@@ -80,6 +84,8 @@ tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
 futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager"] }
 bollard = "0.21"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

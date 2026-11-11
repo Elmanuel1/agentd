@@ -1,5 +1,9 @@
 //! Taking a connection from the pool, under one deadline.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use diesel::sql_types::Text;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
@@ -12,7 +16,18 @@ use shared::Writer;
 #[derive(Clone)]
 pub struct DieselPgPool {
     inner: DieselPool<AsyncPgConnection>,
-    deadline: std::time::Duration,
+    deadline: Duration,
+    slow: Arc<SlowCheckouts>,
+}
+
+/// A checkout that waits longer than this is slow.
+const SLOW_CHECKOUT: Duration = Duration::from_secs(1);
+
+/// When a checkout last waited longer than [`SLOW_CHECKOUT`].
+struct SlowCheckouts {
+    since: Instant,
+    /// Milliseconds after `since`, plus one; 0 while none has.
+    last: AtomicU64,
 }
 
 impl std::fmt::Debug for DieselPgPool {
@@ -22,15 +37,29 @@ impl std::fmt::Debug for DieselPgPool {
 }
 
 impl DieselPgPool {
-    pub(crate) fn new(inner: DieselPool<AsyncPgConnection>, deadline: std::time::Duration) -> Self {
-        Self { inner, deadline }
+    pub(crate) fn new(inner: DieselPool<AsyncPgConnection>, deadline: Duration) -> Self {
+        let slow = Arc::new(SlowCheckouts { since: Instant::now(), last: AtomicU64::new(0) });
+        Self { inner, deadline, slow }
     }
 
     /// A connection, or a wait timeout once the deadline passes.
     pub async fn get(&self) -> Result<PooledConnection, PoolError> {
-        tokio::time::timeout(self.deadline, self.inner.get())
+        let started = Instant::now();
+        let conn = tokio::time::timeout(self.deadline, self.inner.get())
             .await
-            .unwrap_or(Err(PoolError::Timeout(deadpool::managed::TimeoutType::Wait)))
+            .unwrap_or(Err(PoolError::Timeout(deadpool::managed::TimeoutType::Wait)));
+        if started.elapsed() > SLOW_CHECKOUT {
+            let at = u64::try_from(self.slow.since.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.slow.last.store(at.saturating_add(1), Ordering::Relaxed);
+        }
+        conn
+    }
+
+    /// A checkout waited longer than [`SLOW_CHECKOUT`] within the last `window`.
+    pub fn slow_within(&self, window: Duration) -> bool {
+        let last = AtomicU64::load(&self.slow.last, Ordering::Relaxed);
+        let now = u64::try_from(self.slow.since.elapsed().as_millis()).unwrap_or(u64::MAX);
+        last > 0 && now.saturating_sub(last - 1) <= u64::try_from(window.as_millis()).unwrap_or(u64::MAX)
     }
 
     /// A connection for a write, carrying the current [`Writer`] so every row

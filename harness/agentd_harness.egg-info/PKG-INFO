@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: agentd-harness
+Version: 0.1.0
+Summary: agentd's session harness: the agent loop of one session, inside its sandbox.
+Requires-Python: >=3.11
+Requires-Dist: anthropic==2.3.0
+Requires-Dist: mini-swe-agent==2.4.6
+Requires-Dist: httpx
+Requires-Dist: requests

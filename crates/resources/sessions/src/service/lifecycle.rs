@@ -4,8 +4,8 @@ use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
 use super::events::validate_sendable;
 use super::{guard_writable, map_store, parse_id, SessionsService};
-use crate::events::{Event, EventPayload, SessionEvent, UserEvent};
-use crate::store::SessionFilter;
+use crate::events::{EventPayload, UserEvent};
+use crate::store::{SessionFilter, StoreError};
 use crate::types::{
     AgentRefInput, CreateSessionRequest, Session, SessionId, SessionStatus, SessionTag, Stats,
     UpdateSessionRequest,
@@ -130,33 +130,29 @@ impl SessionsService {
             s.archived_at = Some(Timestamp::now());
             s.updated_at = Timestamp::now();
             self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
-            // Drop the broadcast sender — an archived session takes no new
-            // events, so keeping its channel would leak the entry (and its
-            // ring buffer) for the process lifetime.
-            self.channels.lock().remove(&id);
+            // Every replica's streams of the session end.
+            self.publish(&ctx.workspace, &id).await;
             self.stop_sandbox(&ctx.workspace, &id).await;
         }
         Ok(s)
     }
 
-    /// `DELETE /v1/sessions/{id}`: removes the session and its events. Open
-    /// streams get `session.deleted` as their last event.
+    /// `DELETE /v1/sessions/{id}`: removes the session, stops its work item
+    /// and deletes its events. Open streams get `session.deleted` as their
+    /// last event.
     pub async fn delete(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
-        let s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        if s.status == SessionStatus::Running {
-            return Err(ApiError::conflict_invalid_request("cannot delete a running session"));
+        let deleted = self.store.delete(&ctx.workspace, &id).await.map_err(|e| match e {
+            StoreError::Conflict => ApiError::conflict_invalid_request("cannot delete a running session"),
+            e => map_store(e),
+        })?;
+        self.publish(&ctx.workspace, &id).await;
+        self.remove_sandbox(&id).await;
+        // The session is gone, so no API reaches events left behind: they
+        // are logged, not raised.
+        if let Err(e) = self.events.delete_events_of(&[(ctx.workspace.clone(), id.clone())]).await {
+            tracing::error!(session = %id, error = %e, "sessions: could not delete a deleted session's events");
         }
-        // The session first: an append checks the session in the same
-        // statement as its insert, so none can land after this.
-        let deleted = self.store.delete(&ctx.workspace, &id).await.map_err(map_store)?;
-        self.events.delete_events(&ctx.workspace, &id).await.map_err(map_store)?;
-        let mut last = Event::new(SessionEvent::Deleted {}.into());
-        last.processed_at = Some(Timestamp::now());
-        if let Some(tx) = self.channels.lock().remove(&id) {
-            let _ = tx.send(last);
-        }
-        self.stop_sandbox(&ctx.workspace, &id).await;
         Ok(deleted)
     }
 }

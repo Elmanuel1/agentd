@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use shared::page::filters::CreatedRange;
-use shared::{ApiError, Pagination, WorkspaceId};
+use shared::{ApiError, Pagination, Timestamp, WorkspaceId};
 
 use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
@@ -83,7 +83,8 @@ pub trait SessionsStore: Send + Sync {
     /// Write `s` only while the stored session is still `read`; a session
     /// another writer changed first is [`StoreError::Conflict`].
     async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError>;
-    /// Delete a session row.
+    /// Under the session's append lock, delete the session unless it is
+    /// running ([`StoreError::Conflict`]) and stop its work item.
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// One page of the sessions `filter` keeps, in its order.
     async fn list(
@@ -94,8 +95,37 @@ pub trait SessionsStore: Send + Sync {
     ) -> Result<Vec<Session>, StoreError>;
 }
 
+/// Whether an append puts its session on the step queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    /// It does not: an agent's own event, or a session the harness serves.
+    No,
+    /// It does, in the append's commit.
+    Step,
+    /// It wakes the step the session already has, and queues none.
+    IfQueued,
+}
+
 /// Refuses results, given the calls they answer and the results already saved.
 pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<(), ApiError> + Send + Sync + 'a;
+
+/// A read of a session's log from a position.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Tail {
+    /// The session is archived.
+    pub archived: bool,
+    /// Each event with its position in the log, in log order.
+    pub events: Vec<(i64, Event)>,
+}
+
+/// Where a new stream of a session starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Head {
+    /// The position of the session's latest event, 0 when it has none.
+    pub seq: i64,
+    /// The positions of its client events not processed yet, in log order.
+    pub queued: Vec<i64>,
+}
 
 /// A session's event log, read.
 #[async_trait]
@@ -112,6 +142,18 @@ pub trait SessionEventReads: Send + Sync {
         filter: &EventFilter,
         page: &Pagination,
     ) -> Result<Vec<Event>, StoreError>;
+    /// Up to `limit` events after position `after`, with the events at
+    /// `pending` wherever they are; `None` once the session is gone.
+    async fn tail(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        after: i64,
+        pending: &[i64],
+        limit: usize,
+    ) -> Result<Option<Tail>, StoreError>;
+    /// Where a new stream of the session starts.
+    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError>;
 }
 
 /// A session's append-only event log. It has its own lifecycle: the engine
@@ -119,10 +161,24 @@ pub trait SessionEventReads: Send + Sync {
 /// stream read it on its own.
 #[async_trait]
 pub trait SessionEventLog: SessionEventReads {
-    /// Append an event to the log of an existing session.
-    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
-    /// Replace an event in place (processed_at stamping).
-    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError>;
+    /// Append `events`, in order, to the log of an existing session, under
+    /// the session's append lock.
+    async fn append_events(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        events: &[Event],
+        wake: Wake,
+    ) -> Result<(), StoreError>;
+    /// Stamp `at` on those of `ids` not processed yet; the events it stamped,
+    /// in log order.
+    async fn update_processed_at(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        ids: &[EventId],
+        at: Timestamp,
+    ) -> Result<Vec<Event>, StoreError>;
     /// Under the session's append lock: `check` reads the events whose id is
     /// one of `calls` and the results that answer them, and `events` are
     /// appended only when it passes; otherwise its refusal is returned.
@@ -133,7 +189,14 @@ pub trait SessionEventLog: SessionEventReads {
         calls: &[EventId],
         events: &[Event],
         check: &AnswerCheck<'_>,
+        wake: Wake,
     ) -> Result<Result<(), ApiError>, StoreError>;
-    /// Delete the whole log.
-    async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError>;
+    /// Delete the whole log of each session.
+    async fn delete_events_of(&self, sessions: &[(WorkspaceId, SessionId)]) -> Result<(), StoreError>;
+}
+
+/// How loaded the database is, as a replica last measured it.
+pub trait DatabaseLoad: Send + Sync {
+    /// Too loaded to take new streams.
+    fn overloaded(&self) -> bool;
 }

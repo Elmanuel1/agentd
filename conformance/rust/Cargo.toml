@@ -20,6 +20,7 @@ tokio = { workspace = true }
 test-support = { workspace = true }
 store-postgres = { workspace = true }
 blobs-s3 = { workspace = true }
+sessions = { workspace = true }
 
 [lints]
 workspace = true

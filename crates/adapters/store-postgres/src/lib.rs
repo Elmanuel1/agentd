@@ -18,10 +18,12 @@
 
 mod checkout;
 pub mod entities;
+mod load;
 mod pool;
 pub mod schema;
 
 pub use checkout::{DieselPgPool, PooledConnection};
+pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 
 pub use entities::agents::PgAgentsStore;
@@ -31,7 +33,9 @@ pub use entities::dreams::PgDreamsStore;
 pub use entities::environment_keys::PgEnvironmentKeysStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
+pub use entities::loop_steps::PgSteps;
 pub use entities::memory::PgMemoryStore;
+pub use entities::run_lock::PgRunLock;
 pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;

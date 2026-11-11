@@ -4,17 +4,16 @@
 mod reads;
 
 use ::sessions::events::{Event, EventId};
-use ::sessions::store::{AnswerCheck, SessionEventLog, StoreError};
+use ::sessions::store::{AnswerCheck, SessionEventLog, StoreError, Wake};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
-use diesel::sql_types::{Array, Jsonb, Text};
-use diesel::{ExpressionMethods, QueryDsl};
+use diesel::sql_types::{Array, BigInt, Jsonb, Text};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use shared::{ApiError, WorkspaceId};
+use shared::{ApiError, Timestamp, WorkspaceId};
 
-use crate::schema::session_events;
-use crate::{diesel_be, pool_be, to_doc, DocRow, PgBackend};
+use super::loop_steps::enqueue;
+use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 
 /// Postgres-backed session event log (Diesel).
 #[derive(Debug, Clone)]
@@ -31,33 +30,39 @@ impl PgSessionEventLog {
 
 #[async_trait]
 impl SessionEventLog for PgSessionEventLog {
-    async fn append_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
+    async fn append_events(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        events: &[Event],
+        wake: Wake,
+    ) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let inserted = insert(&mut conn, ws, id, &[event.id.as_str()], vec![to_doc(&event)?])
-            .await
-            .map_err(diesel_be)?;
-        if inserted == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
+        let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
+        conn.transaction::<_, diesel::result::Error, _>(|c| {
+            async move {
+                lock(c, id).await?;
+                if insert(c, ws, id, &ids, docs).await? != ids.len() {
+                    return Err(diesel::result::Error::NotFound);
+                }
+                enqueue(c, ws, id, wake).await
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(log_be)
     }
 
-    async fn replace_event(&self, ws: &WorkspaceId, id: &SessionId, event: Event) -> Result<(), StoreError> {
+    async fn update_processed_at(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        ids: &[EventId],
+        at: Timestamp,
+    ) -> Result<Vec<Event>, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let affected = diesel::update(
-            session_events::table
-                .filter(session_events::workspace_id.eq(ws.as_str()))
-                .filter(session_events::session_id.eq(id.as_str()))
-                .filter(session_events::event_id.eq(event.id.as_str())),
-        )
-        .set(session_events::doc.eq(to_doc(&event)?))
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::NotFound);
-        }
-        Ok(())
+        stamp(&mut conn, ws, id, ids, at).await.map_err(diesel_be)?.into_iter().map(parse_doc).collect()
     }
 
     async fn append_answers(
@@ -67,6 +72,7 @@ impl SessionEventLog for PgSessionEventLog {
         calls: &[EventId],
         events: &[Event],
         check: &AnswerCheck<'_>,
+        wake: Wake,
     ) -> Result<Result<(), ApiError>, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let calls: Vec<&str> = calls.iter().map(EventId::as_str).collect();
@@ -74,12 +80,9 @@ impl SessionEventLog for PgSessionEventLog {
         let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
-                // F1's per-session append lock: a second writer answering the
-                // same call waits here, then reads the first one's result.
-                diesel::sql_query("SELECT pg_advisory_xact_lock(hashtext($1))")
-                    .bind::<Text, _>(id.as_str())
-                    .execute(c)
-                    .await?;
+                // A second writer answering the same call waits here, then
+                // reads the first one's result.
+                lock(c, id).await?;
                 let rows: Vec<DocRow> = diesel::sql_query(
                     "SELECT doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND (event_id = \
                      ANY($3) OR doc->>'tool_use_id' = ANY($3) OR doc->>'custom_tool_use_id' = ANY($3))",
@@ -96,24 +99,24 @@ impl SessionEventLog for PgSessionEventLog {
                 if insert(c, ws, id, &ids, docs).await? != events.len() {
                     return Err(diesel::result::Error::NotFound);
                 }
-                Ok(Ok(()))
+                enqueue(c, ws, id, wake).await.map(Ok)
             }
             .scope_boxed()
         })
         .await
-        .map_err(|e| match e {
-            diesel::result::Error::NotFound => StoreError::NotFound,
-            e => diesel_be(e),
-        })
+        .map_err(log_be)
     }
 
-    async fn delete_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<(), StoreError> {
+    async fn delete_events_of(&self, sessions: &[(WorkspaceId, SessionId)]) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        diesel::delete(
-            session_events::table
-                .filter(session_events::workspace_id.eq(ws.as_str()))
-                .filter(session_events::session_id.eq(id.as_str())),
+        let (ws, ids): (Vec<&str>, Vec<&str>) =
+            sessions.iter().map(|(w, s)| (w.as_str(), s.as_str())).unzip();
+        diesel::sql_query(
+            "DELETE FROM session_events USING unnest($1::text[], $2::text[]) AS v(workspace_id, session_id)
+             WHERE session_events.workspace_id = v.workspace_id AND session_events.session_id = v.session_id",
         )
+        .bind::<Array<Text>, _>(ws)
+        .bind::<Array<Text>, _>(ids)
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;
@@ -121,7 +124,59 @@ impl SessionEventLog for PgSessionEventLog {
     }
 }
 
-async fn insert(
+/// The session's append lock, held to the end of the transaction. Two
+/// writers appending to one session at once would otherwise commit out of
+/// `seq` order: T1 takes seq 10, T2 takes 11 and commits first, and a stream
+/// reading after 9 moves its cursor to 11 and never sends 10.
+pub(crate) async fn lock(c: &mut AsyncPgConnection, id: &SessionId) -> Result<(), diesel::result::Error> {
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind::<Text, _>(id.as_str())
+        .execute(c)
+        .await?;
+    Ok(())
+}
+
+fn log_be(e: diesel::result::Error) -> StoreError {
+    match e {
+        diesel::result::Error::NotFound => StoreError::NotFound,
+        e => diesel_be(e),
+    }
+}
+
+/// Stamp `at` on those of `ids` not processed yet; their docs, in log order.
+pub(crate) async fn stamp(
+    c: &mut AsyncPgConnection,
+    ws: &WorkspaceId,
+    id: &SessionId,
+    ids: &[EventId],
+    at: Timestamp,
+) -> Result<Vec<serde_json::Value>, diesel::result::Error> {
+    let ids: Vec<&str> = ids.iter().map(EventId::as_str).collect();
+    let mut rows: Vec<SeqDocRow> = diesel::sql_query(
+        "UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', to_jsonb($4::text))
+         WHERE workspace_id = $1 AND session_id = $2 AND event_id = ANY($3) AND doc->>'processed_at' IS NULL
+         RETURNING seq, doc",
+    )
+    .bind::<Text, _>(ws.as_str())
+    .bind::<Text, _>(id.as_str())
+    .bind::<Array<Text>, _>(&ids)
+    .bind::<Text, _>(at.to_wire())
+    .load(c)
+    .await?;
+    rows.sort_by_key(|r| r.seq);
+    Ok(rows.into_iter().map(|r| r.doc).collect())
+}
+
+/// One event read with its log position.
+#[derive(diesel::QueryableByName)]
+struct SeqDocRow {
+    #[diesel(sql_type = BigInt)]
+    seq: i64,
+    #[diesel(sql_type = Jsonb)]
+    doc: serde_json::Value,
+}
+
+pub(crate) async fn insert(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     id: &SessionId,
