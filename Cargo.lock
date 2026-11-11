@@ -1451,6 +1451,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "agents",
+ "async-trait",
+ "axum",
+ "parking_lot",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sessions",
+ "shared",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "environments"
 version = "0.1.0"
 dependencies = [
