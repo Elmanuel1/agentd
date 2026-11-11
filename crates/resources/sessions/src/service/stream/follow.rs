@@ -1,16 +1,15 @@
 //! One session's tail on this replica: it reads the log after a signal or
 //! its fallback timer, and sends each event to the session's subscribers.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rand::Rng;
 use shared::{Timestamp, WorkspaceId};
 
-use super::{Tail, Tails};
+use super::{listed, Tail, Tails};
 use crate::events::{Event, SessionEvent};
-use crate::store::SessionEventLog;
+use crate::store::{Head, SessionEventLog};
 use crate::types::SessionId;
 
 /// Events one read of the log takes.
@@ -31,18 +30,25 @@ pub(super) struct Follow {
 }
 
 impl Follow {
-    pub(super) async fn run(self, mut cursor: i64) {
-        // Client events sent while not yet processed: each is sent again
-        // once it is.
-        let mut pending: Vec<i64> = Vec::new();
+    pub(super) async fn run(self, head: Head) {
+        // Client events not processed yet: each is sent once it is.
+        let (mut cursor, mut pending) = (head.seq, head.queued);
         loop {
             let jitter = Duration::from_millis(rand::thread_rng().gen_range(0..=JITTER_MS));
             tokio::select! {
                 () = self.tail.wake.notified() => {}
                 () = tokio::time::sleep(FALLBACK + jitter) => {}
             }
-            if self.unheard() {
-                return;
+            {
+                // The last subscriber left, or took the tail with it.
+                let mut tails = self.tails.lock();
+                if !listed(&tails, &self.id, &self.tail.wake) {
+                    return;
+                }
+                if self.tail.tx.receiver_count() == 0 {
+                    tails.remove(&self.id);
+                    return;
+                }
             }
             loop {
                 let read = match self.events.tail(&self.ws, &self.id, cursor, &pending, PAGE).await {
@@ -73,11 +79,13 @@ impl Follow {
     }
 
     fn send(&self, cursor: &mut i64, pending: &mut Vec<i64>, seq: i64, ev: Event) {
-        if seq <= *cursor {
-            if ev.processed_at.is_some() {
-                pending.retain(|p| *p != seq);
-                let _ = self.tail.tx.send(ev);
-            }
+        let seen = seq <= *cursor;
+        if seen && ev.processed_at.is_none() {
+            return;
+        }
+        if seen {
+            pending.retain(|p| *p != seq);
+            let _ = self.tail.tx.send(ev);
             return;
         }
         *cursor = seq;
@@ -96,32 +104,12 @@ impl Follow {
         let _ = self.tail.tx.send(ev);
     }
 
-    /// The last subscriber left, or took the tail with it.
-    fn unheard(&self) -> bool {
-        let mut tails = self.tails.lock();
-        if !self.listed(&tails) {
-            return true;
-        }
-        if self.tail.tx.receiver_count() > 0 {
-            return false;
-        }
-        tails.remove(&self.id);
-        true
-    }
-
     /// End every stream of the session here: they end once the tail's
     /// senders are gone.
     fn close(self) {
-        self.remove(&mut self.tails.lock());
-    }
-
-    fn remove(&self, tails: &mut HashMap<SessionId, Tail>) {
-        if self.listed(tails) {
+        let mut tails = self.tails.lock();
+        if listed(&tails, &self.id, &self.tail.wake) {
             tails.remove(&self.id);
         }
-    }
-
-    fn listed(&self, tails: &HashMap<SessionId, Tail>) -> bool {
-        tails.get(&self.id).is_some_and(|t| Arc::ptr_eq(&t.wake, &self.tail.wake))
     }
 }

@@ -48,7 +48,7 @@ impl PgLoad {
         .get_result(&mut conn)
         .await
         .map_err(diesel_be)?;
-        self.crowded.store(c.used * 100 > c.max * CROWDED_PERCENT, Ordering::Relaxed);
+        self.crowded.store(crowded(&c), Ordering::Relaxed);
         Ok(())
     }
 
@@ -66,8 +66,25 @@ impl PgLoad {
     }
 }
 
+fn crowded(c: &Connections) -> bool {
+    c.used * 100 > c.max * CROWDED_PERCENT
+}
+
 impl DatabaseLoad for PgLoad {
     fn overloaded(&self) -> bool {
         self.pool.slow_within(WINDOW) || AtomicBool::load(&self.crowded, Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_database_is_crowded_past_90_percent_of_max_connections() {
+        assert!(!crowded(&Connections { used: 90, max: 100 }));
+        assert!(crowded(&Connections { used: 91, max: 100 }));
+        assert!(!crowded(&Connections { used: 9, max: 10 }));
+        assert!(crowded(&Connections { used: 10, max: 10 }));
     }
 }

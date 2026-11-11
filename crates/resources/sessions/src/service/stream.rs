@@ -84,13 +84,13 @@ impl SessionsService {
             return Err(ApiError::of(ErrorType::Overloaded, "the database is overloaded; retry the stream"));
         }
         let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
-        self.listen();
+        self.streams.listening.call_once(|| {
+            let rx = self.streams.signals.subscribe();
+            tokio::spawn(wake_tails(rx, Arc::downgrade(&self.streams.tails)));
+        });
         let tails = &self.streams.tails;
-        if let Some(sub) = join(tails, &id) {
-            return Ok(sub);
-        }
-        // The stream has no replay: it starts after the latest event.
-        let head = self.events.head(&ctx.workspace, &id).await.map_err(map_store)?;
+        // Listed before its head is read, so a signal meanwhile leaves the
+        // tail a wake-up.
         let (tail, rx, new) = {
             let mut map = tails.lock();
             let new = !map.contains_key(&id);
@@ -101,18 +101,32 @@ impl SessionsService {
             let rx = tail.tx.subscribe();
             (tail, rx, new)
         };
-        if new {
-            let follow = Follow {
-                events: self.events.clone(),
-                tails: tails.clone(),
-                ws: ctx.workspace.clone(),
-                id: id.clone(),
-                tail: tail.clone(),
-                ends_on_archive: session.archived_at.is_none(),
-            };
-            tokio::spawn(follow.run(head));
+        let sub = Subscription { rx, wake: tail.wake.clone(), tails: tails.clone(), id: id.clone() };
+        if !new {
+            return Ok(sub);
         }
-        Ok(Subscription { rx, wake: tail.wake, tails: tails.clone(), id })
+        // The stream has no replay: it starts after the latest event.
+        let head = match self.events.head(&ctx.workspace, &id).await {
+            Ok(head) => head,
+            Err(e) => {
+                // No tail runs for it: the next stream lists its own.
+                let mut map = tails.lock();
+                if listed(&map, &id, &tail.wake) {
+                    map.remove(&id);
+                }
+                return Err(map_store(e));
+            }
+        };
+        let follow = Follow {
+            events: self.events.clone(),
+            tails: tails.clone(),
+            ws: ctx.workspace.clone(),
+            id,
+            tail,
+            ends_on_archive: session.archived_at.is_none(),
+        };
+        tokio::spawn(follow.run(head));
+        Ok(sub)
     }
 
     /// Tell every replica the session changed. A signal that cannot be sent
@@ -123,20 +137,11 @@ impl SessionsService {
             tracing::warn!(session = %id, error = %e, "sessions: could not signal the session's streams");
         }
     }
-
-    /// Start, once, waking each signalled session's tail.
-    fn listen(&self) {
-        self.streams.listening.call_once(|| {
-            let rx = self.streams.signals.subscribe();
-            tokio::spawn(wake_tails(rx, Arc::downgrade(&self.streams.tails)));
-        });
-    }
 }
 
-fn join(tails: &Tails, id: &SessionId) -> Option<Subscription> {
-    let tail = tails.lock().get(id).cloned()?;
-    let rx = tail.tx.subscribe();
-    Some(Subscription { rx, wake: tail.wake, tails: tails.clone(), id: id.clone() })
+/// `wake` is the tail listed for `id`, not one that replaced it.
+fn listed(tails: &HashMap<SessionId, Tail>, id: &SessionId, wake: &Arc<Notify>) -> bool {
+    tails.get(id).is_some_and(|t| Arc::ptr_eq(&t.wake, wake))
 }
 
 async fn wake_tails(mut rx: broadcast::Receiver<Signal>, tails: Weak<Mutex<HashMap<SessionId, Tail>>>) {
@@ -174,9 +179,8 @@ impl Drop for Subscription {
     fn drop(&mut self) {
         let mut tails = self.tails.lock();
         // This receiver is still counted while it drops.
-        let last = tails
-            .get(&self.id)
-            .is_some_and(|t| Arc::ptr_eq(&t.wake, &self.wake) && t.tx.receiver_count() <= 1);
+        let last = listed(&tails, &self.id, &self.wake)
+            && tails.get(&self.id).is_some_and(|t| t.tx.receiver_count() <= 1);
         if last {
             tails.remove(&self.id);
             self.wake.notify_one();

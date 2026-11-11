@@ -107,6 +107,15 @@ pub struct Tail {
     pub events: Vec<(i64, Event)>,
 }
 
+/// Where a new stream of a session starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Head {
+    /// The position of the session's latest event, 0 when it has none.
+    pub seq: i64,
+    /// The positions of its client events not processed yet, in log order.
+    pub queued: Vec<i64>,
+}
+
 /// A session's event log, read.
 #[async_trait]
 pub trait SessionEventReads: Send + Sync {
@@ -132,8 +141,8 @@ pub trait SessionEventReads: Send + Sync {
         pending: &[i64],
         limit: usize,
     ) -> Result<Option<Tail>, StoreError>;
-    /// The position of the session's latest event, 0 when it has none.
-    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<i64, StoreError>;
+    /// Where a new stream of the session starts.
+    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError>;
 }
 
 /// A session's append-only event log. It has its own lifecycle: the engine

@@ -22,7 +22,7 @@ mod load;
 mod pool;
 pub mod schema;
 
-pub use checkout::{DieselPgPool, PooledConnection, SLOW_CHECKOUT};
+pub use checkout::{DieselPgPool, PooledConnection};
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 

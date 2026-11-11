@@ -1,7 +1,7 @@
 //! The session event log's reads.
 
 use ::sessions::events::Event;
-use ::sessions::store::{EventFilter, Order, SessionEventReads, StoreError, Tail};
+use ::sessions::store::{EventFilter, Head, Order, SessionEventReads, StoreError, Tail};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
@@ -143,17 +143,29 @@ impl SessionEventReads for PgSessionEventLog {
         Ok(Some(Tail { archived, events }))
     }
 
-    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<i64, StoreError> {
+    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let head: Option<i64> = session_events::table
-            .filter(session_events::workspace_id.eq(ws.as_str()))
-            .filter(session_events::session_id.eq(id.as_str()))
-            .select(diesel::dsl::max(session_events::seq))
-            .first(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        Ok(head.unwrap_or(0))
+        let head: HeadRow = diesel::sql_query(
+            "SELECT coalesce(max(seq), 0) AS seq, coalesce(array_agg(seq ORDER BY seq) FILTER (
+                 WHERE doc->>'processed_at' IS NULL AND (doc->>'type' LIKE 'user.%' OR doc->>'type' = 'system.message')
+             ), '{}') AS queued
+             FROM session_events WHERE workspace_id = $1 AND session_id = $2",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .get_result(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        Ok(Head { seq: head.seq, queued: head.queued })
     }
+}
+
+#[derive(diesel::QueryableByName)]
+struct HeadRow {
+    #[diesel(sql_type = BigInt)]
+    seq: i64,
+    #[diesel(sql_type = Array<BigInt>)]
+    queued: Vec<i64>,
 }
 
 #[derive(diesel::QueryableByName)]

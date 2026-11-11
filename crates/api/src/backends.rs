@@ -153,7 +153,7 @@ impl Backends {
         };
         let signals: Arc<dyn Signals> = match &config.streams.valkey_url {
             Some(url) => {
-                Arc::new(ValkeySignals::connect(url).await.map_err(|e| BootError::Signals(e.to_string()))?)
+                Arc::new(ValkeySignals::connect(url).map_err(|e| BootError::Signals(e.to_string()))?)
             }
             None => Arc::new(LocalSignals::default()),
         };

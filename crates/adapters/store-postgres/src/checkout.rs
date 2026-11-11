@@ -21,7 +21,7 @@ pub struct DieselPgPool {
 }
 
 /// A checkout that waits longer than this is slow.
-pub const SLOW_CHECKOUT: Duration = Duration::from_secs(1);
+const SLOW_CHECKOUT: Duration = Duration::from_secs(1);
 
 /// When a checkout last waited longer than [`SLOW_CHECKOUT`].
 struct SlowCheckouts {

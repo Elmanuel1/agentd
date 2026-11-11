@@ -11,7 +11,9 @@ use std::time::Duration;
 use serde_json::json;
 use sessions::events::{Event, EventPayload, SessionEvent, StopReason, UserEvent};
 use sessions::retention::{ArchivedCursor, ArchivedSessions, Retention, RunLock};
-use sessions::store::{DatabaseLoad, SessionEventLog, SessionEventReads, SessionsStore, StoreError, Tail};
+use sessions::store::{
+    DatabaseLoad, Head, SessionEventLog, SessionEventReads, SessionsStore, StoreError, Tail,
+};
 use sessions::types::{Session, SessionId, SessionStatus};
 use shared::{OrgId, Timestamp, WorkspaceId};
 use store_postgres::{
@@ -163,7 +165,7 @@ async fn the_tail_reads_after_its_cursor_with_its_pending_events_until_the_sessi
     let log = PgSessionEventLog::new(backend().await);
     let ws = uniq_ws("tail");
     let s = session(&store, &ws, None).await;
-    assert_eq!(log.head(&ws, &s.id).await.unwrap(), 0);
+    assert_eq!(log.head(&ws, &s.id).await.unwrap(), Head { seq: 0, queued: vec![] });
     assert_eq!(
         log.tail(&ws, &s.id, 0, &[], 10).await.unwrap(),
         Some(Tail { archived: false, events: vec![] })
@@ -176,18 +178,24 @@ async fn the_tail_reads_after_its_cursor_with_its_pending_events_until_the_sessi
         all.events.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>(),
         vec![a.clone(), b.clone(), c.clone()]
     );
-    assert_eq!(log.head(&ws, &s.id).await.unwrap(), seqs[2]);
+    assert_eq!(log.head(&ws, &s.id).await.unwrap(), Head { seq: seqs[2], queued: seqs.clone() });
+    log.update_processed_at(&ws, &s.id, std::slice::from_ref(&b.id), now()).await.unwrap();
+    log.append_events(&ws, &s.id, &[idle()]).await.unwrap();
+    let head = log.head(&ws, &s.id).await.unwrap();
+    assert_eq!(head.queued, vec![seqs[0], seqs[2]], "the client events still queued, not a status event");
+    assert!(head.seq > seqs[2]);
+    let b = Event { processed_at: log.events(&ws, &s.id).await.unwrap()[1].processed_at, ..b };
     // After b, with a pending: a and c. The limit counts only events after the cursor.
     let read = log.tail(&ws, &s.id, seqs[1], &[seqs[0]], 1).await.unwrap().unwrap();
-    assert_eq!(read, Tail { archived: false, events: vec![(seqs[0], a), (seqs[2], c)] });
+    assert_eq!(read, Tail { archived: false, events: vec![(seqs[0], a.clone()), (seqs[2], c)] });
     let read = log.tail(&ws, &s.id, 0, &[], 2).await.unwrap().unwrap();
-    assert_eq!(read.events.len(), 2, "a full page");
+    assert_eq!(read.events, vec![(seqs[0], a), (seqs[1], b)], "a full page");
 
     let mut archived = s.clone();
     archived.archived_at = Some(now());
     store.replace(&ws, &s, archived.clone()).await.unwrap();
     assert_eq!(
-        log.tail(&ws, &s.id, seqs[2], &[], 10).await.unwrap(),
+        log.tail(&ws, &s.id, head.seq, &[], 10).await.unwrap(),
         Some(Tail { archived: true, events: vec![] })
     );
     store.delete(&ws, &s.id).await.unwrap();

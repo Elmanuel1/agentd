@@ -69,10 +69,7 @@ impl Sse {
 
 async fn valkey() -> Option<Streaming> {
     let url = std::env::var("AGENTD_VALKEY_URL").ok()?;
-    Some(Streaming {
-        signals: Arc::new(ValkeySignals::connect(&url).await.unwrap()),
-        load: Arc::new(Unloaded),
-    })
+    Some(Streaming { signals: Arc::new(ValkeySignals::connect(&url).unwrap()), load: Arc::new(Unloaded) })
 }
 
 fn message(text: &str) -> Value {
@@ -109,6 +106,26 @@ async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_que
         unstamped.as_object_mut().unwrap().remove("processed_at");
         assert_eq!(&unstamped, queued, "the same event, processed");
     }
+}
+
+#[tokio::test]
+async fn a_stream_opened_while_an_event_is_queued_gets_it_once_processed() {
+    // F-1: the stamp of an event sent before the stream opened still reaches it.
+    let Some(rig) = Rig::with_sandbox().await else { return };
+    let (Some(a), Some(b)) = (valkey().await, valkey().await) else { return };
+    let (a, b) = (rig.replica(&rig.stores, a), rig.replica(&rig.stores, b));
+    let env = rig.environment("cloud").await;
+    let session = rig.session(&env, json!({})).await;
+    let events = format!("/v1/sessions/{session}/events");
+    let (_, sent) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("early")))).await;
+    let mut stream = Sse::open(&b, &session).await;
+    let take = format!("/v1/sessions/{session}/harness/take");
+    let (st, _) = send_to(&a, request("POST", &take, Auth::Bearer(&rig.token(&session)), None)).await;
+    assert_eq!(st, StatusCode::OK);
+    let mut processed = stream.event(SIGNALLED).await;
+    assert!(processed["processed_at"].is_string(), "{processed}");
+    processed.as_object_mut().unwrap().remove("processed_at");
+    assert_eq!(processed, sent["data"][0]);
 }
 
 #[tokio::test]
@@ -266,7 +283,7 @@ async fn a_message_racing_a_delete_lands_before_it_or_is_refused_and_leaves_no_e
         outcomes.insert(sent.as_u16());
         let id = SessionId::parse(&session).unwrap();
         assert_eq!(
-            rig.stores.session_events.head(&ws, &id).await.unwrap(),
+            rig.stores.session_events.head(&ws, &id).await.unwrap().seq,
             0,
             "no event outlives its session"
         );

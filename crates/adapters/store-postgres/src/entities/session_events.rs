@@ -156,11 +156,11 @@ fn log_be(e: diesel::result::Error) -> StoreError {
 
 /// One event read with its log position.
 #[derive(diesel::QueryableByName)]
-pub(crate) struct SeqDocRow {
+struct SeqDocRow {
     #[diesel(sql_type = BigInt)]
-    pub(crate) seq: i64,
+    seq: i64,
     #[diesel(sql_type = Jsonb)]
-    pub(crate) doc: serde_json::Value,
+    doc: serde_json::Value,
 }
 
 async fn insert(

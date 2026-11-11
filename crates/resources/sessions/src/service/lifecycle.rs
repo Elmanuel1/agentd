@@ -146,9 +146,13 @@ impl SessionsService {
             StoreError::Conflict => ApiError::conflict_invalid_request("cannot delete a running session"),
             e => map_store(e),
         })?;
-        self.events.delete_events_of(&[(ctx.workspace.clone(), id.clone())]).await.map_err(map_store)?;
         self.publish(&ctx.workspace, &id).await;
         self.remove_sandbox(&id).await;
+        // The session is gone, so no API reaches events left behind: they
+        // are logged, not raised.
+        if let Err(e) = self.events.delete_events_of(&[(ctx.workspace.clone(), id.clone())]).await {
+            tracing::error!(session = %id, error = %e, "sessions: could not delete a deleted session's events");
+        }
         Ok(deleted)
     }
 }

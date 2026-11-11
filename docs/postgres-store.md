@@ -8,7 +8,7 @@ a native `INSERT … ON CONFLICT DO NOTHING`; a tick whose claim or run fails is
 not retried, so a tick can be lost. Event streams read the log itself: each
 replica tails every session it streams, woken by a Valkey signal
 (`AGENTD_VALKEY_URL`) or a fallback timer, so a stream on any replica sees every
-event. The local scheduler's timers still live in the process: run one replica
+event. The local scheduler's timers live in the process: run one replica
 until a shared scheduler replaces them, since schedules exist only where they
 were created.
 
