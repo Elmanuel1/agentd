@@ -9,6 +9,7 @@ license.workspace = true
 shared = { workspace = true }
 agents = { workspace = true }
 sessions = { workspace = true }
+work = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -62,32 +62,22 @@ impl Builder {
         self.calls.clear();
     }
 
+    /// The conversation so far. A call of the last step with no result yet
+    /// is waiting: on the client (a confirmation or a custom tool) or on the
+    /// session's worker (a built-in tool), so the model is not called.
     pub(super) fn finish(mut self) -> History {
         let unanswered = self
             .calls
             .iter()
-            .filter(|(id, ..)| {
-                !self.answered.contains(id) && (self.owed.contains(id) || self.custom.contains(id))
-            })
+            .filter(|(id, ..)| !self.answered.contains(id))
             .map(|(id, name, input)| Unanswered {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
                 custom: self.custom.contains(id),
+                asked: self.owed.contains(id),
             })
             .collect();
-        let pending: Vec<String> = self
-            .calls
-            .iter()
-            .filter(|(id, ..)| !self.answered.contains(id))
-            .map(|(id, ..)| id.clone())
-            .collect();
-        let has_owed = pending.iter().any(|id| self.owed.contains(id) || self.custom.contains(id));
-        if !has_owed {
-            for id in pending {
-                self.result(id, "The tool did not run: the turn was interrupted.".into(), true);
-            }
-        }
         self.flush();
         History { messages: self.messages, unanswered }
     }

@@ -30,7 +30,11 @@ impl Default for Retry {
 impl Retry {
     /// Call `client` until it answers, fails for good, or runs out of tries
     /// or time.
-    pub async fn call(&self, client: &dyn ModelClient, req: ModelRequest) -> Result<ModelResponse, ModelError> {
+    pub async fn call(
+        &self,
+        client: &dyn ModelClient,
+        req: ModelRequest,
+    ) -> Result<ModelResponse, ModelError> {
         let end = Instant::now() + self.deadline;
         let mut backoff = self.first;
         let mut tried = 0;

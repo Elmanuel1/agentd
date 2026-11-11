@@ -9,8 +9,8 @@ use agents::AgentSnapshot;
 use serde_json::{json, Value};
 
 use super::history::SEND_TO_AGENT;
-use crate::model::ModelTool;
 use super::specs;
+use crate::model::ModelTool;
 
 /// The coordinator's roster tool.
 pub const LIST_AGENTS: &str = "list_agents";

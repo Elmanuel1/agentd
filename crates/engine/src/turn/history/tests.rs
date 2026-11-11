@@ -101,13 +101,13 @@ fn an_ask_without_a_result_is_owed_and_blocks_the_model() {
 }
 
 #[test]
-fn a_call_cut_off_by_a_crash_gets_an_error_result() {
+fn an_allowed_built_in_call_waits_for_the_session_s_worker() {
     let s1 = start();
     let call = tool_use("bash", "allow");
     let h = build(&[user("go"), s1.clone(), end(&s1), call]);
-    assert!(h.unanswered.is_empty());
-    assert!(matches!(&h.messages.last().unwrap().content[0], Block::ToolResult { is_error: true, .. }));
-    assert!(h.awaits_model());
+    assert_eq!(h.unanswered.len(), 1);
+    assert!(h.unanswered[0].for_worker());
+    assert!(!h.awaits_model());
 }
 
 #[test]

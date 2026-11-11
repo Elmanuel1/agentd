@@ -27,8 +27,17 @@ pub struct Unanswered {
     pub name: String,
     /// Its input.
     pub input: serde_json::Value,
-    /// A custom tool (the client runs it) rather than a confirmation.
+    /// A custom tool (the client runs it).
     pub custom: bool,
+    /// A built-in call waiting on the client's confirmation.
+    pub asked: bool,
+}
+
+impl Unanswered {
+    /// The session's worker runs it: a built-in call the policy allowed.
+    pub fn for_worker(&self) -> bool {
+        !self.custom && !self.asked
+    }
 }
 
 /// What a thread's log says.
