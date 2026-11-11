@@ -94,9 +94,10 @@ async fn on_loop(rig: &Rig, model: Arc<Scripted>, joined: Timestamp) -> (Router,
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let pg = store_postgres::PgBackend::connect(&url).await.unwrap();
     let mut conn = pg.diesel.get().await.unwrap();
-    diesel_async::RunQueryDsl::execute(diesel::sql_query("DELETE FROM loop_steps"), &mut *conn)
-        .await
-        .unwrap();
+    // Earlier runs' steps, and the runtime queue's items other tests poll for.
+    for leftover in ["DELETE FROM loop_steps", "DELETE FROM work_items WHERE queue = 'runtime'"] {
+        diesel_async::RunQueryDsl::execute(diesel::sql_query(leftover), &mut *conn).await.unwrap();
+    }
     let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
     let on_loop = LoopWorkspaces::new([(WorkspaceId::new(&rig.ws), joined)]);
     let app =
