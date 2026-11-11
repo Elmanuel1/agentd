@@ -8,21 +8,25 @@ use std::time::Duration;
 use blobs_s3::{BlobError, S3BlobStore};
 use sandbox_docker::DockerRuntime;
 
+mod postgres;
 mod stores;
 
 pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
-use crate::telemetry::{self, Metrics};
+use crate::telemetry::Metrics;
 use api_keys::{ApiKeysService, EnvironmentKeysService};
 use scheduler_local::LocalScheduler;
 use secrets_aws::{AwsAdminKeys, AwsSecretStore};
+use sessions::signals::{LocalSignals, Signals};
+use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use shared::ports::secrets::{SecretError, SecretStore};
 use shared::ports::{Runtime, SchedulerPort};
-use store_postgres::{PgBackend, PgError};
+use signals_valkey::ValkeySignals;
+use store_postgres::PgError;
 
 use crate::config::{
     BlobsConfig, Config, KeysConfig, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
@@ -56,6 +60,10 @@ pub struct Backends {
     pub extra_models: Vec<String>,
     /// The instruments every boundary records into.
     pub metrics: Arc<Metrics>,
+    /// How replicas tell each other a session changed.
+    pub signals: Arc<dyn Signals>,
+    /// The database's load, which new streams wait on.
+    pub load: Arc<dyn DatabaseLoad>,
 }
 
 /// The deployment's own keys, read from Secrets Manager once at boot.
@@ -112,6 +120,9 @@ pub enum BootError {
     /// The sandbox runtime.
     #[error("sandbox: {0}")]
     Sandbox(String),
+    /// The Valkey the replicas signal through.
+    #[error("signals: {0}")]
+    Signals(String),
 }
 
 impl Backends {
@@ -129,16 +140,22 @@ impl Backends {
         let admin = Arc::new(AwsAdminKeys::new(aws.clone(), pepper.clone()));
         let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws.clone()), metrics.clone()));
-        let (stores, keys) = match &config.store {
-            StoreConfig::Postgres { url, pool } => {
-                let observer = telemetry::db::observer(metrics.clone());
-                let pg = PgBackend::connect_observed(url, *pool, observer).await?;
-                telemetry::db::watch_pool(&opentelemetry::global::meter("agentd"), pg.diesel.clone());
-                let stores = Stores::postgres(pg, blobs, secrets);
-                let keys = ApiKeysService::new(stores.api_keys.clone(), pepper.clone());
+        let (stores, load, keys) = match &config.store {
+            StoreConfig::Postgres { url, read_url, pool } => {
+                let retention = config.streams.retention;
+                let pg =
+                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, secrets)
+                        .await?;
+                let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                (stores, keys)
+                (pg.stores, pg.load, keys)
             }
+        };
+        let signals: Arc<dyn Signals> = match &config.streams.valkey_url {
+            Some(url) => {
+                Arc::new(ValkeySignals::connect(url).await.map_err(|e| BootError::Signals(e.to_string()))?)
+            }
+            None => Arc::new(LocalSignals::default()),
         };
         let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), pepper)
             .with_runtime_key(&aws.runtime_key().await?);
@@ -175,6 +192,8 @@ impl Backends {
             sandbox,
             extra_models,
             metrics,
+            signals,
+            load,
         })
     }
 }

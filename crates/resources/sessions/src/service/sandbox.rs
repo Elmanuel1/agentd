@@ -39,23 +39,35 @@ impl SessionsService {
             Ok(_) => Ok(()),
             // A daemon that cannot be reached is transient: 529, which the
             // SDKs retry.
-            Err(e @ RuntimeError::Unavailable(_)) => Err(ApiError {
-                status: ErrorType::Overloaded.status(),
-                error_type: ErrorType::Overloaded,
-                message: format!("sandbox: {e}"),
-                extra: serde_json::Map::new(),
-            }),
+            Err(e @ RuntimeError::Unavailable(_)) => {
+                Err(ApiError::of(ErrorType::Overloaded, format!("sandbox: {e}")))
+            }
             Err(e) => Err(ApiError::internal(format!("sandbox: {e}"))),
         }
     }
 
-    /// Remove the session's sandbox (on archive, delete and terminate). The session's own state is the source
-    /// of truth, so a runtime that cannot be reached is logged, not raised:
-    /// an archive or delete never waits on the sandbox host.
+    /// End the session's sandbox (on archive and terminate): its work item
+    /// stops, then the sandbox goes.
     pub(super) async fn stop_sandbox(&self, ws: &WorkspaceId, id: &SessionId) {
         if let Some(work) = &self.work {
             work.end(ws, id).await;
         }
+        self.remove_runtime(id).await;
+    }
+
+    /// Remove a deleted session's sandbox: its work item stopped with the
+    /// delete.
+    pub(super) async fn remove_sandbox(&self, id: &SessionId) {
+        if let Some(work) = &self.work {
+            work.forget(id);
+        }
+        self.remove_runtime(id).await;
+    }
+
+    /// The session's own state is the source of truth, so a runtime that
+    /// cannot be reached is logged, not raised: an archive or delete never
+    /// waits on the sandbox host.
+    async fn remove_runtime(&self, id: &SessionId) {
         let Some(runtime) = &self.sandbox else {
             return;
         };

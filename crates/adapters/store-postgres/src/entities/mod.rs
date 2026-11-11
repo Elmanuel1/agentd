@@ -9,6 +9,7 @@ pub mod environment_keys;
 pub mod environments;
 pub mod files;
 pub mod memory;
+pub mod run_lock;
 pub mod session_events;
 pub mod sessions;
 pub mod skill_versions;

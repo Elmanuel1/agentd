@@ -4,9 +4,9 @@
 //! selects, assemble the app, and serve. `agentd keys …`, `agentd
 //! admin-keys …` and `agentd environment-keys …` manage keys, and `agentd
 //! vault-secrets tag` tags secrets, instead ([`api::cli`]). Records and blobs live
-//! in Postgres and object storage; event streams and the local scheduler live
-//! in the process, so run one replica until a shared event bus and scheduler
-//! replace them.
+//! in Postgres and object storage. Every replica's event streams read the log,
+//! signalled through Valkey (`AGENTD_VALKEY_URL`); the local scheduler lives
+//! in the process, so run one replica until a shared scheduler replaces it.
 
 use std::process::ExitCode;
 

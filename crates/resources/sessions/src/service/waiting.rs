@@ -96,9 +96,7 @@ impl SessionsService {
             Ok(())
         };
         self.events.append_answers(&ctx.workspace, &id, &ids, &events, &check).await.map_err(map_store)??;
-        for ev in &events {
-            self.broadcast(&id, ev);
-        }
+        self.publish(&ctx.workspace, &id).await;
         Ok(events)
     }
 }

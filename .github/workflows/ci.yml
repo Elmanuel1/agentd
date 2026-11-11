@@ -50,12 +50,19 @@ jobs:
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
           --health-interval 2s --health-timeout 5s --health-retries 60
+      valkey:
+        image: valkey/valkey:8.0-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
       AGENTD_PG_TESTS: "1"
       AGENTD_DOCKER_TESTS: "1"
       AGENTD_SANDBOX_IMAGE: agentd-sandbox
       AGENTD_AWS_ENDPOINT: http://localhost:4566
+      AGENTD_VALKEY_URL: redis://localhost:6379
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
@@ -97,9 +104,16 @@ jobs:
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
           --health-interval 2s --health-timeout 5s --health-retries 60
+      valkey:
+        image: valkey/valkey:8.0-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
       AGENTD_AWS_ENDPOINT: http://localhost:4566
+      AGENTD_VALKEY_URL: redis://localhost:6379
       AGENTD_S3_CREATE_BUCKET: "1"
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test

@@ -9,18 +9,16 @@
 //! - `terminated` is absorbing; archived sessions are read-only,
 //! - `session.status_idle` carries a `stop_reason`; `requires_action` is
 //!   NOT terminal for drain loops.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use parking_lot::Mutex;
 use shared::limits::ModelCatalog;
 use shared::ports::Runtime;
 use shared::{ApiError, AuthContext, Usage, WorkspaceId};
-use tokio::sync::broadcast;
 
 use crate::events::{Event, EventPayload, StopReason};
-use crate::store::{SessionEventLog, SessionsStore, StoreError};
+use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
 use crate::types::{OutcomeEvaluation, Session, SessionId, SessionStatus, ThreadId};
 
 use agents::AgentSnapshot;
@@ -31,12 +29,13 @@ mod lifecycle;
 mod record;
 mod resources;
 mod sandbox;
+mod stream;
 mod threads;
 mod waiting;
 
 pub use threads::threads_projection;
 
-pub use events::Subscription;
+pub use stream::{Streams, Subscription};
 
 /// Resolution + validation dependencies the sessions service needs from
 /// other entities — a port, so tests fake it and `api` wires it to
@@ -112,18 +111,20 @@ pub trait SandboxWork: Send + Sync {
     ) -> Result<BTreeMap<String, String>, ApiError>;
     /// The session's sandbox is gone: its work item stops.
     async fn end(&self, ws: &WorkspaceId, session: &SessionId);
+    /// The session is gone and its work item already stopped: only what is
+    /// held for its sandbox goes.
+    fn forget(&self, session: &SessionId);
 }
-
-/// The live fan-out: one broadcast channel per session that has a listener.
-type Channels = Arc<Mutex<HashMap<SessionId, broadcast::Sender<Event>>>>;
 
 /// Sessions service.
 pub struct SessionsService {
     store: Arc<dyn SessionsStore>,
     events: Arc<dyn SessionEventLog>,
+    /// The log as the events list reads it: a read replica, where one is set.
+    list_reads: Arc<dyn SessionEventReads>,
     deps: Arc<dyn SessionDeps>,
     /// Live SSE fan-out. Stream has NO replay — reconnect = list + dedupe.
-    channels: Channels,
+    streams: Streams,
     /// The models an `agent_with_overrides` may name.
     catalog: ModelCatalog,
     /// Runs one sandbox per session; `None` runs no sandbox.
@@ -147,7 +148,31 @@ impl SessionsService {
         deps: Arc<dyn SessionDeps>,
         catalog: ModelCatalog,
     ) -> Self {
-        Self { store, events, deps, catalog, channels: Channels::default(), sandbox: None, work: None }
+        let list_reads = events.clone();
+        Self {
+            store,
+            events,
+            list_reads,
+            deps,
+            catalog,
+            streams: Streams::default(),
+            sandbox: None,
+            work: None,
+        }
+    }
+
+    /// Stream through `streams`, for every replica.
+    #[must_use]
+    pub fn with_streams(mut self, streams: Streams) -> Self {
+        self.streams = streams;
+        self
+    }
+
+    /// Serve the events list from `reads`.
+    #[must_use]
+    pub fn with_list_reads(mut self, reads: Arc<dyn SessionEventReads>) -> Self {
+        self.list_reads = reads;
+        self
     }
 
     /// Run each session's sandbox on `runtime`, its worker on a work item

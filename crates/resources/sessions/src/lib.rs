@@ -13,8 +13,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod events;
+pub mod retention;
 pub mod routes;
 pub mod service;
+pub mod signals;
 pub mod store;
 pub mod types;
 
@@ -24,7 +26,7 @@ use shared::beta::BetaGate;
 use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
-pub use service::{HarnessContract, SandboxWork, SessionDeps, SessionsService, Subscription};
+pub use service::{HarnessContract, SandboxWork, SessionDeps, SessionsService, Streams, Subscription};
 pub use store::{SessionEventLog, SessionEventReads, SessionsStore};
 pub use types::{Session, SessionId, SessionStatus};
 

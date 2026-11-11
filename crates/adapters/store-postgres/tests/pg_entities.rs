@@ -339,20 +339,17 @@ async fn pg_sessions_shared_event_log() {
 
     let e1 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
     let e2 = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-    log.append_event(&ws, &session.id, e1.clone()).await.unwrap();
-    log.append_event(&ws, &session.id, e2.clone()).await.unwrap();
+    log.append_events(&ws, &session.id, &[e1.clone(), e2.clone()]).await.unwrap();
 
     let events = log.events(&ws, &session.id).await.unwrap();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].id, e1.id, "log returns append order (by seq)");
+    assert_eq!(events, vec![e1.clone(), e2.clone()], "log returns append order (by seq)");
 
-    // replace stamps processed_at in place — no new row.
-    let mut e1p = e1.clone();
-    e1p.processed_at = Some(Timestamp::now());
-    log.replace_event(&ws, &session.id, e1p).await.unwrap();
-    let events = log.events(&ws, &session.id).await.unwrap();
-    assert_eq!(events.len(), 2);
-    assert!(events[0].processed_at.is_some());
+    // A stamp sets processed_at in place: no new row.
+    let at: Timestamp = serde_json::from_value(json!(Timestamp::now())).unwrap();
+    let stamped = log.update_processed_at(&ws, &session.id, std::slice::from_ref(&e1.id), at).await.unwrap();
+    let e1p = Event { processed_at: Some(at), ..e1 };
+    assert_eq!(stamped, vec![e1p.clone()]);
+    assert_eq!(log.events(&ws, &session.id).await.unwrap(), vec![e1p, e2]);
 
     store.delete(&ws, &session.id).await.unwrap();
     assert!(store.get(&ws, &session.id).await.is_err());
@@ -473,7 +470,7 @@ async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
 
     store.delete(&ws, &read.id).await.unwrap();
     let late = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-    assert!(matches!(log.append_event(&ws, &read.id, late).await, Err(StoreError::NotFound)));
+    assert!(matches!(log.append_events(&ws, &read.id, &[late]).await, Err(StoreError::NotFound)));
 }
 
 #[tokio::test]

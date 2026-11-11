@@ -1,8 +1,9 @@
 # agentd stack for development: agentd, its egress service, Postgres
-# (migrated by Flyway), and LocalStack for S3, Secrets Manager and KMS. Vault credentials are encrypted
+# (migrated by Flyway), LocalStack for S3, Secrets Manager and KMS, and Valkey for the
+# replicas' stream signals. Vault credentials are encrypted
 # under a KMS key on the emulator exactly as in production; there is no weaker
-# mode. Event streams and the local scheduler are per process, so run one
-# replica. Every published port is bound to 127.0.0.1.
+# mode. The local scheduler is per process, so run one replica. Every published
+# port is bound to 127.0.0.1.
 #
 #   export POSTGRES_PASSWORD=$(openssl rand -hex 16) AGENTD_EGRESS_ADMIN_TOKEN=$(openssl rand -hex 32)
 #   docker compose -f docker/docker-compose.yml up
@@ -21,6 +22,7 @@ x-agentd: &agentd
     AGENTD_S3_CREATE_BUCKET: "1"
     AGENTD_SECRETS_ENDPOINT: http://localstack:4566
     AGENTD_SECRETS_KMS_KEY_ID: alias/agentd-secrets
+    AGENTD_VALKEY_URL: redis://valkey:6379
     # Only the emulator accepts these.
     AWS_ACCESS_KEY_ID: test
     AWS_SECRET_ACCESS_KEY: test
@@ -83,12 +85,14 @@ services:
         condition: service_completed_successfully   # schema ready before boot
       localstack:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
       docker:
         condition: service_started
       egress:
         condition: service_started
     deploy:
-      replicas: ${AGENTD_REPLICAS:-1}   # one: event streams and timers are per process
+      replicas: ${AGENTD_REPLICAS:-1}   # one: the scheduler's timers are per process
 
   # The egress proxy: sandboxes reach it on their own networks; it reads each
   # credential from Secrets Manager when a request needs it. No shell in the
@@ -139,6 +143,17 @@ services:
       - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agentd"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Pub/sub for the replicas' stream signals; it stores nothing.
+  valkey:
+    image: valkey/valkey:8.0-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 20

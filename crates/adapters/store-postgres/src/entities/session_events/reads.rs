@@ -1,10 +1,10 @@
 //! The session event log's reads.
 
 use ::sessions::events::Event;
-use ::sessions::store::{EventFilter, Order, SessionEventReads, StoreError};
+use ::sessions::store::{EventFilter, Order, SessionEventReads, StoreError, Tail};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
-use diesel::sql_types::{Array, BigInt, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
@@ -105,4 +105,63 @@ impl SessionEventReads for PgSessionEventLog {
         .map_err(diesel_be)?;
         rows.into_iter().map(|r| parse_doc(r.doc)).collect()
     }
+
+    async fn tail(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+        after: i64,
+        pending: &[i64],
+        limit: usize,
+    ) -> Result<Option<Tail>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        // The session row comes back with no event when nothing matched, and
+        // no row at all once the session is gone.
+        let rows: Vec<TailRow> = diesel::sql_query(
+            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, e.seq, e.doc FROM sessions s
+             LEFT JOIN session_events e ON e.workspace_id = s.workspace_id AND e.session_id = s.session_id
+               AND (e.seq > $3 OR e.seq = ANY($4))
+             WHERE s.workspace_id = $1 AND s.session_id = $2
+             ORDER BY e.seq LIMIT $5",
+        )
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .bind::<BigInt, _>(after)
+        .bind::<Array<BigInt>, _>(pending)
+        .bind::<BigInt, _>(i64::try_from(limit + pending.len()).unwrap_or(i64::MAX))
+        .load(&mut conn)
+        .await
+        .map_err(diesel_be)?;
+        let Some(archived) = <[TailRow]>::first(&rows).map(|r| r.archived) else {
+            return Ok(None);
+        };
+        let events = rows
+            .into_iter()
+            .filter_map(|r| r.seq.zip(r.doc))
+            .map(|(seq, doc)| parse_doc(doc).map(|e| (seq, e)))
+            .collect::<Result<_, StoreError>>()?;
+        Ok(Some(Tail { archived, events }))
+    }
+
+    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<i64, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let head: Option<i64> = session_events::table
+            .filter(session_events::workspace_id.eq(ws.as_str()))
+            .filter(session_events::session_id.eq(id.as_str()))
+            .select(diesel::dsl::max(session_events::seq))
+            .first(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        Ok(head.unwrap_or(0))
+    }
+}
+
+#[derive(diesel::QueryableByName)]
+struct TailRow {
+    #[diesel(sql_type = Bool)]
+    archived: bool,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    seq: Option<i64>,
+    #[diesel(sql_type = Nullable<Jsonb>)]
+    doc: Option<serde_json::Value>,
 }

@@ -15,6 +15,8 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
+use sessions::signals::{LocalSignals, Signals};
+use sessions::store::DatabaseLoad;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::KeyPepper;
@@ -45,11 +47,34 @@ pub fn stamp() -> String {
     format!("{}{}", Timestamp::now().as_datetime().timestamp_micros(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// A database load that never refuses a stream.
+pub struct Unloaded;
+
+impl DatabaseLoad for Unloaded {
+    fn overloaded(&self) -> bool {
+        false
+    }
+}
+
+/// How one app replica streams: its signals and the load it reads.
+pub struct Streaming {
+    pub signals: Arc<dyn Signals>,
+    pub load: Arc<dyn DatabaseLoad>,
+}
+
+impl Default for Streaming {
+    /// Signals in this app alone, never overloaded.
+    fn default() -> Self {
+        Self { signals: Arc::new(LocalSignals::default()), load: Arc::new(Unloaded) }
+    }
+}
+
 fn app(
     stores: &Stores,
     keys: Arc<StaticKeySource>,
     env_keys: &EnvironmentKeysService,
     sandbox: bool,
+    streaming: Streaming,
 ) -> Router {
     let backends = Backends {
         stores: stores.clone(),
@@ -67,6 +92,8 @@ fn app(
         sandbox: sandbox.then(api::config::SandboxConfig::default),
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
+        signals: streaming.signals,
+        load: streaming.load,
     };
     build_router(AppState::build(backends).unwrap())
 }
@@ -134,7 +161,7 @@ impl Rig {
             EnvironmentKeysService::new(stores.environment_keys.clone(), Arc::new(KeyPepper::new(&[9; 32])))
                 .with_runtime_key(&runtime_key);
         let keys = Arc::new(keys);
-        let app = app(&stores, keys.clone(), &env_keys, sandbox);
+        let app = app(&stores, keys.clone(), &env_keys, sandbox, Streaming::default());
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
@@ -149,7 +176,12 @@ impl Rig {
 
     /// A fresh app over the same database and keys, as after a restart.
     pub fn restarted(&self) -> Router {
-        app(&self.stores, self.keys.clone(), &self.env_keys, self.sandbox)
+        app(&self.stores, self.keys.clone(), &self.env_keys, self.sandbox, Streaming::default())
+    }
+
+    /// Another replica over `stores`, streaming as `streaming` says.
+    pub fn replica(&self, stores: &Stores, streaming: Streaming) -> Router {
+        app(stores, self.keys.clone(), &self.env_keys, self.sandbox, streaming)
     }
 
     pub fn ctx(&self) -> AuthContext {
@@ -177,28 +209,32 @@ impl Rig {
         auth: Auth<'_>,
         body: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
-        let beta = if uri.starts_with("/v1/memory_stores") {
-            "agent-memory-2026-07-22"
-        } else {
-            "managed-agents-2026-04-01"
-        };
-        let mut b = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", beta);
-        b = match auth {
-            Auth::Key(k) => b.header("x-api-key", k),
-            Auth::Bearer(k) => b.header("authorization", format!("Bearer {k}")),
-        };
-        let body = body.map_or_else(Body::empty, |v| Body::from(v.to_string()));
-        self.send(b.body(body).unwrap()).await
+        self.send(request(method, uri, auth, body)).await
     }
 
     pub async fn send(&self, req: Request<Body>) -> (StatusCode, serde_json::Value) {
         send_to(&self.app, req).await
     }
+}
+
+/// A request as the SDKs send it.
+pub fn request(method: &str, uri: &str, auth: Auth<'_>, body: Option<serde_json::Value>) -> Request<Body> {
+    let beta = if uri.starts_with("/v1/memory_stores") {
+        "agent-memory-2026-07-22"
+    } else {
+        "managed-agents-2026-04-01"
+    };
+    let b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", beta);
+    let b = match auth {
+        Auth::Key(k) => b.header("x-api-key", k),
+        Auth::Bearer(k) => b.header("authorization", format!("Bearer {k}")),
+    };
+    b.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string()))).unwrap()
 }
 
 /// Send `req` to `app`: its status and JSON body (or text).

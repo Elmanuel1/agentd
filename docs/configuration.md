@@ -25,6 +25,9 @@ fakes in test code, never from configuration ([Security](#security)).
 |---|---|---|
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_URL` | required | Postgres connection |
+| `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
+| `AGENTD_VALKEY_URL` | unset (signals stay in the process) | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another; `rediss://` for TLS |
+| `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
 | `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |

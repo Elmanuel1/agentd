@@ -98,6 +98,10 @@ impl SandboxWork for WorkIssuer {
         if let Err(e) = self.work.end_session(ws, session.as_str()).await {
             tracing::warn!(session = %session, error = %e.message, "work: could not stop the session's work item");
         }
+        self.forget(session);
+    }
+
+    fn forget(&self, session: &SessionId) {
         if let Some(egress) = &self.egress {
             egress.forget(session.as_str());
         }

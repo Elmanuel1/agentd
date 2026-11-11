@@ -29,6 +29,13 @@ impl Timestamp {
         self.0
     }
 
+    /// `by` earlier; a span reaching before the Unix epoch is the epoch.
+    #[must_use]
+    pub fn earlier_by(&self, by: std::time::Duration) -> Self {
+        let at = chrono::Duration::from_std(by).ok().and_then(|by| self.0.checked_sub_signed(by));
+        Self(at.filter(|at| *at > DateTime::UNIX_EPOCH).unwrap_or(DateTime::UNIX_EPOCH))
+    }
+
     /// Wire rendering: `%Y-%m-%dT%H:%M:%S%.6fZ`.
     pub fn to_wire(&self) -> String {
         self.0.to_rfc3339_opts(SecondsFormat::Micros, true)

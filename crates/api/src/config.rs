@@ -29,6 +29,8 @@ pub struct Config {
     pub extra_models: Vec<String>,
     /// How sandboxes reach agentd and the egress service.
     pub sandbox: SandboxConfig,
+    /// Session streams across replicas, and event retention.
+    pub streams: StreamsConfig,
 }
 
 /// `AGENTD_BLOBS`.
@@ -91,7 +93,20 @@ impl Config {
             .map(str::to_owned)
             .collect();
         let sandbox = SandboxConfig::from_lookup(&get)?;
-        Ok(Self { addr, store, blobs, secrets, keys, scheduler, runtime, telemetry, extra_models, sandbox })
+        let streams = StreamsConfig::from_lookup(&get)?;
+        Ok(Self {
+            addr,
+            store,
+            blobs,
+            secrets,
+            keys,
+            scheduler,
+            runtime,
+            telemetry,
+            extra_models,
+            sandbox,
+            streams,
+        })
     }
 }
 
@@ -163,11 +178,13 @@ mod runtime;
 mod sandbox;
 mod secrets;
 mod store;
+mod streams;
 mod telemetry;
 
 pub use runtime::{RuntimeConfig, DEFAULT_SANDBOX_IMAGE};
 pub use sandbox::SandboxConfig;
 pub use store::StoreConfig;
+pub use streams::StreamsConfig;
 pub use telemetry::TelemetryConfig;
 
 #[cfg(test)]

@@ -155,7 +155,9 @@ impl ApiError {
         Self::of(ErrorType::Api, message)
     }
 
-    fn of(error_type: ErrorType, message: impl Into<String>) -> Self {
+    /// An `error_type` error under its canonical status.
+    #[must_use]
+    pub fn of(error_type: ErrorType, message: impl Into<String>) -> Self {
         Self { status: error_type.status(), error_type, message: message.into(), extra: Map::new() }
     }
 

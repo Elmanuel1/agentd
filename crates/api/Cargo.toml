@@ -20,6 +20,7 @@ memory = { workspace = true }
 files = { workspace = true }
 skills = { workspace = true }
 sessions = { workspace = true }
+signals-valkey = { workspace = true }
 deployments = { workspace = true }
 dreams = { workspace = true }
 scheduler-local = { workspace = true }

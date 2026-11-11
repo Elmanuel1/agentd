@@ -9,7 +9,7 @@ use environments::EnvironmentsService;
 use files::FilesService;
 use memory::MemoriesService;
 use organizations::WorkspacesService;
-use sessions::SessionsService;
+use sessions::{SessionsService, Streams};
 use shared::limits::ModelCatalog;
 use shared::ports::fire::FireError;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
@@ -69,6 +69,8 @@ impl AppState {
             sandbox,
             extra_models,
             metrics,
+            signals,
+            load,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
@@ -82,7 +84,9 @@ impl AppState {
             stores.session_events,
             Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
             catalog,
-        );
+        )
+        .with_streams(Streams::new(signals, load))
+        .with_list_reads(stores.session_event_list);
         // One key signs work tokens and egress passwords, each under its own purpose.
         let key = system.work_token_key.clone();
         let cloud =

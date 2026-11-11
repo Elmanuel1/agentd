@@ -20,7 +20,11 @@ async fn append(rig: &Rig, session: &str, payload: EventPayload) -> String {
     event.processed_at = Some(Timestamp::now());
     let id = event.id.as_str().to_owned();
     let ws = WorkspaceId::new(&rig.ws);
-    rig.stores.session_events.append_event(&ws, &SessionId::parse(session).unwrap(), event).await.unwrap();
+    rig.stores
+        .session_events
+        .append_events(&ws, &SessionId::parse(session).unwrap(), &[event])
+        .await
+        .unwrap();
     id
 }
 
