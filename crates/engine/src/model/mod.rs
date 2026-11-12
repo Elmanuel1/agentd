@@ -6,11 +6,13 @@ use serde::{Deserialize, Serialize};
 use sessions::events::ModelUsage;
 
 pub mod anthropic;
+mod block;
 pub mod budget;
 pub mod openai;
 pub mod retry;
 pub mod router;
 
+pub use block::Block;
 pub use router::{ModelRouter, Provider as ModelProvider, ProviderConfig};
 
 /// Who said a message.
@@ -21,42 +23,6 @@ pub enum Role {
     User,
     /// The model.
     Assistant,
-}
-
-/// One block of a message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Block {
-    /// Text.
-    Text {
-        /// The text.
-        text: String,
-    },
-    /// A tool call by the model.
-    ToolUse {
-        /// The call's id, echoed by its result.
-        id: String,
-        /// The tool.
-        name: String,
-        /// Its input.
-        input: serde_json::Value,
-    },
-    /// The result of a tool call.
-    ToolResult {
-        /// The call it answers.
-        tool_use_id: String,
-        /// The result text.
-        content: String,
-        /// Whether the tool failed.
-        is_error: bool,
-    },
-}
-
-impl Block {
-    /// A text block.
-    pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into() }
-    }
 }
 
 /// One message in the conversation.

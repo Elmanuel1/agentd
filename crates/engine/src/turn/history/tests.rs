@@ -51,7 +51,7 @@ fn end(start: &Event) -> Event {
 }
 
 fn build(events: &[Event]) -> History {
-    rebuild(&events.iter().collect::<Vec<_>>(), &HashMap::new())
+    rebuild(&events.iter().collect::<Vec<_>>(), &HashMap::new(), &HashMap::new())
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn a_secondary_thread_sees_its_own_events_and_the_answers_to_its_calls() {
     let all = vec![user("primary only"), got, step, custom, answer];
     let mine = thread_events(&all, Some(&sub));
     assert_eq!(mine.len(), 4);
-    let h = rebuild(&mine, &HashMap::new());
+    let h = rebuild(&mine, &HashMap::new(), &HashMap::new());
     assert_eq!(h.messages[0], Message { role: Role::User, content: vec![Block::text("extract it")] });
     assert!(h.unanswered.is_empty());
     assert!(h.awaits_model());
@@ -178,9 +178,9 @@ fn an_outcome_shows_its_rubric_and_a_failed_round_its_findings() {
         usage: ModelUsage::default(),
     });
     let rubrics = HashMap::from([("file_1".to_owned(), "### 1. name".to_owned())]);
-    let h = rebuild(&[&define], &rubrics);
+    let h = rebuild(&[&define], &rubrics, &HashMap::new());
     assert!(matches!(&h.messages[0].content[0], Block::Text { text } if text.contains("### 1. name")));
-    let h = rebuild(&[&define, &feedback], &rubrics);
+    let h = rebuild(&[&define, &feedback], &rubrics, &HashMap::new());
     assert!(matches!(&h.messages[0].content[1], Block::Text { text } if text.starts_with("name is wrong")));
 }
 
@@ -200,3 +200,17 @@ fn the_primary_thread_leaves_out_answers_to_another_threads_calls() {
 
 mod inputs;
 mod interrupts;
+
+#[test]
+fn a_call_s_kept_thinking_goes_back_first_in_its_message() {
+    let (s, thought) = (start(), ev(AgentEvent::Thinking { content: None }));
+    let call = tool_use("bash", "allow");
+    let events = [user("go"), s.clone(), thought.clone(), call.clone(), end(&s), result(&call, "ok")];
+    let blocks = json!({"thinking": [{"type": "thinking", "thinking": "", "signature": "sig"}]});
+    let kept: Kept = HashMap::from([(thought.id.clone(), blocks)]);
+    let h = rebuild(&events.iter().collect::<Vec<_>>(), &HashMap::new(), &kept);
+    let said = h.messages.iter().find(|m| m.role == Role::Assistant).unwrap();
+    assert_eq!(said.content[0], Block::Thinking { thinking: String::new(), signature: "sig".into() });
+    assert!(matches!(said.content[1], Block::ToolUse { .. }));
+    assert_eq!(build(&events).messages.iter().find(|m| m.role == Role::Assistant).unwrap().content.len(), 1);
+}

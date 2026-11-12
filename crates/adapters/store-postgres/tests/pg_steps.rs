@@ -170,6 +170,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 read: std::slice::from_ref(&asked.id),
                 at: Timestamp::now(),
                 events: std::slice::from_ref(&start),
+                engine: &[],
                 session: &running,
             },
         )
@@ -187,6 +188,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 read: &[],
                 at: Timestamp::now(),
                 events: std::slice::from_ref(&last),
+                engine: &[],
                 session: &unchanged,
             },
         )
@@ -218,7 +220,11 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
     let none: &[Event] = std::slice::from_ref(&late);
     assert!(!r
         .steps
-        .write(&first, 60, StepWrite { read: &[], at: Timestamp::now(), events: none, session: &unchanged })
+        .write(
+            &first,
+            60,
+            StepWrite { read: &[], at: Timestamp::now(), events: none, engine: &[], session: &unchanged }
+        )
         .await
         .unwrap());
     assert!(!r
@@ -226,7 +232,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
         .commit(
             &first,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: none, session: &unchanged }
+            StepWrite { read: &[], at: Timestamp::now(), events: none, engine: &[], session: &unchanged }
         )
         .await
         .unwrap());
@@ -235,7 +241,13 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
         .commit(
             &second,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged }
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[reply()],
+                engine: &[],
+                session: &unchanged
+            }
         )
         .await
         .unwrap());
@@ -261,7 +273,13 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
         .commit(
             &c,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged }
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[reply()],
+                engine: &[],
+                session: &unchanged
+            }
         )
         .await
         .unwrap());
@@ -272,7 +290,7 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
         .commit(
             &next,
             StepEnd::Again,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged }
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged }
         )
         .await
         .unwrap());
@@ -297,7 +315,13 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
         .commit(
             &c,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged }
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[reply()],
+                engine: &[],
+                session: &unchanged
+            }
         )
         .await
         .unwrap());
@@ -336,7 +360,7 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
         .commit(
             &held,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged },
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged },
         )
         .await
         .unwrap();
@@ -385,7 +409,13 @@ async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() 
         .commit(
             &c,
             StepEnd::Requeue,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[reply()], session: &unchanged },
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[reply()],
+                engine: &[],
+                session: &unchanged,
+            },
         )
         .await
         .unwrap();
@@ -417,7 +447,7 @@ async fn the_counts_see_due_and_leased_steps() {
         .commit(
             &c,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged },
+            StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged },
         )
         .await
         .unwrap();
@@ -467,6 +497,32 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
     .bind::<diesel::sql_types::Text, _>(c.id.as_str());
     let due: DueIn = diesel_async::RunQueryDsl::get_result(q, &mut *conn).await.unwrap();
     assert!(due.seconds > 50, "a step deferred for a minute stays deferred: {}s", due.seconds);
-    let w = StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged };
+    let w = StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged };
     r.steps.commit(&held, StepEnd::Done, w).await.unwrap();
+}
+
+#[tokio::test]
+async fn what_a_step_keeps_beside_an_event_only_the_engine_read_returns() {
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    let ws = uniq_ws("kept");
+    let s = r.session(&ws).await;
+    r.wake(&ws, &s.id).await;
+    let c = r.claim_of("w1", 60, &s.id).await.unwrap();
+    let said = reply();
+    let kept = [(said.id.clone(), json!({"thinking": [{"type": "redacted_thinking", "data": "enc"}]}))];
+    let write = StepWrite {
+        read: &[],
+        at: Timestamp::now(),
+        events: std::slice::from_ref(&said),
+        engine: &kept,
+        session: &unchanged,
+    };
+    r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
+    let read = r.log.engine_events(&ws, &s.id).await.unwrap();
+    let (event, engine) = read.iter().find(|(e, _)| e.id == said.id).unwrap();
+    assert_eq!(engine.as_ref(), Some(&kept[0].1));
+    assert!(serde_json::to_value(event).unwrap().get("engine").is_none(), "the event as the API serves it");
 }

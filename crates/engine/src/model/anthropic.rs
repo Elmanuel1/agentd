@@ -44,6 +44,9 @@ pub fn body(req: &ModelRequest) -> Value {
         "messages": messages,
         "metadata": {"user_id": req.agent},
     });
+    if let Some(thinking) = thinking(&req.model, req.max_tokens) {
+        crate::json::set(&mut body, "thinking", thinking);
+    }
     // The API refuses an empty system text block, and a cache mark on one.
     if !req.system.is_empty() {
         let system = json!([{"type": "text", "text": req.system, "cache_control": {"type": "ephemeral"}}]);
@@ -63,6 +66,20 @@ pub fn body(req: &ModelRequest) -> Value {
     body
 }
 
+/// The models that take a fixed thinking budget; every later one thinks adaptively.
+const BUDGETED: [&str; 3] = ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-5"];
+
+/// The request's `thinking`: adaptive, or for an older model a budget of a
+/// quarter of the output cap, at least the API's minimum of 1024 tokens and
+/// below the cap, so none when the cap leaves no room.
+fn thinking(model: &str, max_tokens: u32) -> Option<Value> {
+    let budget = (max_tokens / 4).max(1024);
+    match BUDGETED.iter().any(|m| model.starts_with(m)) {
+        true => (budget < max_tokens).then(|| json!({"type": "enabled", "budget_tokens": budget})),
+        false => Some(json!({"type": "adaptive"})),
+    }
+}
+
 fn message(m: &Message) -> Value {
     let role = match m.role {
         Role::User => "user",
@@ -76,6 +93,10 @@ fn message(m: &Message) -> Value {
             Block::ToolUse { id, name, input } => {
                 json!({"type": "tool_use", "id": id, "name": name, "input": input})
             }
+            Block::Thinking { thinking, signature } => {
+                json!({"type": "thinking", "thinking": thinking, "signature": signature})
+            }
+            Block::RedactedThinking { data } => json!({"type": "redacted_thinking", "data": data}),
             Block::ToolResult { tool_use_id, content, is_error } => json!({
                 "type": "tool_result", "tool_use_id": tool_use_id,
                 "content": [{"type": "text", "text": content}], "is_error": is_error,
@@ -99,7 +120,10 @@ pub fn parse(v: &Value) -> ModelResponse {
                 name: crate::json::at(block, "/name").as_str().unwrap_or_default().to_owned(),
                 input: crate::json::at(block, "/input").clone(),
             }),
-            Some("thinking" | "redacted_thinking") => thought = true,
+            Some("thinking" | "redacted_thinking") => {
+                thought = true;
+                content.extend(serde_json::from_value::<Block>(block.clone()).ok());
+            }
             _ => {}
         }
     }

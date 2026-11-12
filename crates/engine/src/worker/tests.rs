@@ -147,3 +147,43 @@ fn a_grader_stalls_after_three_calls_with_no_tool_call() {
     log.insert(3, call());
     assert!(!stalled(&log, &turn.thread));
 }
+
+#[test]
+fn a_reply_s_signed_thinking_is_kept_beside_its_agent_thinking() {
+    let (turn, start, session) = (turn(), EventId::generate(), session());
+    let thought = Block::Thinking { thinking: String::new(), signature: "sig".into() };
+    let r = ModelResponse {
+        content: vec![thought, Block::text("hi")],
+        thought: true,
+        stop: StopKind::EndTurn,
+        ..reply(&[])
+    };
+    let tools = Toolbox::default();
+    let call = Call {
+        turn: &turn,
+        start: &start,
+        tools: &tools,
+        cloud: false,
+        more: false,
+        session: &session,
+        log: &[],
+        grading: None,
+    };
+    let out = led(&call, &r);
+    let thinking = out
+        .events
+        .iter()
+        .find(|e| matches!(e.payload, EventPayload::Agent(sessions::events::AgentEvent::Thinking { .. })))
+        .unwrap();
+    assert_eq!(
+        out.engine,
+        vec![(
+            thinking.id.clone(),
+            json!({"thinking": [{"type": "thinking", "thinking": "", "signature": "sig"}]})
+        )]
+    );
+    assert!(
+        serde_json::to_value(thinking).unwrap().get("content").is_none(),
+        "live's agent.thinking carries no content"
+    );
+}

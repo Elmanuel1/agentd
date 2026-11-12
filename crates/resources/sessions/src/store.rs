@@ -8,6 +8,10 @@ use shared::{ApiError, Pagination, Timestamp, WorkspaceId};
 use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
+mod reads;
+
+pub use reads::{Head, SessionEventReads, Tail};
+
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
@@ -107,53 +111,6 @@ pub enum Wake {
 /// Refuses results, given the calls they answer and the results already saved;
 /// accepted, it answers each result's thread, its call's.
 pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, ApiError> + Send + Sync + 'a;
-
-/// A read of a session's log from a position.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Tail {
-    /// The session is archived.
-    pub archived: bool,
-    /// Each event with its position in the log, in log order.
-    pub events: Vec<(i64, Event)>,
-}
-
-/// Where a new stream of a session starts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Head {
-    /// The position of the session's latest event, 0 when it has none.
-    pub seq: i64,
-    /// The positions of its client events not processed yet, in log order.
-    pub queued: Vec<i64>,
-}
-
-/// A session's event log, read.
-#[async_trait]
-pub trait SessionEventReads: Send + Sync {
-    /// Full event history, append order.
-    async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
-    /// The client events the agent has not taken yet, append order.
-    async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
-    /// One page of the events `filter` keeps, in its order.
-    async fn events_page(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        filter: &EventFilter,
-        page: &Pagination,
-    ) -> Result<Vec<Event>, StoreError>;
-    /// Up to `limit` events after position `after`, with the events at
-    /// `pending` wherever they are; `None` once the session is gone.
-    async fn tail(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        after: i64,
-        pending: &[i64],
-        limit: usize,
-    ) -> Result<Option<Tail>, StoreError>;
-    /// Where a new stream of the session starts.
-    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError>;
-}
 
 /// A session's append-only event log. It has its own lifecycle: the engine
 /// appends to it while the session row is unchanged, and the events list and

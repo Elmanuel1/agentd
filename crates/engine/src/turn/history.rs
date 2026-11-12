@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use sessions::events::{AgentEvent, Event, EventPayload, Rubric, SpanEvent, UserEvent};
+use sessions::events::{AgentEvent, Event, EventId, EventPayload, Rubric, SpanEvent, UserEvent};
 use sessions::types::ThreadId;
 use shared::ContentBlock;
 
@@ -88,16 +88,25 @@ fn texts(content: &[ContentBlock]) -> String {
     content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("\n")
 }
 
+/// What the loop kept beside events (their `engine` object), by event id.
+pub type Kept = HashMap<EventId, serde_json::Value>;
+
 /// Rebuild `events` (one thread's, oldest first) into its conversation.
 /// `rubrics` holds the text of rubric files by file id. A tool call with no
 /// result that the client does not owe gets an error result, so the
 /// conversation stays valid after an interrupted step.
-pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History {
+pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept) -> History {
     let mut b = Builder::default();
     for ev in events {
         let id = ev.id.as_str().to_owned();
         match &ev.payload {
             EventPayload::Span(SpanEvent::ModelRequestStart {}) => b.step(),
+            // Its signed blocks go back unmodified, first in its call's message.
+            EventPayload::Agent(AgentEvent::Thinking { .. }) => b.assistant.extend(
+                kept.get(&ev.id)
+                    .and_then(|k| serde_json::from_value::<Vec<Block>>(k["thinking"].clone()).ok())
+                    .unwrap_or_default(),
+            ),
             EventPayload::Span(SpanEvent::OutcomeEvaluationEnd { result, explanation, .. }) => {
                 b.text(feedback_prompt(*result, explanation.as_deref().unwrap_or_default()));
             }

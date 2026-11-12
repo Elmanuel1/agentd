@@ -70,7 +70,12 @@ The loop calls the model itself, with one key per provider:
 Manager (`PREFIX/operator/models/<provider>`). A model id with a `/` goes to the
 OpenAI-compatible API at `AGENTD_MODEL_BASE_URL` (default
 `https://openrouter.ai/api/v1`), and any other id to the
-Messages API at `AGENTD_ANTHROPIC_BASE_URL`. The system prompt and the tool
+Messages API at `AGENTD_ANTHROPIC_BASE_URL`. A Messages API call asks for
+thinking: adaptive, or a budget of a quarter of the output cap for
+`claude-haiku-4-5`, `claude-sonnet-4-5` and `claude-opus-4-5`. Each call that
+reasons writes `agent.thinking` (no content, as live), and its signed thinking
+blocks are kept beside that event, never served, and sent back unmodified in
+the call that follows. The system prompt and the tool
 list carry prompt-cache marks. A call that fails with 408, 409, 429 or 5xx is
 retried with backoff and jitter, never sooner than `retry-after`, within the
 step's 10 minute deadline.

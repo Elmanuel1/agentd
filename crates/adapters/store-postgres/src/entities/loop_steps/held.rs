@@ -25,7 +25,14 @@ async fn land(
     let (ws, id) = (&claim.workspace, &claim.session);
     stamp(c, ws, id, write.read, write.at).await?;
     let ids: Vec<&str> = write.events.iter().map(|e| e.id.as_str()).collect();
-    let docs = write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
+    let mut docs =
+        write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
+    for (doc, event) in docs.iter_mut().zip(write.events) {
+        let kept = write.engine.iter().find(|(e, _)| *e == event.id).map(|(_, kept)| kept.clone());
+        if let (Some(kept), Some(doc)) = (kept, doc.as_object_mut()) {
+            doc.insert("engine".into(), kept);
+        }
+    }
     if insert(c, ws, id, &ids, docs).await? != ids.len() {
         return Err(diesel::result::Error::RollbackTransaction);
     }

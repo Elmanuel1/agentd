@@ -37,6 +37,9 @@ pub struct StepWrite<'a> {
     pub at: shared::Timestamp,
     /// The events it appends, in order.
     pub events: &'a [Event],
+    /// What the loop keeps beside some of those events, by event id, which
+    /// no API read serves.
+    pub engine: &'a [(EventId, serde_json::Value)],
     /// What it changes on the session's row.
     pub session: &'a SessionChange<'a>,
 }

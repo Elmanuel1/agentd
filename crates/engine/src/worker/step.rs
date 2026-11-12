@@ -23,6 +23,7 @@ use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
 use crate::model::{ModelError, ModelProvider, ModelRequest};
+use crate::turn::history::Kept;
 use crate::turn::policy::Toolbox;
 use crate::turn::prompt::system_prompt;
 
@@ -39,7 +40,7 @@ impl Loop {
 
     async fn write(&self, claim: &Claim, b: &Batch, to: Option<SessionStatus>) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
+        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
         let wrote = self
             .stores
             .steps
@@ -64,7 +65,7 @@ impl Loop {
             s.outcome_evaluations = after.outcome_evaluations.clone();
             true
         };
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
+        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
         let done = self.stores.steps.commit(claim, end, w).await.map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(done)
@@ -78,13 +79,15 @@ impl Loop {
             Err(StoreError::NotFound) => return Ok(()),
             Err(e) => return Err(BackendError::new(e)),
         };
-        let log = self.stores.log.events(ws, id).await.map_err(BackendError::new)?;
+        let read = self.stores.log.engine_events(ws, id).await.map_err(BackendError::new)?;
+        let kept: Kept = read.iter().filter_map(|(e, k)| Some((e.id.clone(), k.clone()?))).collect();
+        let log: Vec<Event> = read.into_iter().map(|(e, _)| e).collect();
         let queue = self.stores.work.queue_of(ws, id.as_str()).await.map_err(BackendError::new)?;
         let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
         let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
         let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } =
-            take(&log, &session, cloud, &rubrics);
+            take(&log, &session, cloud, &rubrics, &kept);
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
             self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
@@ -205,7 +208,9 @@ impl Loop {
                     session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
                     session.outcome_evaluations.push(eval);
                 }
-                (batch(Vec::new(), Vec::new(), out.events), out.end)
+                let mut done = batch(Vec::new(), Vec::new(), out.events);
+                done.engine = out.engine;
+                (done, out.end)
             }
         };
         self.commit(claim, end, &done, &session).await?;

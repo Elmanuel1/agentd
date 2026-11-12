@@ -10,6 +10,7 @@ use sessions::types::{OutcomeEvaluation, Session};
 use super::grade::{self, Outcome};
 use super::team::Thread;
 use super::turn::Turn;
+use serde_json::{json, Value};
 use shared::ContentBlock;
 
 use crate::model::{Block, ModelResponse};
@@ -23,6 +24,8 @@ pub(super) struct Led {
     pub(super) idle: Option<StopReason>,
     /// The grader's verdict, for the session to record.
     pub(super) evaluation: Option<OutcomeEvaluation>,
+    /// The signed thinking blocks, kept beside the `agent.thinking` event.
+    pub(super) engine: Vec<(EventId, Value)>,
 }
 
 /// One model call, as the reply's events need it.
@@ -44,9 +47,18 @@ pub(super) struct Call<'a> {
 /// The reply's events, and how the step ends.
 pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
     let (turn, start, tools, cloud, more) = (c.turn, c.start, c.tools, c.cloud, c.more);
-    let mut events = Vec::new();
+    let (mut events, mut engine) = (Vec::new(), Vec::new());
     if r.thought {
-        events.push(turn.event(AgentEvent::Thinking { content: None }));
+        let thinking = turn.event(AgentEvent::Thinking { content: None });
+        let blocks: Vec<&Block> = r
+            .content
+            .iter()
+            .filter(|b| matches!(b, Block::Thinking { .. } | Block::RedactedThinking { .. }))
+            .collect();
+        if !blocks.is_empty() {
+            engine.push((thinking.id.clone(), json!({ "thinking": blocks })));
+        }
+        events.push(thinking);
     }
     let text: Vec<ContentBlock> = r
         .content
@@ -146,5 +158,5 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         (true, false) => Some(StopReason::EndTurn {}),
         (true, true) => None,
     };
-    Led { events, end, idle, evaluation }
+    Led { events, end, idle, evaluation, engine }
 }
