@@ -139,22 +139,28 @@ fn thread_lifecycle_events_match_the_live_capture() {
 }
 
 #[test]
-fn a_secondary_threads_work_stays_off_the_session_stream_unless_it_blocks() {
+fn a_secondary_threads_tool_calls_show_on_the_session_stream_and_its_other_work_does_not() {
+    // The official worker runs every thread's built-in calls from the session's stream.
     let thread = ThreadId::generate();
     let mut used = Event::new(EventPayload::Agent(AgentEvent::ToolUse {
         name: "bash".into(),
         input: serde_json::json!({"command": "ls"}),
         evaluated_permission: Some("allow".into()),
-        evaluation: None,
+        evaluation: Some(serde_json::json!({"type": "always_allow"})),
     }));
     used.session_thread_id = Some(thread.clone());
-    assert!(!used.on_session_stream());
+    assert!(used.on_session_stream());
     assert!(used.on_thread_stream(Some(&thread)));
     assert!(used.thread_wire().get("session_thread_id").is_none());
-    if let EventPayload::Agent(AgentEvent::ToolUse { evaluated_permission, .. }) = &mut used.payload {
-        *evaluated_permission = Some("ask".into());
+    let said = Event {
+        session_thread_id: Some(thread),
+        ..Event::new(EventPayload::Agent(AgentEvent::Message { content: vec![] }))
+    };
+    assert!(!said.on_session_stream());
+    if let EventPayload::Agent(AgentEvent::ToolUse { evaluation, .. }) = &mut used.payload {
+        *evaluation = None;
     }
-    assert!(used.on_session_stream());
+    assert!(!used.on_session_stream(), "a call the loop answers itself, as a grader's verdict");
 }
 
 #[test]

@@ -77,7 +77,6 @@ impl SessionEventLog for PgSessionEventLog {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let calls: Vec<&str> = calls.iter().map(EventId::as_str).collect();
         let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
-        let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
                 // A second writer answering the same call waits here, then
@@ -93,9 +92,15 @@ impl SessionEventLog for PgSessionEventLog {
                 .load(c)
                 .await?;
                 let found = rows.into_iter().map(|r| serde_json::from_value(r.doc)).collect::<Result<Vec<Event>, _>>();
-                if let Err(refused) = check(&found.map_err(|e| diesel::result::Error::DeserializationError(e.into()))?) {
-                    return Ok(Err(refused));
-                }
+                let threads = match check(&found.map_err(|e| diesel::result::Error::DeserializationError(e.into()))?) {
+                    Ok(threads) => threads,
+                    Err(refused) => return Ok(Err(refused)),
+                };
+                let answers = events.iter().zip(threads).map(|(e, session_thread_id)| Event { session_thread_id, ..e.clone() });
+                let docs = answers
+                    .map(|e| to_doc(&e))
+                    .collect::<Result<Vec<_>, StoreError>>()
+                    .map_err(|e| diesel::result::Error::SerializationError(e.to_string().into()))?;
                 if insert(c, ws, id, &ids, docs).await? != events.len() {
                     return Err(diesel::result::Error::NotFound);
                 }

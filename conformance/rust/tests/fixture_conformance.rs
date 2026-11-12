@@ -18,7 +18,7 @@ use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
-use shared::ports::{FakeRuntime, FakeScheduler};
+use shared::ports::FakeScheduler;
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -64,13 +64,10 @@ async fn app() -> Option<Router> {
         },
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
-        runtime: Some(Arc::new(FakeRuntime::new())),
-        sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,
-        on_loop: sessions::steps::LoopWorkspaces::default(),
         role: api::config::Role::All,
     };
     Some(build_router(AppState::build(backends).unwrap()))

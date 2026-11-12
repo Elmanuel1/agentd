@@ -40,7 +40,7 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
    └─ conformance      the swappability oracle (fixture diff, normalized)
 ```
 
-**Swappable ports:** `Runtime` (Fargate/Firecracker/local), `SchedulerPort`
+**Swappable ports:** `SchedulerPort`
 (Temporal/EventBridge/local), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
 `BlobStore` (S3), `SecretStore`, `KeySource`, storage traits per entity
 (in-memory/Postgres). The binary picks one backend per port from config at

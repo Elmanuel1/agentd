@@ -104,8 +104,9 @@ pub enum Wake {
     Step,
 }
 
-/// Refuses results, given the calls they answer and the results already saved.
-pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<(), ApiError> + Send + Sync + 'a;
+/// Refuses results, given the calls they answer and the results already saved;
+/// accepted, it answers each result's thread, its call's.
+pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, ApiError> + Send + Sync + 'a;
 
 /// A read of a session's log from a position.
 #[derive(Debug, Clone, Default, PartialEq)]

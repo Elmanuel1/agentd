@@ -14,7 +14,6 @@ use base64::Engine as _;
 use common::{send_to, Auth, Rig, EGRESS_KEY, KEY, SCOPE, WORK_KEY};
 use serde_json::{json, Value};
 use shared::ports::secrets::SecretKey;
-use shared::tenancy::RUNTIME_QUEUE;
 use work::{Placeholders, WorkTokens};
 
 fn secret(work: &Value) -> Value {

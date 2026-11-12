@@ -95,7 +95,10 @@ impl SessionsService {
                     )));
                 }
             }
-            Ok(())
+            let thread = |call: &EventId| {
+                found.iter().find(|e| e.id == *call).and_then(|e| e.session_thread_id.clone())
+            };
+            Ok(calls.iter().map(|(call, _)| thread(call)).collect())
         };
         self.events
             .append_answers(&ctx.workspace, &id, &ids, &events, &check, Wake::Step)

@@ -86,7 +86,8 @@ impl SessionEventReads for PgSessionEventLog {
                AND ($7::timestamptz IS NULL OR {processed} <= $7)
                AND (CASE WHEN $10::text IS NULL THEN
                       doc->>'session_thread_id' IS NULL OR doc->>'type' LIKE 'session.%'
-                      OR doc->>'evaluated_permission' = 'ask' OR doc->>'type' = 'agent.custom_tool_use'
+                      OR (doc->>'type' = 'agent.tool_use' AND jsonb_typeof(doc->'evaluation') = 'object')
+                      OR doc->>'type' = 'agent.custom_tool_use'
                     ELSE doc->>'session_thread_id' = $10 AND doc->>'type' <> 'session.thread_created' END)
              ORDER BY {processed} {order} NULLS LAST, seq {order}
              LIMIT $8 OFFSET $9"

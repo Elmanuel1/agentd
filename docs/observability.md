@@ -1,7 +1,7 @@
 # Observability
 
 agentd emits traces, metrics and logs at every boundary it crosses: each request it serves, each SQL statement
-and pooled connection, each blob, secret and sandbox operation, and each scheduled fire. Each signal names its
+and pooled connection, each blob and secret operation, and each scheduled fire. Each signal names its
 boundary, its operation and its outcome, so a failure points at the boundary that failed. The code lives in
 `crates/api/src/telemetry`.
 
@@ -18,7 +18,7 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 | Event retention | `sessions::retention`, every 5 minutes on the replica that holds its lock | | `agentd.retention.last_success` (s), when this replica last completed a run, while `AGENTD_EVENT_RETENTION_DAYS` is set | `warn` |
 | Postgres statements | `telemetry::db`, diesel `Instrumentation` on every pooled connection | `SELECT postgres` and so on, under the request | `db.client.operation.duration` (s) by operation and outcome | `error`; a unique violation is `debug` (it is a 409) |
 | Postgres connections | the pool's setup hook | | a failed `CONNECT` in `db.client.operation.duration`; `db.client.connection.count` (idle, used), `.max`, `.pending_requests` | `error` |
-| Blobs, secrets, sandbox | `telemetry::ports::Observed` around each port | `blobs.put`, `secrets.get`, `sandbox.launch` | `agentd.port.operation.duration` (s) by port, operation and outcome | `warn` |
+| Blobs, secrets | `telemetry::ports::Observed` around each port | `blobs.put`, `secrets.get` | `agentd.port.operation.duration` (s) by port, operation and outcome | `warn` |
 | Scheduled fires | `Observed` around each module's fire handler | `fires.deployment` (the one fire kind today) | the same, port `fires` | `warn` |
 
 Every boundary operation is covered: 49 route registrations plus the unknown-path fallback, every statement
@@ -57,7 +57,7 @@ that the dashboard and alert rules are provisioned.
 | `agentd-5xx-ratio` | more than 1% of requests answer 5xx for 5 minutes | page |
 | `agentd-p95-latency` | p95 above 1 s for 10 minutes | warn |
 | `agentd-sql-failures` | more than 0.05 failed statements or connections per second for 5 minutes | page |
-| `agentd-port-failures` | a blob, secret or sandbox port fails more than 0.05 times per second for 5 minutes | warn |
+| `agentd-port-failures` | a blob or secret port fails more than 0.05 times per second for 5 minutes | warn |
 | `agentd-fire-failures` | any scheduled fire failed in the last 15 minutes | warn |
 | `agentd-pool-saturated` | a request waited for a Postgres connection for 5 minutes | warn |
 | `agentd-absent` | no agentd telemetry for 5 minutes | page |

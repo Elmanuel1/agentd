@@ -146,18 +146,19 @@ impl Event {
     }
 
     /// Whether the session's own stream shows this event: everything but a
-    /// secondary thread's work, which shows only where it blocks (a tool
-    /// awaiting confirmation or a custom tool).
+    /// secondary thread's work, which shows only the calls a worker or the
+    /// client answers: its toolset calls (those with an `evaluation`), which
+    /// the official worker runs from the session's stream, telling threads
+    /// apart by `session_thread_id`, and its custom tool calls.
     pub fn on_session_stream(&self) -> bool {
         self.session_thread_id.is_none()
-            || match &self.payload {
-                EventPayload::Session(_) => true,
-                EventPayload::Agent(AgentEvent::ToolUse { evaluated_permission, .. }) => {
-                    evaluated_permission.as_deref() == Some("ask")
-                }
-                EventPayload::Agent(AgentEvent::CustomToolUse { .. }) => true,
-                _ => false,
-            }
+            || matches!(
+                self.payload,
+                EventPayload::Session(_)
+                    | EventPayload::Agent(
+                        AgentEvent::ToolUse { evaluation: Some(_), .. } | AgentEvent::CustomToolUse { .. }
+                    )
+            )
     }
 
     /// Whether thread `thread`'s stream shows this event; `None` names the

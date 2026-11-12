@@ -11,9 +11,10 @@ prompt and rubric in a grader session.
 
 ## Runs
 
-Each session's agent runs in its sandbox, as the session's harness, and calls
-the model through the egress service with the operator's model key. The script
-uses only the official Python SDK, with its base URL changed.
+agentd's loop runs each session's agent and calls the model with the operator's
+model key; the session's tools run on a worker in a sandbox (`agentd-worker`),
+which mounts the documents and skills and saves the outputs. The script uses
+only the official Python SDK, with its base URL changed.
 
 Scripted (CI): `mock-model.json` scripts every model reply, served by
 `conformance/mock_model.py`; `fixture/` is the slice of the demo data it needs
@@ -21,8 +22,8 @@ Scripted (CI): `mock-model.json` scripts every model reply, served by
 
 ```bash
 python conformance/mock_model.py --port 18766 conformance/demo/mock-model.json &
-echo mock | agentd model-key set --host mock-model.agentd.test
-AGENTD_MODEL_BASE_URL=http://mock-model.agentd.test:18766/v1 agentd &
+echo mock | agentd model-key set --provider anthropic --host 127.0.0.1
+AGENTD_ANTHROPIC_BASE_URL=http://127.0.0.1:18766 agentd &
 AGENTD_TEST_DEMO=1 AGENTD_TEST_KEY=<key> pytest conformance/demo
 ```
 
