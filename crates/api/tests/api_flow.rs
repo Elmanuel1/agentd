@@ -13,7 +13,7 @@ use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
-use shared::ports::{FakeRuntime, FakeScheduler};
+use shared::ports::FakeScheduler;
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -29,10 +29,6 @@ fn enabled() -> bool {
 /// the integration env isn't configured (test skips). Unique tenants per call
 /// isolate the shared DB.
 async fn app() -> Option<Router> {
-    app_with(Arc::new(FakeRuntime::new())).await
-}
-
-async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
     if !enabled() {
         return None;
     }
@@ -59,13 +55,10 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
         },
         scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
-        runtime: Some(runtime),
-        sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,
-        on_loop: sessions::steps::LoopWorkspaces::default(),
         role: api::config::Role::All,
     };
     Some(build_router(AppState::build(backends).unwrap()))
@@ -402,9 +395,8 @@ async fn exact_live_error_strings_survive_the_full_stack() {
 }
 
 #[tokio::test]
-async fn a_session_launches_its_sandbox_with_the_resolved_environment() {
-    let runtime = Arc::new(FakeRuntime::new());
-    let Some(app) = app_with(runtime.clone()).await else {
+async fn a_session_queues_its_work_item_on_its_environment_s_queue() {
+    let Some(app) = app().await else {
         return;
     };
     let env_body = r#"{"name":"sbx","config":{"type":"cloud","networking":{"type":"limited"}}}"#;
@@ -418,11 +410,10 @@ async fn a_session_launches_its_sandbox_with_the_resolved_environment() {
     );
     let (st, session) = call(&app, "POST", "/v1/sessions", Some(&body)).await;
     assert_eq!(st, StatusCode::OK);
-    let jobs = runtime.launched();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].target_id, session["id"].as_str().unwrap());
-    assert_eq!(jobs[0].environment_id, env["id"].as_str().unwrap());
-    assert_eq!(jobs[0].environment["networking"]["type"], "limited");
+    let item =
+        format!("/v1/environments/{}/work/{}", env["id"].as_str().unwrap(), session["id"].as_str().unwrap());
+    let (st, work) = call(&app, "GET", &item, None).await;
+    assert_eq!((st, work["state"].as_str()), (StatusCode::OK, Some("queued")), "{work}");
 }
 
 /// A stamp no other app in this test binary shares: tests run in parallel, and

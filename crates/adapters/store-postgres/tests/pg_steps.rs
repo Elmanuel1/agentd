@@ -343,32 +343,6 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
 }
 
 #[tokio::test]
-async fn a_wake_for_a_session_with_no_step_queues_none_when_it_only_wakes() {
-    // P10: a running harness-path session's event wakes no step.
-    if !enabled() {
-        return;
-    }
-    let r = rig().await;
-    let ws = uniq_ws("ifq");
-    let s = r.session(&ws).await;
-    let e = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-    r.log.append_events(&ws, &s.id, std::slice::from_ref(&e), Wake::IfQueued).await.unwrap();
-    assert!(r.claim_of("w1", 60, &s.id).await.is_none());
-    r.wake(&ws, &s.id).await;
-    let c = r.claim_of("w1", 60, &s.id).await.unwrap();
-    r.log.append_events(&ws, &s.id, &[reply()], Wake::IfQueued).await.unwrap();
-    r.steps
-        .commit(
-            &c,
-            StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], session: &unchanged },
-        )
-        .await
-        .unwrap();
-    assert!(r.claim_of("w2", 60, &s.id).await.is_some(), "it woke the step the session had");
-}
-
-#[tokio::test]
 async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() {
     // L-8.
     if !enabled() {

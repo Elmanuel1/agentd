@@ -58,9 +58,9 @@ impl SessionsService {
             vault_ids: req.vault_ids,
             deployment_id: req.deployment_id,
         };
-        self.launch_sandbox(ctx, &session, environment).await?;
+        self.queue_work(ctx, &session, &environment).await?;
         if let Err(e) = self.store.insert(&ctx.workspace, session.clone()).await {
-            self.stop_sandbox(&ctx.workspace, &session.id).await;
+            self.end_work(&ctx.workspace, &session.id).await;
             return Err(map_store(e));
         }
         if !initial.is_empty() {
@@ -132,7 +132,7 @@ impl SessionsService {
             self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
             // Every replica's streams of the session end.
             self.publish(&ctx.workspace, &id).await;
-            self.stop_sandbox(&ctx.workspace, &id).await;
+            self.end_work(&ctx.workspace, &id).await;
         }
         Ok(s)
     }
@@ -147,7 +147,6 @@ impl SessionsService {
             e => map_store(e),
         })?;
         self.publish(&ctx.workspace, &id).await;
-        self.remove_sandbox(&id).await;
         // The session is gone, so no API reaches events left behind: they
         // are logged, not raised.
         if let Err(e) = self.events.delete_events_of(&[(ctx.workspace.clone(), id.clone())]).await {

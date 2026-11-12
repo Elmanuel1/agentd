@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use blobs_s3::{BlobError, S3BlobStore};
-use sandbox_docker::DockerRuntime;
 
 mod postgres;
 mod stores;
@@ -19,19 +18,16 @@ use api_keys::{ApiKeysService, EnvironmentKeysService};
 use scheduler_local::LocalScheduler;
 use secrets_aws::{AwsAdminKeys, AwsSecretStore};
 use sessions::signals::{LocalSignals, Signals};
-use sessions::steps::LoopWorkspaces;
 use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use shared::ports::secrets::{SecretError, SecretStore};
-use shared::ports::{Runtime, SchedulerPort};
+use shared::ports::SchedulerPort;
 use signals_valkey::ValkeySignals;
 use store_postgres::PgError;
 
-use crate::config::{
-    BlobsConfig, Config, KeysConfig, Role, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
-};
+use crate::config::{BlobsConfig, Config, KeysConfig, Role, SchedulerConfig, StoreConfig, WorkConfig};
 
 /// How often the local scheduler checks for due fires (cron is minute-grained).
 const LOCAL_TICK: Duration = Duration::from_secs(10);
@@ -52,11 +48,6 @@ pub struct Backends {
     pub scheduler: Arc<dyn SchedulerPort>,
     /// Where the scheduler delivers fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
-    /// The sandbox runtime. Configuration always gives one; `None` is for tests
-    /// that build their backends in code.
-    pub runtime: Option<Arc<dyn Runtime>>,
-    /// How sandboxes reach agentd and the egress service; set with the runtime.
-    pub sandbox: Option<SandboxConfig>,
     /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
     pub extra_models: Vec<String>,
     /// The instruments every boundary records into.
@@ -65,8 +56,6 @@ pub struct Backends {
     pub signals: Arc<dyn Signals>,
     /// The database's load, which new streams wait on.
     pub load: Arc<dyn DatabaseLoad>,
-    /// The workspaces whose sessions the loop serves.
-    pub on_loop: LoopWorkspaces,
     /// What this replica runs; a `loop` replica serves no route.
     pub role: Role,
 }
@@ -86,14 +75,14 @@ impl SystemKeys {
     /// Read the keys from `aws`, each created the first time; with
     /// `AGENTD_WORK_TOKEN_KEY` set, work tokens are signed with it and
     /// `system/work_token_key` is not read.
-    pub async fn load(aws: &AwsSecretStore, sandbox: &SandboxConfig) -> Result<Self, SecretError> {
+    pub async fn load(aws: &AwsSecretStore, work: &WorkConfig) -> Result<Self, SecretError> {
         Ok(Self {
-            work_token_key: match &sandbox.work_token_key {
+            work_token_key: match &work.work_token_key {
                 Some(key) => key.clone(),
                 None => aws.work_token_key().await?.to_vec(),
             },
             egress_key: aws.egress_key().await?.to_vec(),
-            api_base_url: sandbox.api_base_url.clone(),
+            api_base_url: work.api_base_url.clone(),
         })
     }
 }
@@ -122,9 +111,6 @@ pub enum BootError {
     /// The secret store, or its KMS key.
     #[error("secrets: {0}")]
     Secrets(#[from] SecretError),
-    /// The sandbox runtime.
-    #[error("sandbox: {0}")]
-    Sandbox(String),
     /// The Valkey the replicas signal through.
     #[error("signals: {0}")]
     Signals(String),
@@ -168,7 +154,7 @@ impl Backends {
         };
         let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), pepper)
             .with_runtime_key(&aws.runtime_key().await?);
-        let system = SystemKeys::load(&aws, &config.sandbox).await?;
+        let system = SystemKeys::load(&aws, &config.work).await?;
         let fires = Arc::new(FireRegistry::new());
         let scheduler: Arc<dyn SchedulerPort> = match config.scheduler {
             SchedulerConfig::Local => {
@@ -184,18 +170,7 @@ impl Backends {
                 crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref(), &system).await?,
             );
         }
-        let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
-            RuntimeConfig::Docker { .. } if !role.serves_api() => None,
-            RuntimeConfig::Docker { image, limits, network } => {
-                let docker = bollard::Docker::connect_with_defaults()
-                    .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let runtime = DockerRuntime::new(docker, image.clone(), *limits, network.clone());
-                runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
-                Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
-            }
-        };
         let extra_models = config.extra_models.clone();
-        let sandbox = runtime.as_ref().map(|_| config.sandbox.clone());
         let environment_keys: Arc<dyn EnvironmentKeySource> = Arc::new(environment_keys);
         Ok(Self {
             stores,
@@ -205,13 +180,10 @@ impl Backends {
             system,
             scheduler,
             fires,
-            runtime,
-            sandbox,
             extra_models,
             metrics,
             signals,
             load,
-            on_loop: config.agent_loop.workspaces.clone(),
             role,
         })
     }

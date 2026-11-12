@@ -12,28 +12,23 @@
 use std::sync::Arc;
 
 use shared::limits::ModelCatalog;
-use shared::ports::Runtime;
 use shared::ApiError;
 
-use crate::steps::LoopWorkspaces;
 use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
 use crate::types::{Session, SessionId};
 
 mod events;
-mod harness;
 mod lifecycle;
-mod on_loop;
 mod ports;
-mod record;
 mod resources;
-mod sandbox;
 mod stream;
 mod threads;
 mod waiting;
+mod work;
 
 pub use threads::threads_projection;
 
-pub use ports::{HarnessContract, SandboxWork, SessionDeps};
+pub use ports::{SessionDeps, SessionWork};
 pub use stream::{Streams, Subscription};
 
 /// Sessions service.
@@ -47,12 +42,8 @@ pub struct SessionsService {
     streams: Streams,
     /// The models an `agent_with_overrides` may name.
     catalog: ModelCatalog,
-    /// Runs one sandbox per session; `None` runs no sandbox.
-    sandbox: Option<Arc<dyn Runtime>>,
-    /// Issues each sandbox's work item, which its harness runs.
-    work: Option<Arc<dyn SandboxWork>>,
-    /// The workspaces whose sessions the loop serves.
-    on_loop: LoopWorkspaces,
+    /// Queues and stops each session's work item; `None` queues none.
+    work: Option<Arc<dyn SessionWork>>,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -71,24 +62,7 @@ impl SessionsService {
         catalog: ModelCatalog,
     ) -> Self {
         let list_reads = events.clone();
-        Self {
-            store,
-            events,
-            list_reads,
-            deps,
-            catalog,
-            streams: Streams::default(),
-            sandbox: None,
-            work: None,
-            on_loop: LoopWorkspaces::default(),
-        }
-    }
-
-    /// Serve the sessions of `workspaces` on the loop.
-    #[must_use]
-    pub fn with_loop(mut self, workspaces: LoopWorkspaces) -> Self {
-        self.on_loop = workspaces;
-        self
+        Self { store, events, list_reads, deps, catalog, streams: Streams::default(), work: None }
     }
 
     /// Stream through `streams`, for every replica.
@@ -105,12 +79,10 @@ impl SessionsService {
         self
     }
 
-    /// Run each session's sandbox on `runtime`, its worker on a work item
-    /// from `work`.
+    /// Queue each session's work item through `work`.
     #[must_use]
-    pub fn with_sandbox(mut self, runtime: Arc<dyn Runtime>, work: Option<Arc<dyn SandboxWork>>) -> Self {
-        self.sandbox = Some(runtime);
-        self.work = work;
+    pub fn with_work(mut self, work: Arc<dyn SessionWork>) -> Self {
+        self.work = Some(work);
         self
     }
 }

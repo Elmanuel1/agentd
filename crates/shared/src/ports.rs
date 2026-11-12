@@ -5,11 +5,9 @@
 pub mod blobs;
 pub mod fire;
 pub mod keys;
-pub mod runtime;
 pub mod scheduler;
 pub mod secrets;
 
-pub use runtime::{FakeRuntime, JobKind, JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 pub use scheduler::{
     FakeScheduler, FireId, FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort, TenantRef,
 };

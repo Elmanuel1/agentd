@@ -3,7 +3,7 @@ use shared::{ApiError, AuthContext, Pagination};
 
 use super::{guard_writable, map_store, parse_id, SessionsService};
 use crate::events::{Event, EventPayload, UserEvent};
-use crate::store::EventFilter;
+use crate::store::{EventFilter, Wake};
 use crate::types::{OutcomeId, Session, SessionStatus};
 
 impl SessionsService {
@@ -40,8 +40,7 @@ impl SessionsService {
         if out.is_empty() {
             return Ok(out);
         }
-        let wake = self.wake_for(ctx, &session).await?;
-        self.events.append_events(&ctx.workspace, &id, &out, wake).await.map_err(map_store)?;
+        self.events.append_events(&ctx.workspace, &id, &out, Wake::Step).await.map_err(map_store)?;
         self.publish(&ctx.workspace, &id).await;
         Ok(out)
     }

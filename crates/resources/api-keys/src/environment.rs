@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyError, KeyPepper};
 use shared::ports::secrets::{ExposeSecret, SecretString};
-use shared::tenancy::{HOSTED_QUEUE, RUNTIME_QUEUE};
+use shared::tenancy::RUNTIME_QUEUE;
 use shared::{AuthContext, EnvironmentCaller, Id, OrgId, Timestamp, WorkspaceId};
 
 use crate::service::{key_error, mint};
@@ -54,7 +54,7 @@ impl EnvironmentKeysService {
         name: &str,
     ) -> Result<(EnvironmentKey, SecretString), KeyError> {
         // A key bound to one of agentd's own queues would reach other workspaces' work.
-        if [RUNTIME_QUEUE, HOSTED_QUEUE].contains(&environment) {
+        if environment == RUNTIME_QUEUE {
             return Err(KeyError(format!(
                 "`{environment}` names one of agentd's own queues, not an environment"
             )));

@@ -13,20 +13,21 @@ fn config(vars: &[(&str, &str)]) -> Result<Config, ConfigError> {
     let mut all: HashMap<String, String> = HashMap::from([
         ("DATABASE_URL".into(), URL.into()),
         ("AGENTD_SECRETS_KMS_KEY_ID".into(), "alias/agentd".into()),
+        ("AGENTD_API_BASE_URL".into(), "http://agentd:8080".into()),
     ]);
     all.extend(vars.iter().map(|(k, v)| ((*k).into(), (*v).into())));
     Config::from_lookup(|k| all.get(k).cloned())
 }
 
 #[test]
-fn defaults_select_postgres_s3_aws_aws_keys_local_docker() {
+fn defaults_select_postgres_s3_aws_and_aws_keys() {
     let c = config(&[]).unwrap();
     let StoreConfig::Postgres { url, .. } = &c.store;
     assert_eq!(url, URL);
     assert_eq!(c.blobs, BlobsConfig::S3(S3Config::new("agentd-artifacts")));
     assert_eq!(c.secrets, AwsSecretsConfig::new("agentd", "alias/agentd"));
     assert_eq!((c.keys, c.scheduler), (KeysConfig::Aws, SchedulerConfig::Local));
-    assert!(matches!(c.runtime, RuntimeConfig::Docker { ref image, .. } if image == DEFAULT_SANDBOX_IMAGE));
+    assert_eq!(c.work.api_base_url, "http://agentd:8080");
 }
 
 #[test]
@@ -37,13 +38,19 @@ fn an_unknown_backend_is_an_error() {
 
 #[test]
 fn no_value_weakens_security() {
-    for (var, value) in [("AGENTD_SECRETS", "blob"), ("AGENTD_KEYS", "env"), ("AGENTD_RUNTIME", "none")] {
+    for (var, value) in [("AGENTD_SECRETS", "blob"), ("AGENTD_KEYS", "env")] {
         assert_eq!(config(&[(var, value)]).unwrap_err().var, var, "{var}={value}");
     }
     // The removed development switches are not read at all.
     let c = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_DEV_KEY", "1"), ("AGENTD_DEV_SECRETS", "1")])
         .unwrap();
     assert_eq!(c, config(&[]).unwrap());
+}
+
+#[test]
+fn the_api_base_url_is_required() {
+    let err = config(&[("AGENTD_API_BASE_URL", "")]).unwrap_err();
+    assert_eq!(err.var, "AGENTD_API_BASE_URL");
 }
 
 #[test]

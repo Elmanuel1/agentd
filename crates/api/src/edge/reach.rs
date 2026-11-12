@@ -34,8 +34,8 @@ fn parts(path: &str) -> Vec<&str> {
 }
 
 /// The routes a work token reaches: its own work item's read, ack,
-/// heartbeat and stop; its own session's reads, events and stream, and the
-/// harness routes; the files, skills and memory routes the official worker
+/// heartbeat and stop; its own session's reads, events and stream; the
+/// files, skills and memory routes the official worker
 /// calls, which [`granted`] narrows to what its session grants.
 pub(super) fn work_route(method: &Method, path: &str, claims: &WorkClaims) -> bool {
     let own = |id: &str| id == claims.session;
@@ -45,7 +45,6 @@ pub(super) fn work_route(method: &Method, path: &str, claims: &WorkClaims) -> bo
         ["v1", "environments", _, "work", id, "ack" | "heartbeat" | "stop"] => post && own(id),
         ["v1", "sessions", s] | ["v1", "sessions", s, "events", "stream"] => get && own(s),
         ["v1", "sessions", s, "events"] => (get || post) && own(s),
-        ["v1", "sessions", s, "harness", ..] => own(s),
         ["v1", "files"] => post,
         ["v1", "files", _] => get || delete,
         ["v1", "files", _, "content"] | ["v1", "skills", _] | ["v1", "skills", _, "versions", _] => get,

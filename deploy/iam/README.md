@@ -7,8 +7,8 @@ customer-managed KMS key and tagged `workspace`, `vault` and
 `PREFIX/system/admin_keys/<digest>`, holding only a peppered digest, the key
 id and org, and tagged with what `agentd admin-keys list` shows. The pepper
 every key digest is keyed with is `PREFIX/system/api_key_pepper`; beside it are
-`PREFIX/system/work_token_key`, `PREFIX/system/egress_key` and
-`PREFIX/system/runtime_key`. An `environment_variable` credential's secret is
+`PREFIX/system/work_token_key`, `PREFIX/system/egress_key` (it signs the
+placeholders in a `cloud` work secret) and `PREFIX/system/runtime_key`. An `environment_variable` credential's secret is
 also tagged `credential_type=environment_variable`. All of them are under the
 same KMS key, so the same policy covers them. Only agentd's
 role, and an operator running `agentd keys`, `agentd admin-keys`, `agentd
@@ -22,8 +22,6 @@ use the key.
 | `PREFIX` | `AGENTD_SECRETS_PREFIX` (default `agentd`) |
 | `KMS_KEY_ARN` | the ARN of the key in `AGENTD_SECRETS_KMS_KEY_ID` |
 | `AGENTD_ROLE_ARN` | the role agentd runs as (or assumes with `AGENTD_SECRETS_ROLE_ARN`) |
-| `EGRESS_ROLE_ARN` | the role the egress service, `agentd-egress`, runs as |
-| `REGION` | the region the secrets are in (the egress policy names it) |
 | `ACCOUNT_ID` | the account that owns the key and the secrets |
 
 The ARNs match every region and account (`*:*`). Pinning them to your
@@ -55,16 +53,11 @@ region and account is tighter and loses nothing.
   - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only
     through Secrets Manager (`kms:ViaService`) and only for `PREFIX/` secrets
     (`kms:EncryptionContext:SecretARN`).
-- `egress-secrets-policy.json`, on the egress service's role: only
-  `GetSecretValue`, on `PREFIX/` secrets in `REGION` and `ACCOUNT_ID` only, and an explicit deny on
-  `PREFIX/system/`, where the admin keys and the pepper live. The
-  service reads a credential's current value when a request needs it and
-  makes no other AWS call.
 - `kms-key-policy.json`, the key policy. The account administers the key but
   holds no use of it and cannot create grants on it, so no IAM policy or grant
   can give a principal its use; only a change to this key policy can. Only
   `AGENTD_ROLE_ARN` may use it, through Secrets Manager, for `PREFIX/`
-  secrets, and `EGRESS_ROLE_ARN` may only decrypt, the same way. Rotate its material with KMS automatic key rotation: the key stays
+  secrets. Rotate its material with KMS automatic key rotation: the key stays
   the same, so existing secrets keep decrypting. A different key id leaves
   every existing secret under the old key, which these policies no longer
   allow.

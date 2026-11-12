@@ -1,7 +1,6 @@
-//! The environment-variable credentials of a session's vaults, as the
-//! sandbox and the egress proxy know them: names, hosts and where each
-//! value is stored. No value is read here; only the egress service reads
-//! one, when a request needs it.
+//! The environment-variable credentials of a session's vaults, as a `cloud`
+//! session's work secret names them: names, hosts and where each value is
+//! stored. No value is read here.
 
 use std::sync::Arc;
 
@@ -17,7 +16,7 @@ pub struct EnvCredential {
     pub credential_id: String,
     /// Its vault's id.
     pub vault_id: String,
-    /// The variable name the sandbox sees.
+    /// The variable name the session sees.
     pub name: String,
     /// What it is for, from its display name.
     pub description: String,
@@ -25,7 +24,7 @@ pub struct EnvCredential {
     pub hosts: Option<Vec<String>>,
 }
 
-/// Lists the credentials a session's sandbox may use.
+/// Lists the credentials a session may use.
 #[derive(Clone)]
 pub struct VaultCredentials {
     store: Arc<dyn VaultCredentialStore>,

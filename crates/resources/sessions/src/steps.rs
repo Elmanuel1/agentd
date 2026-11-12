@@ -90,21 +90,3 @@ pub trait Steps: Send + Sync {
     /// The queue's rows, counted.
     async fn counts(&self) -> Result<StepCounts, StoreError>;
 }
-
-/// The workspaces whose sessions run on the loop, each with when it joined
-/// (`AGENTD_LOOP_WORKSPACES`). A session created before its workspace joined
-/// was started on the harness path; it moves to the loop at its next turn.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LoopWorkspaces(std::collections::BTreeMap<WorkspaceId, shared::Timestamp>);
-
-impl LoopWorkspaces {
-    /// From each workspace and when it joined.
-    pub fn new(joined: impl IntoIterator<Item = (WorkspaceId, shared::Timestamp)>) -> Self {
-        Self(joined.into_iter().collect())
-    }
-
-    /// When `ws` joined the loop, if it is listed.
-    pub fn joined(&self, ws: &WorkspaceId) -> Option<shared::Timestamp> {
-        self.0.get(ws).copied()
-    }
-}

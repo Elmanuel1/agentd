@@ -2,9 +2,6 @@
 
 use std::time::Duration;
 
-use sessions::steps::LoopWorkspaces;
-use shared::{Timestamp, WorkspaceId};
-
 use super::{number, ConfigError};
 
 /// `AGENTD_ROLE`.
@@ -20,7 +17,7 @@ pub enum Role {
 }
 
 impl Role {
-    /// This replica serves the API's background jobs and launches sandboxes.
+    /// This replica serves the API and its background jobs.
     pub fn serves_api(self) -> bool {
         self != Self::Loop
     }
@@ -36,9 +33,6 @@ impl Role {
 pub struct LoopConfig {
     /// What this replica runs.
     pub role: Role,
-    /// `AGENTD_LOOP_WORKSPACES`: `wrkspc_…@<RFC 3339>,…`, the workspaces whose
-    /// sessions the loop serves and when each joined.
-    pub workspaces: LoopWorkspaces,
     /// `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` (32).
     pub per_workspace: i64,
     /// `AGENTD_MODEL_ATTEMPTS` (5).
@@ -53,6 +47,9 @@ pub struct LoopConfig {
     pub itpm: Option<u64>,
     /// `AGENTD_ANTHROPIC_BASE_URL` (`https://api.anthropic.com`).
     pub anthropic_base_url: String,
+    /// `AGENTD_MODEL_BASE_URL` (`https://openrouter.ai/api/v1`): the
+    /// OpenAI-compatible API other models are called at.
+    pub model_base_url: String,
     /// A step's model deadline (10 min); its lease is 2 min longer.
     pub deadline: Duration,
 }
@@ -73,7 +70,6 @@ impl LoopConfig {
         let optional = |var| get(var).map(|_| number(get, var, 1_u64)).transpose();
         Ok(Self {
             role,
-            workspaces: workspaces(get("AGENTD_LOOP_WORKSPACES").as_deref().unwrap_or_default())?,
             per_workspace: number(get, "AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE", 32)?,
             attempts: number(get, "AGENTD_MODEL_ATTEMPTS", 5)?,
             steps: number(get, "AGENTD_STEPS_PER_WORKER", 256)?,
@@ -82,21 +78,9 @@ impl LoopConfig {
             itpm: optional("AGENTD_MODEL_ITPM")?,
             anthropic_base_url: get("AGENTD_ANTHROPIC_BASE_URL")
                 .unwrap_or_else(|| "https://api.anthropic.com".into()),
+            model_base_url: get("AGENTD_MODEL_BASE_URL")
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
             deadline: Duration::from_secs(600),
         })
     }
-}
-
-fn workspaces(raw: &str) -> Result<LoopWorkspaces, ConfigError> {
-    let joined = raw.split(',').map(str::trim).filter(|w| !w.is_empty()).map(|entry| {
-        let bad = || ConfigError {
-            var: "AGENTD_LOOP_WORKSPACES",
-            reason: format!("`{entry}` is not `<workspace>@<RFC 3339 time>`"),
-        };
-        let (ws, at) = entry.split_once('@').ok_or_else(bad)?;
-        let at: Timestamp =
-            serde_json::from_value(serde_json::Value::String(at.to_owned())).map_err(|_| bad())?;
-        Ok((WorkspaceId::new(ws), at))
-    });
-    Ok(LoopWorkspaces::new(joined.collect::<Result<Vec<_>, ConfigError>>()?))
 }

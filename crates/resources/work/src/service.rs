@@ -10,9 +10,8 @@ use shared::{ApiError, AuthContext, Page, Pagination, Timestamp};
 use crate::caller::WorkCaller;
 use crate::secret::CloudVariables;
 use crate::store::{StoreError, WorkItem, WorkStore};
-use crate::tokens::{WorkClaims, WorkTokens};
+use crate::tokens::WorkTokens;
 use crate::types::{QueueStats, StatsTag, Work, WorkData, WorkDataTag, WorkState, WorkTag};
-use shared::tenancy::HOSTED_QUEUE;
 
 /// Work items over their store.
 pub struct WorkService {
@@ -91,23 +90,6 @@ impl WorkService {
             handed_out_at: None,
         };
         self.store.queue(&item).await.map_err(backend)
-    }
-
-    /// Queue the work of a session whose own sandbox's harness takes it: the
-    /// secret that sandbox starts with.
-    pub async fn issue(
-        &self,
-        ctx: &AuthContext,
-        environment_id: &str,
-        session: &str,
-    ) -> Result<String, ApiError> {
-        self.queue(ctx, environment_id, session, HOSTED_QUEUE).await?;
-        let claims = WorkClaims {
-            session: session.to_owned(),
-            ws: ctx.workspace.as_str().to_owned(),
-            org: ctx.org.as_str().to_owned(),
-        };
-        Ok(self.tokens.secret(&claims, &self.api_base_url, &BTreeMap::new()))
     }
 
     /// `GET …/work/{id}`.

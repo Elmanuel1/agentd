@@ -6,10 +6,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use api::config::SandboxConfig;
+use api::config::WorkConfig;
 use api::SystemKeys;
 use secrets_aws::{AwsSecretStore, AwsSecretsConfig};
 use work::{WorkClaims, WorkTokens};
+
+fn work(work_token_key: Option<Vec<u8>>) -> WorkConfig {
+    WorkConfig { api_base_url: "http://agentd.test".into(), work_token_key }
+}
 
 async fn aws(endpoint: &str, prefix: &str) -> AwsSecretStore {
     let shared = aws_common::sdk_config(None, None).await;
@@ -31,8 +35,8 @@ fn prefix(test: &str) -> String {
 async fn a_token_minted_under_one_boot_verifies_under_the_next() {
     let Ok(endpoint) = std::env::var("AGENTD_AWS_ENDPOINT") else { return };
     let prefix = prefix("boot");
-    let first = SystemKeys::load(&aws(&endpoint, &prefix).await, &SandboxConfig::default()).await.unwrap();
-    let next = SystemKeys::load(&aws(&endpoint, &prefix).await, &SandboxConfig::default()).await.unwrap();
+    let first = SystemKeys::load(&aws(&endpoint, &prefix).await, &work(None)).await.unwrap();
+    let next = SystemKeys::load(&aws(&endpoint, &prefix).await, &work(None)).await.unwrap();
     assert_eq!((first.work_token_key.len(), first.egress_key.len()), (32, 32));
     let claims = WorkClaims { session: "sesn_1".into(), ws: "wrkspc_1".into(), org: "org_1".into() };
     let token = WorkTokens::new(first.work_token_key).mint(&claims);
@@ -44,8 +48,7 @@ async fn a_token_minted_under_one_boot_verifies_under_the_next() {
 async fn a_configured_work_token_key_signs_and_secrets_manager_is_not_read_for_it() {
     let Ok(endpoint) = std::env::var("AGENTD_AWS_ENDPOINT") else { return };
     let prefix = prefix("configured");
-    let sandbox = SandboxConfig { work_token_key: Some(vec![7; 32]), ..SandboxConfig::default() };
-    let keys = SystemKeys::load(&aws(&endpoint, &prefix).await, &sandbox).await.unwrap();
+    let keys = SystemKeys::load(&aws(&endpoint, &prefix).await, &work(Some(vec![7; 32]))).await.unwrap();
     assert_eq!(keys.work_token_key, vec![7; 32]);
     let shared = aws_common::sdk_config(None, None).await;
     let sm = aws_sdk_secretsmanager::Client::from_conf(

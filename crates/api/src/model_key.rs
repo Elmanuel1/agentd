@@ -2,8 +2,7 @@
 //! a model provider's key, an operator credential. It is read from stdin,
 //! stored in Secrets Manager as an environment-variable credential bound to
 //! the provider's host, and never printed. The loop reads it to call the
-//! model; the egress service puts OpenRouter's into a sandbox's model
-//! requests, and the sandbox sees only a placeholder.
+//! model.
 
 use std::io::Read as _;
 use std::process::ExitCode;
@@ -21,7 +20,7 @@ use crate::config::Config;
 pub struct Provider {
     /// Its name in the key's path and in `--provider`.
     pub name: &'static str,
-    /// The variable a sandbox's harness reads its key from (as a placeholder).
+    /// The stored credential's `secret_name`.
     pub variable: &'static str,
     /// The host its key is sent to unless `--host` names another.
     pub host: &'static str,
@@ -40,10 +39,8 @@ pub const ANTHROPIC: Provider = Provider {
     host: "api.anthropic.com",
 };
 
-/// Where OpenRouter's key is stored, which the egress service also reads.
+/// Where the model keys are stored; the provider's name completes the path.
 pub const KEY: (&str, &str, &str) = ("operator", "models", OPENROUTER.name);
-/// The variable the sandbox's harness reads it from (as a placeholder).
-pub const VARIABLE: &str = OPENROUTER.variable;
 
 /// How to call it.
 pub const USAGE: &str = "usage: agentd model-key set [--provider anthropic|openrouter] [--host <host>] < key";

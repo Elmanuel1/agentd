@@ -1,4 +1,4 @@
-//! The outbound ports and scheduled fires: every blob, secret and sandbox
+//! The outbound ports and scheduled fires: every blob and secret
 //! operation and every fire is a span and a duration sample, and a failure is
 //! logged with the port and operation.
 
@@ -15,7 +15,6 @@ use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::fire::{FireError, FireHandler};
 use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
-use shared::ports::{JobSpec, Runtime, RuntimeError, RuntimeHandle, TaskState};
 use shared::{AdminContext, AuthContext};
 use tracing::field::Empty;
 use tracing::Instrument;
@@ -108,25 +107,6 @@ impl<T: KeySource + ?Sized> KeySource for Observed<T> {
 impl<T: AdminKeySource + ?Sized> AdminKeySource for Observed<T> {
     async fn resolve(&self, key: &str) -> Result<Option<AdminContext>, KeyError> {
         self.run("admin_keys", "resolve", self.inner.resolve(key)).await
-    }
-}
-
-#[async_trait]
-impl<T: Runtime + ?Sized> Runtime for Observed<T> {
-    async fn launch(&self, job: JobSpec) -> Result<RuntimeHandle, RuntimeError> {
-        self.run("sandbox", "launch", self.inner.launch(job)).await
-    }
-
-    async fn status(&self, handle: &RuntimeHandle) -> Result<TaskState, RuntimeError> {
-        self.run("sandbox", "status", self.inner.status(handle)).await
-    }
-
-    async fn stop(&self, handle: &RuntimeHandle) -> Result<(), RuntimeError> {
-        self.run("sandbox", "stop", self.inner.stop(handle)).await
-    }
-
-    fn handle_for(&self, target_id: &str) -> Option<RuntimeHandle> {
-        self.inner.handle_for(target_id)
     }
 }
 

@@ -36,8 +36,7 @@ mod rows;
 
 use self::rows::Counts;
 
-/// Put the session on the queue in the append's transaction, or wake the
-/// step it already has.
+/// Put the session on the queue in the append's transaction.
 pub(crate) async fn enqueue(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
@@ -49,10 +48,6 @@ pub(crate) async fn enqueue(
         Wake::Step => {
             "INSERT INTO loop_steps (workspace_id, session_id) VALUES ($1, $2) ON CONFLICT (workspace_id, session_id) \
              DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())"
-        }
-        Wake::IfQueued => {
-            "UPDATE loop_steps SET wakes = wakes + 1, due_at = least(due_at, now()) \
-             WHERE workspace_id = $1 AND session_id = $2"
         }
     };
     diesel::sql_query(sql)

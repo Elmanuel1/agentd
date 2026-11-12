@@ -84,7 +84,7 @@ groups:
           summary: agentd SQL statements failing
           description: 'Postgres statements fail (unique violations are expected and counted, but at this rate the database or a migration is wrong).'
       - uid: agentd-port-failures
-        title: agentd blob, secret or sandbox operations failing
+        title: agentd blob or secret operations failing
         condition: C
         data:
           - refId: A
@@ -107,7 +107,7 @@ groups:
         labels:
           severity: warn
         annotations:
-          summary: agentd blob, secret or sandbox operations failing
+          summary: agentd blob or secret operations failing
           description: 'An outbound port fails: {{ $labels.agentd_port }}. Check object storage or the Docker daemon.'
       - uid: agentd-fire-failures
         title: agentd scheduled fires failing

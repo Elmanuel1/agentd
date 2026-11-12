@@ -19,9 +19,10 @@ use diesel::connection::{Instrumentation, InstrumentationEvent};
 use http_body_util::BodyExt;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
+use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::DatabaseLoad;
 use sessions::SessionId;
-use shared::WorkspaceId;
+use shared::{Timestamp, WorkspaceId};
 use signals_valkey::ValkeySignals;
 use store_postgres::{PgBackend, PgObserver, PoolSettings};
 use tower::ServiceExt;
@@ -75,11 +76,14 @@ fn message(text: &str) -> Value {
     json!({"events": [{"type": "user.message", "content": [{"type": "text", "text": text}]}]})
 }
 
-/// The session's harness takes its queued client events, which stamps them processed.
-async fn take(app: &Router, rig: &Rig, session: &str) {
-    let take = format!("/v1/sessions/{session}/harness/take");
-    let (st, taken) = send_to(app, request("POST", &take, Auth::Bearer(&rig.token(session)), None)).await;
-    assert_eq!(st, StatusCode::OK, "{taken}");
+/// A step takes the session's queued client events: they are stamped
+/// processed and `signals` tells the streams.
+async fn take(signals: &dyn Signals, rig: &Rig, session: &str) {
+    let (ws, id) = (WorkspaceId::new(&rig.ws), SessionId::parse(session).unwrap());
+    let log = &rig.stores.session_events;
+    let queued: Vec<_> = log.unprocessed_events(&ws, &id).await.unwrap().into_iter().map(|e| e.id).collect();
+    log.update_processed_at(&ws, &id, &queued, Timestamp::now()).await.unwrap();
+    signals.publish(&Signal { workspace: ws, session: id }).await.unwrap();
 }
 
 /// `event` as it was sent: processed, with its `processed_at` taken off.
@@ -95,8 +99,9 @@ const SIGNALLED: Duration = Duration::from_secs(3);
 #[tokio::test]
 async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_once_processed() {
     // F-1, over Valkey.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let (Some(a), Some(b)) = (valkey().await, valkey().await) else { return };
+    let signals = a.signals.clone();
     let (a, b) = (rig.replica(&rig.stores, a), rig.replica(&rig.stores, b));
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
@@ -107,7 +112,7 @@ async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_onc
     let (_, second) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("two")))).await;
     let sent = [first["data"][0].clone(), second["data"][0].clone()];
     assert_eq!(stream.next(SIGNALLED).await, None, "live streams no queued copy");
-    take(&a, &rig, &session).await;
+    take(signals.as_ref(), &rig, &session).await;
     for queued in &sent {
         assert_eq!(&as_sent(stream.event(SIGNALLED).await), queued, "the same event, processed, in order");
     }
@@ -116,22 +121,23 @@ async fn an_event_sent_through_one_replica_reaches_another_s_stream_in_order_onc
 #[tokio::test]
 async fn a_stream_opened_while_an_event_is_queued_gets_it_once_processed() {
     // F-1: the stamp of an event sent before the stream opened still reaches it.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let (Some(a), Some(b)) = (valkey().await, valkey().await) else { return };
+    let signals = a.signals.clone();
     let (a, b) = (rig.replica(&rig.stores, a), rig.replica(&rig.stores, b));
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("early")))).await;
     let mut stream = Sse::open(&b, &session).await;
-    take(&a, &rig, &session).await;
+    take(signals.as_ref(), &rig, &session).await;
     assert_eq!(as_sent(stream.event(SIGNALLED).await), sent["data"][0]);
 }
 
 #[tokio::test]
 async fn deleting_through_one_replica_ends_another_s_stream_with_session_deleted() {
     // F-2, over Valkey.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let (Some(a), Some(b)) = (valkey().await, valkey().await) else { return };
     let (a, b) = (rig.replica(&rig.stores, a), rig.replica(&rig.stores, b));
     let env = rig.environment("cloud").await;
@@ -152,7 +158,7 @@ async fn deleting_through_one_replica_ends_another_s_stream_with_session_deleted
 #[tokio::test]
 async fn archiving_through_one_replica_ends_another_s_stream() {
     // F-3, over Valkey.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let (Some(a), Some(b)) = (valkey().await, valkey().await) else { return };
     let (a, b) = (rig.replica(&rig.stores, a), rig.replica(&rig.stores, b));
     let env = rig.environment("cloud").await;
@@ -167,15 +173,16 @@ async fn archiving_through_one_replica_ends_another_s_stream() {
 #[tokio::test]
 async fn with_no_signal_between_replicas_an_event_still_arrives_within_six_seconds() {
     // F-4: each replica signals only itself, so the fallback timer delivers.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let (a, b) =
         (rig.replica(&rig.stores, Streaming::default()), rig.replica(&rig.stores, Streaming::default()));
+    let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
     let mut stream = Sse::open(&b, &session).await;
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&a, request("POST", &events, Auth::Key(KEY), Some(message("late")))).await;
-    take(&a, &rig, &session).await;
+    take(signals.as_ref(), &rig, &session).await;
     let started = tokio::time::Instant::now();
     assert_eq!(as_sent(stream.event(Duration::from_millis(6500)).await), sent["data"][0]);
     assert!(started.elapsed() > Duration::from_millis(100), "no signal reached the other replica");
@@ -192,9 +199,13 @@ impl DatabaseLoad for Switch {
 #[tokio::test]
 async fn while_overloaded_a_new_stream_gets_529_and_an_open_one_keeps_streaming() {
     // F-5, with the gate forced.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let gate = Arc::new(Switch(AtomicBool::new(false)));
-    let app = rig.replica(&rig.stores, Streaming { load: gate.clone(), ..Streaming::default() });
+    let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
+    let app = rig.replica(
+        &rig.stores,
+        Streaming { load: gate.clone(), signals: signals.clone(), ..Streaming::default() },
+    );
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
     let mut open = Sse::open(&app, &session).await;
@@ -205,7 +216,7 @@ async fn while_overloaded_a_new_stream_gets_529_and_an_open_one_keeps_streaming(
     assert_eq!(refused["error"], json!({"type": "overloaded_error", "message": "Overloaded"}), "{refused}");
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&app, request("POST", &events, Auth::Key(KEY), Some(message("still")))).await;
-    take(&app, &rig, &session).await;
+    take(signals.as_ref(), &rig, &session).await;
     assert_eq!(as_sent(open.event(SIGNALLED).await), sent["data"][0]);
 }
 
@@ -234,20 +245,21 @@ impl Instrumentation for Recorder {
 #[tokio::test]
 async fn with_a_read_replica_only_the_events_list_reads_it() {
     // E-3: the list on the replica; sends, stamps and streams on the primary.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let seen = Seen::default();
     let statements = seen.0.clone();
     let replica = PgBackend::connect_observed(&url, PoolSettings::default(), Arc::new(seen)).await.unwrap();
     let stores = rig.stores.clone().reading_events_from(replica);
-    let app = rig.replica(&stores, Streaming::default());
+    let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
+    let app = rig.replica(&stores, Streaming { signals: signals.clone(), ..Streaming::default() });
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
     let mut stream = Sse::open(&app, &session).await;
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&app, request("POST", &events, Auth::Key(KEY), Some(message("primary")))).await;
-    take(&app, &rig, &session).await;
+    take(signals.as_ref(), &rig, &session).await;
     assert_eq!(as_sent(stream.event(SIGNALLED).await), sent["data"][0]);
     assert_eq!(statements.lock().clone(), Vec::<String>::new(), "no send, stamp or stream read the replica");
 
@@ -265,7 +277,7 @@ async fn a_message_racing_a_delete_lands_before_it_or_is_refused_and_leaves_no_e
     // E-4, looped: the message is accepted and the delete then removes it, or
     // the message finds no session; either way no event outlives the session
     // and its work item reads stopped.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let ws = WorkspaceId::new(&rig.ws);
     let mut outcomes = std::collections::BTreeSet::new();
@@ -296,13 +308,13 @@ async fn a_message_racing_a_delete_lands_before_it_or_is_refused_and_leaves_no_e
 #[tokio::test]
 async fn a_running_session_is_not_deleted() {
     // E-4: the delete answers 409 and keeps the session and its events.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let session = rig.session(&env, json!({})).await;
-    let harness = format!("/v1/sessions/{session}/harness/events");
-    let running = json!({"events": [{"type": "session.status_running"}]});
-    let (st, body) = rig.call("POST", &harness, Auth::Bearer(&rig.token(&session)), Some(running)).await;
-    assert_eq!(st, StatusCode::OK, "{body}");
+    let (ws, id) = (WorkspaceId::new(&rig.ws), SessionId::parse(&session).unwrap());
+    let read = rig.stores.sessions.get(&ws, &id).await.unwrap();
+    let running = sessions::Session { status: sessions::SessionStatus::Running, ..read.clone() };
+    rig.stores.sessions.replace(&ws, &read, running).await.unwrap();
     let (st, refused) = rig.call("DELETE", &format!("/v1/sessions/{session}"), Auth::Key(KEY), None).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(refused["error"]["message"], "cannot delete a running session");

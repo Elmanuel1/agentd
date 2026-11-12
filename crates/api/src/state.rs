@@ -20,14 +20,11 @@ use vaults::VaultsService;
 use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealWorkspaceKeys};
 use crate::edge::scoped::WorkAccess;
-use crate::egress::{EgressAdmin, SessionEgressPolicy};
-use crate::harness::{self, Harness};
-use crate::sandbox_work::WorkIssuer;
 use crate::session_grants::SessionReach;
+use crate::session_work::WorkQueue;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
-use shared::hash::Signer;
-use vaults::egress::VaultCredentials;
+use vaults::variables::VaultCredentials;
 use work::{CloudVariables, Placeholders, WorkService, WorkTokens};
 
 /// The assembled app: the key source and every resource's module.
@@ -65,13 +62,10 @@ impl AppState {
             system,
             scheduler,
             fires,
-            runtime,
-            sandbox,
             extra_models,
             metrics,
             signals,
             load,
-            on_loop,
             role,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
@@ -88,37 +82,18 @@ impl AppState {
             catalog,
         )
         .with_streams(Streams::new(signals, load))
-        .with_loop(on_loop)
         .with_list_reads(stores.session_event_list);
-        // One key signs work tokens and egress passwords, each under its own purpose.
-        let key = system.work_token_key.clone();
         let cloud =
             CloudVariables { source: reach.clone(), placeholders: Placeholders::new(system.egress_key) };
         let work = Arc::new(
-            WorkService::new(stores.work.clone(), WorkTokens::new(key.clone()), system.api_base_url)
-                .with_cloud_variables(cloud),
+            WorkService::new(
+                stores.work.clone(),
+                WorkTokens::new(system.work_token_key),
+                system.api_base_url,
+            )
+            .with_cloud_variables(cloud),
         );
-        let issuer = sandbox.map(|config| {
-            let egress = config.egress_admin.as_ref().map(|(url, token)| {
-                Arc::new(SessionEgressPolicy::new(
-                    Signer::new(key.clone()),
-                    VaultCredentials::new(stores.vault_credentials.clone()),
-                    EgressAdmin::new(url, token),
-                    &config.model_base_url,
-                ))
-            });
-            Arc::new(WorkIssuer {
-                work: work.clone(),
-                api_url: config.api_url,
-                egress,
-                egress_host: config.egress_host,
-                model_base_url: config.model_base_url,
-            }) as Arc<dyn sessions::SandboxWork>
-        });
-        let sessions = Arc::new(match runtime {
-            Some(runtime) => sessions.with_sandbox(runtime, issuer),
-            None => sessions,
-        });
+        let sessions = Arc::new(sessions.with_work(Arc::new(WorkQueue { work: work.clone() })));
         let files = Arc::new(FilesService::new(stores.files));
         let skills = Arc::new(SkillsService::new(stores.skills, stores.skill_versions));
         let deployments = Arc::new(DeploymentsService::new(
@@ -135,9 +110,8 @@ impl AppState {
             environments::module(environments),
             vaults::module(Arc::new(VaultsService::new(stores.vaults, stores.vault_credentials))),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
-            files::module(files.clone(), reach.clone()),
+            files::module(files, reach.clone()),
             skills::module(skills),
-            harness::module(Harness { sessions: sessions.clone(), files: files.clone() }),
             sessions::module(sessions),
             deployments::module(deployments),
             work::module(work.clone()),

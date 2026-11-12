@@ -1,9 +1,8 @@
 //! sessions — the Session entity: CRUD, the append-only event log,
 //! SSE streaming, the status state machine, resources, and outcome intake.
 //!
-//! Boundary: this crate is **control-plane data**. The agent loop runs in
-//! each session's sandbox, as its harness, and writes into this crate
-//! through [`service::HarnessContract`].
+//! Boundary: this crate is **control-plane data**. The agent loop (the
+//! `engine` crate) reads and writes sessions through [`steps::Steps`].
 //!
 //! Live-verified shapes: session object (embeds the full agent snapshot),
 //! `sesn_` ids, `status: idle` on create, `outcome_evaluations: []`,
@@ -27,7 +26,7 @@ use shared::beta::BetaGate;
 use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
-pub use service::{HarnessContract, SandboxWork, SessionDeps, SessionsService, Streams, Subscription};
+pub use service::{SessionDeps, SessionWork, SessionsService, Streams, Subscription};
 pub use store::{SessionEventLog, SessionEventReads, SessionsStore};
 pub use types::{Session, SessionId, SessionStatus};
 

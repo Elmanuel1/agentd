@@ -98,12 +98,10 @@ pub trait SessionsStore: Send + Sync {
 /// Whether an append puts its session on the step queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
-    /// It does not: an agent's own event, or a session the harness serves.
+    /// It does not: an agent's own event.
     No,
     /// It does, in the append's commit.
     Step,
-    /// It wakes the step the session already has, and queues none.
-    IfQueued,
 }
 
 /// Refuses results, given the calls they answer and the results already saved.

@@ -36,7 +36,7 @@ pub async fn spawn(
     let openrouter = model_key::read(secrets, OPENROUTER).await.map_err(key)?;
     let providers = ProviderConfig {
         anthropic: anthropic.map(|k| (k, c.anthropic_base_url.clone())),
-        openai_compat: openrouter.map(|k| (k, config.sandbox.model_base_url.clone())),
+        openai_compat: openrouter.map(|k| (k, c.model_base_url.clone())),
     };
     let client = ModelRouter::from_config(&providers).map_err(BootError::Loop)?;
     let budget: Arc<dyn ModelBudget> = match (&config.streams.valkey_url, c.rpm.or(c.itpm)) {

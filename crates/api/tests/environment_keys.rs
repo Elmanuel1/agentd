@@ -237,10 +237,11 @@ async fn the_runtime_queue_hands_out_cloud_work_with_placeholders_and_never_a_va
     assert!(!rig.secrets.tagged(&SecretKey::new(&rig.ws, &first, mcp["id"].as_str().unwrap()).unwrap()));
     let session = rig.session(&env, json!({"vault_ids": [first, second]})).await;
     let runtime = rig.runtime().to_owned();
-    // W-23 before any runtime work; then W-22 once the session's work is on the runtime queue.
-    let (st, body) = rig.call("GET", &format!("/v1/environments/{env}"), Auth::Bearer(&runtime), None).await;
+    // W-23 for an environment with no runtime work; W-22 for the session's, queued at create.
+    let unused = rig.environment("cloud").await;
+    let (st, body) =
+        rig.call("GET", &format!("/v1/environments/{unused}"), Auth::Bearer(&runtime), None).await;
     assert_eq!((st, body["error"]["message"].as_str()), (StatusCode::FORBIDDEN, Some(SCOPE)));
-    rig.work.queue(&rig.ctx(), &env, &session, RUNTIME_QUEUE).await.unwrap();
     let (st, read) = rig.call("GET", &format!("/v1/environments/{env}"), Auth::Bearer(&runtime), None).await;
     assert_eq!((st, read["id"].as_str()), (StatusCode::OK, Some(env.as_str())), "{read}");
     let (_, as_key) = rig.call("GET", &format!("/v1/environments/{env}"), Auth::Key(KEY), None).await;
@@ -310,15 +311,15 @@ async fn the_runtime_queue_hands_out_cloud_work_with_placeholders_and_never_a_va
     let (st, _) = rig.call("GET", &format!("/v1/sessions/{session}"), Auth::Bearer(token), None).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     // The runtime key never reaches another queue, nor a session off the runtime queue.
-    let off = rig.session(&env, json!({})).await;
+    let off = rig.session(&rig.environment("self_hosted").await, json!({})).await;
     let (st, _) = rig.call("GET", &format!("/v1/sessions/{off}"), Auth::Bearer(&runtime), None).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn an_archived_or_deleted_session_s_item_stops_and_is_kept() {
-    // W-11, on the harness path: each session's sandbox takes its own hosted item.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    // W-11.
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let (idle, held) = (rig.session(&env, json!({})).await, rig.session(&env, json!({})).await);
     let token = rig.token(&held);
@@ -341,17 +342,9 @@ async fn an_archived_or_deleted_session_s_item_stops_and_is_kept() {
         (StatusCode::OK, Some("stopped")),
         "the item outlives its session"
     );
-    // Terminated by its harness: the item stops too.
-    let ended = rig.session(&env, json!({})).await;
-    let terminated = json!({"events": [{"type": "session.status_terminated"}]});
-    let harness = format!("/v1/sessions/{ended}/harness/events");
-    let (st, body) = rig.call("POST", &harness, Auth::Bearer(&rig.token(&ended)), Some(terminated)).await;
-    assert_eq!(st, StatusCode::OK, "{body}");
-    let (_, stopped) = rig.call("GET", &path(&ended), Auth::Key(KEY), None).await;
-    assert_eq!(stopped["state"], "stopped");
     // A path that names another environment does not reach the item.
     let elsewhere = rig.environment("cloud").await;
     let (st, _) =
-        rig.call("GET", &format!("/v1/environments/{elsewhere}/work/{ended}"), Auth::Key(KEY), None).await;
+        rig.call("GET", &format!("/v1/environments/{elsewhere}/work/{held}"), Auth::Key(KEY), None).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }

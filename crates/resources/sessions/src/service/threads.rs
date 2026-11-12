@@ -3,8 +3,9 @@
 
 use shared::{ApiError, AuthContext, Timestamp, Usage};
 
-use super::{map_store, parse_id, HarnessContract, SessionsService};
+use super::{map_store, parse_id, SessionsService};
 use crate::events::{Event, EventPayload, SessionEvent, SpanEvent};
+use crate::store::Wake;
 use crate::types::{
     primary_thread_id, Session, SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag,
 };
@@ -52,7 +53,17 @@ impl SessionsService {
         if thread.archived_at.is_none() {
             let payload =
                 SessionEvent::ThreadStatusTerminated { agent_name: thread.agent.config.name.clone() };
-            self.emit(&ctx.workspace, &thread.session_id, Some(&thread.id), payload.into()).await?;
+            let ev = Event {
+                session_thread_id: Some(thread.id.clone()),
+                processed_at: Some(Timestamp::now()),
+                ..Event::new(payload.into())
+            };
+            let (ws, session) = (&ctx.workspace, &thread.session_id);
+            self.events
+                .append_events(ws, session, std::slice::from_ref(&ev), Wake::No)
+                .await
+                .map_err(map_store)?;
+            self.publish(ws, session).await;
         }
         self.thread(ctx, raw_id, tid).await
     }

@@ -12,7 +12,7 @@ use crate::service::{backend, not_found, WorkService};
 use crate::store::{Beat, Reach};
 use crate::tokens::WorkClaims;
 use crate::types::{Heartbeat, HeartbeatTag, Work, WorkState};
-use shared::tenancy::{HOSTED_QUEUE, RUNTIME_QUEUE};
+use shared::tenancy::RUNTIME_QUEUE;
 
 /// The lease a heartbeat grants when it asks for none, or for 0, as on live;
 /// an acknowledgement holds the item this long before its first heartbeat.
@@ -144,9 +144,8 @@ impl WorkService {
         item.map(|i| i.work).ok_or_else(not_found)
     }
 
-    /// Put the work of a session the loop serves on its queue: its
-    /// environment's for `self_hosted`, the runtime queue for `cloud`. An item
-    /// the harness holds is stopped first, so it queues again there.
+    /// Put a session's work on its queue: its environment's for
+    /// `self_hosted`, the runtime queue for `cloud`.
     pub async fn queue_for_loop(
         &self,
         ctx: &AuthContext,
@@ -154,9 +153,6 @@ impl WorkService {
         session: &str,
         self_hosted: bool,
     ) -> Result<(), ApiError> {
-        if self.queue_of(&ctx.workspace, session).await?.is_some_and(|q| q == HOSTED_QUEUE) {
-            self.halt(&ctx.workspace, session).await?;
-        }
         let queue = match self_hosted {
             true => environment_id,
             false => RUNTIME_QUEUE,
