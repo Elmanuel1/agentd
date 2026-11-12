@@ -188,16 +188,11 @@
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "satisfied",
-      "findings": []
-     }
+     "type": "text",
+     "text": "{\"result\": \"satisfied\", \"criteria\": [{\"criterion\": \"deliverable\", \"met\": true, \"finding\": \"checked\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 1200,
     "output_tokens": 80,
@@ -209,16 +204,11 @@
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "satisfied",
-      "findings": []
-     }
+     "type": "text",
+     "text": "{\"result\": \"satisfied\", \"criteria\": [{\"criterion\": \"deliverable\", \"met\": true, \"finding\": \"checked\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 1200,
     "output_tokens": 80,
@@ -230,16 +220,11 @@
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "satisfied",
-      "findings": []
-     }
+     "type": "text",
+     "text": "{\"result\": \"satisfied\", \"criteria\": [{\"criterion\": \"deliverable\", \"met\": true, \"finding\": \"checked\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 1200,
     "output_tokens": 80,

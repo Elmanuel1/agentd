@@ -14,6 +14,7 @@ use shared::tenancy::RUNTIME_QUEUE;
 use shared::BackendError;
 
 use super::reply::{led, Call};
+use super::rubrics;
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
 use super::team::roster;
@@ -21,7 +22,6 @@ use super::turn::{batch, opening, Batch};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
-use super::{grade, rubrics};
 use crate::model::{ModelError, ModelProvider, ModelRequest};
 use crate::turn::policy::Toolbox;
 use crate::turn::prompt::system_prompt;
@@ -138,7 +138,7 @@ impl Loop {
             false => &[],
         };
         let tools = match &thread.grading {
-            Some(_) => grade::tools(),
+            Some(_) => Toolbox::read_only(),
             None => Toolbox::for_agent(&agent, coordinator),
         };
         let effort = agent

@@ -30,7 +30,7 @@ pub(super) fn settle(
         threads(session, &seen).into_iter().any(|t| !t.primary && t.id != turn.thread && busy(&seen, &t.id));
     let outcome = active(&seen).filter(|o| o.open.is_none());
     match (out.idle.take(), thread.primary, thread.grading.is_some()) {
-        // The grader ended a step without its verdict: the next step asks for
+        // The grader ended a step without its grade: the next step asks for
         // it, until the grader has stalled and the round fails.
         (Some(StopReason::EndTurn {}), false, true) => {
             out.end = StepEnd::Again;
@@ -44,9 +44,13 @@ pub(super) fn settle(
             out.events.extend(reply(turn, &primary, &final_text(r)));
             out.end = StepEnd::Again;
         }
-        (Some(stop @ StopReason::EndTurn {}), true, _) if others || outcome.is_some() => {
-            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
+        // As on live: the round starts right after the reply, the thread still running.
+        (Some(StopReason::EndTurn {}), true, _) if outcome.is_some() => {
             out.events.extend(outcome.map(|o| begin(&primary, &o)));
+            out.end = StepEnd::Again;
+        }
+        (Some(stop @ StopReason::EndTurn {}), true, _) if others => {
+            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.end = StepEnd::Again;
         }
         (Some(stop), _, _) => {

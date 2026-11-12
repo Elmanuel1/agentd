@@ -80,22 +80,6 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 evaluated_permission: Some("allow".into()),
                 evaluation: evaluation.clone(),
             }),
-            Some(Disposition::Verdict) => {
-                let Some(outcome) = c.grading else { continue };
-                unknown = true;
-                let call = turn.event(AgentEvent::ToolUse {
-                    name: name.to_owned(),
-                    input: input.clone(),
-                    evaluated_permission: Some("allow".into()),
-                    evaluation: None,
-                });
-                let primary = Thread::primary(c.session).turn();
-                let (end, eval) = grade::verdict(&primary, outcome, input, r.usage.clone());
-                after.extend([grade::recorded(turn, &call.id), end]);
-                calls.push(call);
-                evaluation = Some(eval);
-                continue;
-            }
             Some(Disposition::Delegate) => {
                 unknown = true;
                 let (call, led): (Vec<Event>, Vec<Event>) =
@@ -129,6 +113,20 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
             waiting.push(call.id.clone());
         }
         calls.push(call);
+    }
+    // A grader grades in its reply's text, with no tool call.
+    let said = r.content.iter().filter_map(|b| match b {
+        Block::Text { text } => Some(text.as_str()),
+        _ => None,
+    });
+    let grade =
+        c.grading.filter(|_| calls.is_empty()).zip(grade::graded(&said.collect::<Vec<_>>().join("\n")));
+    if let Some((outcome, grade)) = grade {
+        let primary = Thread::primary(c.session).turn();
+        let (end, eval) = grade::verdict(&primary, outcome, &grade, r.usage.clone());
+        after.push(end);
+        evaluation = Some(eval);
+        unknown = true;
     }
     events.extend(calls);
     events.push(turn.event(SpanEvent::ModelRequestEnd {

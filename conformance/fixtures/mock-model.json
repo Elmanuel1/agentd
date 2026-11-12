@@ -278,21 +278,11 @@
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "needs_revision",
-      "findings": [
-       {
-        "criterion": "1. greeting",
-        "finding": "says draft"
-       }
-      ]
-     }
+     "type": "text",
+     "text": "{\"result\": \"needs_revision\", \"criteria\": [{\"criterion\": \"1. greeting\", \"met\": false, \"finding\": \"says draft\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 10,
     "output_tokens": 5,
@@ -304,16 +294,11 @@
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "satisfied",
-      "findings": []
-     }
+     "type": "text",
+     "text": "{\"result\": \"satisfied\", \"criteria\": [{\"criterion\": \"deliverable\", \"met\": true, \"finding\": \"checked\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 10,
     "output_tokens": 5,

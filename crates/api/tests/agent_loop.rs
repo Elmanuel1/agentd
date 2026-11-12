@@ -554,10 +554,9 @@ async fn an_outcome_is_graded_on_its_own_thread_until_satisfied() {
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let verdict = |result: &str| {
-        Say::Tool(
-            "submit_verdict",
-            json!({"result": result, "findings": [{"criterion": "tone", "finding": "too short"}]}),
-        )
+        let met = result == "satisfied";
+        let grade = json!({"result": result, "criteria": [{"criterion": "tone", "met": met, "finding": "too short"}]});
+        Say::Text(Box::leak(grade.to_string().into_boxed_str()))
     };
     let model = Scripted::new(vec![
         Say::Text("draft"),
@@ -698,7 +697,7 @@ async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
 #[tokio::test]
 async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the_round() {
     // L-5: the rubric file's text is graded against; a grader that ends three
-    // turns without `submit_verdict`, with text or with nothing, fails the round.
+    // turns without a grade, with other text or with nothing, fails the round.
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let (st, file) = rig.upload(Auth::Key(KEY), "rubric.md", "### Tone\nWarm and specific.", None).await;

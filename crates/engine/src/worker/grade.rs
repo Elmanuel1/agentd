@@ -7,23 +7,21 @@
 use std::collections::HashMap;
 
 use agents::AgentSnapshot;
-use serde_json::{json, Value};
-use sessions::events::{AgentEvent, Event, EventId, EventPayload, ModelUsage, Rubric, SpanEvent, UserEvent};
+use serde_json::Value;
+use sessions::events::{Event, EventId, EventPayload, ModelUsage, Rubric, SpanEvent, UserEvent};
 use sessions::types::{OutcomeEvaluation, OutcomeId, OutcomeResult, Session, ThreadId};
-use shared::ContentBlock;
 
 use super::team::Thread;
 use super::turn::Turn;
-use crate::model::{Block, Message, ModelTool, Role};
+use crate::model::{Block, Message, Role};
 use crate::turn::history::History;
-use crate::turn::policy::{Disposition, Toolbox};
 
 /// Rounds when `max_iterations` is left out (documented default).
 const DEFAULT_MAX_ITERATIONS: u32 = 3;
-/// The grader's verdict tool.
-pub(super) const VERDICT: &str = "submit_verdict";
+/// After a grader reply with no grade.
+const GRADE_NUDGE: &str = "Reply with only your grade, as the JSON object your instructions describe.";
 
-const GRADER_SYSTEM: &str = "You are an outcome grader. You grade a deliverable against a rubric, independently: you did not produce it, and you check it against the source files in the sandbox, not against what such work usually says. Read the rubric in the message. Treat each `###` heading (or each numbered rule, when there are no headings) as one criterion. For each: reason, check the deliverable's values against the source material with the tools, and decide whether it passes. Change no file. When done, call `submit_verdict` once: `satisfied` only when every criterion passes, `needs_revision` when any fails, `failed` when the rubric does not apply to the deliverable. In `findings`, list every failed criterion with what is wrong, where in the deliverable, and the evidence that shows it.";
+const GRADER_SYSTEM: &str = "You are an outcome grader. You grade a deliverable against a rubric, independently: you did not produce it, and you check it against the source files in the sandbox, not against what such work usually says. Read the rubric in the message. Treat each `###` heading (or each numbered rule, when there are no headings) as one criterion. For each: reason, check the deliverable's values against the source material with the tools, and decide whether it is met. Change no file. When done, reply with only a JSON object: {\"result\": \"satisfied\" when every criterion is met, \"needs_revision\" when any is not, or \"failed\" when the rubric does not apply to the deliverable, \"criteria\": [{\"criterion\": its heading, \"met\": true or false, \"finding\": what you found, where in the deliverable, and the evidence}]}, listing every criterion.";
 
 /// The outcome the session works toward, and its open grading round.
 #[derive(Debug, Clone, PartialEq)]
@@ -104,22 +102,6 @@ pub(super) fn begin(primary: &Turn, outcome: &Outcome) -> Event {
     })
 }
 
-/// The grader's tools: the read-only built-ins, and its verdict.
-pub(super) fn tools() -> Toolbox {
-    let mut tools = Toolbox::read_only();
-    let verdict = ModelTool {
-        name: VERDICT.into(),
-        description: "Submit the grade.".into(),
-        input_schema: json!({"type": "object", "properties": {
-            "result": {"type": "string", "enum": ["satisfied", "needs_revision", "failed"]},
-            "findings": {"type": "array", "items": {"type": "object", "properties": {
-                "criterion": {"type": "string"}, "finding": {"type": "string"}}, "required": ["criterion", "finding"]}}},
-            "required": ["result", "findings"]}),
-    };
-    tools.add(verdict, Disposition::Verdict);
-    tools
-}
-
 /// The grader's conversation: the task and rubric, then its own steps, with
 /// a nudge after a step that called nothing.
 pub(super) fn conversation(
@@ -137,23 +119,27 @@ pub(super) fn conversation(
     );
     history.messages.insert(0, Message { role: Role::User, content: vec![Block::text(task)] });
     if history.messages.last().is_some_and(|m| m.role == Role::Assistant) && history.unanswered.is_empty() {
-        history.messages.push(Message {
-            role: Role::User,
-            content: vec![Block::text(format!("Call `{VERDICT}` with your grade."))],
-        });
+        history.messages.push(Message { role: Role::User, content: vec![Block::text(GRADE_NUDGE)] });
     }
     history
 }
 
-/// The verdict `input` submits: the round's end, as the primary thread's
-/// event, and the evaluation the session records.
+/// The grade in a grader's reply `text`: its JSON object with a `result`.
+pub(super) fn graded(text: &str) -> Option<Value> {
+    let (start, end) = (text.find('{')?, text.rfind('}')?);
+    let grade: Value = serde_json::from_str(text.get(start..=end)?).ok()?;
+    grade.get("result").is_some_and(Value::is_string).then_some(grade)
+}
+
+/// The round's end for `grade`, as the primary thread's event, and the
+/// evaluation the session records. The explanation is worded as live's.
 pub(super) fn verdict(
     primary: &Turn,
     outcome: &Outcome,
-    input: &Value,
+    grade: &Value,
     usage: ModelUsage,
 ) -> (Event, OutcomeEvaluation) {
-    let mut result = match input.get("result").and_then(Value::as_str) {
+    let mut result = match grade.get("result").and_then(Value::as_str) {
         Some("satisfied") => OutcomeResult::Satisfied,
         Some("failed") => OutcomeResult::Failed,
         _ => OutcomeResult::NeedsRevision,
@@ -161,21 +147,31 @@ pub(super) fn verdict(
     if result == OutcomeResult::NeedsRevision && outcome.iteration + 1 >= outcome.max_iterations {
         result = OutcomeResult::MaxIterationsReached;
     }
-    let findings: Vec<String> = input
-        .get("findings")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|f| {
-            format!("- {}: {}", f["criterion"].as_str().unwrap_or(""), f["finding"].as_str().unwrap_or(""))
-        })
-        .collect();
+    let criteria = grade.get("criteria").and_then(Value::as_array).cloned().unwrap_or_default();
+    let line = |c: &Value| {
+        let met = match c["met"].as_bool() {
+            Some(true) => "met",
+            _ => "not met",
+        };
+        format!(
+            "- {} ({met}): {}",
+            c["criterion"].as_str().unwrap_or(""),
+            c["finding"].as_str().unwrap_or("")
+        )
+    };
     let explanation = match result {
-        OutcomeResult::Satisfied => "An independent grader found every criterion met.".to_owned(),
-        _ => format!(
-            "An independent grader found the following criteria are not fully met:\n\n{}",
-            findings.join("\n")
-        ),
+        OutcomeResult::Satisfied => {
+            let lines: Vec<String> = criteria.iter().map(line).collect();
+            format!("An independent grader found all criteria met:\n\n{}", lines.join("\n"))
+        }
+        _ => {
+            let unmet = criteria.iter().filter(|c| c["met"].as_bool() != Some(true));
+            let lines: Vec<String> = unmet.map(line).collect();
+            format!(
+                "An independent grader found the following criteria are not fully met:\n\n{}",
+                lines.join("\n")
+            )
+        }
     };
     let end = primary.event(SpanEvent::OutcomeEvaluationEnd {
         outcome_evaluation_start_id: outcome.open.clone().unwrap_or_else(EventId::generate),
@@ -192,13 +188,4 @@ pub(super) fn verdict(
         iteration: outcome.iteration,
     };
     (end, eval)
-}
-
-/// The verdict call's own answer, on the grader's thread.
-pub(super) fn recorded(grader: &Turn, call: &EventId) -> Event {
-    grader.event(AgentEvent::ToolResult {
-        tool_use_id: call.clone(),
-        content: vec![ContentBlock::text("Recorded.")],
-        is_error: false,
-    })
 }
