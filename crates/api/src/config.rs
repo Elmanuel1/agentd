@@ -18,8 +18,6 @@ pub struct Config {
     pub secrets: AwsSecretsConfig,
     /// API-key source (`AGENTD_KEYS`).
     pub keys: KeysConfig,
-    /// Scheduler (`AGENTD_SCHEDULER`).
-    pub scheduler: SchedulerConfig,
     /// Where logs, traces and metrics go.
     pub telemetry: TelemetryConfig,
     /// `AGENTD_MODELS`: model ids agents may name beyond the built-in
@@ -48,13 +46,6 @@ pub enum KeysConfig {
     Aws,
 }
 
-/// `AGENTD_SCHEDULER`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchedulerConfig {
-    /// `local`: the in-process scheduler (single replica).
-    Local,
-}
-
 /// A configuration value agentd cannot boot with.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{var}: {reason}")]
@@ -78,10 +69,6 @@ impl Config {
             "aws" => KeysConfig::Aws,
             other => return Err(unknown("AGENTD_KEYS", other)),
         };
-        let scheduler = match selector(&get, "AGENTD_SCHEDULER", "local").as_str() {
-            "local" => SchedulerConfig::Local,
-            other => return Err(unknown("AGENTD_SCHEDULER", other)),
-        };
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         let telemetry = TelemetryConfig::from_lookup(&get)?;
         let extra_models = get("AGENTD_MODELS")
@@ -94,19 +81,7 @@ impl Config {
         let work = WorkConfig::from_lookup(&get)?;
         let streams = StreamsConfig::from_lookup(&get)?;
         let agent_loop = LoopConfig::from_lookup(&get)?;
-        Ok(Self {
-            addr,
-            store,
-            blobs,
-            secrets,
-            keys,
-            scheduler,
-            telemetry,
-            extra_models,
-            work,
-            streams,
-            agent_loop,
-        })
+        Ok(Self { addr, store, blobs, secrets, keys, telemetry, extra_models, work, streams, agent_loop })
     }
 }
 

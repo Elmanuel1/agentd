@@ -3,7 +3,6 @@
 //! and routes see only the ports.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use blobs_s3::{BlobError, S3BlobStore};
 
@@ -15,7 +14,6 @@ pub use stores::Stores;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
 use api_keys::{ApiKeysService, EnvironmentKeysService};
-use scheduler_local::LocalScheduler;
 use secrets_aws::{AwsAdminKeys, AwsSecretStore};
 use sessions::signals::{LocalSignals, Signals};
 use sessions::store::DatabaseLoad;
@@ -23,14 +21,10 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use shared::ports::secrets::{SecretError, SecretStore};
-use shared::ports::SchedulerPort;
 use signals_valkey::ValkeySignals;
 use store_postgres::PgError;
 
-use crate::config::{BlobsConfig, Config, KeysConfig, Role, SchedulerConfig, StoreConfig, WorkConfig};
-
-/// How often the local scheduler checks for due fires (cron is minute-grained).
-const LOCAL_TICK: Duration = Duration::from_secs(10);
+use crate::config::{BlobsConfig, Config, KeysConfig, Role, StoreConfig, WorkConfig};
 
 /// One backend per port.
 pub struct Backends {
@@ -44,8 +38,6 @@ pub struct Backends {
     pub environment_keys: Arc<dyn EnvironmentKeySource>,
     /// The keys work tokens and placeholders are signed with.
     pub system: SystemKeys,
-    /// The durable timer.
-    pub scheduler: Arc<dyn SchedulerPort>,
     /// Where the scheduler delivers fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
     /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
@@ -120,8 +112,8 @@ pub enum BootError {
 }
 
 impl Backends {
-    /// Connect the backends `config` selects. The local scheduler starts
-    /// ticking here.
+    /// Connect the backends `config` selects. The scheduler and its outbox
+    /// relay start here.
     pub async fn from_config(config: &Config) -> Result<Self, BootError> {
         let metrics = Arc::new(Metrics::global());
         let role = config.agent_loop.role;
@@ -135,12 +127,14 @@ impl Backends {
         let admin = Arc::new(AwsAdminKeys::new(aws.clone(), pepper.clone()));
         let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws.clone()), metrics.clone()));
+        let fires = Arc::new(FireRegistry::new());
         let (stores, load, keys) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
                 let s = secrets.clone();
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
+                postgres::schedule(&pg.backend, &fires);
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys)
@@ -155,16 +149,6 @@ impl Backends {
         let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), pepper)
             .with_runtime_key(&aws.runtime_key().await?);
         let system = SystemKeys::load(&aws, &config.work).await?;
-        let fires = Arc::new(FireRegistry::new());
-        let scheduler: Arc<dyn SchedulerPort> = match config.scheduler {
-            SchedulerConfig::Local => {
-                let local = Arc::new(LocalScheduler::new(fires.clone()));
-                if role.serves_api() {
-                    drop(local.clone().spawn(LOCAL_TICK));
-                }
-                local
-            }
-        };
         if role.runs_loop() {
             drop(
                 crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref(), &system).await?,
@@ -178,7 +162,6 @@ impl Backends {
             admin_keys,
             environment_keys,
             system,
-            scheduler,
             fires,
             extra_models,
             metrics,

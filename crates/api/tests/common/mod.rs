@@ -22,7 +22,7 @@ use shared::ports::fire::FireRegistry;
 use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::KeyPepper;
 use shared::ports::secrets::{ExposeSecret, SecretString};
-use shared::ports::FakeScheduler;
+
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::PgBackend;
 use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
@@ -87,7 +87,6 @@ fn app(
             egress_key: EGRESS_KEY.to_vec(),
             api_base_url: "http://agentd.test".into(),
         },
-        scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),

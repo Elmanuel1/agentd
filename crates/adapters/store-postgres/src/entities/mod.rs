@@ -11,6 +11,7 @@ pub mod files;
 pub mod loop_steps;
 pub mod memory;
 pub mod run_lock;
+pub mod schedules;
 pub mod session_events;
 pub mod sessions;
 pub mod skill_versions;

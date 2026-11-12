@@ -36,6 +36,8 @@ pub use entities::files::PgFilesStore;
 pub use entities::loop_steps::PgSteps;
 pub use entities::memory::PgMemoryStore;
 pub use entities::run_lock::PgRunLock;
+pub use entities::schedules::outbox::PgScheduleRelay;
+pub use entities::schedules::PgScheduler;
 pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;

@@ -25,7 +25,6 @@ engine = { workspace = true }
 uuid = { workspace = true }
 deployments = { workspace = true }
 dreams = { workspace = true }
-scheduler-local = { workspace = true }
 work = { workspace = true }
 store-postgres = { workspace = true }
 diesel = { workspace = true }

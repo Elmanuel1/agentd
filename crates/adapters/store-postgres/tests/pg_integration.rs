@@ -247,11 +247,7 @@ async fn dashboard_queries_are_native_sql() {
     // Deployments with mixed status → count + status filter in SQL.
     let ctx_ws = ctx(&ws);
     let deps = Arc::new(PgDeploymentsStore::new(backend().await));
-    let svc = deployments::DeploymentsService::new(
-        deps.clone(),
-        Arc::new(FakeDeps),
-        Arc::new(shared::ports::FakeScheduler::new()),
-    );
+    let svc = deployments::DeploymentsService::new(deps.clone(), Arc::new(FakeDeps));
     for _ in 0..3 {
         svc.create(&ctx_ws, create_depl()).await.unwrap();
     }

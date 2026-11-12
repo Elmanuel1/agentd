@@ -11,9 +11,7 @@ replica tails every session it streams, woken by a Valkey signal
 stream on any replica sees every event. A new stream gets 529
 `overloaded_error` while the primary is overloaded: a pool checkout waited over
 1 s in the last 10 s, or its client connections, counted every 10 s, pass 90%
-of `max_connections`. Streams already open keep streaming. The local scheduler's timers live in the process: run one replica
-until a shared scheduler replaces them, since schedules exist only where they
-were created.
+of `max_connections`. Streams already open keep streaming.
 
 ## Versions (Flyway-compatible)
 

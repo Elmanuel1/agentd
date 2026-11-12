@@ -23,7 +23,7 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 
 Every boundary operation is covered: 49 route registrations plus the unknown-path fallback, every statement
 through the pool, all 3 operations of each of the 3 outbound ports, and every fire kind. Inside a request, time
-between boundaries is the request span's own time. Not covered: the local scheduler's tick loop and the S3
+between boundaries is the request span's own time. Not covered: the scheduler's tick and outbox relay loops and the S3
 SDK's internal retries (both log, but emit no metric).
 
 A 5xx response body says only `Internal server error` (or `Overloaded` for a 529), as the live API does. The

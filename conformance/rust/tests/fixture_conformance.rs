@@ -18,7 +18,7 @@ use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
-use shared::ports::FakeScheduler;
+
 use shared::Timestamp;
 use store_postgres::PgBackend;
 use tower::ServiceExt;
@@ -62,7 +62,6 @@ async fn app() -> Option<Router> {
             egress_key: vec![2; 32],
             api_base_url: "http://agentd.test".into(),
         },
-        scheduler: Arc::new(FakeScheduler::new()),
         fires: Arc::new(FireRegistry::new()),
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),

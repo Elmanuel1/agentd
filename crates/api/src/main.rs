@@ -5,8 +5,8 @@
 //! admin-keys …` and `agentd environment-keys …` manage keys, and `agentd
 //! vault-secrets tag` tags secrets, instead ([`api::cli`]). Records and blobs live
 //! in Postgres and object storage. Every replica's event streams read the log,
-//! signalled through Valkey (`AGENTD_VALKEY_URL`); the local scheduler lives
-//! in the process, so run one replica until a shared scheduler replaces it.
+//! signalled through Valkey (`AGENTD_VALKEY_URL`), and every replica claims
+//! due schedules from Postgres.
 
 use std::process::ExitCode;
 

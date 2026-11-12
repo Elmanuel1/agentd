@@ -16,7 +16,6 @@ fakes in test code, never from configuration ([Security](#security)).
 | Blob store | `AGENTD_BLOBS` | `s3` |
 | Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
 | API keys | `AGENTD_KEYS` | `aws`: workspace and environment keys in Postgres and admin keys in Secrets Manager, digested with a pepper in Secrets Manager (see [API keys](#api-keys)) |
-| Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
 
 ## Settings
 
@@ -82,7 +81,7 @@ step's 10 minute deadline.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention and the local scheduler run in `api` and `all` |
+| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role ticks the scheduler |
 | `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
@@ -290,6 +289,20 @@ for its kind. The dreams module is not assembled, so no dream handler is
 registered. The scheduler delivers each tick to the handler of the
 target's kind, which runs it under the tenant that registered the schedule.
 A tick whose kind has no handler fails and is logged as dropped.
+
+Schedules go through an outbox. Each change (a deployment's create, pause,
+unpause or archive) is written to `schedule_outbox` in the transaction of the
+deployment write that causes it. One replica at a time, holding an advisory
+lock, relays the rows every second, in order, to the scheduler sink and
+removes each once applied; a change the sink refuses stops the pass and is
+retried by the next. The built-in sink is the Postgres scheduler: one
+`schedules` row per target, whose due rows every replica claims every 10 s
+with `FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it
+after the commit. A fire more than a minute late is skipped, so after
+downtime a schedule fires again from its next time, with no backfill.
+`claim_fire` keeps each deployment fire exactly once. Another sink (a
+Temporal or EventBridge schedule fed through Kafka, say) replaces it behind
+the same `SchedulerPort`.
 
 ## Telemetry
 

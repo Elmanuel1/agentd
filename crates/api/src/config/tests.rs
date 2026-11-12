@@ -26,7 +26,7 @@ fn defaults_select_postgres_s3_aws_and_aws_keys() {
     assert_eq!(url, URL);
     assert_eq!(c.blobs, BlobsConfig::S3(S3Config::new("agentd-artifacts")));
     assert_eq!(c.secrets, AwsSecretsConfig::new("agentd", "alias/agentd"));
-    assert_eq!((c.keys, c.scheduler), (KeysConfig::Aws, SchedulerConfig::Local));
+    assert_eq!(c.keys, KeysConfig::Aws);
     assert_eq!(c.work.api_base_url, "http://agentd:8080");
 }
 

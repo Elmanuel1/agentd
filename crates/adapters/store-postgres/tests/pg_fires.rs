@@ -75,7 +75,6 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     let svc = Arc::new(DeploymentsService::new(
         Arc::new(PgDeploymentsStore::new(backend().await)),
         Arc::new(FakeDeps),
-        scheduler.clone(),
     ));
     let fires = FireRegistry::new();
     for handler in deployments::module(svc.clone()).fire_handlers {
@@ -91,6 +90,11 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     }))
     .unwrap();
     let d = svc.create(&ctx, req).await.unwrap();
+    // The create's outbox row reaches the sink through the relay.
+    let relay = store_postgres::PgScheduleRelay::new(backend().await, scheduler.clone());
+    while scheduler.registered().iter().all(|s| s.target.id != d.id.as_str()) {
+        relay.relay().await.unwrap();
+    }
     let spec = scheduler.registered().into_iter().find(|s| s.target.id == d.id.as_str()).unwrap();
     assert_eq!(spec.tenant, TenantRef::of(&ctx));
 

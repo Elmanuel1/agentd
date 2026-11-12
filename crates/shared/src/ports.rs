@@ -9,5 +9,6 @@ pub mod scheduler;
 pub mod secrets;
 
 pub use scheduler::{
-    FakeScheduler, FireId, FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort, TenantRef,
+    FakeScheduler, FireId, FireTarget, ScheduleChange, ScheduleSpec, ScheduleState, SchedulerError,
+    SchedulerPort, TenantRef,
 };

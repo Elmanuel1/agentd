@@ -60,7 +60,6 @@ impl AppState {
             admin_keys,
             environment_keys,
             system,
-            scheduler,
             fires,
             extra_models,
             metrics,
@@ -103,7 +102,6 @@ impl AppState {
                 environments: environments.clone(),
                 sessions: sessions.clone(),
             }),
-            scheduler,
         ));
         let modules = vec![
             agents::module(agents),
