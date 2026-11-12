@@ -15,14 +15,16 @@ use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
 use api_keys::{ApiKeysService, EnvironmentKeysService};
 use secrets_aws::{AwsAdminKeys, AwsSecretStore};
-use sessions::signals::{LocalSignals, Signals};
+use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
+use shared::hash::KeyRing;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use shared::ports::secrets::{SecretError, SecretStore};
-use signals_valkey::ValkeySignals;
+use signals_valkey::{ValkeyChanges, ValkeySignals};
 use store_postgres::PgError;
+use store_postgres::ScheduleOutbox;
 
 use crate::config::{BlobsConfig, Config, KeysConfig, Role, StoreConfig, WorkConfig};
 
@@ -52,30 +54,24 @@ pub struct Backends {
     pub role: Role,
 }
 
-/// The deployment's own keys, read from Secrets Manager once at boot.
+/// The deployment's own keys, from its configuration.
 #[derive(Clone)]
 pub struct SystemKeys {
-    /// Signs work tokens (`<prefix>/system/work_token_key`, or `AGENTD_WORK_TOKEN_KEY`).
-    pub work_token_key: Vec<u8>,
-    /// Signs `environment_variable` placeholders (`<prefix>/system/egress_key`).
-    pub egress_key: Vec<u8>,
+    /// Signs and verifies work tokens.
+    pub work_tokens: KeyRing,
+    /// Signs and verifies `environment_variable` placeholders.
+    pub placeholders: KeyRing,
     /// agentd's API as a work secret's `api_base_url` names it.
     pub api_base_url: String,
 }
 
-impl SystemKeys {
-    /// Read the keys from `aws`, each created the first time; with
-    /// `AGENTD_WORK_TOKEN_KEY` set, work tokens are signed with it and
-    /// `system/work_token_key` is not read.
-    pub async fn load(aws: &AwsSecretStore, work: &WorkConfig) -> Result<Self, SecretError> {
-        Ok(Self {
-            work_token_key: match &work.work_token_key {
-                Some(key) => key.clone(),
-                None => aws.work_token_key().await?.to_vec(),
-            },
-            egress_key: aws.egress_key().await?.to_vec(),
+impl From<&WorkConfig> for SystemKeys {
+    fn from(work: &WorkConfig) -> Self {
+        Self {
+            work_tokens: work.work_tokens.clone(),
+            placeholders: work.placeholders.clone(),
             api_base_url: work.api_base_url.clone(),
-        })
+        }
     }
 }
 
@@ -134,21 +130,25 @@ impl Backends {
                 let s = secrets.clone();
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
-                postgres::schedule(&pg.backend, &fires);
+                let scheduler = postgres::schedule(&pg.backend, &fires);
+                let feed = ValkeyChanges::new(
+                    url,
+                    &config.streams.changes_prefix,
+                    &format!("agentd-{}", uuid::Uuid::new_v4()),
+                )
+                .map_err(|e| BootError::Signals(e.to_string()))?;
+                drop(feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(scheduler)))]));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys)
             }
         };
-        let signals: Arc<dyn Signals> = match &config.streams.valkey_url {
-            Some(url) => {
-                Arc::new(ValkeySignals::connect(url).map_err(|e| BootError::Signals(e.to_string()))?)
-            }
-            None => Arc::new(LocalSignals::default()),
-        };
+        let url = &config.streams.valkey_url;
+        let signals: Arc<dyn Signals> =
+            Arc::new(ValkeySignals::connect(url).map_err(|e| BootError::Signals(e.to_string()))?);
         let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), pepper)
             .with_runtime_key(&aws.runtime_key().await?);
-        let system = SystemKeys::load(&aws, &config.work).await?;
+        let system = SystemKeys::from(&config.work);
         if role.runs_loop() {
             drop(
                 crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref(), &system).await?,

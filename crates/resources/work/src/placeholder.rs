@@ -5,7 +5,7 @@
 //! session.
 
 use serde::{Deserialize, Serialize};
-use shared::hash::Signer;
+use shared::hash::{KeyRing, Signer};
 
 /// Every placeholder starts with this.
 pub const PREFIX: &str = "agentd-ph-";
@@ -30,9 +30,9 @@ pub struct Placeholders {
 }
 
 impl Placeholders {
-    /// Sign with the egress key.
-    pub fn new(egress_key: impl Into<Vec<u8>>) -> Self {
-        Self { signer: Signer::new(egress_key).derive("placeholder") }
+    /// Sign with `keys`' first key; verify with any of them.
+    pub fn new(keys: &KeyRing) -> Self {
+        Self { signer: Signer::new(keys.clone()).derive("placeholder") }
     }
 
     /// The placeholder for `claims`.
@@ -58,11 +58,11 @@ mod tests {
             vault: "vlt_1".into(),
             credential: "cred_1".into(),
         };
-        let keys = Placeholders::new(b"egress".to_vec());
+        let keys = Placeholders::new(&KeyRing::single(b"egress".to_vec()));
         let p = keys.sign(&claims);
         assert!(p.starts_with(PREFIX));
         assert_eq!(keys.verify(&p), Some(claims));
-        assert_eq!(Placeholders::new(b"other".to_vec()).verify(&p), None);
-        assert_eq!(crate::WorkTokens::new(b"egress".to_vec()).verify(&p), None);
+        assert_eq!(Placeholders::new(&KeyRing::single(b"other".to_vec())).verify(&p), None);
+        assert_eq!(crate::WorkTokens::new(&KeyRing::single(b"egress".to_vec())).verify(&p), None);
     }
 }

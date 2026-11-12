@@ -6,11 +6,14 @@ use std::time::Duration;
 use super::{number, ConfigError};
 
 /// How replicas share session changes, and event retention.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StreamsConfig {
-    /// `AGENTD_VALKEY_URL`: the Valkey every replica signals through. Unset,
-    /// signals stay in this process, which suits a single replica.
-    pub valkey_url: Option<String>,
+    /// `AGENTD_VALKEY_URL` (required): the Valkey every replica signals
+    /// through, and whose streams carry the change feed.
+    pub valkey_url: String,
+    /// `AGENTD_CHANGES_PREFIX` (`agentd`): Debezium's `topic.prefix`, which
+    /// names the change streams `<prefix>.public.<table>`.
+    pub changes_prefix: String,
     /// `AGENTD_EVENT_RETENTION_DAYS`: archived sessions lose their events
     /// this long after archiving. Unset, events are kept.
     pub retention: Option<Duration>,
@@ -20,7 +23,8 @@ pub struct StreamsConfig {
 impl std::fmt::Debug for StreamsConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamsConfig")
-            .field("valkey_url", &self.valkey_url.as_ref().map(|_| "***"))
+            .field("valkey_url", &"***")
+            .field("changes_prefix", &self.changes_prefix)
             .field("retention", &self.retention)
             .finish()
     }
@@ -34,7 +38,11 @@ impl StreamsConfig {
             .map(|_| number(get, "AGENTD_EVENT_RETENTION_DAYS", 1))
             .transpose()?;
         Ok(Self {
-            valkey_url: get("AGENTD_VALKEY_URL").filter(|u| !u.is_empty()),
+            valkey_url: get("AGENTD_VALKEY_URL").filter(|u| !u.is_empty()).ok_or_else(|| ConfigError {
+                var: "AGENTD_VALKEY_URL",
+                reason: "required: the replicas' signals and the change feed".into(),
+            })?,
+            changes_prefix: get("AGENTD_CHANGES_PREFIX").unwrap_or_else(|| "agentd".into()),
             retention: days.map(|d| Duration::from_secs(d.saturating_mul(DAY))),
         })
     }

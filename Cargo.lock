@@ -3154,6 +3154,7 @@ dependencies = [
  "engine",
  "futures",
  "redis",
+ "serde_json",
  "sessions",
  "shared",
  "tokio",

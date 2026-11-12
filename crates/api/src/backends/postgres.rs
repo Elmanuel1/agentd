@@ -11,8 +11,7 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::secrets::SecretStore;
 use store_postgres::{
-    PgBackend, PgError, PgLoad, PgRunLock, PgScheduleRelay, PgScheduler, PgSessionEventLog, PgSessionsStore,
-    PoolSettings,
+    PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
 
 use super::Stores;
@@ -20,8 +19,6 @@ use crate::telemetry::{self, Metrics};
 
 /// How often each replica claims due schedules (cron is minute-grained).
 const TICK: Duration = Duration::from_secs(10);
-/// How often the schedule outbox is relayed to the scheduler.
-const RELAY: Duration = Duration::from_secs(1);
 
 /// What the Postgres backends give the rest of the app.
 pub(super) struct Postgres {
@@ -66,11 +63,11 @@ pub(super) async fn connect(
     Ok(Postgres { stores, load: Arc::new(load), backend: pg })
 }
 
-/// Start the scheduler on `backend`, delivering to `fires`, and the outbox
-/// relay feeding it. Every replica ticks: a due schedule goes to whichever
-/// claims it first.
-pub(super) fn schedule(backend: &PgBackend, fires: &Arc<FireRegistry>) {
+/// Start the scheduler on `backend`, delivering to `fires`, and answer it:
+/// the change feed applies the outbox to it. Every replica ticks: a due
+/// schedule goes to whichever claims it first.
+pub(super) fn schedule(backend: &PgBackend, fires: &Arc<FireRegistry>) -> PgScheduler {
     let scheduler = PgScheduler::new(backend.clone(), fires.clone());
     drop(scheduler.clone().spawn(TICK));
-    drop(PgScheduleRelay::new(backend.clone(), Arc::new(scheduler)).spawn(RELAY));
+    scheduler
 }

@@ -78,7 +78,7 @@ fn app() -> Router {
             admin_keys: Arc::new(admin_keys),
             environment_keys: Arc::new(test_support::NoEnvironmentKeys),
             work: WorkAccess {
-                tokens: work::WorkTokens::new(b"admin-edge".to_vec()),
+                tokens: work::WorkTokens::new(&shared::hash::KeyRing::single(b"admin-edge".to_vec())),
                 items: Arc::new(NoWork),
                 grants: Arc::new(NoGrants),
             },

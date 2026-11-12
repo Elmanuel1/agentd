@@ -14,6 +14,9 @@ fn config(vars: &[(&str, &str)]) -> Result<Config, ConfigError> {
         ("DATABASE_URL".into(), URL.into()),
         ("AGENTD_SECRETS_KMS_KEY_ID".into(), "alias/agentd".into()),
         ("AGENTD_API_BASE_URL".into(), "http://agentd:8080".into()),
+        ("AGENTD_VALKEY_URL".into(), "redis://valkey:6379".into()),
+        ("AGENTD_WORK_TOKEN_KEYS".into(), "k1:000102030405060708090a0b0c0d0e0f".into()),
+        ("AGENTD_PLACEHOLDER_KEYS".into(), "k1:101112131415161718191a1b1c1d1e1f".into()),
     ]);
     all.extend(vars.iter().map(|(k, v)| ((*k).into(), (*v).into())));
     Config::from_lookup(|k| all.get(k).cloned())

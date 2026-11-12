@@ -46,7 +46,10 @@ async fn a_self_hosted_worker_polls_acks_heartbeats_and_stops_its_environment_s_
     let decoded = secret(&work);
     assert_eq!(decoded["environment_variables"], json!({}), "EV-1: self_hosted gets none");
     let token = decoded["sessions_token"].as_str().unwrap().to_owned();
-    assert_eq!(WorkTokens::new(WORK_KEY.to_vec()).verify(&token).unwrap().session, session);
+    assert_eq!(
+        WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())).verify(&token).unwrap().session,
+        session
+    );
     let (_, again) = rig.call("GET", &format!("{base}/poll"), Auth::Bearer(&key), None).await;
     assert_eq!(again, Value::Null, "handed out: no second poller gets it");
     let (_, stats) = rig.call("GET", &format!("{base}/stats"), Auth::Bearer(&key), None).await;
@@ -263,7 +266,7 @@ async fn the_runtime_queue_hands_out_cloud_work_with_placeholders_and_never_a_va
     let decoded = secret(&work);
     let vars = decoded["environment_variables"].as_object().unwrap();
     assert_eq!(vars.keys().collect::<Vec<_>>(), ["OTHER", "SHARED"], "the archived credential is left out");
-    let placeholders = Placeholders::new(EGRESS_KEY.to_vec());
+    let placeholders = Placeholders::new(&shared::hash::KeyRing::single(EGRESS_KEY.to_vec()));
     let shared = placeholders.verify(vars["SHARED"].as_str().unwrap()).unwrap();
     assert_eq!(
         (shared.vault.as_str(), shared.credential.as_str()),

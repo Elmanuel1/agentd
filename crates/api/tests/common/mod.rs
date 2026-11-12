@@ -83,8 +83,8 @@ fn app(
         admin_keys: Arc::new(StaticAdminKeys::default()),
         environment_keys: Arc::new(env_keys.clone()),
         system: SystemKeys {
-            work_token_key: WORK_KEY.to_vec(),
-            egress_key: EGRESS_KEY.to_vec(),
+            work_tokens: shared::hash::KeyRing::single(WORK_KEY.to_vec()),
+            placeholders: shared::hash::KeyRing::single(EGRESS_KEY.to_vec()),
             api_base_url: "http://agentd.test".into(),
         },
         fires: Arc::new(FireRegistry::new()),
@@ -155,10 +155,17 @@ impl Rig {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
         });
-        let cloud = CloudVariables { source: reach, placeholders: Placeholders::new(EGRESS_KEY.to_vec()) };
+        let cloud = CloudVariables {
+            source: reach,
+            placeholders: Placeholders::new(&shared::hash::KeyRing::single(EGRESS_KEY.to_vec())),
+        };
         let work = Arc::new(
-            WorkService::new(stores.work.clone(), WorkTokens::new(WORK_KEY.to_vec()), "http://agentd.test")
-                .with_cloud_variables(cloud),
+            WorkService::new(
+                stores.work.clone(),
+                WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())),
+                "http://agentd.test",
+            )
+            .with_cloud_variables(cloud),
         );
         Some(Self { app, stores, keys, env_keys, runtime_key, work, secrets, org, ws, ws_b })
     }
@@ -293,7 +300,7 @@ impl Rig {
 
     /// The work token of `session`, as its work secret carries it.
     pub fn token(&self, session: &str) -> String {
-        WorkTokens::new(WORK_KEY.to_vec()).mint(&work::WorkClaims {
+        WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())).mint(&work::WorkClaims {
             session: session.into(),
             ws: self.ws.clone(),
             org: self.org.clone(),

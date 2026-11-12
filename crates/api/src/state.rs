@@ -83,14 +83,10 @@ impl AppState {
         .with_streams(Streams::new(signals, load))
         .with_list_reads(stores.session_event_list);
         let cloud =
-            CloudVariables { source: reach.clone(), placeholders: Placeholders::new(system.egress_key) };
+            CloudVariables { source: reach.clone(), placeholders: Placeholders::new(&system.placeholders) };
         let work = Arc::new(
-            WorkService::new(
-                stores.work.clone(),
-                WorkTokens::new(system.work_token_key),
-                system.api_base_url,
-            )
-            .with_cloud_variables(cloud),
+            WorkService::new(stores.work.clone(), WorkTokens::new(&system.work_tokens), system.api_base_url)
+                .with_cloud_variables(cloud),
         );
         let sessions = Arc::new(sessions.with_work(Arc::new(WorkQueue { work: work.clone() })));
         let files = Arc::new(FilesService::new(stores.files));

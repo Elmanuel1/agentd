@@ -3,9 +3,15 @@
 use super::*;
 
 #[test]
-fn streams_signal_in_process_and_keep_events_unless_configured() {
+fn valkey_is_required_and_events_are_kept_unless_configured() {
     let c = config(&[]).unwrap();
-    assert_eq!(c.streams, StreamsConfig { valkey_url: None, retention: None });
+    let base = StreamsConfig {
+        valkey_url: "redis://valkey:6379".into(),
+        changes_prefix: "agentd".into(),
+        retention: None,
+    };
+    assert_eq!(c.streams, base);
+    assert_eq!(config(&[("AGENTD_VALKEY_URL", "")]).unwrap_err().var, "AGENTD_VALKEY_URL");
     let StoreConfig::Postgres { read_url, .. } = &c.store;
     assert_eq!(read_url, &None);
 }
@@ -21,7 +27,11 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
     assert_eq!(
         c.streams,
-        StreamsConfig { valkey_url: Some("rediss://:pw@valkey:6379".into()), retention: Some(day * 30) }
+        StreamsConfig {
+            valkey_url: "rediss://:pw@valkey:6379".into(),
+            changes_prefix: "agentd".into(),
+            retention: Some(day * 30)
+        }
     );
     let StoreConfig::Postgres { read_url, .. } = &c.store;
     assert_eq!(read_url.as_deref(), Some("postgres://reader:r3ad-pass@replica:5432/agentd"));

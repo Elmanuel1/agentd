@@ -6,6 +6,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
 mod budget;
+mod changes;
 
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;
 
 pub use budget::ValkeyBudget;
+pub use changes::ValkeyChanges;
 
 /// The one channel every session's signals go on.
 const CHANNEL: &str = "agentd:sessions";

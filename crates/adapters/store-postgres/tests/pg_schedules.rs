@@ -1,6 +1,6 @@
 //! Schedules over live Postgres (K-1, K-2): a due schedule fires once across
-//! schedulers, a late one is skipped, and the outbox reaches the sink in
-//! order. Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
+//! schedulers, a late one is skipped, and the outbox's changes reach the
+//! sink in order. Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -10,10 +10,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
+use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::fire::{FireError, FireHandler, FireRegistry};
 use shared::ports::{FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, SchedulerPort, TenantRef};
 use shared::AuthContext;
-use store_postgres::{PgBackend, PgScheduleRelay, PgScheduler};
+use store_postgres::{PgBackend, PgScheduler, ScheduleOutbox};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -121,33 +122,28 @@ async fn a_fire_more_than_a_minute_late_is_skipped_and_a_paused_one_waits() {
 }
 
 #[tokio::test]
-async fn the_outbox_reaches_the_sink_in_order() {
-    if !enabled() {
-        return;
-    }
-    let pg = backend().await;
+async fn the_outbox_s_changes_reach_the_sink_in_order_and_its_deletes_are_not_changes() {
     let s = spec(&uniq("order"));
-    let mut conn = pg.diesel.get().await.unwrap();
-    for change in [
+    let sink = Arc::new(FakeScheduler::new());
+    let outbox = ScheduleOutbox::new(sink.clone());
+    let event = |op: &str, change: &ScheduleChange| {
+        let row = serde_json::json!({"seq": 1, "target": s.target.key(), "change": serde_json::to_string(change).unwrap()});
+        let (before, after) = match op {
+            "d" => (row, serde_json::Value::Null),
+            _ => (serde_json::Value::Null, row),
+        };
+        Change::from_debezium(&serde_json::json!({"op": op, "before": before, "after": after, "source": {"table": "schedule_outbox"}})).unwrap()
+    };
+    let changes = [
         ScheduleChange::Upsert { spec: s.clone() },
         ScheduleChange::Pause { target: s.target.clone() },
         ScheduleChange::Delete { target: s.target.clone() },
         ScheduleChange::Upsert { spec: s.clone() },
-    ] {
-        let doc = serde_json::to_value(&change).unwrap();
-        diesel::sql_query("INSERT INTO schedule_outbox (target, change) VALUES ($1, $2)")
-            .bind::<Text, _>(s.target.key())
-            .bind::<diesel::sql_types::Jsonb, _>(doc)
-            .execute(&mut conn)
-            .await
-            .unwrap();
+    ];
+    for change in &changes {
+        outbox.handle(&event("c", change)).await.unwrap();
+        outbox.handle(&event("d", change)).await.unwrap();
     }
-    let sink = Arc::new(FakeScheduler::new());
-    let relay = PgScheduleRelay::new(pg.clone(), sink.clone());
-    for _ in 0..20 {
-        relay.relay().await.unwrap();
-    }
-    let state = sink.describe(&s.target).await.unwrap();
-    assert!(!state.paused, "the last change, a fresh upsert, wins");
+    assert!(!sink.describe(&s.target).await.unwrap().paused, "the last change, a fresh upsert, wins");
     assert_eq!(sink.registered().iter().filter(|r| r.target == s.target).count(), 1);
 }

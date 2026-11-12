@@ -3,6 +3,7 @@
 //! testable.
 
 pub mod blobs;
+pub mod changes;
 pub mod fire;
 pub mod keys;
 pub mod scheduler;

@@ -71,7 +71,6 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     if !enabled() {
         return;
     }
-    let scheduler = Arc::new(FakeScheduler::new());
     let svc = Arc::new(DeploymentsService::new(
         Arc::new(PgDeploymentsStore::new(backend().await)),
         Arc::new(FakeDeps),
@@ -90,13 +89,13 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     }))
     .unwrap();
     let d = svc.create(&ctx, req).await.unwrap();
-    // The create's outbox row reaches the sink through the relay.
-    let relay = store_postgres::PgScheduleRelay::new(backend().await, scheduler.clone());
-    while scheduler.registered().iter().all(|s| s.target.id != d.id.as_str()) {
-        relay.relay().await.unwrap();
-    }
-    let spec = scheduler.registered().into_iter().find(|s| s.target.id == d.id.as_str()).unwrap();
-    assert_eq!(spec.tenant, TenantRef::of(&ctx));
+    // The schedule the create registers through the outbox.
+    let spec = ScheduleSpec {
+        cron: d.schedule.expression.clone(),
+        timezone: d.schedule.timezone.clone(),
+        target: FireTarget::new("deployment", d.id.as_str()),
+        tenant: TenantRef::of(&ctx),
+    };
 
     fires.fire(&spec, Utc::now()).await.unwrap();
 
@@ -142,9 +141,9 @@ async fn dream_fire_runs_under_the_schedules_tenant_and_a_missing_dream_is_an_er
         .await
         .unwrap(),
     );
+    let scheduler = Arc::new(FakeScheduler::new());
     let pg = backend().await;
     let memories = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(pg.clone(), blobs))));
-    let scheduler = Arc::new(FakeScheduler::new());
     let svc = Arc::new(DreamsService::new(
         Arc::new(PgDreamsStore::new(pg)),
         memories.clone(),

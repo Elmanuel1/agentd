@@ -39,15 +39,12 @@ pub async fn spawn(
         openai_compat: openrouter.map(|k| (k, c.model_base_url.clone())),
     };
     let client = ModelRouter::from_config(&providers).map_err(BootError::Loop)?;
-    let budget: Arc<dyn ModelBudget> = match (&config.streams.valkey_url, c.rpm.or(c.itpm)) {
-        (Some(url), Some(_)) => {
+    let url = &config.streams.valkey_url;
+    let budget: Arc<dyn ModelBudget> = match c.rpm.or(c.itpm) {
+        Some(_) => {
             Arc::new(ValkeyBudget::connect(url, c.rpm, c.itpm).map_err(|e| BootError::Loop(e.to_string()))?)
         }
-        (None, Some(_)) => {
-            tracing::warn!("loop: AGENTD_MODEL_RPM or AGENTD_MODEL_ITPM is set without AGENTD_VALKEY_URL; no model budget applies");
-            Arc::new(Unlimited)
-        }
-        _ => Arc::new(Unlimited),
+        None => Arc::new(Unlimited),
     };
     let models = Models {
         client: Arc::new(client),
@@ -61,7 +58,7 @@ pub async fn spawn(
         log: stores.session_events.clone(),
         work: Arc::new(WorkService::new(
             stores.work.clone(),
-            WorkTokens::new(system.work_token_key.clone()),
+            WorkTokens::new(&system.work_tokens),
             system.api_base_url.clone(),
         )),
         files: Arc::new(FilesService::new(stores.files.clone())),

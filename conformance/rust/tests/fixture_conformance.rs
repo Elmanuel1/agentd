@@ -58,8 +58,8 @@ async fn app() -> Option<Router> {
         admin_keys: Arc::new(StaticAdminKeys::default()),
         environment_keys: Arc::new(test_support::NoEnvironmentKeys),
         system: api::SystemKeys {
-            work_token_key: vec![1; 32],
-            egress_key: vec![2; 32],
+            work_tokens: shared::hash::KeyRing::single(vec![1; 32]),
+            placeholders: shared::hash::KeyRing::single(vec![2; 32]),
             api_base_url: "http://agentd.test".into(),
         },
         fires: Arc::new(FireRegistry::new()),
