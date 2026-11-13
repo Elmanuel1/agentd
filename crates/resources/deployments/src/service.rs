@@ -32,8 +32,15 @@ pub trait DeploymentDeps: Send + Sync {
     ) -> Result<AgentRef, ApiError>;
     /// Verify the environment is usable (→ `environment_archived`).
     async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError>;
-    /// Create a session for a fire; returns the session id.
-    async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError>;
+    /// Create a session for a fire, with its initial events; returns the
+    /// session id. Called again with the same `key`, it returns the session
+    /// the first call made.
+    async fn create_session(
+        &self,
+        ctx: &AuthContext,
+        deployment: &Deployment,
+        key: Option<&str>,
+    ) -> Result<String, ApiError>;
 }
 
 /// Deployment service.

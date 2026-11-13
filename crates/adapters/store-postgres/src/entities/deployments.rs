@@ -1,5 +1,4 @@
-//! `DeploymentsStore` on Postgres via Diesel — native exactly-once claim via
-//! `INSERT … ON CONFLICT DO NOTHING`.
+//! `DeploymentsStore` on Postgres via Diesel.
 
 use ::deployments::store::{DeploymentsStore, StoreError};
 use ::deployments::types::{Deployment, DeploymentId, DeploymentRun};
@@ -166,14 +165,5 @@ impl DeploymentsStore for PgDeploymentsStore {
         has_error: Option<bool>,
     ) -> Result<Vec<DeploymentRun>, StoreError> {
         runs::list(&self.backend, ws, deployment, has_error).await
-    }
-
-    async fn claim_fire(
-        &self,
-        ws: &WorkspaceId,
-        deployment: &DeploymentId,
-        scheduled_at: &str,
-    ) -> Result<bool, StoreError> {
-        runs::claim(&self.backend, ws, deployment, scheduled_at).await
     }
 }

@@ -10,6 +10,7 @@ use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::secrets::SecretStore;
+use signals_valkey::ValkeyChanges;
 use store_postgres::{
     PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
@@ -63,11 +64,23 @@ pub(super) async fn connect(
     Ok(Postgres { stores, load: Arc::new(load), backend: pg })
 }
 
-/// Start the scheduler on `backend`, delivering to `fires`, and answer it:
-/// the change feed applies the outbox to it. Every replica ticks: a due
-/// schedule goes to whichever claims it first.
-pub(super) fn schedule(backend: &PgBackend, fires: &Arc<FireRegistry>) -> PgScheduler {
-    let scheduler = PgScheduler::new(backend.clone(), fires.clone());
-    drop(scheduler.clone().spawn(TICK));
-    scheduler
+/// The fires every replica delivers: the built-in scheduler's tick (a due
+/// schedule goes to whichever replica claims it first) and the fires stream
+/// of an external scheduler. They start once the handlers are registered.
+#[derive(Debug)]
+pub struct FireSources {
+    tick: PgScheduler,
+    feed: ValkeyChanges,
+}
+
+impl FireSources {
+    pub(super) fn new(tick: PgScheduler, feed: ValkeyChanges) -> Self {
+        Self { tick, feed }
+    }
+
+    /// Start delivering to `fires`.
+    pub(crate) fn start(self, fires: &Arc<FireRegistry>) {
+        drop(self.tick.spawn(TICK));
+        drop(self.feed.spawn_fires(fires.clone()));
+    }
 }

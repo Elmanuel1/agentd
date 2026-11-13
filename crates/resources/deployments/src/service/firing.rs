@@ -26,8 +26,9 @@ impl DeploymentsService {
     /// The scheduled fire path: [`crate::fire::DeploymentFire`] and `/internal/fire`.
     ///
     /// Contract: business failures are RECORDED (error run) and returned as
-    /// success; the scheduler never retries. Paused/archived scheduled ticks
-    /// are dropped silently (paused suppresses scheduled fires only).
+    /// success. A repeat of the same tick makes no second run or session.
+    /// Paused/archived scheduled ticks are dropped silently (paused
+    /// suppresses scheduled fires only).
     pub async fn fire_scheduled(
         &self,
         ctx: &AuthContext,
@@ -39,19 +40,6 @@ impl DeploymentsService {
         match d.status {
             DeploymentStatus::Paused | DeploymentStatus::Archived => Ok(None),
             DeploymentStatus::Active => {
-                // Exactly-once across replicas: atomically CLAIM the
-                // (deployment, scheduled_at) tick at the store. A read-then-
-                // write dup check would let two replicas both pass and
-                // double-fire; the claim is a single test-and-set (Postgres
-                // UNIQUE index). Only the winner fires.
-                let claimed = self
-                    .store
-                    .claim_fire(&ctx.workspace, &d.id, &scheduled_at.to_wire())
-                    .await
-                    .map_err(map_store)?;
-                if !claimed {
-                    return Ok(None);
-                }
                 let run = self.fire(ctx, d, TriggerContext::Schedule { scheduled_at }).await?;
                 Ok(Some(run))
             }
@@ -77,7 +65,16 @@ impl DeploymentsService {
         mut d: Deployment,
         trigger: TriggerContext,
     ) -> Result<DeploymentRun, ApiError> {
-        let outcome = self.deps.create_session(ctx, &d).await;
+        // A scheduled fire may run again after a stop (the fire inbox takes
+        // it over), so its run and session ids come from the fire itself: the
+        // second attempt finds what the first made.
+        let key = match &trigger {
+            TriggerContext::Schedule { scheduled_at } => {
+                Some(format!("{}@{}", d.id.as_str(), scheduled_at.to_wire()))
+            }
+            TriggerContext::Manual {} => None,
+        };
+        let outcome = self.deps.create_session(ctx, &d, key.as_deref()).await;
         let (session_id, error) = match outcome {
             Ok(sid) => (Some(sid), None),
             Err(e) => (None, Some(classify_fire_error(&e))),
@@ -87,7 +84,7 @@ impl DeploymentsService {
             created_at: Timestamp::now(),
             deployment_id: d.id.clone(),
             error: error.clone(),
-            id: DeploymentRunId::generate(),
+            id: key.as_deref().map_or_else(DeploymentRunId::generate, DeploymentRunId::derived),
             session_id,
             trigger_context: trigger.clone(),
             tag: DeploymentRunTag::DeploymentRun,

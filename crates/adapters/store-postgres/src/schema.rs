@@ -47,15 +47,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    deployment_claims (workspace_id, deployment_id, scheduled_at) {
-        workspace_id -> Text,
-        deployment_id -> Text,
-        scheduled_at -> Text,
-        claimed_at -> Timestamptz,
-    }
-}
-
-diesel::table! {
     files (workspace_id, file_id) {
         workspace_id -> Text,
         file_id -> Text,

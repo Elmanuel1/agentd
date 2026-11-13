@@ -3151,6 +3151,7 @@ name = "signals-valkey"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "engine",
  "futures",
  "redis",

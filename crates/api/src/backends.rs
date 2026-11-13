@@ -9,6 +9,7 @@ use blobs_s3::{BlobError, S3BlobStore};
 mod postgres;
 mod stores;
 
+pub use postgres::FireSources;
 pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
@@ -23,8 +24,7 @@ use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use shared::ports::secrets::{SecretError, SecretStore};
 use signals_valkey::{ValkeyChanges, ValkeySignals};
-use store_postgres::PgError;
-use store_postgres::ScheduleOutbox;
+use store_postgres::{PgError, PgFireClaims, PgScheduler, ScheduleOutbox};
 
 use crate::config::{BlobsConfig, Config, KeysConfig, Role, StoreConfig, WorkConfig};
 
@@ -40,8 +40,11 @@ pub struct Backends {
     pub environment_keys: Arc<dyn EnvironmentKeySource>,
     /// The keys work tokens and placeholders are signed with.
     pub system: SystemKeys,
-    /// Where the scheduler delivers fires; the modules register their handlers here.
+    /// Where the schedulers deliver fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
+    /// What delivers fires, started once the handlers are registered; none
+    /// in a rig that fires nothing.
+    pub fire_sources: Option<FireSources>,
     /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
     pub extra_models: Vec<String>,
     /// The instruments every boundary records into.
@@ -123,24 +126,24 @@ impl Backends {
         let admin = Arc::new(AwsAdminKeys::new(aws.clone(), pepper.clone()));
         let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
         let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws.clone()), metrics.clone()));
-        let fires = Arc::new(FireRegistry::new());
-        let (stores, load, keys) = match &config.store {
+        let (stores, load, keys, fires, sources) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
                 let s = secrets.clone();
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
-                let scheduler = postgres::schedule(&pg.backend, &fires);
+                let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
+                let scheduler = PgScheduler::new(pg.backend.clone(), fires.clone());
                 let feed = ValkeyChanges::new(
-                    url,
+                    &config.streams.valkey_url,
                     &config.streams.changes_prefix,
                     &format!("agentd-{}", uuid::Uuid::new_v4()),
                 )
                 .map_err(|e| BootError::Signals(e.to_string()))?;
-                drop(feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(scheduler)))]));
+                drop(feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone())))]));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                (pg.stores, pg.load, keys)
+                (pg.stores, pg.load, keys, fires, FireSources::new(scheduler, feed))
             }
         };
         let url = &config.streams.valkey_url;
@@ -163,6 +166,7 @@ impl Backends {
             environment_keys,
             system,
             fires,
+            fire_sources: Some(sources),
             extra_models,
             metrics,
             signals,

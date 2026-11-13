@@ -24,7 +24,7 @@ use shared::ports::keys::KeyPepper;
 use shared::ports::secrets::{ExposeSecret, SecretString};
 
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
-use store_postgres::PgBackend;
+use store_postgres::{PgBackend, PgFireClaims};
 use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
 use tower::ServiceExt;
 use vaults::variables::VaultCredentials;
@@ -73,6 +73,7 @@ impl Default for Streaming {
 
 fn app(
     stores: &Stores,
+    pg: &PgBackend,
     keys: Arc<StaticKeySource>,
     env_keys: &EnvironmentKeysService,
     streaming: Streaming,
@@ -87,7 +88,8 @@ fn app(
             placeholders: shared::hash::KeyRing::single(EGRESS_KEY.to_vec()),
             api_base_url: "http://agentd.test".into(),
         },
-        fires: Arc::new(FireRegistry::new()),
+        fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))),
+        fire_sources: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: streaming.signals,
@@ -109,6 +111,7 @@ pub enum Auth<'a> {
 pub struct Rig {
     pub app: Router,
     pub stores: Stores,
+    pub pg: PgBackend,
     pub keys: Arc<StaticKeySource>,
     pub env_keys: EnvironmentKeysService,
     pub runtime_key: SecretString,
@@ -144,13 +147,13 @@ impl Rig {
         keys.register(KEY, &org, &ws, "apikey_01a");
         keys.register(KEY_B, &org, &ws_b, "apikey_01b");
         let secrets = Arc::new(MemorySecretStore::default());
-        let stores = Stores::postgres(backend, blobs, secrets.clone());
+        let stores = Stores::postgres(backend.clone(), blobs, secrets.clone());
         let runtime_key = material::generate(KeyKind::Environment);
         let env_keys =
             EnvironmentKeysService::new(stores.environment_keys.clone(), Arc::new(KeyPepper::new(&[9; 32])))
                 .with_runtime_key(&runtime_key);
         let keys = Arc::new(keys);
-        let app = app(&stores, keys.clone(), &env_keys, Streaming::default());
+        let app = app(&stores, &backend, keys.clone(), &env_keys, Streaming::default());
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
@@ -167,17 +170,17 @@ impl Rig {
             )
             .with_cloud_variables(cloud),
         );
-        Some(Self { app, stores, keys, env_keys, runtime_key, work, secrets, org, ws, ws_b })
+        Some(Self { app, stores, pg: backend, keys, env_keys, runtime_key, work, secrets, org, ws, ws_b })
     }
 
     /// A fresh app over the same database and keys, as after a restart.
     pub fn restarted(&self) -> Router {
-        app(&self.stores, self.keys.clone(), &self.env_keys, Streaming::default())
+        app(&self.stores, &self.pg, self.keys.clone(), &self.env_keys, Streaming::default())
     }
 
     /// Another replica over `stores`, streaming as `streaming` says.
     pub fn replica(&self, stores: &Stores, streaming: Streaming) -> Router {
-        app(stores, self.keys.clone(), &self.env_keys, streaming)
+        app(stores, &self.pg, self.keys.clone(), &self.env_keys, streaming)
     }
 
     pub fn ctx(&self) -> AuthContext {

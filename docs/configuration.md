@@ -292,17 +292,30 @@ A tick whose kind has no handler fails and is logged as dropped.
 
 Schedules go through an outbox. Each change (a deployment's create, pause,
 unpause or archive) is written to `schedule_outbox` in the transaction of the
-deployment write that causes it. One replica at a time, holding an advisory
-lock, relays the rows every second, in order, to the scheduler sink and
-removes each once applied; a change the sink refuses stops the pass and is
-retried by the next. The built-in sink is the Postgres scheduler: one
-`schedules` row per target, whose due rows every replica claims every 10 s
-with `FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it
-after the commit. A fire more than a minute late is skipped, so after
-downtime a schedule fires again from its next time, with no backfill.
-`claim_fire` keeps each deployment fire exactly once. Another sink (a
-Temporal or EventBridge schedule fed through Kafka, say) replaces it behind
-the same `SchedulerPort`.
+deployment write that causes it, and removed in the same transaction, so the
+table stays empty and the change lives on in the WAL. Debezium Server reads
+the WAL into the Valkey stream `agentd.public.schedule_outbox`, and one
+replica at a time, holding a lease in Valkey, applies the changes in order to
+the scheduler sink; a change the sink refuses stops the stream until it
+applies. The built-in sink is the Postgres scheduler: one `schedules` row per
+target, whose due rows every replica claims every 10 s with
+`FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it after
+the commit. A fire more than a minute late is skipped, so after downtime a
+schedule fires again from its next time, with no backfill. Another sink (a
+Temporal worker, say) reads the same stream and delivers its fires to the
+Valkey stream `agentd.fires`, one entry per fire with the fields `spec` (the
+schedule's spec as JSON) and `scheduled_at` (RFC 3339).
+
+Every fire, from either source, passes the fire inbox, `fire_claims`, before
+its handler runs. A delivery may repeat (a scheduler retry, a stream entry a
+stopped replica left pending), so the first delivery claims the fire by its
+target and time, and the others find it held or done. The owner holds the
+fire for 15 minutes; a fire not done by then is taken over by the next
+delivery, up to 3 runs, after which it is dropped and logged at `ERROR`. A
+deployment fire derives its run and session ids from the deployment and the
+fire time, so a run taken over finds the session and run the first made and
+makes no second one. A stream entry is acknowledged once its fire ran or
+needs no run.
 
 ## Telemetry
 

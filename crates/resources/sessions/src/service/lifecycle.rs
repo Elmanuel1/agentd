@@ -33,6 +33,9 @@ impl SessionsService {
         }
         let initial: Vec<EventPayload> = req.initial_events.into_iter().map(EventPayload::User).collect();
         validate_sendable("initial_events", &initial)?;
+        if let Some(made) = self.made(ctx, req.id.as_ref(), &initial).await? {
+            return Ok(made);
+        }
         let mut agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
         if let AgentRefInput::Tagged(overrides) = agent_ref {
             agent = overrides.apply(agent, &self.catalog)?;
@@ -45,7 +48,7 @@ impl SessionsService {
             budget: req.budget,
             created_at: now,
             environment_id,
-            id: SessionId::generate(),
+            id: req.id.unwrap_or_else(SessionId::generate),
             metadata: req.metadata,
             outcome_evaluations: vec![],
             resources: req.resources.into_iter().map(|r| r.into_resource(now)).collect(),
@@ -67,6 +70,26 @@ impl SessionsService {
             self.send_events(ctx, session.id.as_str(), None, initial).await?;
         }
         Ok(session)
+    }
+
+    /// The session an earlier create with `id` made, with the `initial`
+    /// events queued when that create stopped before queueing them.
+    async fn made(
+        &self,
+        ctx: &AuthContext,
+        id: Option<&SessionId>,
+        initial: &[EventPayload],
+    ) -> Result<Option<Session>, ApiError> {
+        let Some(id) = id else { return Ok(None) };
+        let session = match self.store.get(&ctx.workspace, id).await {
+            Ok(session) => session,
+            Err(StoreError::NotFound) => return Ok(None),
+            Err(e) => return Err(map_store(e)),
+        };
+        if !initial.is_empty() && self.events.head(&ctx.workspace, id).await.map_err(map_store)?.seq == 0 {
+            self.send_events(ctx, id.as_str(), None, initial.to_vec()).await?;
+        }
+        Ok(Some(session))
     }
 
     /// `GET /v1/sessions/{id}`.

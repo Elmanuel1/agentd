@@ -1,4 +1,4 @@
-//! A deployment's run records and the exactly-once claim of each fire.
+//! A deployment's run records.
 
 use ::deployments::store::StoreError;
 use ::deployments::types::{DeploymentId, DeploymentRun};
@@ -7,7 +7,7 @@ use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::WorkspaceId;
 
-use crate::schema::{deployment_claims, deployment_runs};
+use crate::schema::deployment_runs;
 use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
 
 #[derive(diesel::Insertable)]
@@ -19,14 +19,6 @@ struct NewRun {
     created_at: DateTime<Utc>,
     has_error: bool,
     doc: serde_json::Value,
-}
-
-#[derive(diesel::Insertable)]
-#[diesel(table_name = deployment_claims)]
-struct NewClaim {
-    workspace_id: String,
-    deployment_id: String,
-    scheduled_at: String,
 }
 
 pub(super) async fn push(
@@ -44,6 +36,7 @@ pub(super) async fn push(
             has_error: run.error.is_some(),
             doc: to_doc(&run)?,
         })
+        .on_conflict_do_nothing()
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;
@@ -71,26 +64,4 @@ pub(super) async fn list(
         .await
         .map_err(diesel_be)?;
     docs.into_iter().map(parse_doc).collect()
-}
-
-pub(super) async fn claim(
-    backend: &PgBackend,
-    ws: &WorkspaceId,
-    deployment: &DeploymentId,
-    scheduled_at: &str,
-) -> Result<bool, StoreError> {
-    let mut conn = backend.diesel.write().await.map_err(pool_be)?;
-    // The PK conflict is the exactly-once boundary: exactly one replica's
-    // insert affects a row; the rest do nothing.
-    let affected = diesel::insert_into(deployment_claims::table)
-        .values(NewClaim {
-            workspace_id: ws.as_str().to_owned(),
-            deployment_id: deployment.as_str().to_owned(),
-            scheduled_at: scheduled_at.to_owned(),
-        })
-        .on_conflict_do_nothing()
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-    Ok(affected == 1)
 }

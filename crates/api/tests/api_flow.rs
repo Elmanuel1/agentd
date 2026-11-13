@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
 
 use shared::Timestamp;
-use store_postgres::PgBackend;
+use store_postgres::{PgBackend, PgFireClaims};
 use tower::ServiceExt;
 
 const KEY: &str = "test-key-workspace-a";
@@ -44,6 +44,8 @@ async fn app() -> Option<Router> {
     keys.register(KEY_B, &org, &format!("wrkspc_b{stamp}"), "apikey_01b");
     let load = Arc::new(store_postgres::PgLoad::new(backend.diesel.clone()));
     let backends = Backends {
+        fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(backend.clone())))),
+        fire_sources: None,
         stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
         admin_keys: Arc::new(StaticAdminKeys::default()),
@@ -53,7 +55,6 @@ async fn app() -> Option<Router> {
             placeholders: shared::hash::KeyRing::single(vec![2; 32]),
             api_base_url: "http://agentd.test".into(),
         },
-        fires: Arc::new(FireRegistry::new()),
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: Arc::new(sessions::signals::LocalSignals::default()),
@@ -302,7 +303,8 @@ async fn deployment_create_and_internal_fire_through_http() {
     let (_, events) = call(&app, "GET", &format!("/v1/sessions/{sid}/events"), None).await;
     assert_eq!(events["data"][0]["type"], "user.message");
 
-    // Idempotency: same scheduled_at again → not fired.
+    // The same tick again finds the first fire's run and session: no second
+    // run, session or kickoff.
     let (_, again) = call(
         &app,
         "POST",
@@ -310,7 +312,13 @@ async fn deployment_create_and_internal_fire_through_http() {
         Some(&format!(r#"{{"deployment_id":"{did}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#)),
     )
     .await;
-    assert_eq!(again["fired"], false);
+    assert_eq!(again["run"]["id"], fired["run"]["id"]);
+    assert_eq!(again["run"]["session_id"], fired["run"]["session_id"]);
+    let (_, runs) = call(&app, "GET", &format!("/v1/deployment_runs?deployment_id={did}"), None).await;
+    assert_eq!(runs["data"].as_array().unwrap().len(), 1);
+    let (_, events) = call(&app, "GET", &format!("/v1/sessions/{sid}/events"), None).await;
+    let kickoffs = events["data"].as_array().unwrap().iter().filter(|e| e["type"] == "user.message").count();
+    assert_eq!(kickoffs, 1);
 }
 
 #[tokio::test]

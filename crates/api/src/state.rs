@@ -61,6 +61,7 @@ impl AppState {
             environment_keys,
             system,
             fires,
+            fire_sources,
             extra_models,
             metrics,
             signals,
@@ -116,6 +117,9 @@ impl AppState {
         ];
         for handler in modules.iter().flat_map(|m| &m.fire_handlers) {
             fires.register(Arc::new(Observed::new(handler.clone(), metrics.clone())))?;
+        }
+        if let Some(sources) = fire_sources {
+            sources.start(&fires);
         }
         let modules = match role.serves_api() {
             true => modules,

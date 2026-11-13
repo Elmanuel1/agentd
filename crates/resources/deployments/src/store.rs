@@ -52,19 +52,4 @@ pub trait DeploymentsStore: Send + Sync {
         deployment: &DeploymentId,
         has_error: Option<bool>,
     ) -> Result<Vec<DeploymentRun>, StoreError>;
-
-    /// Atomically claim one `(deployment, scheduled_at)` fire.
-    ///
-    /// Returns `true` if this call won the claim (the caller should fire),
-    /// `false` if another replica already claimed it (skip). This is the
-    /// exactly-once boundary across replicas — it MUST be atomic. The
-    /// Postgres impl is `INSERT … ON CONFLICT DO NOTHING` on a
-    /// `UNIQUE(deployment_id, scheduled_at)` index (rows-affected = the
-    /// boolean). App code must never do a read-then-write dup check.
-    async fn claim_fire(
-        &self,
-        ws: &WorkspaceId,
-        deployment: &DeploymentId,
-        scheduled_at: &str,
-    ) -> Result<bool, StoreError>;
 }

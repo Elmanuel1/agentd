@@ -1,7 +1,8 @@
 //! The change feed over Valkey Streams: Debezium Server writes each table's
 //! committed changes to the stream `<prefix>.public.<table>` (its Redis
-//! sink, `extended` format), and the replicas read them in the consumer
-//! group `agentd`. An entry is acknowledged once its handler succeeds; an
+//! sink, `extended` format), an external scheduler writes its fires to
+//! `<prefix>.fires`, and the replicas read them in the consumer group
+//! `agentd`. An entry is acknowledged once its handler succeeds; an
 //! entry left pending by a replica that stopped is claimed by another after
 //! [`RECLAIM_MS`]. An ordered handler's stream is read by one replica at a
 //! time, which holds a lease in Valkey, in entry order, stopping at a failure.
@@ -9,12 +10,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use redis::aio::MultiplexedConnection;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,
 };
 use redis::{AsyncCommands, Client, RedisError, RedisResult, SetExpiry, SetOptions};
 use shared::ports::changes::{Change, ChangeHandler};
+use shared::ports::fire::FireRegistry;
+
+use crate::fires::Fires;
 
 /// The consumer group every replica reads in.
 const GROUP: &str = "agentd";
@@ -28,6 +33,15 @@ const BATCH: usize = 100;
 const LEASE_MS: u64 = 30_000;
 /// The pause after a connection or handler failure.
 const BACKOFF: Duration = Duration::from_secs(1);
+
+/// What reads one stream.
+#[async_trait]
+pub(crate) trait Consumer: Send + Sync {
+    /// Whether its entries are read one at a time, in order.
+    fn ordered(&self) -> bool;
+    /// Handle one entry; `true` once it needs no more handling.
+    async fn consume(&self, entry: &StreamId) -> bool;
+}
 
 /// Reads the change streams of one Valkey.
 #[derive(Clone)]
@@ -52,24 +66,31 @@ impl ValkeyChanges {
 
     /// Read each handler's stream on a task of its own.
     pub fn spawn(&self, handlers: Vec<Arc<dyn ChangeHandler>>) -> Vec<tokio::task::JoinHandle<()>> {
-        handlers.into_iter().map(|h| tokio::spawn(self.clone().run(h))).collect()
+        handlers
+            .into_iter()
+            .map(|h| {
+                let stream = format!("{}.public.{}", self.prefix, h.table());
+                tokio::spawn(self.clone().run(stream, Arc::new(Changes(h))))
+            })
+            .collect()
     }
 
-    fn stream(&self, table: &str) -> String {
-        format!("{}.public.{table}", self.prefix)
+    /// Run the fires an external scheduler writes to `<prefix>.fires`.
+    pub fn spawn_fires(&self, fires: Arc<FireRegistry>) -> tokio::task::JoinHandle<()> {
+        let stream = format!("{}.fires", self.prefix);
+        tokio::spawn(self.clone().run(stream, Arc::new(Fires::new(fires))))
     }
 
-    async fn run(self, handler: Arc<dyn ChangeHandler>) {
-        let stream = self.stream(handler.table());
+    async fn run(self, stream: String, consumer: Arc<dyn Consumer>) {
         loop {
-            if let Err(e) = self.serve(&stream, handler.as_ref()).await {
+            if let Err(e) = self.serve(&stream, consumer.as_ref()).await {
                 tracing::warn!(stream = %stream, error = %e, "changes: the stream read failed; reconnecting");
             }
             tokio::time::sleep(BACKOFF).await;
         }
     }
 
-    async fn serve(&self, stream: &str, handler: &dyn ChangeHandler) -> RedisResult<()> {
+    async fn serve(&self, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         let created: RedisResult<()> = conn.xgroup_create_mkstream(stream, GROUP, "0").await;
         match created {
@@ -89,12 +110,12 @@ impl ValkeyChanges {
         &self,
         conn: &mut MultiplexedConnection,
         stream: &str,
-        handler: &dyn ChangeHandler,
+        handler: &dyn Consumer,
     ) -> RedisResult<()> {
         let stale = self.claim(conn, stream, RECLAIM_MS).await?;
         let fresh = self.read(conn, stream).await?;
         for entry in stale.into_iter().chain(fresh) {
-            if handle(handler, &entry).await {
+            if handler.consume(&entry).await {
                 let _: usize = conn.xack(stream, GROUP, &[&entry.id]).await?;
             }
         }
@@ -107,7 +128,7 @@ impl ValkeyChanges {
         &self,
         conn: &mut MultiplexedConnection,
         stream: &str,
-        handler: &dyn ChangeHandler,
+        handler: &dyn Consumer,
     ) -> RedisResult<()> {
         if !self.lease(conn, stream).await? {
             tokio::time::sleep(Duration::from_millis(LEASE_MS / 3)).await;
@@ -118,7 +139,7 @@ impl ValkeyChanges {
             entries = self.read(conn, stream).await?;
         }
         for entry in entries {
-            if !handle(handler, &entry).await {
+            if !handler.consume(&entry).await {
                 tokio::time::sleep(BACKOFF).await;
                 return Ok(());
             }
@@ -161,17 +182,27 @@ impl ValkeyChanges {
     }
 }
 
-/// Handle one entry; `true` once it needs no more handling (done, or not a
-/// change at all, such as a tombstone).
-async fn handle(handler: &dyn ChangeHandler, entry: &StreamId) -> bool {
-    let value: Option<String> = entry.get("value");
-    let change = value.and_then(|v| serde_json::from_str(&v).ok()).and_then(|v| Change::from_debezium(&v));
-    let Some(change) = change else { return true };
-    match handler.handle(&change).await {
-        Ok(()) => true,
-        Err(e) => {
-            tracing::warn!(table = %change.table, id = %entry.id, error = %e, "changes: a handler failed; it runs again");
-            false
+/// A table's changes, as Debezium writes them.
+struct Changes(Arc<dyn ChangeHandler>);
+
+#[async_trait]
+impl Consumer for Changes {
+    fn ordered(&self) -> bool {
+        self.0.ordered()
+    }
+
+    /// Done once handled, or when the entry is not a change at all (a tombstone).
+    async fn consume(&self, entry: &StreamId) -> bool {
+        let value: Option<String> = entry.get("value");
+        let change =
+            value.and_then(|v| serde_json::from_str(&v).ok()).and_then(|v| Change::from_debezium(&v));
+        let Some(change) = change else { return true };
+        match self.0.handle(&change).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(table = %change.table, id = %entry.id, error = %e, "changes: a handler failed; it runs again");
+                false
+            }
         }
     }
 }

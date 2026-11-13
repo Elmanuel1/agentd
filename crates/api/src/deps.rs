@@ -123,7 +123,12 @@ impl DeploymentDeps for RealDeploymentDeps {
         Ok(())
     }
 
-    async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError> {
+    async fn create_session(
+        &self,
+        ctx: &AuthContext,
+        deployment: &Deployment,
+        key: Option<&str>,
+    ) -> Result<String, ApiError> {
         // Build the session create from the frozen deployment config.
         let mut req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "agent": {
@@ -137,20 +142,17 @@ impl DeploymentDeps for RealDeploymentDeps {
         }))
         .map_err(|e| ApiError::internal(e.to_string()))?;
         req.deployment_id = Some(deployment.id.as_str().to_owned());
-        let session = self.sessions.create(ctx, req).await?;
-        // Queue the deployment's initial events as the kickoff.
-        let payloads: Vec<sessions::events::EventPayload> = deployment
+        req.id = key.map(sessions::types::SessionId::derived);
+        req.initial_events = deployment
             .initial_events
             .iter()
             .map(|e| match e {
                 InitialEvent::UserMessage { content } => {
-                    sessions::events::EventPayload::User(sessions::events::UserEvent::Message {
-                        content: content.clone(),
-                    })
+                    sessions::events::UserEvent::Message { content: content.clone() }
                 }
             })
             .collect();
-        self.sessions.send_events(ctx, session.id.as_str(), None, payloads).await?;
+        let session = self.sessions.create(ctx, req).await?;
         Ok(session.id.as_str().to_owned())
     }
 }

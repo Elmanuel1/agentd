@@ -7,6 +7,7 @@
 
 mod budget;
 mod changes;
+mod fires;
 
 use std::time::Duration;
 

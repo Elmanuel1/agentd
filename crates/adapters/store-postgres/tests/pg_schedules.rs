@@ -14,7 +14,7 @@ use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::fire::{FireError, FireHandler, FireRegistry};
 use shared::ports::{FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, SchedulerPort, TenantRef};
 use shared::AuthContext;
-use store_postgres::{PgBackend, PgScheduler, ScheduleOutbox};
+use store_postgres::{PgBackend, PgFireClaims, PgScheduler, ScheduleOutbox};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -76,7 +76,9 @@ async fn a_due_schedule_fires_once_across_two_schedulers_and_moves_to_its_next_t
     if !enabled() {
         return;
     }
-    let (pg, seen, fires) = (backend().await, Arc::new(Seen::default()), Arc::new(FireRegistry::new()));
+    let pg = backend().await;
+    let (seen, fires) =
+        (Arc::new(Seen::default()), Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))));
     fires.register(seen.clone()).unwrap();
     let (a, b) = (PgScheduler::new(pg.clone(), fires.clone()), PgScheduler::new(pg.clone(), fires.clone()));
     let s = spec(&uniq("twice"));
@@ -97,7 +99,9 @@ async fn a_fire_more_than_a_minute_late_is_skipped_and_a_paused_one_waits() {
     if !enabled() {
         return;
     }
-    let (pg, seen, fires) = (backend().await, Arc::new(Seen::default()), Arc::new(FireRegistry::new()));
+    let pg = backend().await;
+    let (seen, fires) =
+        (Arc::new(Seen::default()), Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))));
     fires.register(seen.clone()).unwrap();
     let sched = PgScheduler::new(pg.clone(), fires.clone());
     // Hourly, its last time about 30 minutes ago: more than a minute late.

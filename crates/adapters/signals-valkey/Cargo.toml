@@ -10,6 +10,7 @@ shared = { workspace = true }
 sessions = { workspace = true }
 engine = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 futures = { workspace = true }
 redis = { workspace = true }
 serde_json = { workspace = true }

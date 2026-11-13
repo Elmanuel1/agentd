@@ -4,7 +4,7 @@ use serde::Deserialize;
 use shared::limits::{validate_array_max, validate_model_supported, values, ModelCatalog};
 use shared::{ApiError, Metadata, MetadataPatch, Patch};
 
-use super::{Budget, SessionResourceInput};
+use super::{Budget, SessionId, SessionResourceInput};
 use crate::events::UserEvent;
 
 /// The `agent` of a create: an id, a pinned reference, or a reference with
@@ -105,6 +105,10 @@ pub struct CreateSessionRequest {
     /// Set by a deployment fire; never read from the wire.
     #[serde(skip)]
     pub deployment_id: Option<String>,
+    /// The id a repeatable create gives the session (a deployment fire's);
+    /// never read from the wire.
+    #[serde(skip)]
+    pub id: Option<SessionId>,
 }
 
 /// The agent fields a session update may change (only while not running).

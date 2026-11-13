@@ -1,6 +1,7 @@
 //! Scheduled fires through the [`FireRegistry`], over live Postgres: each
 //! resource's handler runs the fire under the schedule's tenant, with no API
-//! key involved, and a fire that cannot run is an error.
+//! key involved, a fire that cannot run is an error, and the fire inbox runs
+//! each fire once however often it is delivered.
 //!
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`; the dream test also needs
 //! `AGENTD_AWS_ENDPOINT`.
@@ -14,16 +15,18 @@ use async_trait::async_trait;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use chrono::Utc;
 use deployments::service::DeploymentDeps;
+use deployments::types::DeploymentId;
 use deployments::types::{Deployment, TriggerContext};
 use deployments::DeploymentsService;
+use diesel_async::RunQueryDsl;
 use dreams::types::{Candidate, Dream, DreamId, Verdict};
 use dreams::{DreamsService, Proposer, ReviewGate};
 use memory::MemoriesService;
 use serde_json::json;
-use shared::ports::fire::{FireError, FireRegistry};
+use shared::ports::fire::{Claim, FireClaims, FireError, FireRegistry};
 use shared::ports::{FakeScheduler, FireTarget, ScheduleSpec, TenantRef};
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
-use store_postgres::{PgBackend, PgDeploymentsStore, PgDreamsStore, PgMemoryStore};
+use store_postgres::{PgBackend, PgDeploymentsStore, PgDreamsStore, PgFireClaims, PgMemoryStore};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
@@ -61,7 +64,12 @@ impl DeploymentDeps for FakeDeps {
     async fn check_environment(&self, _ctx: &AuthContext, _env: &str) -> Result<(), ApiError> {
         Ok(())
     }
-    async fn create_session(&self, _ctx: &AuthContext, _d: &Deployment) -> Result<String, ApiError> {
+    async fn create_session(
+        &self,
+        _ctx: &AuthContext,
+        _d: &Deployment,
+        _key: Option<&str>,
+    ) -> Result<String, ApiError> {
         Ok("sesn_01fake".into())
     }
 }
@@ -71,11 +79,10 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     if !enabled() {
         return;
     }
-    let svc = Arc::new(DeploymentsService::new(
-        Arc::new(PgDeploymentsStore::new(backend().await)),
-        Arc::new(FakeDeps),
-    ));
-    let fires = FireRegistry::new();
+    let pg = backend().await;
+    let svc =
+        Arc::new(DeploymentsService::new(Arc::new(PgDeploymentsStore::new(pg.clone())), Arc::new(FakeDeps)));
+    let fires = FireRegistry::new(Arc::new(PgFireClaims::new(pg)));
     for handler in deployments::module(svc.clone()).fire_handlers {
         fires.register(handler).unwrap();
     }
@@ -97,7 +104,12 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
         tenant: TenantRef::of(&ctx),
     };
 
-    fires.fire(&spec, Utc::now()).await.unwrap();
+    let at = Utc::now();
+    assert_eq!(fires.fire(&spec, at).await.unwrap(), Claim::Run);
+    assert_eq!(fires.fire(&spec, at).await.unwrap(), Claim::Done);
+    // A fire taken over after a stop runs again and makes no second run.
+    let scheduled_at = Timestamp::from_datetime(at);
+    svc.fire_scheduled(&ctx, d.id.as_str(), scheduled_at).await.unwrap();
 
     let runs = svc.runs(&ctx, d.id.as_str(), None).await.unwrap();
     assert_eq!(runs.len(), 1);
@@ -145,13 +157,13 @@ async fn dream_fire_runs_under_the_schedules_tenant_and_a_missing_dream_is_an_er
     let pg = backend().await;
     let memories = Arc::new(MemoriesService::new(Arc::new(PgMemoryStore::new(pg.clone(), blobs))));
     let svc = Arc::new(DreamsService::new(
-        Arc::new(PgDreamsStore::new(pg)),
+        Arc::new(PgDreamsStore::new(pg.clone())),
         memories.clone(),
         Arc::new(NoCandidates),
         Arc::new(NoCandidates),
         scheduler.clone(),
     ));
-    let fires = FireRegistry::new();
+    let fires = FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())));
     for handler in dreams::module(svc.clone()).fire_handlers {
         fires.register(handler).unwrap();
     }
@@ -175,4 +187,67 @@ async fn dream_fire_runs_under_the_schedules_tenant_and_a_missing_dream_is_an_er
     let missing = ScheduleSpec { target: FireTarget::new("dream", DreamId::generate().as_str()), ..spec };
     let err = fires.fire(&missing, Utc::now()).await.unwrap_err();
     assert!(matches!(&err, FireError::Failed(m) if m.contains("dream not found")), "{err}");
+}
+
+fn spec(ctx: &AuthContext) -> ScheduleSpec {
+    ScheduleSpec {
+        cron: "0 3 * * *".into(),
+        timezone: "UTC".into(),
+        target: FireTarget::new("deployment", DeploymentId::generate().as_str()),
+        tenant: TenantRef::of(ctx),
+    }
+}
+
+/// Move the fire's claim back past its lease, as if its owner stopped.
+async fn expire(pg: &PgBackend, spec: &ScheduleSpec) {
+    let mut conn = pg.diesel.write().await.unwrap();
+    diesel::sql_query("UPDATE fire_claims SET claimed_at = now() - interval '1 hour' WHERE target = $1")
+        .bind::<diesel::sql_types::Text, _>(spec.target.key())
+        .execute(&mut conn)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn one_of_many_concurrent_claims_runs_the_fire_and_the_rest_wait() {
+    if !enabled() {
+        return;
+    }
+    let claims = Arc::new(PgFireClaims::new(backend().await));
+    let spec = spec(&tenant("claim"));
+    let at = Utc::now();
+    let takes: Vec<_> = (0..8)
+        .map(|_| {
+            let (c, s) = (claims.clone(), spec.clone());
+            tokio::spawn(async move { c.take(&s, at).await.unwrap() })
+        })
+        .collect();
+    let mut got = Vec::new();
+    for t in takes {
+        got.push(t.await.unwrap());
+    }
+    assert_eq!(got.iter().filter(|c| **c == Claim::Run).count(), 1, "{got:?}");
+    assert!(got.iter().all(|c| matches!(c, Claim::Run | Claim::Held)), "{got:?}");
+    claims.finish(&spec, at).await.unwrap();
+    assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Done);
+    assert_eq!(claims.take(&spec, at + chrono::Duration::days(1)).await.unwrap(), Claim::Run);
+}
+
+#[tokio::test]
+async fn a_claim_whose_owner_stopped_is_taken_over_until_its_attempts_run_out() {
+    if !enabled() {
+        return;
+    }
+    let pg = backend().await;
+    let claims = PgFireClaims::new(pg.clone());
+    let spec = spec(&tenant("lease"));
+    let at = Utc::now();
+    assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Run);
+    assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Held);
+    for _ in 0..2 {
+        expire(&pg, &spec).await;
+        assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Run);
+    }
+    expire(&pg, &spec).await;
+    assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Done);
 }
