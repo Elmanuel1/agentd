@@ -26,6 +26,7 @@ pub use checkout::{DieselPgPool, PooledConnection};
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 
+pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;
 pub use entities::api_keys::PgApiKeysStore;
 pub use entities::deployments::PgDeploymentsStore;

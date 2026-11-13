@@ -86,6 +86,11 @@ impl KeyRing {
         let keys = self.keys.iter().map(|(id, k)| (id.clone(), hmac_sha256(k, purpose.as_bytes()).to_vec()));
         Self { keys: keys.collect() }
     }
+
+    /// Each key derived for `purpose`, the first key's first.
+    pub(crate) fn derived(&self, purpose: &str) -> Vec<[u8; 32]> {
+        self.keys.iter().map(|(_, k)| hmac_sha256(k, purpose.as_bytes())).collect()
+    }
 }
 
 /// Signs claims into `<prefix><key id>.<base64url claims>.<base64url mac>`

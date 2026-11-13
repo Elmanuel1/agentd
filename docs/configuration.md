@@ -15,7 +15,6 @@ fakes in test code, never from configuration ([Security](#security)).
 | Record store | `AGENTD_STORE` | `postgres` |
 | Blob store | `AGENTD_BLOBS` | `s3` |
 | Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
-| API keys | `AGENTD_KEYS` | `aws`: workspace and environment keys in Postgres and admin keys in Secrets Manager, digested with a pepper in Secrets Manager (see [API keys](#api-keys)) |
 
 ## Settings
 
@@ -24,7 +23,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_URL` | required | Postgres connection |
 | `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
-| `AGENTD_VALKEY_URL` | unset (signals stay in the process) | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another; `rediss://` for TLS |
+| `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
@@ -35,6 +34,12 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_S3_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
 | `AGENTD_S3_CREATE_BUCKET` | `0` | Create the bucket at boot when it is missing |
 | `AGENTD_S3_LOCATION_CONSTRAINT` | the region on AWS S3 (none in `us-east-1`); none with a custom endpoint | The location constraint a created bucket gets, for an S3-compatible store that names locations its own way |
+| `AGENTD_API_KEY_PEPPERS` | required | `<id>:<hex>,…`: the peppers every API key digest is keyed with (see [Keys from the environment](#keys-from-the-environment)) |
+| `AGENTD_WORK_TOKEN_KEYS` | required | `<id>:<hex>,…`: the first signs work tokens, every one verifies them |
+| `AGENTD_PLACEHOLDER_KEYS` | required | `<id>:<hex>,…`: the same, for the placeholders of `environment_variable` credentials |
+| `AGENTD_RUNTIME_KEYS` | unset (no runtime key) | agentd's runtime keys, `sk-ant-oat01-…`, comma separated, the current one first |
+| `AGENTD_ANTHROPIC_API_KEY` | unset (no Anthropic models) | The loop's key for the Messages API |
+| `AGENTD_OPENROUTER_API_KEY` | unset (no OpenAI-compatible models) | The loop's key for the API at `AGENTD_MODEL_BASE_URL` |
 | `RUST_LOG` | `info` | Log level |
 
 
@@ -64,9 +69,9 @@ its results land on the call's thread. A coordinator's `send_to_agent` opens a
 roster thread that runs in later steps. An outcome is graded on the grader's
 own thread.
 
-The loop calls the model itself, with one key per provider:
-`agentd model-key set --provider anthropic|openrouter` stores it in Secrets
-Manager (`PREFIX/operator/models/<provider>`). A model id with a `/` goes to the
+The loop calls the model itself, with one key per provider from the
+environment: `AGENTD_ANTHROPIC_API_KEY` and `AGENTD_OPENROUTER_API_KEY`. A
+model id with a `/` goes to the
 OpenAI-compatible API at `AGENTD_MODEL_BASE_URL` (default
 `https://openrouter.ai/api/v1`), and any other id to the
 Messages API at `AGENTD_ANTHROPIC_BASE_URL`. A Messages API call asks for
@@ -138,18 +143,23 @@ and the AWS error code, never a value or an AWS message. The AWS SDK's
 `debug` and `trace` events, which can print request and response bodies, are
 dropped from every log whatever `RUST_LOG` says.
 
-## System secrets
+## Keys from the environment
 
-agentd keeps four values once per deployment as `<prefix>/system/<name>`,
-under the same KMS key as the credentials, read at boot and created the first
-time; another replica, or the next boot, reads the same values:
+agentd reads its own keys from environment variables; how the deployment fills
+them (a secrets manager, a task definition) is the deployment's concern. Each
+key ring is `<id>:<hex>,…`, ids of letters and digits, keys of at least 16
+bytes:
 
-| Name | What it is |
+| Variable | What it is |
 |---|---|
-| `api_key_pepper` | 32 random bytes, hex: keys every API key and environment key digest |
-| `work_token_key` | 32 random bytes, hex: signs work tokens, so a token outlives the process that minted it (`AGENTD_WORK_TOKEN_KEY` replaces it) |
-| `egress_key` | 32 random bytes, hex: signs `environment_variable` placeholders, which a sandbox worker's egress swap checks |
-| `runtime_key` | agentd's runtime key, an `sk-ant-oat01-` environment key for the runtime queue |
+| `AGENTD_API_KEY_PEPPERS` | The peppers every API key digest is keyed with. The first keys each new digest. A request's key is looked up under every pepper in one query, and a key found under an older one is stored under the first from then on, so a pepper rotates by putting a new one first and dropping the old one once no key is stored under it |
+| `AGENTD_WORK_TOKEN_KEYS` | Signs work tokens, `agentd-wt-<key id>.<claims>.<mac>`. A token verifies while its key id is in the ring |
+| `AGENTD_PLACEHOLDER_KEYS` | Signs placeholders the same way, `agentd-ph-<key id>.<claims>.<mac>` |
+| `AGENTD_RUNTIME_KEYS` | agentd's runtime keys, the current one first. The poller of `cloud` environments polls the runtime queue with the first; every one listed reaches it, so a key rotates by putting the new one first and dropping the old one once no poller uses it. Make one with `printf 'sk-ant-oat01-%sAA' "$(openssl rand 64 \| base64 \| tr '+/' '-_' \| tr -d '=\n')"` |
+| `AGENTD_ANTHROPIC_API_KEY`, `AGENTD_OPENROUTER_API_KEY` | The model providers' keys |
+
+Every replica must have the same rings. Secrets Manager holds only tenant vault
+credentials.
 
 ## Work
 
@@ -177,8 +187,8 @@ The work secret is base64url JSON with live's nine keys in live's order:
 unarchived `environment_variable` credential in its vaults (the first vault in
 `vault_ids` wins a name) to a placeholder, never the value; for a
 `self_hosted` session it is `{}`. A placeholder is `agentd-ph-` then
-`<base64url JSON {session, ws, vault, credential}>.<base64url HMAC-SHA256>`,
-keyed with HMAC-SHA256(`egress_key`, `"placeholder"`), so the swap finds the
+`<key id>.<base64url JSON {session, ws, vault, credential}>.<base64url HMAC-SHA256>`,
+signed with the first key of `AGENTD_PLACEHOLDER_KEYS`, so the swap finds the
 credential's secret from it and refuses one copied into another session.
 
 A work token reaches its own item (read, ack, heartbeat, stop), its own
@@ -198,9 +208,8 @@ which one a request needs: `/v1/organizations` routes take admin keys only,
 every other route workspace keys and environment keys, and the work tokens
 described under [Work](#work). Every key is 86 base64url characters from 64
 random bytes after its prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
-keyed with a pepper agentd keeps as `<prefix>/system/api_key_pepper` in
-Secrets Manager (created on first use), so the stored digests alone verify
-nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
+keyed with the current pepper of `AGENTD_API_KEY_PEPPERS`, so the stored
+digests alone verify nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
 hash such as argon2id would only add cost to every request. Nothing is
 cached, so a revoke holds from the next request.
 
@@ -208,9 +217,7 @@ cached, so a revoke holds from the next request.
   workspace. Each is a row in the Postgres `api_keys` table: its digest under
   a unique index, its id, org, workspace, name, partial key hint, and the time
   it was created and revoked. A request computes its key's digest and reads
-  the unrevoked row with that digest. Secrets under
-  `<prefix>/system/api_keys/` are never read: reissue each of those keys with
-  `agentd keys create`, and switch callers to the new keys before deploying.
+  the unrevoked row stored under one of its digests.
 - **Environment keys** (`sk-ant-oat01-…`, `envkey_…`) are a worker's poller's
   Bearer token, as live issues them in its Console: each acts for one org,
   workspace and `self_hosted` environment, and is a row in the Postgres
@@ -220,16 +227,14 @@ cached, so a revoke holds from the next request.
   reads, events and stream of its environment's sessions (any other
   session is a 404); every other route is live's 403 `permission_error`
   ("OAuth token does not meet scope requirement …"). A workspace key on
-  `work/poll` is a 401 `Invalid bearer token`. agentd's own runtime key
-  (`<prefix>/system/runtime_key`) reaches the runtime queue's routes the same
+  `work/poll` is a 401 `Invalid bearer token`. agentd's own runtime keys
+  (`AGENTD_RUNTIME_KEYS`) reach the runtime queue's routes the same
   way, across workspaces, and also `GET /v1/environments/{id}` for an
   environment with a work item on the runtime queue, so a launcher can apply
   its networking; any other environment is the same 403.
 - **Admin keys** (`sk-ant-admin01-…`, `adminkey_…`) act for one org. Each is a
-  Secrets Manager secret, `<prefix>/system/admin_keys/<digest>`, under the
-  same KMS key as the credentials, holding the digest, its id and org; the
-  tags carry what a listing shows. A request reads the one secret its digest
-  names and compares the digest in constant time. A revoke deletes the secret.
+  row in the Postgres `admin_keys` table, its digest under a unique index, with
+  its id, org, name, partial key hint, and the time it was created and revoked.
 
 ```bash
 agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]   # prints the key once, on stdout
@@ -245,12 +250,11 @@ agentd vault-secrets tag                                                      # 
 ```
 
 The commands read the same configuration as the server, so `DATABASE_URL` is
-required for all of them when `AGENTD_STORE` is unset or `postgres`. `agentd
-keys` and `agentd environment-keys` use Postgres (migrated) and Secrets
-Manager for the pepper; `agentd vault-secrets tag` reads the credentials from
-Postgres and tags their secrets in Secrets Manager; `agentd admin-keys` uses
-only Secrets Manager. A key is printed once and never stored;
-lose it and create another. No environment variable holds a key.
+required for all of them when `AGENTD_STORE` is unset or `postgres`, and so
+is `AGENTD_API_KEY_PEPPERS`. `agentd keys`, `agentd admin-keys` and `agentd
+environment-keys` use Postgres (migrated); `agentd vault-secrets tag` reads the
+credentials from Postgres and tags their secrets in Secrets Manager. A key is
+printed once and never stored; lose it and create another.
 
 ## Security
 
@@ -258,10 +262,9 @@ There is no switch that weakens any of these; each is the only behaviour.
 
 - Vault credentials are in Secrets Manager under a customer-managed KMS key.
   There is no plain store.
-- API keys are peppered digests, workspace and environment keys in Postgres
-  and admin keys in Secrets Manager, made by `agentd keys`, `agentd
-  environment-keys` and `agentd admin-keys`. No key is
-  read from the environment and there is no default key.
+- API keys are peppered digests in Postgres, made by `agentd keys`, `agentd
+  environment-keys` and `agentd admin-keys`. No API key is read from the
+  environment and there is no default key; only agentd's own runtime keys are.
 - agentd runs no tool and starts no container: a session's tools run on the
   worker that polls its environment, which holds only the work token of the
   item it took.

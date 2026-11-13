@@ -1,6 +1,7 @@
 //! Postgres implementations of the entity store traits (Diesel typed DSL over
 //! `crate::schema`; the wire object lives in each table's `doc` jsonb column).
 
+pub mod admin_keys;
 pub mod agents;
 pub mod api_keys;
 pub mod deployments;

@@ -4,9 +4,11 @@
 //! jOOQ in the Java stack). Column types map: `text`→Text, `bigint`/`bigserial`
 //! →Int8, `timestamptz`→Timestamptz, `jsonb`→Jsonb, `boolean`→Bool.
 
+mod admin_keys_table;
 mod api_keys_table;
 mod environment_keys_table;
 mod workspaces_table;
+pub use admin_keys_table::admin_keys;
 pub use api_keys_table::api_keys;
 pub use environment_keys_table::environment_keys;
 pub use workspaces_table::workspaces;

@@ -14,19 +14,19 @@ pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
-use api_keys::{ApiKeysService, EnvironmentKeysService};
-use secrets_aws::{AwsAdminKeys, AwsSecretStore};
+use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
+use secrets_aws::AwsSecretStore;
 use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
 use shared::hash::KeyRing;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
-use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
+use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::{SecretError, SecretStore};
 use signals_valkey::{ValkeyChanges, ValkeySignals};
 use store_postgres::{PgError, PgFireClaims, PgScheduler, ScheduleOutbox};
 
-use crate::config::{BlobsConfig, Config, KeysConfig, Role, StoreConfig, WorkConfig};
+use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
 
 /// One backend per port.
 pub struct Backends {
@@ -121,11 +121,8 @@ impl Backends {
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
         let aws = AwsSecretStore::connect(&config.secrets).await?;
-        let KeysConfig::Aws = config.keys;
-        let pepper = Arc::new(aws.api_key_pepper().await?);
-        let admin = Arc::new(AwsAdminKeys::new(aws.clone(), pepper.clone()));
-        let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
-        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws.clone()), metrics.clone()));
+        let peppers = Arc::new(PepperRing::from_ring(&config.keys.peppers));
+        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
         let (stores, load, keys, fires, sources) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
@@ -141,7 +138,7 @@ impl Backends {
                 )
                 .map_err(|e| BootError::Signals(e.to_string()))?;
                 drop(feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone())))]));
-                let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
+                let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys, fires, FireSources::new(scheduler, feed))
             }
@@ -149,13 +146,13 @@ impl Backends {
         let url = &config.streams.valkey_url;
         let signals: Arc<dyn Signals> =
             Arc::new(ValkeySignals::connect(url).map_err(|e| BootError::Signals(e.to_string()))?);
-        let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), pepper)
-            .with_runtime_key(&aws.runtime_key().await?);
+        let admin = Arc::new(AdminKeysService::new(stores.admin_keys.clone(), peppers.clone()));
+        let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
+        let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), peppers)
+            .with_runtime_keys(&config.keys.runtime);
         let system = SystemKeys::from(&config.work);
         if role.runs_loop() {
-            drop(
-                crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref(), &system).await?,
-            );
+            drop(crate::agent_loop::spawn(config, &stores, signals.clone(), &system).await?);
         }
         let extra_models = config.extra_models.clone();
         let environment_keys: Arc<dyn EnvironmentKeySource> = Arc::new(environment_keys);

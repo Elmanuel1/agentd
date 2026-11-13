@@ -13,7 +13,6 @@ pub mod cli;
 pub mod config;
 pub mod deps;
 pub mod edge;
-pub mod model_key;
 pub mod session_grants;
 pub mod session_work;
 pub mod state;

@@ -1,7 +1,7 @@
 //! `EnvironmentKeysStore` on Postgres via Diesel. A request is resolved to
 //! its tenant and environment by its key's digest.
 
-use ::api_keys::{EnvironmentKey, EnvironmentKeysStore, StoreError};
+use ::api_keys::{EnvironmentKey, EnvironmentKeysStore, KeyDigests, StoreError};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -71,6 +71,35 @@ fn record((id, org, workspace, environment_id, name, hint, created_at, revoked_a
 }
 
 #[async_trait]
+impl KeyDigests<EnvironmentKey> for PgEnvironmentKeysStore {
+    async fn find_active(
+        &self,
+        digests: &[Vec<u8>],
+    ) -> Result<Option<(EnvironmentKey, Vec<u8>)>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let row: Option<(Row, Vec<u8>)> = environment_keys::table
+            .filter(environment_keys::key_digest.eq_any(digests))
+            .filter(environment_keys::revoked_at.is_null())
+            .select((COLUMNS, environment_keys::key_digest))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        Ok(row.map(|(row, digest)| (record(row), digest)))
+    }
+
+    async fn rehash(&self, id: &str, digest: &[u8]) -> Result<(), StoreError> {
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        diesel::update(environment_keys::table.filter(environment_keys::environment_key_id.eq(id)))
+            .set(environment_keys::key_digest.eq(digest))
+            .execute(&mut conn)
+            .await
+            .map(drop)
+            .map_err(diesel_be)
+    }
+}
+
+#[async_trait]
 impl EnvironmentKeysStore for PgEnvironmentKeysStore {
     async fn insert(&self, key: &EnvironmentKey, digest: &[u8]) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
@@ -89,19 +118,6 @@ impl EnvironmentKeysStore for PgEnvironmentKeysStore {
             .await
             .map_err(diesel_be)?;
         Ok(())
-    }
-
-    async fn find_active(&self, digest: &[u8]) -> Result<Option<EnvironmentKey>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let row: Option<Row> = environment_keys::table
-            .filter(environment_keys::key_digest.eq(digest))
-            .filter(environment_keys::revoked_at.is_null())
-            .select(COLUMNS)
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?;
-        Ok(row.map(record))
     }
 
     async fn list(&self) -> Result<Vec<EnvironmentKey>, StoreError> {

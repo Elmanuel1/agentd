@@ -1,5 +1,6 @@
 //! The loop workers of a `loop` or `all` replica: the model providers whose
-//! keys are stored, the account-wide budget, and the worker pool.
+//! keys are set (`AGENTD_ANTHROPIC_API_KEY`, `AGENTD_OPENROUTER_API_KEY`), the
+//! account-wide budget, and the worker pool.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,7 @@ use engine::model::retry::Retry;
 use engine::model::{ModelRouter, ProviderConfig};
 use engine::worker::{Loop, Models, Settings, Stores as LoopStores};
 use sessions::signals::Signals;
-use shared::ports::secrets::SecretStore;
+use shared::ports::secrets::{ExposeSecret, SecretString};
 use signals_valkey::ValkeyBudget;
 
 use files::FilesService;
@@ -17,7 +18,6 @@ use work::{WorkService, WorkTokens};
 
 use crate::backends::{BootError, Stores, SystemKeys};
 use crate::config::Config;
-use crate::model_key::{self, ANTHROPIC, OPENROUTER};
 
 /// A claim's lease outlasts the step's model deadline by this much.
 const LEASE_MARGIN: Duration = Duration::from_secs(120);
@@ -27,16 +27,13 @@ pub async fn spawn(
     config: &Config,
     stores: &Stores,
     signals: Arc<dyn Signals>,
-    secrets: &dyn SecretStore,
     system: &SystemKeys,
 ) -> Result<tokio::task::JoinHandle<()>, BootError> {
     let c = &config.agent_loop;
-    let key = |e: String| BootError::Loop(format!("model key: {e}"));
-    let anthropic = model_key::read(secrets, ANTHROPIC).await.map_err(key)?;
-    let openrouter = model_key::read(secrets, OPENROUTER).await.map_err(key)?;
+    let key = |k: &Option<SecretString>| k.as_ref().map(|k| k.expose_secret().to_owned());
     let providers = ProviderConfig {
-        anthropic: anthropic.map(|k| (k, c.anthropic_base_url.clone())),
-        openai_compat: openrouter.map(|k| (k, c.model_base_url.clone())),
+        anthropic: key(&config.keys.anthropic).map(|k| (k, c.anthropic_base_url.clone())),
+        openai_compat: key(&config.keys.openrouter).map(|k| (k, c.model_base_url.clone())),
     };
     let client = ModelRouter::from_config(&providers).map_err(BootError::Loop)?;
     let url = &config.streams.valkey_url;

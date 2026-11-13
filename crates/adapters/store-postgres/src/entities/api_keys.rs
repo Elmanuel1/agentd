@@ -1,7 +1,7 @@
 //! `ApiKeysStore` on Postgres via Diesel. Keys are not tenant-scoped rows: a
 //! request is resolved to its tenant by its key's digest.
 
-use ::api_keys::{ApiKey, ApiKeysStore, StoreError};
+use ::api_keys::{ApiKey, ApiKeysStore, KeyDigests, StoreError};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -69,6 +69,32 @@ fn record((id, org, workspace, name, hint, created_at, revoked_at): Row) -> ApiK
 }
 
 #[async_trait]
+impl KeyDigests<ApiKey> for PgApiKeysStore {
+    async fn find_active(&self, digests: &[Vec<u8>]) -> Result<Option<(ApiKey, Vec<u8>)>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let row: Option<(Row, Vec<u8>)> = api_keys::table
+            .filter(api_keys::key_digest.eq_any(digests))
+            .filter(api_keys::revoked_at.is_null())
+            .select((COLUMNS, api_keys::key_digest))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?;
+        Ok(row.map(|(row, digest)| (record(row), digest)))
+    }
+
+    async fn rehash(&self, id: &str, digest: &[u8]) -> Result<(), StoreError> {
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        diesel::update(api_keys::table.filter(api_keys::api_key_id.eq(id)))
+            .set(api_keys::key_digest.eq(digest))
+            .execute(&mut conn)
+            .await
+            .map(drop)
+            .map_err(diesel_be)
+    }
+}
+
+#[async_trait]
 impl ApiKeysStore for PgApiKeysStore {
     async fn insert(&self, key: &ApiKey, digest: &[u8]) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
@@ -86,19 +112,6 @@ impl ApiKeysStore for PgApiKeysStore {
             .await
             .map_err(diesel_be)?;
         Ok(())
-    }
-
-    async fn find_active(&self, digest: &[u8]) -> Result<Option<ApiKey>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let row: Option<Row> = api_keys::table
-            .filter(api_keys::key_digest.eq(digest))
-            .filter(api_keys::revoked_at.is_null())
-            .select(COLUMNS)
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?;
-        Ok(row.map(record))
     }
 
     async fn list(&self) -> Result<Vec<ApiKey>, StoreError> {

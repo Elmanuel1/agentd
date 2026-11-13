@@ -36,11 +36,10 @@ async fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "vault-secrets" => {
             return api::cli::vault_secrets::vault_secrets(&config, rest).await
         }
-        Some((cmd, rest)) if cmd == "model-key" => return api::model_key::model_key(&config, rest).await,
         Some(_) => {
             let cli = api::cli::USAGE;
             let (env, vault) = (api::cli::environment_keys::USAGE, api::cli::vault_secrets::USAGE);
-            eprintln!("{cli}\n{env}\n{vault}\n{}", api::model_key::USAGE);
+            eprintln!("{cli}\n{env}\n{vault}");
             return ExitCode::FAILURE;
         }
     }

@@ -3,17 +3,11 @@
 agentd keeps each vault credential in AWS Secrets Manager as
 `PREFIX/<workspace>/<vault>/<credential>`, encrypted under one
 customer-managed KMS key and tagged `workspace`, `vault` and
-`managed-by=agentd`. Admin keys are secrets too: each is
-`PREFIX/system/admin_keys/<digest>`, holding only a peppered digest, the key
-id and org, and tagged with what `agentd admin-keys list` shows. The pepper
-every key digest is keyed with is `PREFIX/system/api_key_pepper`; beside it are
-`PREFIX/system/work_token_key`, `PREFIX/system/egress_key` (it signs the
-placeholders in a `cloud` work secret) and `PREFIX/system/runtime_key`. An `environment_variable` credential's secret is
-also tagged `credential_type=environment_variable`. All of them are under the
-same KMS key, so the same policy covers them. Only agentd's
-role, and an operator running `agentd keys`, `agentd admin-keys`, `agentd
-environment-keys` or `agentd vault-secrets` as it, can read them. Sandboxes and runners cannot read them or
-use the key.
+`managed-by=agentd`. An `environment_variable` credential's secret is also
+tagged `credential_type=environment_variable`. Secrets Manager holds nothing
+else: agentd's own keys come from its environment. Only agentd's role, and an
+operator running `agentd vault-secrets` as it, can read them. Sandboxes and
+runners cannot read them or use the key.
 
 ## Placeholders
 
@@ -31,8 +25,8 @@ region and account is tighter and loses nothing.
 
 - `agentd-secrets-policy.json`, on agentd's role:
   - `CreateSecret` under `PREFIX/` only with the `managed-by=agentd` tag, only
-    agentd's tag keys (`workspace`, `vault`, `managed-by`, `credential_type`,
-    and for admin keys `org`, `admin-key-id`, `key-name`, `key-hint`), and only under `KMS_KEY_ARN`
+    agentd's tag keys (`workspace`, `vault`, `managed-by`, `credential_type`),
+    and only under `KMS_KEY_ARN`
     (`secretsmanager:KmsKeyArn`, as in AWS's
     [identity-based policy examples](https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_iam-policies.html);
     agentd always sends the key ARN).
@@ -42,12 +36,9 @@ region and account is tighter and loses nothing.
   - `GetSecretValue`, `DescribeSecret` and `DeleteSecret` on `PREFIX/`
     secrets. These are scoped by name only: a tag condition fails for a secret
     that does not exist, so AWS would answer `AccessDenied` where agentd needs
-    `ResourceNotFound` (an unknown admin key is a 401, a missing pepper is
-    created, a gone secret is already deleted).
+    `ResourceNotFound` (a gone secret is already deleted).
   - `PutSecretValue` and `RestoreSecret`, which only touch existing secrets,
     on `PREFIX/` secrets tagged `managed-by=agentd`.
-  - `ListSecrets`, which takes no resource, for `agentd admin-keys list` and
-    `revoke`. It returns names and tags, never a value.
   - No delete without a recovery window.
   - `kms:DescribeKey` on the key, for the check at boot.
   - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only

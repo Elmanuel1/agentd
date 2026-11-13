@@ -6,6 +6,9 @@
 # environment (`ant beta:worker poll`), outside this stack.
 #
 #   export POSTGRES_PASSWORD=$(openssl rand -hex 16)
+#   for v in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS; do
+#     export "$v=k1:$(openssl rand -hex 32)"; done
+#   export AGENTD_OPENROUTER_API_KEY=...   # or AGENTD_ANTHROPIC_API_KEY, for the loop
 #   docker compose -f docker/docker-compose.yml up
 #   docker compose -f docker/docker-compose.yml logs keys   # the dev API key, printed once
 
@@ -29,6 +32,14 @@ x-agentd: &agentd
     AWS_DEFAULT_REGION: us-east-1
     # agentd's API as workers reach it, the work secret's `api_base_url`.
     AGENTD_API_BASE_URL: http://127.0.0.1:8080
+    # Key rings `<id>:<hex>,…`; the first signs or keys, the rest only verify.
+    AGENTD_API_KEY_PEPPERS: ${AGENTD_API_KEY_PEPPERS:?set AGENTD_API_KEY_PEPPERS}
+    AGENTD_WORK_TOKEN_KEYS: ${AGENTD_WORK_TOKEN_KEYS:?set AGENTD_WORK_TOKEN_KEYS}
+    AGENTD_PLACEHOLDER_KEYS: ${AGENTD_PLACEHOLDER_KEYS:?set AGENTD_PLACEHOLDER_KEYS}
+    # agentd's runtime keys (`sk-ant-oat01-…`, current first) and the model keys.
+    AGENTD_RUNTIME_KEYS: ${AGENTD_RUNTIME_KEYS:-}
+    AGENTD_ANTHROPIC_API_KEY: ${AGENTD_ANTHROPIC_API_KEY:-}
+    AGENTD_OPENROUTER_API_KEY: ${AGENTD_OPENROUTER_API_KEY:-}
     RUST_LOG: info
 
 services:

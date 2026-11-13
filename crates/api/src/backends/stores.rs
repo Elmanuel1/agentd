@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use agents::AgentsStore;
-use api_keys::{ApiKeysStore, EnvironmentKeysStore};
+use api_keys::{AdminKeysStore, ApiKeysStore, EnvironmentKeysStore};
 use deployments::DeploymentsStore;
 use environments::EnvironmentsStore;
 use files::store::FilesStore;
@@ -15,7 +15,7 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::secrets::SecretStore;
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
-    PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentKeysStore,
+    PgAdminKeysStore, PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentKeysStore,
     PgEnvironmentsStore, PgFilesStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore,
     PgSkillVersionsStore, PgSkillsStore, PgSteps, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
 };
@@ -55,6 +55,8 @@ pub struct Stores {
     pub api_keys: Arc<dyn ApiKeysStore>,
     /// Environment keys.
     pub environment_keys: Arc<dyn EnvironmentKeysStore>,
+    /// Organization admin keys.
+    pub admin_keys: Arc<dyn AdminKeysStore>,
     /// Work items.
     pub work: Arc<dyn WorkStore>,
     /// Work items, as the edge reads them.
@@ -91,6 +93,7 @@ impl Stores {
             workspaces: Arc::new(PgWorkspacesStore::new(backend.clone())),
             api_keys: Arc::new(PgApiKeysStore::new(backend.clone())),
             environment_keys: Arc::new(PgEnvironmentKeysStore::new(backend.clone())),
+            admin_keys: Arc::new(PgAdminKeysStore::new(backend.clone())),
             work: work.clone(),
             work_reads: work,
             steps: Arc::new(PgSteps::new(backend)),

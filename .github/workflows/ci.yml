@@ -161,8 +161,16 @@ jobs:
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
           echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
-      - name: Store the model key, an operator credential, with the CLI
-        run: echo "mock-model-key-$(openssl rand -hex 8)" | ./target/debug/agentd model-key set --host 127.0.0.1
+      - name: Give agentd its keys through the environment
+        run: |
+          for var in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS; do
+            ring="k1:$(openssl rand -hex 32)"
+            echo "::add-mask::$ring"
+            echo "$var=$ring" >> "$GITHUB_ENV"
+          done
+          model="mock-model-key-$(openssl rand -hex 8)"
+          echo "::add-mask::$model"
+          echo "AGENTD_OPENROUTER_API_KEY=$model" >> "$GITHUB_ENV"
       - name: Create the SDK API key with the CLI
         run: |
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)

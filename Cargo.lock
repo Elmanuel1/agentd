@@ -115,6 +115,7 @@ dependencies = [
  "shared",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2935,14 +2936,7 @@ dependencies = [
  "aws-sdk-secretsmanager",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "base64 0.22.1",
- "chrono",
- "hex",
- "hmac",
- "rand 0.8.6",
- "serde",
  "serde_json",
- "sha2",
  "shared",
  "tokio",
  "uuid",

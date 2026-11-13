@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ::api_keys::EnvironmentKeysService;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyPepper};
+use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyPepper, PepperRing};
 use shared::ports::secrets::ExposeSecret;
 use shared::Timestamp;
 use store_postgres::schema::environment_keys;
@@ -25,7 +25,7 @@ async fn only_the_digest_is_stored_and_a_key_resolves_to_its_environment_until_r
     let pg = PgBackend::connect(&url).await.unwrap();
     let keys = EnvironmentKeysService::new(
         Arc::new(PgEnvironmentKeysStore::new(pg.clone())),
-        Arc::new(KeyPepper::new(&[7; 32])),
+        Arc::new(PepperRing::single(KeyPepper::new(&[7; 32]))),
     );
     let s = Timestamp::now().as_datetime().timestamp_micros();
     let (ws, env) = (format!("wrkspc_e{s}"), format!("env_e{s}"));

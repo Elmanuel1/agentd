@@ -20,7 +20,7 @@ use sessions::signals::{LocalSignals, Signals};
 use sessions::store::DatabaseLoad;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::material::{self, KeyKind};
-use shared::ports::keys::KeyPepper;
+use shared::ports::keys::{KeyPepper, PepperRing};
 use shared::ports::secrets::{ExposeSecret, SecretString};
 
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
@@ -149,9 +149,11 @@ impl Rig {
         let secrets = Arc::new(MemorySecretStore::default());
         let stores = Stores::postgres(backend.clone(), blobs, secrets.clone());
         let runtime_key = material::generate(KeyKind::Environment);
-        let env_keys =
-            EnvironmentKeysService::new(stores.environment_keys.clone(), Arc::new(KeyPepper::new(&[9; 32])))
-                .with_runtime_key(&runtime_key);
+        let env_keys = EnvironmentKeysService::new(
+            stores.environment_keys.clone(),
+            Arc::new(PepperRing::single(KeyPepper::new(&[9; 32]))),
+        )
+        .with_runtime_keys(std::slice::from_ref(&runtime_key));
         let keys = Arc::new(keys);
         let app = app(&stores, &backend, keys.clone(), &env_keys, Streaming::default());
         let reach = Arc::new(SessionReach {

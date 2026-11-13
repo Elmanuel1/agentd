@@ -16,7 +16,7 @@ pub struct Config {
     pub blobs: BlobsConfig,
     /// Secret store (`AGENTD_SECRETS`).
     pub secrets: AwsSecretsConfig,
-    /// API-key source (`AGENTD_KEYS`).
+    /// The peppers, runtime keys and model keys from the environment.
     pub keys: KeysConfig,
     /// Where logs, traces and metrics go.
     pub telemetry: TelemetryConfig,
@@ -38,14 +38,6 @@ pub enum BlobsConfig {
     S3(S3Config),
 }
 
-/// `AGENTD_KEYS`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeysConfig {
-    /// `aws`: workspace keys in Postgres and admin keys in Secrets Manager,
-    /// each a digest keyed with the pepper in Secrets Manager, never the key.
-    Aws,
-}
-
 /// A configuration value agentd cannot boot with.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{var}: {reason}")]
@@ -65,10 +57,7 @@ impl Config {
             other => return Err(unknown("AGENTD_BLOBS", other)),
         };
         let secrets = secrets::from_lookup(&get)?;
-        let keys = match selector(&get, "AGENTD_KEYS", "aws").as_str() {
-            "aws" => KeysConfig::Aws,
-            other => return Err(unknown("AGENTD_KEYS", other)),
-        };
+        let keys = KeysConfig::from_lookup(&get)?;
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         let telemetry = TelemetryConfig::from_lookup(&get)?;
         let extra_models = get("AGENTD_MODELS")
@@ -149,6 +138,7 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
     })
 }
 
+mod keys;
 mod role;
 mod secrets;
 mod store;
@@ -156,6 +146,7 @@ mod streams;
 mod telemetry;
 mod work;
 
+pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};
 pub use store::StoreConfig;
 pub use streams::StreamsConfig;

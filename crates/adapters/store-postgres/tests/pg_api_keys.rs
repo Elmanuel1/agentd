@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ::api_keys::{ApiKey, ApiKeysService, ApiKeysStore};
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::ports::keys::{KeyPepper, KeySource};
+use shared::ports::keys::{KeyPepper, KeySource, PepperRing};
 use shared::ports::secrets::ExposeSecret;
 use shared::{OrgId, Timestamp, WorkspaceId};
 use store_postgres::schema::api_keys;
@@ -35,7 +35,7 @@ async fn a_key_resolves_until_it_is_revoked_and_only_its_digest_is_stored() {
         return;
     }
     let pg = backend().await;
-    let pepper = Arc::new(KeyPepper::new(&[7; 32]));
+    let pepper = Arc::new(PepperRing::single(KeyPepper::new(&[7; 32])));
     let keys = ApiKeysService::new(Arc::new(PgApiKeysStore::new(pg.clone())), pepper);
     let ws = format!("wrkspc_k{}", stamp());
     let (record, key) = keys.create("org_keys", &ws, "ci").await.unwrap();
@@ -86,7 +86,8 @@ async fn a_workspace_revoke_reaches_only_that_workspaces_active_keys() {
         return;
     }
     let store = PgApiKeysStore::new(backend().await);
-    let keys = ApiKeysService::new(Arc::new(store.clone()), Arc::new(KeyPepper::new(&[7; 32])));
+    let keys =
+        ApiKeysService::new(Arc::new(store.clone()), Arc::new(PepperRing::single(KeyPepper::new(&[7; 32]))));
     let (archived, kept) = (format!("wrkspc_a{}", stamp()), format!("wrkspc_k{}", stamp()));
     let (_, a1) = keys.create("org_keys", &archived, "a1").await.unwrap();
     let (_, a2) = keys.create("org_keys", &archived, "a2").await.unwrap();
@@ -104,4 +105,33 @@ async fn a_workspace_revoke_reaches_only_that_workspaces_active_keys() {
     let again =
         store.revoke_workspace(&OrgId::new("org_keys"), &WorkspaceId::new(&archived), Timestamp::now()).await;
     assert_eq!(again.unwrap(), 0, "a revoked key is not revoked again");
+}
+
+#[tokio::test]
+async fn a_key_under_a_retired_pepper_is_found_and_moved_to_the_current_one() {
+    if !enabled() {
+        return;
+    }
+    let pg = backend().await;
+    let store = Arc::new(PgApiKeysStore::new(pg.clone()));
+    let ring = |raw: &str| Arc::new(PepperRing::from_ring(&shared::hash::KeyRing::parse(raw).unwrap()));
+    let (old, new) = (format!("a:{}", "aa".repeat(32)), format!("b:{}", "bb".repeat(32)));
+    let before = ApiKeysService::new(store.clone(), ring(&old));
+    let (record, key) = before.create("org_keys", &format!("wrkspc_r{}", stamp()), "ci").await.unwrap();
+    let rotated = ring(&format!("{new},{old}"));
+    let current = rotated.digests(key.expose_secret())[0].clone();
+    assert!(ApiKeysService::new(store.clone(), rotated)
+        .resolve(key.expose_secret())
+        .await
+        .unwrap()
+        .is_some());
+    let mut conn = pg.diesel.get().await.unwrap();
+    let stored: Vec<u8> = api_keys::table
+        .filter(api_keys::api_key_id.eq(&record.id))
+        .select(api_keys::key_digest)
+        .first(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(stored, current);
+    assert!(ApiKeysService::new(store, ring(&new)).resolve(key.expose_secret()).await.unwrap().is_some());
 }
