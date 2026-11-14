@@ -330,7 +330,11 @@ stream `agentd.public.<table>`. Its offsets are rows of `debezium_offsets` in
 the same database, which it creates on first start. Every minute it writes a
 logical message to the WAL, so the slot moves on while the captured tables are
 quiet, and a heartbeat entry to the stream `__debezium-heartbeat.agentd`,
-which agentd does not read. The same properties file runs in every
+which agentd does not read. An entry stays in its stream after it is
+acknowledged, so once a minute each replica trims each stream it reads below
+the oldest entry a group still needs (its oldest pending entry, else the last
+one it was delivered), and the heartbeat stream to its last 100 entries. The
+same properties file runs in every
 deployment; the environment overrides any key in it
 (`debezium.source.database.hostname` is `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`).
 Compose runs it as the `debezium` service; CI starts it with

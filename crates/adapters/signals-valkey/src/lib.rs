@@ -8,6 +8,7 @@
 mod budget;
 mod changes;
 mod fires;
+mod trim;
 
 use std::time::Duration;
 

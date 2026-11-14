@@ -4,7 +4,8 @@
 //! `<prefix>.fires`, and the replicas read them in the consumer group
 //! `agentd`. An entry is acknowledged once its handler succeeds; an
 //! entry left pending by a replica that stopped is claimed by another after
-//! [`RECLAIM_MS`]. An ordered handler's stream is read by one replica at a
+//! [`RECLAIM_MS`], and each stream is trimmed of what every group has
+//! acknowledged ([`crate::trim`]). An ordered handler's stream is read by one replica at a
 //! time, which holds a lease in Valkey, in entry order, stopping at a failure.
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::fire::FireRegistry;
 
 use crate::fires::Fires;
+use crate::trim::{self, Keep};
 
 /// The consumer group every replica reads in.
 const GROUP: &str = "agentd";
@@ -64,8 +66,11 @@ impl ValkeyChanges {
         Ok(Self { client: Client::open(url)?, prefix: prefix.to_owned(), consumer: consumer.to_owned() })
     }
 
-    /// Read each handler's stream on a task of its own.
+    /// Read each handler's stream on a task of its own, and trim Debezium's
+    /// heartbeats.
     pub fn spawn(&self, handlers: Vec<Arc<dyn ChangeHandler>>) -> Vec<tokio::task::JoinHandle<()>> {
+        let heartbeats = format!("__debezium-heartbeat.{}", self.prefix);
+        drop(tokio::spawn(trim::every(self.client.clone(), heartbeats, Keep::HEARTBEATS)));
         handlers
             .into_iter()
             .map(|h| {
@@ -82,6 +87,7 @@ impl ValkeyChanges {
     }
 
     async fn run(self, stream: String, consumer: Arc<dyn Consumer>) {
+        drop(tokio::spawn(trim::every(self.client.clone(), stream.clone(), Keep::Needed)));
         loop {
             if let Err(e) = self.serve(&stream, consumer.as_ref()).await {
                 tracing::warn!(stream = %stream, error = %e, "changes: the stream read failed; reconnecting");
