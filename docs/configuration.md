@@ -300,7 +300,8 @@ table stays empty and the change lives on in the WAL. Debezium Server reads
 the WAL into the Valkey stream `agentd.public.schedule_outbox`, and one
 replica at a time, holding a lease in Valkey, applies the changes in order to
 the scheduler sink; a change the sink refuses stops the stream until it
-applies. The built-in sink is the Postgres scheduler: one `schedules` row per
+applies, and a change that does not decode is logged at `ERROR` and passed
+over. The built-in sink is the Postgres scheduler: one `schedules` row per
 target, whose due rows every replica claims every 10 s with
 `FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it after
 the commit. A fire more than a minute late is skipped, so after downtime a
@@ -319,6 +320,55 @@ deployment fire derives its run and session ids from the deployment and the
 fire time, so a run taken over finds the session and run the first made and
 makes no second one. A stream entry is acknowledged once its fire ran or
 needs no run.
+
+## The change feed
+
+Debezium Server reads the committed changes of the tables in
+`docker/debezium/application.properties` from Postgres's WAL (pgoutput, the
+publication and slot `agentd_changes`) and writes each table's to the Valkey
+stream `agentd.public.<table>`. Its offsets are rows of `debezium_offsets` in
+the same database, which it creates on first start. Every minute it writes a
+logical message to the WAL, so the slot moves on while the captured tables are
+quiet, and a heartbeat entry to the stream `__debezium-heartbeat.agentd`,
+which agentd does not read. The same properties file runs in every
+deployment; the environment overrides any key in it
+(`debezium.source.database.hostname` is `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`).
+Compose runs it as the `debezium` service; CI starts it with
+`docker/debezium/start-ci.sh`.
+
+In production:
+
+- **Postgres** runs with `wal_level=logical` (on RDS and Aurora, the parameter
+  `rds.logical_replication=1`, then a reboot) and `max_slot_wal_keep_size` set
+  to what the disk can spare, so a stalled slot cannot fill it. A slot past
+  that size is invalidated and the changes in it are lost.
+- **Debezium's role** has `REPLICATION` (on RDS, `GRANT rds_replication`),
+  `SELECT` on the captured tables, and `CREATE` on the schema for its offsets
+  table. The publication is made once by the tables' owner,
+  `CREATE PUBLICATION agentd_changes FOR TABLE schedule_outbox`, and Debezium
+  runs with `DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE=disabled`. A table
+  added to the feed joins `table.include.list` and the publication
+  (`ALTER PUBLICATION agentd_changes ADD TABLE …`).
+- **Debezium Server** runs as exactly one instance (`quay.io/debezium/server`,
+  the version compose pins), restarted when it stops; a second instance
+  cannot take the slot. Its connections come from the environment:
+  `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`, `_PORT`, `_DBNAME`, `_USER`,
+  `_PASSWORD` and `_SSLMODE` (`require`); the offsets' JDBC URL, user and
+  password in `DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_URL`, `_USER`
+  and `_PASSWORD`; and the sink's `DEBEZIUM_SINK_REDIS_ADDRESS`,
+  `DEBEZIUM_SINK_REDIS_PASSWORD` and `DEBEZIUM_SINK_REDIS_SSL_ENABLED`. It
+  answers `GET /q/health` on port 8080.
+- **Valkey** runs with `appendonly yes` and `appendfsync everysec` on a
+  volume that outlives the container, so the streams survive a restart; a
+  managed Valkey serves only if it offers AOF.
+
+The signals to alarm on, with their thresholds:
+
+| Signal | Read from | Alarm when |
+|---|---|---|
+| Slot lag | `pg_current_wal_lsn() - confirmed_flush_lsn` of `agentd_changes` in `pg_replication_slots` (RDS: `OldestReplicationSlotLag`) | over 1 GB, or growing for 15 minutes |
+| Debezium health | `GET /q/health` | down for 2 minutes |
+| Stream backlog | `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
 
 ## Telemetry
 

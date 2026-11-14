@@ -151,3 +151,18 @@ async fn the_outbox_s_changes_reach_the_sink_in_order_and_its_deletes_are_not_ch
     assert!(!sink.describe(&s.target).await.unwrap().paused, "the last change, a fresh upsert, wins");
     assert_eq!(sink.registered().iter().filter(|r| r.target == s.target).count(), 1);
 }
+
+#[tokio::test]
+async fn an_outbox_change_that_never_decodes_is_passed_over() {
+    let s = spec(&uniq("poison"));
+    let sink = Arc::new(FakeScheduler::new());
+    let outbox = ScheduleOutbox::new(sink.clone());
+    let insert = |change: serde_json::Value| {
+        let row = serde_json::json!({"seq": 1, "target": s.target.key(), "change": change.to_string()});
+        Change::from_debezium(&serde_json::json!({"op": "c", "before": null, "after": row, "source": {"table": "schedule_outbox"}})).unwrap()
+    };
+    outbox.handle(&insert(serde_json::json!({}))).await.unwrap();
+    let upsert = serde_json::to_value(ScheduleChange::Upsert { spec: s.clone() }).unwrap();
+    outbox.handle(&insert(upsert)).await.unwrap();
+    assert!(!sink.describe(&s.target).await.unwrap().paused, "the change after it still applies");
+}

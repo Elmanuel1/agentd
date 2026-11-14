@@ -1,6 +1,7 @@
-# agentd stack for development: agentd, Postgres (migrated by Flyway),
-# LocalStack for S3, Secrets Manager and KMS, and Valkey for the replicas'
-# stream signals. Vault credentials are encrypted under a KMS key on the
+# agentd stack for development: agentd, Postgres (migrated by Flyway, with
+# logical WAL), Debezium Server reading the WAL into Valkey Streams, Valkey
+# (with AOF) for the change streams and the replicas' signals, and LocalStack
+# for S3, Secrets Manager and KMS. Vault credentials are encrypted under a KMS key on the
 # emulator exactly as in production; there is no weaker mode. Every published
 # port is bound to 127.0.0.1. Tools run on a worker that polls the session's
 # environment (`ant beta:worker poll`), outside this stack.
@@ -95,6 +96,8 @@ services:
 
   postgres:
     image: postgres:16-alpine   # Flyway 11 supports PG 9.5–latest; 16 is the safe LTS-grade pick
+    # Logical WAL for Debezium; a slot that falls behind keeps at most 1 GB.
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_slot_wal_keep_size=1GB"]
     environment:
       POSTGRES_DB: agentd
       POSTGRES_USER: agentd
@@ -109,9 +112,13 @@ services:
       timeout: 3s
       retries: 20
 
-  # Pub/sub for the replicas' stream signals; it stores nothing.
+  # The change streams Debezium writes, and the replicas' pub/sub signals.
+  # AOF, fsynced every second, keeps the streams across a restart.
   valkey:
     image: valkey/valkey:8.0-alpine
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - valkey_data:/data
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -119,6 +126,23 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Debezium Server: the committed changes of the tables in
+  # debezium/application.properties, from the WAL into Valkey Streams. One
+  # instance: a second could not take the replication slot.
+  debezium:
+    image: quay.io/debezium/server:3.3.1.Final
+    environment:
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - ./debezium:/debezium/config:ro
+    restart: unless-stopped
+    depends_on:
+      flyway:
+        condition: service_completed_successfully   # its tables exist before the publication
+      valkey:
+        condition: service_healthy
 
   # S3, Secrets Manager and KMS. Healthy once the init hook has made the KMS
   # key (docker/localstack/ready.d).
@@ -139,3 +163,4 @@ services:
 
 volumes:
   pg_data:
+  valkey_data:

@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use diesel::sql_types::{Jsonb, Text};
+use diesel::sql_types::{BigInt, Jsonb, Text};
+use diesel::QueryableByName;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp};
 use shared::ports::{ScheduleChange, SchedulerPort};
@@ -19,12 +20,24 @@ pub(crate) async fn record(
 ) -> Result<(), diesel::result::Error> {
     let doc =
         serde_json::to_value(change).map_err(|e| diesel::result::Error::SerializationError(e.into()))?;
-    diesel::sql_query("WITH added AS (INSERT INTO schedule_outbox (target, change) VALUES ($1, $2) RETURNING seq) DELETE FROM schedule_outbox USING added WHERE schedule_outbox.seq = added.seq")
-        .bind::<Text, _>(change.target().key())
-        .bind::<Jsonb, _>(doc)
+    // Two statements: a DELETE in the INSERT's own statement cannot see the row.
+    let added: Added =
+        diesel::sql_query("INSERT INTO schedule_outbox (target, change) VALUES ($1, $2) RETURNING seq")
+            .bind::<Text, _>(change.target().key())
+            .bind::<Jsonb, _>(doc)
+            .get_result(c)
+            .await?;
+    diesel::sql_query("DELETE FROM schedule_outbox WHERE seq = $1")
+        .bind::<BigInt, _>(added.seq)
         .execute(c)
         .await
         .map(drop)
+}
+
+#[derive(QueryableByName)]
+struct Added {
+    #[diesel(sql_type = BigInt)]
+    seq: i64,
 }
 
 /// Applies the outbox's changes to a scheduler sink, one at a time, in order.
@@ -58,17 +71,24 @@ impl ChangeHandler for ScheduleOutbox {
 
     /// An insert's change, applied again after a crash, leaves the same
     /// schedule; its delete in the same transaction is not a change to apply.
+    /// A change that never decodes is passed over, so it cannot hold back
+    /// the ones after it; a sink failure is retried.
     async fn handle(&self, change: &Change) -> Result<(), BackendError> {
         let Some(row) = change.after.as_ref().filter(|_| change.op == ChangeOp::Insert) else {
             return Ok(());
         };
-        let Some(doc) = row.get("change") else { return Ok(()) };
-        // Debezium sends a jsonb column as its JSON text.
-        let doc = match doc.as_str() {
-            Some(text) => serde_json::from_str(text).map_err(BackendError::new)?,
-            None => doc.clone(),
+        let Some(decoded) = row.get("change").and_then(decode) else {
+            tracing::error!(row = ?row.get("seq"), "schedules: an outbox change does not decode; passed over");
+            return Ok(());
         };
-        let change: ScheduleChange = serde_json::from_value(doc).map_err(BackendError::new)?;
-        change.apply(self.sink.as_ref()).await.map_err(BackendError::new)
+        decoded.apply(self.sink.as_ref()).await.map_err(BackendError::new)
+    }
+}
+
+/// The change in a row's `change` column, which Debezium sends as JSON text.
+fn decode(doc: &serde_json::Value) -> Option<ScheduleChange> {
+    match doc.as_str() {
+        Some(text) => serde_json::from_str(text).ok(),
+        None => serde_json::from_value(doc.clone()).ok(),
     }
 }
