@@ -21,7 +21,7 @@ use diesel_async::RunQueryDsl;
 use serde_json::{json, Value};
 use shared::ports::fire::FireRegistry;
 use shared::ports::{FireTarget, SchedulerError, SchedulerPort};
-use signals_valkey::ValkeyChanges;
+use signals_valkey::{Valkey, ValkeyChanges};
 use store_postgres::{PgFireClaims, PgScheduler, ScheduleOutbox};
 
 fn cdc_enabled() -> bool {
@@ -106,7 +106,8 @@ async fn a_deployment_s_schedule_changes_reach_the_scheduler_through_the_wal() {
     let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(rig.pg.clone()))));
     let sched = PgScheduler::new(rig.pg.clone(), fires);
     let url = std::env::var("AGENTD_VALKEY_URL").unwrap();
-    let feed = ValkeyChanges::new(&url, "agentd", &format!("agentd-test-{}", common::stamp())).unwrap();
+    let valkey = Valkey::open(&url, std::env::var("AGENTD_VALKEY_CLUSTER").as_deref() == Ok("1")).unwrap();
+    let feed = ValkeyChanges::new(&valkey, "agentd", &format!("agentd-test-{}", common::stamp()));
     let tasks = feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(sched.clone())))]);
 
     let id = scheduled(&rig).await;

@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::{number, ConfigError};
+use super::{flag, number, ConfigError};
 
 /// How replicas share session changes, and event retention.
 #[derive(Clone, PartialEq, Eq)]
@@ -11,6 +11,9 @@ pub struct StreamsConfig {
     /// `AGENTD_VALKEY_URL` (required): the Valkey every replica signals
     /// through, and whose streams carry the change feed.
     pub valkey_url: String,
+    /// `AGENTD_VALKEY_CLUSTER` (`false`): the URL is a cluster's
+    /// configuration endpoint (cluster mode enabled).
+    pub valkey_cluster: bool,
     /// `AGENTD_CHANGES_PREFIX` (`agentd`): Debezium's `topic.prefix`, which
     /// names the change streams `<prefix>.public.<table>`.
     pub changes_prefix: String,
@@ -24,6 +27,7 @@ impl std::fmt::Debug for StreamsConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamsConfig")
             .field("valkey_url", &"***")
+            .field("valkey_cluster", &self.valkey_cluster)
             .field("changes_prefix", &self.changes_prefix)
             .field("retention", &self.retention)
             .finish()
@@ -42,6 +46,7 @@ impl StreamsConfig {
                 var: "AGENTD_VALKEY_URL",
                 reason: "required: the replicas' signals and the change feed".into(),
             })?,
+            valkey_cluster: flag(get, "AGENTD_VALKEY_CLUSTER", false)?,
             changes_prefix: get("AGENTD_CHANGES_PREFIX").unwrap_or_else(|| "agentd".into()),
             retention: days.map(|d| Duration::from_secs(d.saturating_mul(DAY))),
         })

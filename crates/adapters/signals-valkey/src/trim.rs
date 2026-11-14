@@ -6,9 +6,10 @@
 
 use std::time::Duration;
 
-use redis::aio::MultiplexedConnection;
 use redis::streams::{StreamInfoGroupsReply, StreamPendingReply, StreamTrimOptions, StreamTrimmingMode};
-use redis::{AsyncCommands, Client, RedisResult};
+use redis::{AsyncCommands, RedisResult};
+
+use crate::valkey::{Conn, Valkey};
 
 /// How often a stream is trimmed.
 const EVERY: Duration = Duration::from_secs(60);
@@ -30,18 +31,18 @@ impl Keep {
 }
 
 /// Trim `stream` every [`EVERY`], for as long as the task runs.
-pub(crate) async fn every(client: Client, stream: String, keep: Keep) {
+pub(crate) async fn every(valkey: Valkey, stream: String, keep: Keep) {
     loop {
         tokio::time::sleep(EVERY).await;
-        if let Err(e) = trim(&client, &stream, keep).await {
+        if let Err(e) = trim(&valkey, &stream, keep).await {
             tracing::warn!(stream = %stream, error = %e, "changes: a stream trim failed; it runs again");
         }
     }
 }
 
 /// Trim `stream` once; the entries removed.
-pub(crate) async fn trim(client: &Client, stream: &str, keep: Keep) -> RedisResult<usize> {
-    let mut conn = client.get_multiplexed_async_connection().await?;
+pub(crate) async fn trim(valkey: &Valkey, stream: &str, keep: Keep) -> RedisResult<usize> {
+    let mut conn = valkey.connection().await?;
     let exists: bool = conn.exists(stream).await?;
     let options = match (exists, keep) {
         (false, _) => return Ok(0),
@@ -55,7 +56,7 @@ pub(crate) async fn trim(client: &Client, stream: &str, keep: Keep) -> RedisResu
 }
 
 /// The oldest entry some group of `stream` still needs; `None` when no group reads it.
-async fn needed(conn: &mut MultiplexedConnection, stream: &str) -> RedisResult<Option<(u64, u64)>> {
+async fn needed(conn: &mut Conn, stream: &str) -> RedisResult<Option<(u64, u64)>> {
     let info: StreamInfoGroupsReply = conn.xinfo_groups(stream).await?;
     let mut oldest = None;
     for group in info.groups {

@@ -24,6 +24,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `DATABASE_URL` | required | Postgres connection |
 | `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
 | `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
+| `AGENTD_VALKEY_CLUSTER` | `false` | `true` when `AGENTD_VALKEY_URL` is a cluster's configuration endpoint (cluster mode enabled): agentd then follows the cluster's slots and subscribes over RESP3 |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
@@ -360,11 +361,18 @@ In production:
   `_PASSWORD` and `_SSLMODE` (`require`); the offsets' JDBC URL, user and
   password in `DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_URL`, `_USER`
   and `_PASSWORD`; and the sink's `DEBEZIUM_SINK_REDIS_ADDRESS`,
-  `DEBEZIUM_SINK_REDIS_PASSWORD` and `DEBEZIUM_SINK_REDIS_SSL_ENABLED`. It
+  `DEBEZIUM_SINK_REDIS_PASSWORD`, `DEBEZIUM_SINK_REDIS_SSL_ENABLED` and, for
+  a cluster, `DEBEZIUM_SINK_REDIS_CLUSTER_ENABLED=true`. It
   answers `GET /q/health` on port 8080.
-- **Valkey** runs with `appendonly yes` and `appendfsync everysec` on a
-  volume that outlives the container, so the streams survive a restart; a
-  managed Valkey serves only if it offers AOF.
+- **Valkey** is node-based ElastiCache for Valkey 9 with durability and
+  synchronous writes: each write is in a transactional log in at least two
+  availability zones before Valkey answers. Durability needs cluster mode
+  enabled, Multi-AZ with a replica per shard, and TLS, so agentd runs with
+  `AGENTD_VALKEY_CLUSTER=true` and a `rediss://` URL to the configuration
+  endpoint, and Debezium with `DEBEZIUM_SINK_REDIS_CLUSTER_ENABLED=true`.
+  Compose and CI run a one-node cluster with AOF
+  (`docker/valkey/start-cluster.sh`); the CI test job also keeps a standalone
+  Valkey, so both modes are tested.
 
 The signals to alarm on, with their thresholds:
 

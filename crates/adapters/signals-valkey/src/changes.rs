@@ -12,16 +12,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use redis::aio::MultiplexedConnection;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,
 };
-use redis::{AsyncCommands, Client, RedisError, RedisResult, SetExpiry, SetOptions};
+use redis::{AsyncCommands, RedisResult, SetExpiry, SetOptions};
 use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::fire::FireRegistry;
 
 use crate::fires::Fires;
 use crate::trim::{self, Keep};
+use crate::valkey::{Conn, Valkey};
 
 /// The consumer group every replica reads in.
 const GROUP: &str = "agentd";
@@ -48,7 +48,7 @@ pub(crate) trait Consumer: Send + Sync {
 /// Reads the change streams of one Valkey.
 #[derive(Clone)]
 pub struct ValkeyChanges {
-    client: Client,
+    valkey: Valkey,
     prefix: String,
     consumer: String,
 }
@@ -60,17 +60,17 @@ impl std::fmt::Debug for ValkeyChanges {
 }
 
 impl ValkeyChanges {
-    /// The streams of Debezium's `prefix` (its `topic.prefix`) on the Valkey
-    /// at `url`, read as `consumer`, this replica's name.
-    pub fn new(url: &str, prefix: &str, consumer: &str) -> Result<Self, RedisError> {
-        Ok(Self { client: Client::open(url)?, prefix: prefix.to_owned(), consumer: consumer.to_owned() })
+    /// The streams of Debezium's `prefix` (its `topic.prefix`) on `valkey`,
+    /// read as `consumer`, this replica's name.
+    pub fn new(valkey: &Valkey, prefix: &str, consumer: &str) -> Self {
+        Self { valkey: valkey.clone(), prefix: prefix.to_owned(), consumer: consumer.to_owned() }
     }
 
     /// Read each handler's stream on a task of its own, and trim Debezium's
     /// heartbeats.
     pub fn spawn(&self, handlers: Vec<Arc<dyn ChangeHandler>>) -> Vec<tokio::task::JoinHandle<()>> {
         let heartbeats = format!("__debezium-heartbeat.{}", self.prefix);
-        drop(tokio::spawn(trim::every(self.client.clone(), heartbeats, Keep::HEARTBEATS)));
+        drop(tokio::spawn(trim::every(self.valkey.clone(), heartbeats, Keep::HEARTBEATS)));
         handlers
             .into_iter()
             .map(|h| {
@@ -87,7 +87,7 @@ impl ValkeyChanges {
     }
 
     async fn run(self, stream: String, consumer: Arc<dyn Consumer>) {
-        drop(tokio::spawn(trim::every(self.client.clone(), stream.clone(), Keep::Needed)));
+        drop(tokio::spawn(trim::every(self.valkey.clone(), stream.clone(), Keep::Needed)));
         loop {
             if let Err(e) = self.serve(&stream, consumer.as_ref()).await {
                 tracing::warn!(stream = %stream, error = %e, "changes: the stream read failed; reconnecting");
@@ -97,7 +97,7 @@ impl ValkeyChanges {
     }
 
     async fn serve(&self, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
-        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let mut conn = self.valkey.connection().await?;
         let created: RedisResult<()> = conn.xgroup_create_mkstream(stream, GROUP, "0").await;
         match created {
             Err(e) if e.code() != Some("BUSYGROUP") => return Err(e),
@@ -112,12 +112,7 @@ impl ValkeyChanges {
     }
 
     /// Claim what stopped replicas left, then read new entries; handle each.
-    async fn pass(
-        &self,
-        conn: &mut MultiplexedConnection,
-        stream: &str,
-        handler: &dyn Consumer,
-    ) -> RedisResult<()> {
+    async fn pass(&self, conn: &mut Conn, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
         let stale = self.claim(conn, stream, RECLAIM_MS).await?;
         let fresh = self.read(conn, stream).await?;
         for entry in stale.into_iter().chain(fresh) {
@@ -130,12 +125,7 @@ impl ValkeyChanges {
 
     /// Under the lease only: every pending entry, then new ones, in order,
     /// stopping at the first failure so nothing overtakes it.
-    async fn ordered_pass(
-        &self,
-        conn: &mut MultiplexedConnection,
-        stream: &str,
-        handler: &dyn Consumer,
-    ) -> RedisResult<()> {
+    async fn ordered_pass(&self, conn: &mut Conn, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
         if !self.lease(conn, stream).await? {
             tokio::time::sleep(Duration::from_millis(LEASE_MS / 3)).await;
             return Ok(());
@@ -155,7 +145,7 @@ impl ValkeyChanges {
     }
 
     /// Take or renew the stream's lease; `false` when another replica holds it.
-    async fn lease(&self, conn: &mut MultiplexedConnection, stream: &str) -> RedisResult<bool> {
+    async fn lease(&self, conn: &mut Conn, stream: &str) -> RedisResult<bool> {
         let key = format!("agentd:lease:{stream}");
         let held: Option<String> = conn.get(&key).await?;
         if held.as_deref() == Some(self.consumer.as_str()) {
@@ -169,19 +159,14 @@ impl ValkeyChanges {
         Ok(taken.is_some())
     }
 
-    async fn claim(
-        &self,
-        conn: &mut MultiplexedConnection,
-        stream: &str,
-        idle_ms: usize,
-    ) -> RedisResult<Vec<StreamId>> {
+    async fn claim(&self, conn: &mut Conn, stream: &str, idle_ms: usize) -> RedisResult<Vec<StreamId>> {
         let options = StreamAutoClaimOptions::default().count(BATCH);
         let reply: StreamAutoClaimReply =
             conn.xautoclaim_options(stream, GROUP, &self.consumer, idle_ms, "0", options).await?;
         Ok(reply.claimed)
     }
 
-    async fn read(&self, conn: &mut MultiplexedConnection, stream: &str) -> RedisResult<Vec<StreamId>> {
+    async fn read(&self, conn: &mut Conn, stream: &str) -> RedisResult<Vec<StreamId>> {
         let options = StreamReadOptions::default().group(GROUP, &self.consumer).count(BATCH).block(BLOCK_MS);
         let reply: StreamReadReply = conn.xread_options(&[stream], &[">"], &options).await?;
         Ok(reply.keys.into_iter().flat_map(|k| k.ids).collect())

@@ -69,7 +69,8 @@ impl Sse {
 
 async fn valkey() -> Option<Streaming> {
     let url = std::env::var("AGENTD_VALKEY_URL").ok()?;
-    Some(Streaming { signals: Arc::new(ValkeySignals::connect(&url).unwrap()), ..Streaming::default() })
+    let valkey = signals_valkey::Valkey::open(&url, false).unwrap();
+    Some(Streaming { signals: Arc::new(ValkeySignals::connect(&valkey).unwrap()), ..Streaming::default() })
 }
 
 fn message(text: &str) -> Value {

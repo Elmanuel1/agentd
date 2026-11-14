@@ -98,7 +98,7 @@ fn unknown(var: &'static str, value: &str) -> ConfigError {
     ConfigError { var, reason: format!("unknown backend `{value}`") }
 }
 
-fn flag(
+pub(super) fn flag(
     get: &impl Fn(&str) -> Option<String>,
     var: &'static str,
     default: bool,

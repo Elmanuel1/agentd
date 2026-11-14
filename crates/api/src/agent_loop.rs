@@ -11,7 +11,7 @@ use engine::model::{ModelRouter, ProviderConfig};
 use engine::worker::{Loop, Models, Settings, Stores as LoopStores};
 use sessions::signals::Signals;
 use shared::ports::secrets::{ExposeSecret, SecretString};
-use signals_valkey::ValkeyBudget;
+use signals_valkey::{Valkey, ValkeyBudget};
 
 use files::FilesService;
 use work::{WorkService, WorkTokens};
@@ -36,10 +36,12 @@ pub async fn spawn(
         openai_compat: key(&config.keys.openrouter).map(|k| (k, c.model_base_url.clone())),
     };
     let client = ModelRouter::from_config(&providers).map_err(BootError::Loop)?;
-    let url = &config.streams.valkey_url;
     let budget: Arc<dyn ModelBudget> = match c.rpm.or(c.itpm) {
         Some(_) => {
-            Arc::new(ValkeyBudget::connect(url, c.rpm, c.itpm).map_err(|e| BootError::Loop(e.to_string()))?)
+            let streams = &config.streams;
+            let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster);
+            let budget = valkey.and_then(|v| ValkeyBudget::connect(&v, c.rpm, c.itpm));
+            Arc::new(budget.map_err(|e| BootError::Loop(e.to_string()))?)
         }
         None => Arc::new(Unlimited),
     };

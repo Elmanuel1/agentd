@@ -7,6 +7,7 @@ fn valkey_is_required_and_events_are_kept_unless_configured() {
     let c = config(&[]).unwrap();
     let base = StreamsConfig {
         valkey_url: "redis://valkey:6379".into(),
+        valkey_cluster: false,
         changes_prefix: "agentd".into(),
         retention: None,
     };
@@ -20,6 +21,7 @@ fn valkey_is_required_and_events_are_kept_unless_configured() {
 fn valkey_a_read_replica_and_retention_come_from_config() {
     let c = config(&[
         ("AGENTD_VALKEY_URL", "rediss://:pw@valkey:6379"),
+        ("AGENTD_VALKEY_CLUSTER", "true"),
         ("AGENTD_PG_READ_URL", "postgres://reader:r3ad-pass@replica:5432/agentd"),
         ("AGENTD_EVENT_RETENTION_DAYS", "30"),
     ])
@@ -29,6 +31,7 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
         c.streams,
         StreamsConfig {
             valkey_url: "rediss://:pw@valkey:6379".into(),
+            valkey_cluster: true,
             changes_prefix: "agentd".into(),
             retention: Some(day * 30)
         }

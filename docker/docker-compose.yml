@@ -1,6 +1,7 @@
 # agentd stack for development: agentd, Postgres (migrated by Flyway, with
 # logical WAL), Debezium Server reading the WAL into Valkey Streams, Valkey
-# (with AOF) for the change streams and the replicas' signals, and LocalStack
+# (a one-node cluster with AOF) for the change streams and the replicas'
+# signals, and LocalStack
 # for S3, Secrets Manager and KMS. Vault credentials are encrypted under a KMS key on the
 # emulator exactly as in production; there is no weaker mode. Every published
 # port is bound to 127.0.0.1. Tools run on a worker that polls the session's
@@ -27,6 +28,7 @@ x-agentd: &agentd
     AGENTD_SECRETS_ENDPOINT: http://localstack:4566
     AGENTD_SECRETS_KMS_KEY_ID: alias/agentd-secrets
     AGENTD_VALKEY_URL: redis://valkey:6379
+    AGENTD_VALKEY_CLUSTER: "1"
     # Only the emulator accepts these.
     AWS_ACCESS_KEY_ID: test
     AWS_SECRET_ACCESS_KEY: test
@@ -113,16 +115,33 @@ services:
       retries: 20
 
   # The change streams Debezium writes, and the replicas' pub/sub signals.
-  # AOF, fsynced every second, keeps the streams across a restart.
+  # A one-node cluster, as production runs (cluster mode enabled), announced
+  # by its name on this network; AOF, fsynced every second, keeps the streams
+  # across a restart. The first health check gives the node every slot.
   valkey:
-    image: valkey/valkey:8.0-alpine
-    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    image: valkey/valkey:9.0-alpine
+    command:
+      - valkey-server
+      - --cluster-enabled
+      - "yes"
+      - --cluster-announce-hostname
+      - valkey
+      - --cluster-preferred-endpoint-type
+      - hostname
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
     volumes:
       - valkey_data:/data
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - >-
+          valkey-cli cluster info | grep -q cluster_state:ok
+          || { valkey-cli cluster addslotsrange 0 16383 >/dev/null; false; }
       interval: 3s
       timeout: 3s
       retries: 20
@@ -135,6 +154,7 @@ services:
     environment:
       DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DEBEZIUM_SINK_REDIS_CLUSTER_ENABLED: "true"
     volumes:
       - ./debezium:/debezium/config:ro
     restart: unless-stopped
