@@ -24,6 +24,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `DATABASE_URL` | required | Postgres connection |
 | `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
 | `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
+| `AGENTD_KAFKA_BROKERS` | unset | Kafka's brokers (`host:port,…`), from whose topics agentd reads the change feed; unset, it reads it from Valkey Streams on `AGENTD_VALKEY_URL` |
 | `AGENTD_VALKEY_CLUSTER` | `false` | `true` when `AGENTD_VALKEY_URL` is a cluster's configuration endpoint (cluster mode enabled): agentd then follows the cluster's slots and subscribes over RESP3 |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
@@ -298,18 +299,18 @@ Schedules go through an outbox. Each change (a deployment's create, pause,
 unpause or archive) is written to `schedule_outbox` in the transaction of the
 deployment write that causes it, and removed in the same transaction, so the
 table stays empty and the change lives on in the WAL. Debezium Server reads
-the WAL into the Valkey stream `agentd.public.schedule_outbox`, and one
-replica at a time, holding a lease in Valkey, applies the changes in order to
-the scheduler sink; a change the sink refuses stops the stream until it
+the WAL into `agentd.public.schedule_outbox` of the change feed (below), and
+one replica at a time applies the changes in order to the scheduler sink; a change the sink refuses stops the stream until it
 applies, and a change that does not decode is logged at `ERROR` and passed
 over. The built-in sink is the Postgres scheduler: one `schedules` row per
 target, whose due rows every replica claims every 10 s with
 `FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it after
 the commit. A fire more than a minute late is skipped, so after downtime a
 schedule fires again from its next time, with no backfill. Another sink (a
-Temporal worker, say) reads the same stream and delivers its fires to the
-Valkey stream `agentd.fires`, one entry per fire with the fields `spec` (the
-schedule's spec as JSON) and `scheduled_at` (RFC 3339).
+Temporal worker, say) reads the same topic and delivers its fires to
+`agentd.fires` of the feed: on Kafka one record per fire, its value
+`{"spec": …, "scheduled_at": …}`; on Valkey Streams one entry per fire with
+the fields `spec` (the schedule's spec as JSON) and `scheduled_at` (RFC 3339).
 
 Every fire, from either source, passes the fire inbox, `fire_claims`, before
 its handler runs. A delivery may repeat (a scheduler retry, a stream entry a
@@ -326,20 +327,37 @@ needs no run.
 
 Debezium Server reads the committed changes of the tables in
 `docker/debezium/application.properties` from Postgres's WAL (pgoutput, the
-publication and slot `agentd_changes`) and writes each table's to the Valkey
-stream `agentd.public.<table>`. Its offsets are rows of `debezium_offsets` in
-the same database, which it creates on first start. Every minute it writes a
-logical message to the WAL, so the slot moves on while the captured tables are
-quiet, and a heartbeat entry to the stream `__debezium-heartbeat.agentd`,
-which agentd does not read. An entry stays in its stream after it is
-acknowledged, so once a minute each replica trims each stream it reads below
-the oldest entry a group still needs (its oldest pending entry, else the last
-one it was delivered), and the heartbeat stream to its last 100 entries. The
-same properties file runs in every
-deployment; the environment overrides any key in it
+publication and slot `agentd_changes`) and writes each table's to the topic
+`agentd.public.<table>` of the feed. Its offsets are rows of
+`debezium_offsets` in the same database, which it creates on first start.
+Every minute it writes a logical message to the WAL, so the slot moves on while
+the captured tables are quiet, and a heartbeat record to
+`__debezium-heartbeat.agentd`, which agentd does not read. The same properties
+file runs in every deployment; the environment overrides any key in it
 (`debezium.source.database.hostname` is `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`).
 Compose runs it as the `debezium` service; CI starts it with
 `docker/debezium/start-ci.sh`.
+
+The feed is Kafka when `AGENTD_KAFKA_BROKERS` is set, and Debezium runs with
+its Kafka sink (the default). Each replica reads each topic in the consumer
+group `agentd.<topic>` and commits a record's offset once its handler
+succeeds; a record whose handler fails is retried in place, so nothing behind
+it in its partition overtakes it. An ordered table's topic has one partition,
+which the group gives to one replica at a time. An external scheduler writes
+its fires to the topic `agentd.fires`, each record's value
+`{"spec": …, "scheduled_at": "<RFC 3339>"}`. The topics' retention trims them.
+
+Without Kafka, the feed is Valkey Streams on `AGENTD_VALKEY_URL`, and
+Debezium runs with `DEBEZIUM_SINK_TYPE=redis`. Each replica reads each stream
+in the consumer group `agentd`; an ordered stream is read by one replica at a
+time under a lease in Valkey. Heartbeats go to the stream
+`__debezium-heartbeat.agentd` (the sink stalls on a heartbeat it is told to
+skip). An entry stays in its stream after it is acknowledged, so once a minute
+each replica trims each stream it reads below the oldest entry a group still
+needs (its oldest pending entry, else the last one it was delivered), and the
+heartbeat stream to its last 100 entries. Compose and the CI test job run the
+Kafka feed; the CI SDK job runs the Valkey Streams feed on a one-node Valkey
+cluster.
 
 In production:
 
@@ -360,19 +378,19 @@ In production:
   `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`, `_PORT`, `_DBNAME`, `_USER`,
   `_PASSWORD` and `_SSLMODE` (`require`); the offsets' JDBC URL, user and
   password in `DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_URL`, `_USER`
-  and `_PASSWORD`; and the sink's `DEBEZIUM_SINK_REDIS_ADDRESS`,
-  `DEBEZIUM_SINK_REDIS_PASSWORD`, `DEBEZIUM_SINK_REDIS_SSL_ENABLED` and, for
-  a cluster, `DEBEZIUM_SINK_REDIS_CLUSTER_ENABLED=true`. It
-  answers `GET /q/health` on port 8080.
-- **Valkey** is node-based ElastiCache for Valkey 9 with durability and
-  synchronous writes: each write is in a transactional log in at least two
-  availability zones before Valkey answers. Durability needs cluster mode
-  enabled, Multi-AZ with a replica per shard, and TLS, so agentd runs with
-  `AGENTD_VALKEY_CLUSTER=true` and a `rediss://` URL to the configuration
-  endpoint, and Debezium with `DEBEZIUM_SINK_REDIS_CLUSTER_ENABLED=true`.
-  Compose and CI run a one-node cluster with AOF
-  (`docker/valkey/start-cluster.sh`); the CI test job also keeps a standalone
-  Valkey, so both modes are tested.
+  and `_PASSWORD`; and the Kafka sink's
+  `DEBEZIUM_SINK_KAFKA_PRODUCER_BOOTSTRAP_SERVERS`. It answers
+  `GET /q/health` on port 8080.
+- **Kafka** has the topics `agentd.public.schedule_outbox` and `agentd.fires`
+  made before Debezium starts, each with one partition, replication factor 3
+  and `min.insync.replicas=2`, so a record Debezium has written survives the
+  loss of a broker. Retention is longer than the longest time every replica
+  may be down; a record past it is gone before agentd reads it. agentd reaches
+  the brokers at `AGENTD_KAFKA_BROKERS`.
+- **Valkey** keeps nothing that must outlive it while the feed is on Kafka:
+  the signals are delivered at most once and the budget's counters expire
+  after two minutes. A standalone Valkey serves, or a cluster's configuration
+  endpoint with `AGENTD_VALKEY_CLUSTER=true`; `rediss://` for TLS.
 
 The signals to alarm on, with their thresholds:
 
@@ -380,7 +398,7 @@ The signals to alarm on, with their thresholds:
 |---|---|---|
 | Slot lag | `pg_current_wal_lsn() - confirmed_flush_lsn` of `agentd_changes` in `pg_replication_slots` (RDS: `OldestReplicationSlotLag`) | over 1 GB, or growing for 15 minutes |
 | Debezium health | `GET /q/health` | down for 2 minutes |
-| Stream backlog | `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
+| Feed backlog | Kafka: the lag of the group `agentd.agentd.public.<table>`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
 
 ## Telemetry
 

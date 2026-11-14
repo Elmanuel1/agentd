@@ -12,7 +12,9 @@ use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig, Mul
 use redis::cluster::{ClusterClient, ClusterClientBuilder};
 use redis::cluster_async::ClusterConnection;
 use redis::{Client, Cmd, Pipeline, ProtocolVersion, PushKind, RedisError, RedisFuture, RedisResult, Value};
-use tokio::sync::OnceCell;
+
+mod cluster;
+use cluster::Cluster;
 
 /// A standalone Valkey or a cluster.
 #[derive(Clone)]
@@ -27,12 +29,6 @@ enum Node {
     Cluster(Arc<Cluster>),
 }
 
-/// A cluster's client, and the connection its short commands share.
-pub(crate) struct Cluster {
-    client: ClusterClient,
-    shared: OnceCell<ClusterConnection>,
-}
-
 impl std::fmt::Debug for Valkey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cluster = matches!(self.node, Node::Cluster(..));
@@ -45,9 +41,7 @@ impl Valkey {
     /// Nothing connects until first used, so a replica starts while Valkey is down.
     pub fn open(url: &str, cluster: bool) -> Result<Self, RedisError> {
         let node = match cluster {
-            true => {
-                Node::Cluster(Arc::new(Cluster { client: cluster_client(url)?, shared: OnceCell::new() }))
-            }
+            true => Node::Cluster(Arc::new(Cluster::new(cluster_client(url)?))),
             false => Node::Single(Box::new(Client::open(url)?)),
         };
         Ok(Self { url: url.to_owned(), node })
@@ -124,14 +118,11 @@ pub(crate) enum Shared {
 }
 
 impl Shared {
-    /// The connection, made on first use; a failed first use tries again next time.
+    /// The connection, made in the background from the first use on.
     pub(crate) async fn get(&self) -> RedisResult<SharedConn> {
         match self {
             Self::Single(manager) => Ok(SharedConn::Single(manager.clone())),
-            Self::Cluster(cluster) => {
-                let conn = cluster.shared.get_or_try_init(|| cluster.client.get_async_connection()).await?;
-                Ok(SharedConn::Cluster(conn.clone()))
-            }
+            Self::Cluster(cluster) => cluster.shared().await.map(SharedConn::Cluster),
         }
     }
 }

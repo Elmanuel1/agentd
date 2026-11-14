@@ -12,7 +12,9 @@ use super::{ScheduleSpec, TenantRef};
 use crate::{with_writer, AuthContext, OrgId, WorkspaceId, Writer};
 
 mod claims;
+mod delivery;
 pub use claims::{Claim, FireClaims};
+pub use delivery::deliver;
 
 /// A fire that did not run.
 #[derive(Debug, Clone, thiserror::Error)]

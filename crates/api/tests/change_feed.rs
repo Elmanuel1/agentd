@@ -1,8 +1,9 @@
 //! The change feed end to end: a deployment write's schedule change leaves
 //! the outbox empty, and reaches the scheduler through Postgres's WAL,
-//! Debezium Server and Valkey Streams. Gated by `AGENTD_PG_TESTS=1` and
-//! `AGENTD_AWS_ENDPOINT`; the WAL test also needs `AGENTD_CDC_TESTS=1`, a
-//! running Debezium Server (`docker/debezium`) and `AGENTD_VALKEY_URL`.
+//! Debezium Server and the feed: Kafka when `AGENTD_KAFKA_BROKERS` is set,
+//! else Valkey Streams at `AGENTD_VALKEY_URL`. Gated by `AGENTD_PG_TESTS=1`
+//! and `AGENTD_AWS_ENDPOINT`; the WAL test also needs `AGENTD_CDC_TESTS=1`
+//! and a running Debezium Server (`docker/debezium`) writing to that feed.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
+use changes_kafka::KafkaChanges;
 use common::{Auth, Rig, KEY};
 use deployments::fire::target;
 use deployments::types::DeploymentId;
@@ -19,6 +21,7 @@ use diesel::sql_types::{BigInt, Text};
 use diesel::QueryableByName;
 use diesel_async::RunQueryDsl;
 use serde_json::{json, Value};
+use shared::ports::changes::ChangeHandler;
 use shared::ports::fire::FireRegistry;
 use shared::ports::{FireTarget, SchedulerError, SchedulerPort};
 use signals_valkey::{Valkey, ValkeyChanges};
@@ -105,10 +108,17 @@ async fn a_deployment_s_schedule_changes_reach_the_scheduler_through_the_wal() {
     let Some(rig) = Rig::new().await else { return };
     let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(rig.pg.clone()))));
     let sched = PgScheduler::new(rig.pg.clone(), fires);
-    let url = std::env::var("AGENTD_VALKEY_URL").unwrap();
-    let valkey = Valkey::open(&url, std::env::var("AGENTD_VALKEY_CLUSTER").as_deref() == Ok("1")).unwrap();
-    let feed = ValkeyChanges::new(&valkey, "agentd", &format!("agentd-test-{}", common::stamp()));
-    let tasks = feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(sched.clone())))]);
+    let outbox: Arc<dyn ChangeHandler> = Arc::new(ScheduleOutbox::new(Arc::new(sched.clone())));
+    let tasks = match std::env::var("AGENTD_KAFKA_BROKERS") {
+        Ok(brokers) => KafkaChanges::new(&brokers, "agentd").spawn(vec![outbox]),
+        Err(_) => {
+            let url = std::env::var("AGENTD_VALKEY_URL").unwrap();
+            let cluster = std::env::var("AGENTD_VALKEY_CLUSTER").as_deref() == Ok("1");
+            let valkey = Valkey::open(&url, cluster).unwrap();
+            ValkeyChanges::new(&valkey, "agentd", &format!("agentd-test-{}", common::stamp()))
+                .spawn(vec![outbox])
+        }
+    };
 
     let id = scheduled(&rig).await;
     let t = target_of(&id);

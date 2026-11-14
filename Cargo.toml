@@ -22,6 +22,7 @@ members = [
     "crates/adapters/secrets-aws",
     "crates/adapters/aws-common",
     "crates/adapters/signals-valkey",
+    "crates/adapters/changes-kafka",
     "crates/engine",
 ]
 
@@ -53,6 +54,7 @@ test-support = { path = "crates/test-support" }
 secrets-aws = { path = "crates/adapters/secrets-aws" }
 aws-common = { path = "crates/adapters/aws-common" }
 signals-valkey = { path = "crates/adapters/signals-valkey" }
+changes-kafka = { path = "crates/adapters/changes-kafka" }
 engine = { path = "crates/engine" }
 
 # external
@@ -78,6 +80,7 @@ http-body-util = "0.1"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager", "streams", "cluster-async"] }
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.33"

@@ -1,7 +1,7 @@
 # agentd stack for development: agentd, Postgres (migrated by Flyway, with
-# logical WAL), Debezium Server reading the WAL into Valkey Streams, Valkey
-# (a one-node cluster with AOF) for the change streams and the replicas'
-# signals, and LocalStack
+# logical WAL), Debezium Server reading the WAL into Kafka, Kafka for the
+# change feed, Valkey (a one-node cluster with AOF) for the replicas' signals
+# and the model budget, and LocalStack
 # for S3, Secrets Manager and KMS. Vault credentials are encrypted under a KMS key on the
 # emulator exactly as in production; there is no weaker mode. Every published
 # port is bound to 127.0.0.1. Tools run on a worker that polls the session's
@@ -29,6 +29,7 @@ x-agentd: &agentd
     AGENTD_SECRETS_KMS_KEY_ID: alias/agentd-secrets
     AGENTD_VALKEY_URL: redis://valkey:6379
     AGENTD_VALKEY_CLUSTER: "1"
+    AGENTD_KAFKA_BROKERS: kafka:9092
     # Only the emulator accepts these.
     AWS_ACCESS_KEY_ID: test
     AWS_SECRET_ACCESS_KEY: test
@@ -92,6 +93,8 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     deploy:
       replicas: ${AGENTD_REPLICAS:-1}
 
@@ -114,7 +117,7 @@ services:
       timeout: 3s
       retries: 20
 
-  # The change streams Debezium writes, and the replicas' pub/sub signals.
+  # The replicas' pub/sub signals and the model budget's counters.
   # A one-node cluster, as production runs (cluster mode enabled), announced
   # by its name on this network; AOF, fsynced every second, keeps the streams
   # across a restart. The first health check gives the node every slot.
@@ -147,22 +150,45 @@ services:
       retries: 20
 
   # Debezium Server: the committed changes of the tables in
-  # debezium/application.properties, from the WAL into Valkey Streams. One
-  # instance: a second could not take the replication slot.
+  # debezium/application.properties, from the WAL into Kafka. One instance:
+  # a second could not take the replication slot.
   debezium:
     image: quay.io/debezium/server:3.3.1.Final
     environment:
       DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-      DEBEZIUM_SINK_REDIS_CLUSTER_ENABLED: "true"
     volumes:
       - ./debezium:/debezium/config:ro
     restart: unless-stopped
     depends_on:
       flyway:
         condition: service_completed_successfully   # its tables exist before the publication
-      valkey:
+      kafka:
         condition: service_healthy
+
+  # The change feed: one Kafka node (KRaft), each topic made on first write
+  # with one partition, kept 7 days.
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
 
   # S3, Secrets Manager and KMS. Healthy once the init hook has made the KMS
   # key (docker/localstack/ready.d).
@@ -184,3 +210,4 @@ services:
 volumes:
   pg_data:
   valkey_data:
+  kafka_data:

@@ -10,11 +10,11 @@ use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::secrets::SecretStore;
-use signals_valkey::ValkeyChanges;
 use store_postgres::{
     PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
 
+use super::feed::ChangeFeed;
 use super::Stores;
 use crate::telemetry::{self, Metrics};
 
@@ -65,16 +65,16 @@ pub(super) async fn connect(
 }
 
 /// The fires every replica delivers: the built-in scheduler's tick (a due
-/// schedule goes to whichever replica claims it first) and the fires stream
-/// of an external scheduler. They start once the handlers are registered.
+/// schedule goes to whichever replica claims it first) and the fires
+/// an external scheduler writes to the change feed. They start once the handlers are registered.
 #[derive(Debug)]
 pub struct FireSources {
     tick: PgScheduler,
-    feed: ValkeyChanges,
+    feed: ChangeFeed,
 }
 
 impl FireSources {
-    pub(super) fn new(tick: PgScheduler, feed: ValkeyChanges) -> Self {
+    pub(super) fn new(tick: PgScheduler, feed: ChangeFeed) -> Self {
         Self { tick, feed }
     }
 

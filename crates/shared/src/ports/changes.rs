@@ -7,6 +7,9 @@ use serde_json::Value;
 
 use crate::BackendError;
 
+mod delivery;
+pub use delivery::deliver;
+
 /// What a change did to its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeOp {

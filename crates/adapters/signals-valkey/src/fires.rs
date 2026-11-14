@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use redis::streams::StreamId;
-use shared::ports::fire::{Claim, FireError, FireRegistry};
+use shared::ports::fire::{self, FireRegistry};
 use shared::ports::ScheduleSpec;
 
 use crate::changes::Consumer;
@@ -39,24 +39,7 @@ impl Consumer for Fires {
         false
     }
 
-    /// Done once the fire ran or needs no run; a fire another replica holds,
-    /// or one that failed, stays pending and is delivered again.
     async fn consume(&self, entry: &StreamId) -> bool {
-        let Some((spec, at)) = parse(entry) else {
-            tracing::error!(id = %entry.id, "fires: an entry carries no fire; dropped");
-            return true;
-        };
-        match self.registry.fire(&spec, at).await {
-            Ok(Claim::Run | Claim::Done) => true,
-            Ok(Claim::Held) => false,
-            Err(FireError::NoHandler(kind)) => {
-                tracing::error!(target = %spec.target.key(), %kind, "fires: no handler for the fire's kind; dropped");
-                true
-            }
-            Err(e) => {
-                tracing::warn!(target = %spec.target.key(), %at, error = %e, "fires: a fire failed; it runs again after its lease");
-                false
-            }
-        }
+        fire::deliver(&self.registry, parse(entry), &entry.id).await
     }
 }

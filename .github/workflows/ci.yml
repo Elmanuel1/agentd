@@ -63,6 +63,7 @@ jobs:
       AGENTD_AWS_ENDPOINT: http://localhost:4566
       AGENTD_VALKEY_URL: redis://localhost:6379
       AGENTD_VALKEY_CLUSTER_URL: redis://127.0.0.1:7001
+      AGENTD_KAFKA_BROKERS: localhost:9092
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
@@ -79,8 +80,10 @@ jobs:
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
-      - name: Start the change feed (logical WAL, Valkey AOF, Debezium Server)
-        run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" "${{ job.services.valkey.id }}" 6379 false
+      - name: Start Kafka
+        run: docker/kafka/start.sh
+      - name: Start the change feed (logical WAL, Debezium Server into Kafka)
+        run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" kafka localhost:9092
       - name: Start a one-node Valkey cluster, for the cluster-mode tests
         run: docker/valkey/start-cluster.sh 7001
       - run: cargo test --workspace --locked --no-fail-fast
@@ -155,8 +158,8 @@ jobs:
             -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
       - name: Start a one-node Valkey cluster, as production runs
         run: docker/valkey/start-cluster.sh 7001
-      - name: Start the change feed (logical WAL, Debezium Server into the cluster)
-        run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" valkey-cluster 7001 true
+      - name: Start the change feed (logical WAL, Debezium Server into the cluster's streams)
+        run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" redis localhost:7001 true
       - name: Install the ant CLI, whose worker runs the tools
         run: |
           curl -sfL "https://github.com/anthropics/anthropic-cli/releases/download/v${ANT_VERSION}/ant_${ANT_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin ant

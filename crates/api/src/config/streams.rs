@@ -14,6 +14,9 @@ pub struct StreamsConfig {
     /// `AGENTD_VALKEY_CLUSTER` (`false`): the URL is a cluster's
     /// configuration endpoint (cluster mode enabled).
     pub valkey_cluster: bool,
+    /// `AGENTD_KAFKA_BROKERS` (`host:port,…`): read the change feed from
+    /// Kafka's topics. Unset, it is read from Valkey Streams.
+    pub kafka_brokers: Option<String>,
     /// `AGENTD_CHANGES_PREFIX` (`agentd`): Debezium's `topic.prefix`, which
     /// names the change streams `<prefix>.public.<table>`.
     pub changes_prefix: String,
@@ -28,6 +31,7 @@ impl std::fmt::Debug for StreamsConfig {
         f.debug_struct("StreamsConfig")
             .field("valkey_url", &"***")
             .field("valkey_cluster", &self.valkey_cluster)
+            .field("kafka_brokers", &self.kafka_brokers)
             .field("changes_prefix", &self.changes_prefix)
             .field("retention", &self.retention)
             .finish()
@@ -47,6 +51,7 @@ impl StreamsConfig {
                 reason: "required: the replicas' signals and the change feed".into(),
             })?,
             valkey_cluster: flag(get, "AGENTD_VALKEY_CLUSTER", false)?,
+            kafka_brokers: get("AGENTD_KAFKA_BROKERS").filter(|b| !b.is_empty()),
             changes_prefix: get("AGENTD_CHANGES_PREFIX").unwrap_or_else(|| "agentd".into()),
             retention: days.map(|d| Duration::from_secs(d.saturating_mul(DAY))),
         })

@@ -122,11 +122,14 @@ mod tests {
 
     #[tokio::test]
     async fn with_valkey_unreachable_a_replica_starts_and_a_publish_fails_fast() {
-        let signals = ValkeySignals::connect(&Valkey::open("redis://127.0.0.1:1", false).unwrap()).unwrap();
-        let signal = Signal { workspace: WorkspaceId::new("wrkspc_1"), session: SessionId::generate() };
-        let started = tokio::time::Instant::now();
-        assert!(signals.publish(&signal).await.is_err());
-        assert!(started.elapsed() < PUBLISH_WAIT * 3, "{:?}", started.elapsed());
+        for cluster in [false, true] {
+            let signals =
+                ValkeySignals::connect(&Valkey::open("redis://127.0.0.1:1", cluster).unwrap()).unwrap();
+            let signal = Signal { workspace: WorkspaceId::new("wrkspc_1"), session: SessionId::generate() };
+            let started = tokio::time::Instant::now();
+            assert!(signals.publish(&signal).await.is_err());
+            assert!(started.elapsed() < PUBLISH_WAIT * 3, "cluster {cluster}: {:?}", started.elapsed());
+        }
     }
 
     #[tokio::test]

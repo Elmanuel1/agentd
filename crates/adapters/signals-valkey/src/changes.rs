@@ -16,7 +16,7 @@ use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,
 };
 use redis::{AsyncCommands, RedisResult, SetExpiry, SetOptions};
-use shared::ports::changes::{Change, ChangeHandler};
+use shared::ports::changes::{self, ChangeHandler};
 use shared::ports::fire::FireRegistry;
 
 use crate::fires::Fires;
@@ -182,18 +182,8 @@ impl Consumer for Changes {
         self.0.ordered()
     }
 
-    /// Done once handled, or when the entry is not a change at all (a tombstone).
     async fn consume(&self, entry: &StreamId) -> bool {
         let value: Option<String> = entry.get("value");
-        let change =
-            value.and_then(|v| serde_json::from_str(&v).ok()).and_then(|v| Change::from_debezium(&v));
-        let Some(change) = change else { return true };
-        match self.0.handle(&change).await {
-            Ok(()) => true,
-            Err(e) => {
-                tracing::warn!(table = %change.table, id = %entry.id, error = %e, "changes: a handler failed; it runs again");
-                false
-            }
-        }
+        changes::deliver(self.0.as_ref(), value.as_deref(), &entry.id).await
     }
 }

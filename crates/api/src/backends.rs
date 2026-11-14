@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use blobs_s3::{BlobError, S3BlobStore};
 
+mod feed;
 mod postgres;
 mod stores;
 
@@ -23,7 +24,7 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::{SecretError, SecretStore};
-use signals_valkey::{Valkey, ValkeyChanges, ValkeySignals};
+use signals_valkey::{Valkey, ValkeySignals};
 use store_postgres::{PgError, PgFireClaims, PgScheduler, ScheduleOutbox};
 
 use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
@@ -134,8 +135,7 @@ impl Backends {
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
                 let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
                 let scheduler = PgScheduler::new(pg.backend.clone(), fires.clone());
-                let consumer = format!("agentd-{}", uuid::Uuid::new_v4());
-                let feed = ValkeyChanges::new(&valkey, &streams.changes_prefix, &consumer);
+                let feed = feed::ChangeFeed::from_config(streams, &valkey);
                 drop(feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone())))]));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
