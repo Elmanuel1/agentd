@@ -176,8 +176,7 @@ impl CredentialWrites for PgVaultsStore {
     }
 
     async fn insert_deliveries(&self, deliveries: &[Delivery]) -> Result<(), StoreError> {
-        crate::entities::webhook_deliveries::publish(&self.backend, deliveries)
-            .await
-            .map_err(StoreError::Backend)
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        crate::entities::webhook_deliveries::insert_deliveries(&mut conn, deliveries).await.map_err(diesel_be)
     }
 }

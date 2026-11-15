@@ -15,15 +15,15 @@ use webhooks::{Delivery, DeliveryMarks};
 
 use crate::PgBackend;
 
-/// Write `rows` in the transaction on `c`.
+/// Write `deliveries` in the transaction on `c`.
 pub(crate) async fn insert_deliveries(
     c: &mut AsyncPgConnection,
-    rows: &[Delivery],
+    deliveries: &[Delivery],
 ) -> Result<(), diesel::result::Error> {
-    if rows.is_empty() {
+    if deliveries.is_empty() {
         return Ok(());
     }
-    let col = |f: fn(&Delivery) -> &str| rows.iter().map(|r| f(r).to_owned()).collect::<Vec<_>>();
+    let col = |f: fn(&Delivery) -> &str| deliveries.iter().map(|r| f(r).to_owned()).collect::<Vec<_>>();
     diesel::sql_query(
         "INSERT INTO webhook_deliveries (webhook_id, endpoint_key, endpoint_url, body, next_attempt_at) \
          SELECT w, k, u, b, now() FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS d(w, k, u, b)",
@@ -61,13 +61,6 @@ pub(crate) async fn status_changed(
             .optional()?;
     let Some(org) = org else { return Ok(()) };
     insert_deliveries(c, &build(&org.org_id)).await
-}
-
-/// Write `rows` in a transaction of their own, for a change with no other
-/// write to join (a failed refresh).
-pub async fn publish(backend: &PgBackend, rows: &[Delivery]) -> Result<(), BackendError> {
-    let mut conn = backend.diesel.write().await.map_err(BackendError::new)?;
-    insert_deliveries(&mut conn, rows).await.map_err(BackendError::new)
 }
 
 /// Records each delivery's end.

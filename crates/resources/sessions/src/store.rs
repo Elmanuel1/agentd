@@ -80,10 +80,7 @@ impl Default for EventFilter {
 /// A session's compare-and-write.
 #[async_trait]
 pub trait SessionReplace: Send + Sync {
-    /// Write `s` only while the stored session is still `read`; a session
-    /// another writer changed first is [`StoreError::Conflict`]. `deliveries`
-    /// land in the same commit. A write that archives the session stops its
-    /// work item and terminates it as live's does (U3).
+    /// Write `s` and `deliveries` only while the stored session is still `read`, else `Conflict`.
     async fn replace(
         &self,
         ws: &WorkspaceId,

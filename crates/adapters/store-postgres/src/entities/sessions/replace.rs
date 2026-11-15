@@ -1,6 +1,6 @@
 //! A session's replace, under its row lock and compared with what the
-//! writer read; an archive's also stops the work item and terminates the
-//! session in the same commit.
+//! writer read, with its webhook deliveries; an archive's also stops the
+//! work item and terminates the session in the same commit.
 
 use ::sessions::store::{SessionReplace, StoreError};
 use ::sessions::types::Session;
@@ -10,6 +10,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
+use super::super::webhook_deliveries::insert_deliveries;
 use super::PgSessionsStore;
 use crate::schema::sessions;
 use crate::{diesel_be, enum_str, pool_be, to_doc};
@@ -54,8 +55,9 @@ impl SessionReplace for PgSessionsStore {
                     .execute(c)
                     .await?;
                     if read.archived_at.is_none() && s.archived_at.is_some() {
-                        super::terminate::archived(c, ws, read, &s, deliveries).await?;
+                        super::terminate::archived(c, ws, read, &s).await?;
                     }
+                    insert_deliveries(c, deliveries).await?;
                     Ok(Ok(()))
                 }
                 .scope_boxed()

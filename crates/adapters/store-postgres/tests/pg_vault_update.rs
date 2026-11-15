@@ -1,7 +1,8 @@
 //! A credential update while another writer moves the row under it: a lost
 //! claim and a write after another claim each read the credential again, one
 //! deleted meanwhile is `404`, and one that keeps changing is `409` after
-//! three reads (VA-4, MC-7). Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
+//! three reads, its losing secret write kept (D41). Gated by
+//! `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
 
 #![allow(
     clippy::unwrap_used,
@@ -224,6 +225,7 @@ async fn an_update_reads_again_after_another_writer_and_gives_up_after_three_rea
         assert_eq!(creds.reads.load(Ordering::SeqCst), 2, "read again once: {races:?}");
     }
 
+    let before = store.get_credential(&ws, &vid, &cred.id).await.unwrap().wire;
     let (svc, creds) = racing(vec![Race::Claim, Race::Write, Race::Claim]);
     let err =
         svc.update_credential(&ctx, vault.id.as_str(), cred.id.as_str(), update("t3")).await.unwrap_err();
@@ -232,6 +234,20 @@ async fn an_update_reads_again_after_another_writer_and_gives_up_after_three_rea
         (409, "the credential changed during the update; send it again")
     );
     assert_eq!(creds.reads.load(Ordering::SeqCst), 3);
+    let stored = store.get_credential(&ws, &vid, &cred.id).await.unwrap();
+    assert_eq!(
+        Credential { updated_at: before.updated_at, ..stored.wire },
+        before,
+        "the row is the other writer's"
+    );
+    assert_eq!(
+        stored.auth,
+        Some(CredentialAuthInput::StaticBearer {
+            mcp_server_url: "https://mcp.agentd.test/mcp".into(),
+            token: SecretString::new("t3")
+        }),
+        "the secret written before the lost row write stays (D41)"
+    );
 
     let (svc, _) = racing(vec![Race::Delete]);
     let err =

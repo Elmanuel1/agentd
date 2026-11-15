@@ -54,7 +54,20 @@ impl Loop {
         change: &SessionChange<'_>,
         how: Landing,
     ) -> Result<bool, BackendError> {
-        let deliveries = self.deliveries(claim);
+        // A status change's deliveries, when any endpoint is configured (H-1).
+        let hooks = &self.stores.webhooks;
+        let (ws, id) = (claim.workspace.clone(), claim.session.clone());
+        let deliveries: Option<Box<StatusDeliveries<'_>>> = (!hooks.is_empty()).then(|| {
+            Box::new(move |org: &str, status: SessionStatus| {
+                let kind = match status {
+                    SessionStatus::Running => EventKind::SessionRunStarted,
+                    SessionStatus::Idle => EventKind::SessionIdled,
+                    SessionStatus::Terminated => EventKind::SessionTerminated,
+                    SessionStatus::Rescheduling => return Vec::new(),
+                };
+                hooks.deliveries(org, ws.as_str(), kind, id.as_str())
+            }) as Box<StatusDeliveries<'_>>
+        });
         let w = StepWrite {
             read: &b.read,
             at: b.at,
@@ -72,24 +85,5 @@ impl Loop {
         let landed = landed.map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(landed)
-    }
-
-    /// The deliveries a status change of `claim`'s session sends, when any
-    /// endpoint is configured (H-1).
-    fn deliveries(&self, claim: &Claim) -> Option<Box<StatusDeliveries<'_>>> {
-        let hooks = &self.stores.webhooks;
-        if hooks.is_empty() {
-            return None;
-        }
-        let (ws, id) = (claim.workspace.clone(), claim.session.clone());
-        Some(Box::new(move |org: &str, status: SessionStatus| {
-            let kind = match status {
-                SessionStatus::Running => EventKind::SessionRunStarted,
-                SessionStatus::Idle => EventKind::SessionIdled,
-                SessionStatus::Terminated => EventKind::SessionTerminated,
-                SessionStatus::Rescheduling => return Vec::new(),
-            };
-            hooks.deliveries(org, ws.as_str(), kind, id.as_str())
-        }))
     }
 }
