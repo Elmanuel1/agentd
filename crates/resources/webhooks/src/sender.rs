@@ -1,7 +1,10 @@
 //! Sending a delivery: the change feed hands each new `webhook_deliveries`
-//! row here. A delivery not answered 2xx is sent again twice, about 31 s
-//! apart, each attempt signed anew with its own `webhook-timestamp` and the
-//! same `webhook-id`, then dropped (H-3). Delivery is at least once.
+//! row here, and its first attempt runs then. A delivery not answered 2xx is
+//! sent again twice, about 31 s apart, on a task of its own so the feed keeps
+//! moving, each attempt signed anew with its own `webhook-timestamp` and the
+//! same `webhook-id`, then dropped (H-3). The first attempt is delivered at
+//! least once; a replica that stops during the retries leaves the row with
+//! neither `delivered_at` nor `dropped_at`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +21,8 @@ use super::sign::sign;
 const ATTEMPTS: i64 = 3;
 /// How long one attempt may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// Deliveries retried at once per replica.
+const RETRYING: usize = 256;
 
 /// Where a delivery's end is recorded.
 #[async_trait]
@@ -36,6 +41,7 @@ pub struct WebhookSender {
     webhooks: Arc<Webhooks>,
     marks: Arc<dyn DeliveryMarks>,
     spacing: Duration,
+    retrying: Arc<tokio::sync::Semaphore>,
 }
 
 impl std::fmt::Debug for WebhookSender {
@@ -58,7 +64,7 @@ impl WebhookSender {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { http, webhooks, marks, spacing })
+        Ok(Self { http, webhooks, marks, spacing, retrying: Arc::new(tokio::sync::Semaphore::new(RETRYING)) })
     }
 
     async fn attempt(&self, id: &str, url: &str, body: &str, secret: &super::SigningSecret) -> bool {
@@ -95,12 +101,37 @@ impl ChangeHandler for WebhookSender {
         let Some(endpoint) = self.webhooks.endpoint(key) else {
             return self.marks.dropped(id, key, 0).await;
         };
-        for attempt in 1..=ATTEMPTS {
-            if self.attempt(id, url, body, &endpoint.secret).await {
-                return self.marks.delivered(id, key, attempt).await;
+        if self.attempt(id, url, body, &endpoint.secret).await {
+            return self.marks.delivered(id, key, 1).await;
+        }
+        let (me, delivery) = (self.clone(), [id, key, url, body].map(str::to_owned));
+        let secret = endpoint.secret.clone();
+        tokio::spawn(async move {
+            let Ok(_held) = me.retrying.clone().acquire_owned().await else { return };
+            let [id, key, url, body] = delivery;
+            let outcome = me.retry(&id, &key, &url, &body, &secret).await;
+            if let Err(e) = outcome {
+                tracing::warn!(webhook_id = %id, error = %e, "webhooks: a delivery's end could not be recorded");
             }
-            if attempt < ATTEMPTS {
-                tokio::time::sleep(self.spacing).await;
+        });
+        Ok(())
+    }
+}
+
+impl WebhookSender {
+    /// The attempts after the first, `spacing` apart, then the delivery's end.
+    async fn retry(
+        &self,
+        id: &str,
+        key: &str,
+        url: &str,
+        body: &str,
+        secret: &super::SigningSecret,
+    ) -> Result<(), BackendError> {
+        for attempt in 2..=ATTEMPTS {
+            tokio::time::sleep(self.spacing).await;
+            if self.attempt(id, url, body, secret).await {
+                return self.marks.delivered(id, key, attempt).await;
             }
         }
         tracing::info!(webhook_id = %id, endpoint = %key, "webhooks: a delivery was dropped after its attempts");
@@ -190,6 +221,12 @@ mod tests {
         let marks = Arc::new(Marks::default());
         let sender = WebhookSender::new(hooks(&url), marks.clone(), Duration::from_millis(10)).unwrap();
         sender.handle(&change(&url)).await.unwrap();
+        for _ in 0..100 {
+            if !marks.0.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_eq!(n.load(Ordering::SeqCst), 3);
         assert!(got.lock().iter().all(|h| h["webhook-id"] == "whe_1"));
         assert_eq!(marks.0.lock().as_slice(), [("dropped whe_1".to_owned(), 3)]);

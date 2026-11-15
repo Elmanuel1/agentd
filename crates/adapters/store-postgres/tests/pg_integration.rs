@@ -272,7 +272,7 @@ impl DeploymentDeps for FakeDeps {
         _ctx: &AuthContext,
         _d: &Depl,
         _key: Option<&str>,
-    ) -> Result<String, shared::ApiError> {
+    ) -> Result<String, sessions::service::FireRefusal> {
         Ok("sesn_01fake".into())
     }
 }

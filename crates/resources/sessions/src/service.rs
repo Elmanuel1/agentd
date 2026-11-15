@@ -29,7 +29,7 @@ mod work;
 
 pub use threads::threads_projection;
 
-pub use egress::MCP_EGRESS_BLOCKED;
+pub use egress::{FireRefusal, MCP_EGRESS_BLOCKED};
 pub use ports::{SessionDeps, SessionWork};
 pub use stream::{Streams, Subscription};
 

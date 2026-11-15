@@ -138,7 +138,7 @@ impl DeploymentDeps for RealDeploymentDeps {
         ctx: &AuthContext,
         deployment: &Deployment,
         key: Option<&str>,
-    ) -> Result<String, ApiError> {
+    ) -> Result<String, sessions::service::FireRefusal> {
         // Build the session create from the frozen deployment config.
         let mut req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "agent": {
@@ -162,7 +162,7 @@ impl DeploymentDeps for RealDeploymentDeps {
                 }
             })
             .collect();
-        let session = self.sessions.create(ctx, req).await?;
+        let session = self.sessions.create_fired(ctx, req).await?;
         Ok(session.id.as_str().to_owned())
     }
 }

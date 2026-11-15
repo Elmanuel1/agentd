@@ -69,7 +69,7 @@ impl DeploymentDeps for FakeDeps {
         _ctx: &AuthContext,
         _d: &Deployment,
         _key: Option<&str>,
-    ) -> Result<String, ApiError> {
+    ) -> Result<String, sessions::service::FireRefusal> {
         Ok("sesn_01fake".into())
     }
 }

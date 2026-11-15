@@ -2,7 +2,7 @@ use shared::limits::required;
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
-use super::egress::check_mcp_egress;
+use super::egress::{check_mcp_egress, FireRefusal};
 use super::events::validate_sendable;
 use super::{guard_writable, map_store, parse_id, SessionsService};
 use crate::events::{EventPayload, UserEvent};
@@ -15,6 +15,16 @@ use crate::types::{
 impl SessionsService {
     /// `POST /v1/sessions`. `initial_events` are queued as the first input.
     pub async fn create(&self, ctx: &AuthContext, req: CreateSessionRequest) -> Result<Session, ApiError> {
+        self.create_fired(ctx, req).await.map_err(FireRefusal::into_api)
+    }
+
+    /// [`Self::create`], refusing a deployment's session whose agent names an
+    /// MCP host the environment blocks (MC-18) as its own case.
+    pub async fn create_fired(
+        &self,
+        ctx: &AuthContext,
+        req: CreateSessionRequest,
+    ) -> Result<Session, FireRefusal> {
         let agent_ref = required("agent", req.agent)?;
         let environment_id = required("environment_id", req.environment_id)?;
         // Sessions do NOT cap metadata entries (live divergence) but key and
@@ -27,7 +37,8 @@ impl SessionsService {
         {
             return Err(ApiError::invalid_request(format!(
                 "initial_events.{i}: only user.message and user.define_outcome events are allowed"
-            )));
+            ))
+            .into());
         }
         if let Some(budget) = &req.budget {
             budget.max_minor_units()?;
@@ -69,7 +80,7 @@ impl SessionsService {
         self.queue_work(ctx, &session, &environment).await?;
         if let Err(e) = self.store.insert(&ctx.workspace, session.clone()).await {
             self.end_work(&ctx.workspace, &session.id).await;
-            return Err(map_store(e));
+            return Err(map_store(e).into());
         }
         if !initial.is_empty() {
             self.send_events(ctx, session.id.as_str(), None, initial).await?;

@@ -2,7 +2,8 @@
 //! deployment.
 
 use serde::{Deserialize, Serialize};
-use shared::{ApiError, Timestamp};
+use sessions::service::FireRefusal;
+use shared::Timestamp;
 
 use crate::types::{Deployment, DeploymentStatus};
 
@@ -52,11 +53,16 @@ pub enum RunErrorKind {
 }
 
 /// Map a session-create rejection into the fixed run-error taxonomy.
-pub(crate) fn classify_fire_error(e: &ApiError) -> RunError {
+pub(crate) fn classify_fire_error(refusal: &FireRefusal) -> RunError {
+    let e = match refusal {
+        FireRefusal::EgressBlocked => {
+            let message = sessions::service::MCP_EGRESS_BLOCKED.to_owned();
+            return RunError { kind: RunErrorKind::McpEgressBlocked, message };
+        }
+        FireRefusal::Api(e) => e,
+    };
     let msg = e.message.clone();
-    let kind = if msg == sessions::service::MCP_EGRESS_BLOCKED {
-        RunErrorKind::McpEgressBlocked
-    } else if msg.contains("agent") && msg.contains("archived") {
+    let kind = if msg.contains("agent") && msg.contains("archived") {
         RunErrorKind::AgentArchived
     } else if msg.contains("environment") && msg.contains("archived") {
         RunErrorKind::EnvironmentArchived

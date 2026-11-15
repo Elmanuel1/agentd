@@ -50,7 +50,7 @@ impl Loop {
         history: &mut History,
     ) -> Result<Option<Compacting>, ModelError> {
         let model = &thread.agent.config.model.id;
-        let window = self.models.client.window(model).await?;
+        let window = self.models.retry.window(self.models.client.as_ref(), model).await?;
         let scope = (!thread.primary).then(|| thread.id.clone());
         let events = thread_events(log.read, scope.as_ref());
         let view = checkpoint::view(&events, log.kept);

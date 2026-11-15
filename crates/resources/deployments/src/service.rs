@@ -40,7 +40,7 @@ pub trait DeploymentDeps: Send + Sync {
         ctx: &AuthContext,
         deployment: &Deployment,
         key: Option<&str>,
-    ) -> Result<String, ApiError>;
+    ) -> Result<String, sessions::service::FireRefusal>;
 }
 
 /// Deployment service.
