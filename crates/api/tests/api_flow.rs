@@ -354,7 +354,7 @@ async fn a_fire_whose_agent_reaches_a_blocked_mcp_host_pauses_the_deployment() {
     let fire =
         |id: &str| format!(r#"{{"deployment_id":"{id}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#);
     let (_, blocked) = call(&app, "POST", "/v1/deployments", Some(&deploy(&closed))).await;
-    let did = blocked["id"].as_str().expect(&blocked.to_string());
+    let did = blocked["id"].as_str().unwrap_or_else(|| panic!("{blocked}"));
     let (st, fired) = call(&app, "POST", "/internal/fire", Some(&fire(did))).await;
     assert_eq!(st, StatusCode::OK, "{fired}");
     assert_eq!(fired["run"]["session_id"], serde_json::Value::Null, "no session is created");
