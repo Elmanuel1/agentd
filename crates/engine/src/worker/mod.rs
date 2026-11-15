@@ -16,6 +16,7 @@ use crate::model::budget::ModelBudget;
 use crate::model::retry::Retry;
 use crate::model::ModelClient;
 
+mod compact;
 mod grade;
 mod mcp;
 mod reply;
@@ -63,6 +64,8 @@ pub struct Models {
     pub budget: Arc<dyn ModelBudget>,
     /// The output cap per call (`AGENTD_MAX_OUTPUT_TOKENS`).
     pub max_tokens: u32,
+    /// How prompts are kept inside their model's window.
+    pub compaction: crate::turn::compact::Compaction,
 }
 
 impl std::fmt::Debug for Stores {

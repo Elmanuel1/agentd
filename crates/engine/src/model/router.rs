@@ -60,6 +60,8 @@ impl std::fmt::Debug for ProviderConfig {
 pub struct ModelRouter {
     anthropic: Option<Arc<dyn ModelClient>>,
     openai_compat: Option<Arc<dyn ModelClient>>,
+    /// Windows read so far: a model's never changes within a process.
+    windows: Arc<parking_lot::RwLock<std::collections::HashMap<String, u64>>>,
 }
 
 impl std::fmt::Debug for ModelRouter {
@@ -85,6 +87,7 @@ impl ModelRouter {
             openai_compat: config.openai_compat.as_ref().map(|(key, url)| {
                 Arc::new(OpenAiCompatModel::new(http.clone(), key, url)) as Arc<dyn ModelClient>
             }),
+            windows: Arc::default(),
         })
     }
 
@@ -103,6 +106,15 @@ impl ModelRouter {
 impl ModelClient for ModelRouter {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         self.pick(&req.model)?.complete(req).await
+    }
+
+    async fn window(&self, model: &str) -> Result<u64, ModelError> {
+        if let Some(w) = self.windows.read().get(model) {
+            return Ok(*w);
+        }
+        let w = self.pick(model)?.window(model).await?;
+        self.windows.write().insert(model.to_owned(), w);
+        Ok(w)
     }
 }
 

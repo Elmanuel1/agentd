@@ -54,6 +54,7 @@ pub async fn spawn(
         retry: Retry { attempts: c.attempts, deadline: c.deadline, ..Retry::default() },
         budget,
         max_tokens: c.max_output_tokens,
+        compaction: c.compaction,
     };
     let loop_stores = LoopStores {
         steps: stores.steps.clone(),

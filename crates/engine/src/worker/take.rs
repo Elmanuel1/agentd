@@ -12,6 +12,7 @@ use shared::Timestamp;
 use super::grade::{active, conversation};
 use super::team::{threads, Thread};
 use super::turn::Turn;
+use crate::turn::compact::checkpoint;
 use crate::turn::history::{rebuild, thread_events, History, Kept, Unanswered};
 use mcp::{answered, is_mcp, refusal};
 
@@ -139,9 +140,15 @@ pub(super) fn take(
     let read: Vec<Event> = seen.into_iter().chain(answers.iter().cloned()).collect();
     let history_of = |t: &Thread| {
         let scope = (!t.primary).then(|| t.id.clone());
-        let mut history = rebuild(&thread_events(&read, scope.as_ref()), rubrics, kept);
+        let events = thread_events(&read, scope.as_ref());
+        let view = checkpoint::view(&events, kept);
+        let mut history = rebuild(&view.prompt, rubrics, kept);
         if let Some(outcome) = &t.grading {
             history = conversation(outcome, rubrics, history);
+        }
+        // The checkpoint first, then a grader's task (U2).
+        if let Some(cp) = &view.checkpoint {
+            history.messages.insert(0, cp.message());
         }
         for call in history.unanswered.iter_mut().filter(|u| confirmed.iter().any(|c| c.as_str() == u.id)) {
             call.asked = false;

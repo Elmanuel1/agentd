@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
+#[path = "agent_loop/compact.rs"]
+mod compact;
 #[path = "agent_loop/mcp.rs"]
 mod mcp;
 
@@ -43,25 +45,47 @@ enum Say {
     Fail(ModelError),
 }
 
-/// Plays its script in order, then says "done"; records each request.
+/// Plays its script in order, then says "done"; records each request. A
+/// compaction request is answered from `summaries` (a summary by default, or
+/// none) and takes no turn of the script.
 #[derive(Default)]
 struct Scripted {
     script: Mutex<VecDeque<Say>>,
     asked: Mutex<Vec<ModelRequest>>,
+    window: Mutex<u64>,
+    summaries: Mutex<VecDeque<Option<&'static str>>>,
+    /// The input tokens each turn reports.
+    input: Mutex<u64>,
 }
 
 impl Scripted {
     fn new(script: Vec<Say>) -> Arc<Self> {
-        Arc::new(Self { script: Mutex::new(script.into()), asked: Mutex::default() })
+        Arc::new(Self {
+            script: Mutex::new(script.into()),
+            window: Mutex::new(200_000),
+            input: Mutex::new(10),
+            ..Self::default()
+        })
     }
 }
 
 #[async_trait]
 impl ModelClient for Scripted {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
+        let compacting = req.compact.is_some();
         self.asked.lock().push(req);
+        if compacting {
+            let usage = ModelUsage { input_tokens: 50, output_tokens: 5, ..ModelUsage::default() };
+            let content = match self.summaries.lock().pop_front().unwrap_or(Some("the summary")) {
+                Some(s) => vec![Block::Compaction { content: s.into(), signature: "sig".into() }],
+                None => Vec::new(),
+            };
+            let stop = if content.is_empty() { StopKind::EndTurn } else { StopKind::Compaction };
+            return Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.001) });
+        }
         let say = self.script.lock().pop_front().unwrap_or(Say::Text("done"));
-        let usage = ModelUsage { input_tokens: 10, output_tokens: 2, ..ModelUsage::default() };
+        let usage =
+            ModelUsage { input_tokens: *self.input.lock(), output_tokens: 2, ..ModelUsage::default() };
         let (content, stop) = match say {
             Say::Text(t) => (vec![Block::text(t)], StopKind::EndTurn),
             Say::Tool(name, input) => {
@@ -84,6 +108,10 @@ impl ModelClient for Scripted {
             Say::Fail(e) => return Err(e),
         };
         Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.004) })
+    }
+
+    async fn window(&self, _: &str) -> Result<u64, ModelError> {
+        Ok(*self.window.lock())
     }
 }
 
@@ -160,11 +188,19 @@ struct Tune {
     sessions: Option<Arc<dyn SessionsStore>>,
     /// Where its MCP client may connect.
     guard: shared::net::Guard,
+    /// Its compaction settings.
+    compaction: engine::turn::compact::Compaction,
 }
 
 impl Default for Tune {
     fn default() -> Self {
-        Self { steps: 8, budget: Arc::new(Unlimited), sessions: None, guard: shared::net::Guard::default() }
+        Self {
+            steps: 8,
+            budget: Arc::new(Unlimited),
+            sessions: None,
+            guard: shared::net::Guard::default(),
+            compaction: engine::turn::compact::Compaction::default(),
+        }
     }
 }
 
@@ -201,7 +237,7 @@ impl SessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard } = tune;
+    let Tune { steps, budget, sessions, guard, compaction } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -220,7 +256,7 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
         mcp: api::agent_loop::mcp(&rig.stores, guard),
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
-    let models = Models { client: model, retry, budget, max_tokens: 1000 };
+    let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
     let settings = Settings {
         owner: format!("test-{}", common::stamp()),
         lease: Duration::from_secs(60),

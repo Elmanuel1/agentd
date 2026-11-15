@@ -23,6 +23,8 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
             EventPayload::Span(SpanEvent::ModelRequestEnd { .. }) => {
                 ended += usize::from(!std::mem::replace(&mut called, false))
             }
+            // A compaction's call is not a turn the grader ended.
+            EventPayload::Agent(AgentEvent::ThreadContextCompacted {}) => ended = ended.saturating_sub(1),
             _ => {}
         }
     }

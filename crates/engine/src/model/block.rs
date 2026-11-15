@@ -41,6 +41,14 @@ pub enum Block {
         /// Whether the tool failed.
         is_error: bool,
     },
+    /// A compaction's summary, signed by the Messages API, sent back
+    /// unmodified first in every later request (C1).
+    Compaction {
+        /// The summary.
+        content: String,
+        /// Its signature.
+        signature: String,
+    },
 }
 
 impl Block {

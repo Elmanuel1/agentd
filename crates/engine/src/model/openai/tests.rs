@@ -26,6 +26,7 @@ fn tool_results_become_tool_messages_and_text_follows_them() {
         tools: vec![],
         max_tokens: 10,
         effort: Some("max".into()),
+        compact: None,
     };
     let b = body(&req);
     let m = b["messages"].as_array().unwrap();

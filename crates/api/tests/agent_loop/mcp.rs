@@ -436,3 +436,40 @@ async fn a_refused_or_internal_token_endpoint_records_an_authentication_error() 
         drop(worker_);
     }
 }
+
+#[tokio::test]
+async fn a_crowded_prompt_clears_old_results_and_caps_long_ones() {
+    // CP-2, CP-3: the prompt changes, the stored events stay whole.
+    let Some(rig) = Rig::new().await else { return };
+    let (_server, url, guard) = serve().await;
+    let calls = (0..5).map(|i| Say::Calls(vec![("lookup", json!({"q": format!("w{i}")}))]));
+    let model = Scripted::new(calls.chain([Say::Text("done")]).collect());
+    let compaction = engine::turn::compact::Compaction { clear_at: 1, keep_results: 3, tool_output_limit: 2 };
+    let (app, _worker) = worker(&rig, model.clone(), Tune { guard, compaction, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("look five up")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let results = of(&events, "agent.mcp_tool_result");
+    assert_eq!(results[0]["content"][0]["text"], "found \"w0\"", "the stored result is whole");
+    let calls = of(&events, "agent.mcp_tool_use");
+    let asked = model.asked.lock();
+    let fed: Vec<String> = asked
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            super::Block::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fed.len(), 5);
+    for (i, text) in fed.iter().enumerate().take(2) {
+        assert_eq!(*text, format!("[tool result cleared: event {}]", calls[i]["id"].as_str().unwrap()));
+    }
+    for text in &fed[2..] {
+        assert_eq!(*text, "found \"w\n[tool result cut at 2 tokens]", "8 bytes, 2 tokens");
+    }
+}

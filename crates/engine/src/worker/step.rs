@@ -13,6 +13,7 @@ use sessions::types::{Session, SessionStatus};
 use shared::tenancy::RUNTIME_QUEUE;
 use shared::BackendError;
 
+use super::compact::Log;
 use super::reply::{led, Call};
 use super::rubrics;
 use super::settle::settle;
@@ -22,6 +23,7 @@ use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
 use crate::model::{ModelError, ModelProvider};
+use crate::turn::compact::checkpoint;
 use crate::turn::history::{Kept, Unanswered};
 
 impl Loop {
@@ -126,6 +128,8 @@ impl Loop {
             return self.defer_refresh(claim).await;
         }
         let errors = errors.into_iter().map(|error| turn.event(SessionEvent::Error { error }));
+        let mut history = history;
+        let fit = self.fit(&thread, &Log { read: &read, kept: &kept, rubrics: &rubrics }, &mut history).await;
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
         let mut running = match idle {
@@ -135,12 +139,22 @@ impl Loop {
         let ongoing =
             thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
         running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
-        let opening =
+        let mut opening =
             opening(taken, arrived, running, answers.into_iter().chain(errors).chain([start]).collect());
+        if matches!(fit, Ok(Some(_))) {
+            opening.engine.push((start_id.clone(), checkpoint::attempt()));
+        }
         if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
         }
         session.status = SessionStatus::Running;
+        match fit {
+            Err(e) => return self.unfit(claim, &turn, session, &start_id, &e).await,
+            Ok(Some(c)) => {
+                return self.compact(claim, &turn, &thread, session, &start_id, c, &servers.tools()).await
+            }
+            Ok(None) => {}
+        }
         let (tools, request) = self.request(&session, &thread, history.messages, &servers.tools());
         let mut watch = Watch {
             rx: self.signals.subscribe(),

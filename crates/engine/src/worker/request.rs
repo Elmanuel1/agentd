@@ -48,6 +48,7 @@ impl Loop {
             tools: tools.tools.clone(),
             max_tokens: self.models.max_tokens,
             effort,
+            compact: None,
         };
         (tools, request)
     }

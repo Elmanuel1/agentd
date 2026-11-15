@@ -11,6 +11,7 @@ pub mod budget;
 pub mod openai;
 pub mod retry;
 pub mod router;
+mod windows;
 
 pub use block::Block;
 pub use router::{ModelRouter, Provider as ModelProvider, ProviderConfig};
@@ -63,6 +64,9 @@ pub struct ModelRequest {
     pub max_tokens: u32,
     /// Reasoning effort (`low` … `max`), when the agent sets one.
     pub effort: Option<String>,
+    /// Summarise the conversation instead of answering, with these
+    /// instructions (CP-7, CP-8).
+    pub compact: Option<String>,
 }
 
 /// Why the model stopped.
@@ -75,6 +79,8 @@ pub enum StopKind {
     ToolUse,
     /// It hit the output cap.
     MaxTokens,
+    /// It summarised the conversation into a compaction block.
+    Compaction,
 }
 
 /// A completion response.
@@ -154,4 +160,6 @@ impl ModelError {
 pub trait ModelClient: Send + Sync {
     /// One completion.
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError>;
+    /// The model's context window in tokens, from its provider's model list.
+    async fn window(&self, model: &str) -> Result<u64, ModelError>;
 }

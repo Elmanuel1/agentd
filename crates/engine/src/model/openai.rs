@@ -19,6 +19,11 @@ impl OpenAiCompatModel {
     pub fn new(http: reqwest::Client, api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self { http, api_key: api_key.into(), base_url: base_url.into() }
     }
+
+    /// A GET of `path` under the base URL, with the key.
+    pub(super) fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        self.http.get(format!("{}{path}", self.base_url.trim_end_matches('/'))).bearer_auth(&self.api_key)
+    }
 }
 
 /// The request body. Tool results become `tool` messages; text sent beside
@@ -27,6 +32,10 @@ pub fn body(req: &ModelRequest) -> Value {
     let mut messages = vec![json!({"role": "system", "content": req.system})];
     for m in &req.messages {
         push_message(&mut messages, m);
+    }
+    // No provider-side compaction: the summary is a reply to the handoff prompt.
+    if let Some(handoff) = &req.compact {
+        messages.push(json!({"role": "user", "content": handoff}));
     }
     let mut body = json!({
         "model": req.model,
@@ -165,6 +174,10 @@ impl ModelClient for OpenAiCompatModel {
             return Err(ModelError::Retryable(err.to_string()));
         }
         parse(&v)
+    }
+
+    async fn window(&self, model: &str) -> Result<u64, ModelError> {
+        self.read_window(model).await
     }
 }
 
