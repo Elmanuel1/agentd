@@ -110,9 +110,14 @@ async fn a_write_into_an_archived_vault_or_credential_is_refused_and_leaves_no_s
     .unwrap();
     let rotate = rig
         .store
-        .replace_credential(&ws, &vault_id, StoredCredential { wire: cred.clone(), auth: Some(auth) })
+        .write_claimed(
+            &ws,
+            &vault_id,
+            &StoredCredential { wire: cred.clone(), auth: Some(auth) },
+            cred.updated_at,
+        )
         .await;
-    assert_eq!(rotate, Err(StoreError::CredentialArchived));
+    assert_eq!(rotate, Ok(vaults::store::ClaimedWrite::Gone));
     assert_eq!(rig.secret(&vault, cred.id.as_str()), None, "the rotation took its secret back out");
     rig.svc.delete_vault(&rig.ctx, &vault).await.unwrap();
 }

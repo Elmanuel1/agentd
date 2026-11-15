@@ -11,7 +11,7 @@ use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
-use vaults::store::{RefreshWrite, VaultCredentialStore};
+use vaults::store::{ClaimedWrite, VaultCredentialStore};
 use vaults::types::VaultId;
 use vaults::VaultsService;
 
@@ -50,22 +50,22 @@ async fn one_claim_of_a_read_wins_and_the_first_vault_s_credential_is_used() {
 
     let vid = VaultId::parse(first.id.as_str()).unwrap();
     let now = Timestamp::now();
-    assert!(store.claim_refresh(&ws, &vid, &first_cred.id, first_cred.updated_at, now).await.unwrap());
+    assert!(store.claim_credential(&ws, &vid, &first_cred.id, first_cred.updated_at, now).await.unwrap());
     assert!(
         !store
-            .claim_refresh(&ws, &vid, &first_cred.id, first_cred.updated_at, Timestamp::now())
+            .claim_credential(&ws, &vid, &first_cred.id, first_cred.updated_at, Timestamp::now())
             .await
             .unwrap(),
         "a second claim of the same read matches nothing"
     );
     let mut stored = store.get_credential(&ws, &vid, &first_cred.id).await.unwrap();
     stored.wire.updated_at = Timestamp::now();
-    assert_eq!(store.finish_refresh(&ws, &vid, &stored, now).await.unwrap(), RefreshWrite::Matched);
+    assert_eq!(store.write_claimed(&ws, &vid, &stored, now).await.unwrap(), ClaimedWrite::Matched);
     let stale = stored.clone();
-    assert_eq!(store.finish_refresh(&ws, &vid, &stale, now).await.unwrap(), RefreshWrite::Changed);
+    assert_eq!(store.write_claimed(&ws, &vid, &stale, now).await.unwrap(), ClaimedWrite::Changed);
 
     svc.archive_credential(&ctx, first.id.as_str(), first_cred.id.as_str()).await.unwrap();
-    assert_eq!(store.finish_refresh(&ws, &vid, &stale, now).await.unwrap(), RefreshWrite::Gone);
+    assert_eq!(store.write_claimed(&ws, &vid, &stale, now).await.unwrap(), ClaimedWrite::Gone);
     let read = store.get_credential(&ws, &vid, &first_cred.id).await.unwrap();
     assert!(read.auth.is_none(), "the refresh's secret is taken back out");
     let left = svc.mcp_credentials(&ws, &order, &[server.to_owned()]).await.unwrap();

@@ -140,8 +140,9 @@ impl PgVaultsStore {
         Err(exists.map_or(StoreError::CredentialNotFound, |_| StoreError::CredentialArchived))
     }
 
-    /// Delete one credential with its delivery, then its secret, which a
-    /// credential whose secret is already gone does not need.
+    /// Delete one credential with its delivery, in one statement whose
+    /// returned row is the answer, so a repeated delete is `404` and sends no
+    /// second delivery; then its secret, which may already be gone.
     pub(super) async fn delete_row(
         &self,
         ws: &WorkspaceId,
@@ -149,27 +150,33 @@ impl PgVaultsStore {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError> {
-        let (wire, _) = self.credential_row(ws, vault, id).await?;
         let kind = EventKind::CredentialDeleted { vault_id: vault.as_str().to_owned() };
         let facts = self.facts(org, ws, vec![(kind, id.as_str().to_owned())]);
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                diesel::delete(
-                    credentials::table
-                        .filter(credentials::workspace_id.eq(ws.as_str()))
-                        .filter(credentials::vault_id.eq(vault.as_str()))
-                        .filter(credentials::credential_id.eq(id.as_str())),
-                )
-                .execute(c)
-                .await?;
-                insert_deliveries(c, &facts).await
-            }
-            .scope_boxed()
-        })
-        .await
-        .map_err(diesel_be)?;
+        let doc: Option<serde_json::Value> = conn
+            .transaction::<_, diesel::result::Error, _>(|c| {
+                async move {
+                    let doc: Option<serde_json::Value> = diesel::delete(
+                        credentials::table
+                            .filter(credentials::workspace_id.eq(ws.as_str()))
+                            .filter(credentials::vault_id.eq(vault.as_str()))
+                            .filter(credentials::credential_id.eq(id.as_str())),
+                    )
+                    .returning(credentials::doc)
+                    .get_result(c)
+                    .await
+                    .optional()?;
+                    if doc.is_some() {
+                        insert_deliveries(c, &facts).await?;
+                    }
+                    Ok(doc)
+                }
+                .scope_boxed()
+            })
+            .await
+            .map_err(diesel_be)?;
         drop(conn);
+        let wire = parse_doc(doc.ok_or(StoreError::CredentialNotFound)?)?;
         self.put_secret(ws, vault, id, &None).await?;
         Ok(StoredCredential { wire, auth: None })
     }

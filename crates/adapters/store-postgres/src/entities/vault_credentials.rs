@@ -2,7 +2,7 @@
 //! their secret material sealed to the secret store and never written to the
 //! database.
 
-use ::vaults::store::{RefreshWrite, StoreError, StoredCredential, VaultCredentialStore};
+use ::vaults::store::{ClaimedWrite, StoreError, StoredCredential, VaultCredentialStore};
 use ::vaults::types::{Credential, CredentialAuthInput, CredentialId, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -15,8 +15,8 @@ use super::vaults::PgVaultsStore;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be};
 
+mod claim;
 mod reads;
-mod refresh;
 mod write;
 
 impl PgVaultsStore {
@@ -90,15 +90,6 @@ impl VaultCredentialStore for PgVaultsStore {
         Ok(StoredCredential { wire, auth })
     }
 
-    async fn replace_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: StoredCredential,
-    ) -> Result<(), StoreError> {
-        self.replace_guarded(ws, vault, cred, &[]).await
-    }
-
     async fn archive_credential(
         &self,
         ws: &WorkspaceId,
@@ -158,7 +149,7 @@ impl VaultCredentialStore for PgVaultsStore {
         self.read_secret(ws, vault, id).await
     }
 
-    async fn claim_refresh(
+    async fn claim_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -166,17 +157,17 @@ impl VaultCredentialStore for PgVaultsStore {
         read: Timestamp,
         now: Timestamp,
     ) -> Result<bool, StoreError> {
-        self.claim_refresh_row(ws, vault, id, read, now).await
+        self.claim_row(ws, vault, id, read, now).await
     }
 
-    async fn finish_refresh(
+    async fn write_claimed(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: &StoredCredential,
         claimed: Timestamp,
-    ) -> Result<RefreshWrite, StoreError> {
-        self.finish_refresh_row(ws, vault, cred, claimed).await
+    ) -> Result<ClaimedWrite, StoreError> {
+        self.write_claimed_row(ws, vault, cred, claimed).await
     }
 
     async fn refresh_failed(

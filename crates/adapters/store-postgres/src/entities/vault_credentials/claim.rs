@@ -1,9 +1,10 @@
-//! The loop's refresh of an `mcp_oauth` token, guarded by the credential
-//! row's `updated_at`: the claim moves it, so a second worker's claim of the
-//! same read matches nothing (MC-7, MC-23), and the final write lands only
-//! while the claim's time is still there.
+//! A credential write claimed on the row's `updated_at`, for the two writers
+//! that read a credential before they change it: the loop's refresh of an
+//! `mcp_oauth` token and the API's update. The claim moves `updated_at` from
+//! what the writer read, so a second claim of the same read matches nothing
+//! (MC-7, MC-23), and the claimed write lands only while the claim holds.
 
-use ::vaults::store::{RefreshWrite, StoreError, StoredCredential};
+use ::vaults::store::{ClaimedWrite, StoreError, StoredCredential};
 use ::vaults::types::{CredentialId, VaultId};
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::RunQueryDsl;
@@ -15,7 +16,7 @@ use crate::{diesel_be, pool_be, to_doc};
 const KEY: &str = "workspace_id = $1 AND vault_id = $2 AND credential_id = $3";
 
 impl PgVaultsStore {
-    pub(super) async fn claim_refresh_row(
+    pub(super) async fn claim_row(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -39,38 +40,40 @@ impl PgVaultsStore {
         Ok(affected == 1)
     }
 
-    pub(super) async fn finish_refresh_row(
+    pub(super) async fn write_claimed_row(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: &StoredCredential,
         claimed: Timestamp,
-    ) -> Result<RefreshWrite, StoreError> {
+    ) -> Result<ClaimedWrite, StoreError> {
         let id = &cred.wire.id;
         self.put_secret(ws, vault, id, &cred.auth).await?;
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::sql_query(format!(
-            "UPDATE credentials SET doc = $5 WHERE {KEY} AND doc->>'updated_at' = $4 AND doc->>'archived_at' IS NULL"
+            "UPDATE credentials SET doc = $5, display_name = $6 WHERE {KEY} AND doc->>'updated_at' = $4 \
+             AND doc->>'archived_at' IS NULL"
         ))
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(vault.as_str())
         .bind::<Text, _>(id.as_str())
         .bind::<Text, _>(claimed.to_wire())
         .bind::<Jsonb, _>(to_doc(&cred.wire)?)
+        .bind::<Text, _>(&cred.wire.display_name)
         .execute(&mut conn)
         .await
         .map_err(diesel_be)?;
         drop(conn);
         if affected == 1 {
-            return Ok(RefreshWrite::Matched);
+            return Ok(ClaimedWrite::Matched);
         }
         // An update came between the claim and this write, or the credential
         // was archived or deleted meanwhile, which takes its secret out.
         match self.credential_row(ws, vault, id).await {
-            Ok((wire, _)) if wire.archived_at.is_none() => Ok(RefreshWrite::Changed),
+            Ok((wire, _)) if wire.archived_at.is_none() => Ok(ClaimedWrite::Changed),
             Ok(_) | Err(StoreError::CredentialNotFound) => {
                 self.put_secret(ws, vault, id, &None).await?;
-                Ok(RefreshWrite::Gone)
+                Ok(ClaimedWrite::Gone)
             }
             Err(e) => Err(e),
         }

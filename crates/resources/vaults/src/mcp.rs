@@ -8,7 +8,7 @@ use shared::{BackendError, OrgId, Timestamp, WorkspaceId};
 
 use crate::refresh::{request_token, HttpResponse};
 use crate::service::VaultsService;
-use crate::store::{RefreshWrite, StoreError, StoredCredential};
+use crate::store::{ClaimedWrite, StoreError, StoredCredential};
 use crate::types::{
     Credential, CredentialAuthInput, CredentialAuthWire, CredentialId, OauthRefreshInput, SecretString,
     VaultId,
@@ -114,7 +114,7 @@ impl VaultsService {
         }
         let vault = VaultId::parse(&stored.wire.vault_id).map_err(BackendError::new)?;
         let id = stored.wire.id.clone();
-        if !self.credentials.claim_refresh(ws, &vault, &id, read, now).await.map_err(BackendError::new)? {
+        if !self.credentials.claim_credential(ws, &vault, &id, read, now).await.map_err(BackendError::new)? {
             return self.claimed_elsewhere(ws, &vault, &id).await;
         }
         let refresh = match &stored.auth {
@@ -127,12 +127,12 @@ impl VaultsService {
             self.credentials.refresh_failed(ws, org, &vault, &id).await.map_err(BackendError::new)?;
             return Ok(Refresh::Failed(token.refusal()));
         };
-        match self.credentials.finish_refresh(ws, &vault, &written, now).await.map_err(BackendError::new)? {
-            RefreshWrite::Matched => {}
-            RefreshWrite::Changed => {
+        match self.credentials.write_claimed(ws, &vault, &written, now).await.map_err(BackendError::new)? {
+            ClaimedWrite::Matched => {}
+            ClaimedWrite::Changed => {
                 tracing::warn!(credential = %id, "refresh_overwrote_update: an update came during the refresh");
             }
-            RefreshWrite::Gone => return Ok(Refresh::Failed(None)),
+            ClaimedWrite::Gone => return Ok(Refresh::Failed(None)),
         }
         let Some(secret) = written.auth.clone() else { return Ok(Refresh::Failed(None)) };
         let CredentialAuthInput::McpOauth { access_token, .. } = &secret else {

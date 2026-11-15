@@ -35,6 +35,7 @@ impl PgSessionEventLog {
 #[async_trait]
 impl SessionEventReads for PgSessionEventLog {
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
+        self.require_session(ws, id).await?;
         Ok(self.engine_events(ws, id).await?.into_iter().map(|(e, _)| e).collect())
     }
 
@@ -43,7 +44,6 @@ impl SessionEventReads for PgSessionEventLog {
         ws: &WorkspaceId,
         id: &SessionId,
     ) -> Result<Vec<(Event, Option<serde_json::Value>)>, StoreError> {
-        self.require_session(ws, id).await?;
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = session_events::table
             .filter(session_events::workspace_id.eq(ws.as_str()))

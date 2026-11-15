@@ -7,10 +7,15 @@ use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Timestamp};
 
 use crate::service::{map_store, parse_pair, VaultsService};
+use crate::store::ClaimedWrite;
 use crate::types::{
     ClientSecretUpdate, Credential, CredentialAuthInput, CredentialAuthUpdate, OauthRefreshInput,
     RefreshUpdate, TokenEndpointAuthInput, UpdateCredentialRequest,
 };
+
+/// Reads of a credential an update makes before it gives up on a
+/// credential that keeps changing under it.
+const UPDATE_TRIES: usize = 3;
 
 impl VaultsService {
     /// `POST /v1/vaults/{vid}/credentials/{cid}`.
@@ -25,27 +30,45 @@ impl VaultsService {
         if let Some(name) = &req.display_name {
             validate_string_len("display_name", name, 1, usize::MAX)?;
         }
-        let mut stored =
-            self.credentials.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
-        if stored.wire.archived_at.is_some() {
-            return Err(ApiError::invalid_request("Credential is archived."));
+        // Claimed on the read's `updated_at`, so a refresh that lands between
+        // the read and the write is read again, not overwritten.
+        for _ in 0..UPDATE_TRIES {
+            let mut stored =
+                self.credentials.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
+            if stored.wire.archived_at.is_some() {
+                return Err(ApiError::invalid_request("Credential is archived."));
+            }
+            if let Some(update) = req.auth.clone() {
+                let current =
+                    stored.auth.take().ok_or_else(|| ApiError::internal("the credential has no secret"))?;
+                let rotated = rotate(current, update)?;
+                stored.wire.auth = rotated.to_wire();
+                stored.auth = Some(rotated);
+            }
+            let metadata = std::mem::take(&mut stored.wire.metadata).merged(req.metadata.clone());
+            metadata.validate(MetadataPolicy::capped())?;
+            stored.wire.metadata = metadata;
+            if let Some(name) = &req.display_name {
+                stored.wire.display_name = name.clone();
+            }
+            let (read, now) = (stored.wire.updated_at, Timestamp::now());
+            let claimed = self.credentials.claim_credential(&ctx.workspace, &vid, &cid, read, now).await;
+            if !claimed.map_err(map_store)? {
+                continue;
+            }
+            stored.wire.updated_at = Timestamp::now();
+            match self
+                .credentials
+                .write_claimed(&ctx.workspace, &vid, &stored, now)
+                .await
+                .map_err(map_store)?
+            {
+                ClaimedWrite::Matched => return Ok(stored.wire),
+                ClaimedWrite::Changed => continue,
+                ClaimedWrite::Gone => return Err(ApiError::not_found("Credential not found.")),
+            }
         }
-        if let Some(update) = req.auth {
-            let current =
-                stored.auth.take().ok_or_else(|| ApiError::internal("the credential has no secret"))?;
-            let rotated = rotate(current, update)?;
-            stored.wire.auth = rotated.to_wire();
-            stored.auth = Some(rotated);
-        }
-        let metadata = std::mem::take(&mut stored.wire.metadata).merged(req.metadata);
-        metadata.validate(MetadataPolicy::capped())?;
-        stored.wire.metadata = metadata;
-        if let Some(name) = req.display_name {
-            stored.wire.display_name = name;
-        }
-        stored.wire.updated_at = Timestamp::now();
-        self.credentials.replace_credential(&ctx.workspace, &vid, stored.clone()).await.map_err(map_store)?;
-        Ok(stored.wire)
+        Err(ApiError::conflict_invalid_request("the credential changed during the update; send it again"))
     }
 }
 

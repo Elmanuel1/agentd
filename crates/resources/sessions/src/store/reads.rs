@@ -29,7 +29,8 @@ pub struct Head {
 #[async_trait]
 pub trait SessionEventReads: Send + Sync {
     /// Every event of the session, oldest first, each with the `engine`
-    /// object the loop stored beside it, which no API read serves.
+    /// object the loop stored beside it, which no API read serves; none for a
+    /// session that does not exist, which the caller has already read.
     async fn engine_events(
         &self,
         ws: &WorkspaceId,

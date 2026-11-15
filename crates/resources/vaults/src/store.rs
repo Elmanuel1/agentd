@@ -41,7 +41,7 @@ pub enum StoreError {
 
 /// How a refresh's final write landed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RefreshWrite {
+pub enum ClaimedWrite {
     /// The row still held the claim: the new token and expiry are stored.
     Matched,
     /// An update came between the claim and the write: the row is the
@@ -96,13 +96,6 @@ pub trait VaultCredentialStore: Send + Sync {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError>;
-    /// Replace one credential.
-    async fn replace_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: StoredCredential,
-    ) -> Result<(), StoreError>;
     /// Archive one credential: `cred` with its archive stamp and no secret.
     async fn archive_credential(
         &self,
@@ -142,7 +135,7 @@ pub trait VaultCredentialStore: Send + Sync {
     ) -> Result<CredentialAuthInput, StoreError>;
     /// Claim a refresh: move the unarchived row's `updated_at` from `read`
     /// to `now`; `false` when it no longer reads `read`.
-    async fn claim_refresh(
+    async fn claim_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -152,13 +145,13 @@ pub trait VaultCredentialStore: Send + Sync {
     ) -> Result<bool, StoreError>;
     /// Store a refresh's token, then its row while the row's `updated_at`
     /// is still `claimed`.
-    async fn finish_refresh(
+    async fn write_claimed(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: &StoredCredential,
         claimed: Timestamp,
-    ) -> Result<RefreshWrite, StoreError>;
+    ) -> Result<ClaimedWrite, StoreError>;
     /// Send `vault_credential.refresh_failed` for credential `id` (H-5).
     async fn refresh_failed(
         &self,
