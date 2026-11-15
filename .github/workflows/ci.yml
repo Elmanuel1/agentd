@@ -206,6 +206,13 @@ jobs:
         run: |
           npm ci
           npm test
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Java SDK (com.anthropic:anthropic-java 2.52.0)
+        working-directory: conformance/java
+        run: ./gradlew test --no-daemon
       - name: Credentials are in Secrets Manager under the key, and no secret or key is logged
         run: |
           secrets=$(aws --endpoint-url http://localhost:4566 secretsmanager list-secrets --include-planned-deletion \
