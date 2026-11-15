@@ -155,7 +155,6 @@ impl SessionsService {
             self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
             // Every replica's streams of the session end.
             self.publish(&ctx.workspace, &id).await;
-            self.end_work(&ctx.workspace, &id).await;
         }
         Ok(s)
     }

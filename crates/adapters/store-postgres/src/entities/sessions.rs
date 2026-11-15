@@ -104,6 +104,9 @@ impl SessionsStore for PgSessionsStore {
                     .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
                     .execute(c)
                     .await?;
+                    if read.archived_at.is_none() && s.archived_at.is_some() {
+                        stop(c, ws, s.id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
+                    }
                     Ok(Ok(()))
                 }
                 .scope_boxed()

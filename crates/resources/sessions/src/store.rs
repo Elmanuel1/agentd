@@ -85,7 +85,8 @@ pub trait SessionsStore: Send + Sync {
     /// Fetch a session.
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// Write `s` only while the stored session is still `read`; a session
-    /// another writer changed first is [`StoreError::Conflict`].
+    /// another writer changed first is [`StoreError::Conflict`]. A write that
+    /// archives the session stops its work item in the same commit.
     async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError>;
     /// Under the session's append lock, delete the session unless it is
     /// running ([`StoreError::Conflict`]) and stop its work item.

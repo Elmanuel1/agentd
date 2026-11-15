@@ -260,6 +260,31 @@ async fn a_delete_refuses_a_running_session_and_stops_the_work_item_of_one_it_de
 }
 
 #[tokio::test]
+async fn the_write_that_archives_a_session_stops_its_work_item_and_no_other_write_does() {
+    // W-11: in the archive's own commit.
+    if !enabled() {
+        return;
+    }
+    let store = PgSessionsStore::new(backend().await);
+    let work = PgWorkStore::new(backend().await);
+    let ws = uniq_ws("archive");
+    let s = session(&store, &ws, None).await;
+    work.queue(&queued(&ws, &s.id)).await.unwrap();
+    let state =
+        || async { work.get(&ws, s.id.as_str(), &Reach::default()).await.unwrap().unwrap().work.state };
+
+    let mut renamed = s.clone();
+    renamed.title = Some("renamed".into());
+    store.replace(&ws, &s, renamed.clone()).await.unwrap();
+    assert_eq!(state().await, WorkState::Queued, "a write that does not archive stops nothing");
+
+    let mut archived = renamed.clone();
+    archived.archived_at = Some(Timestamp::now());
+    store.replace(&ws, &renamed, archived).await.unwrap();
+    assert_eq!(state().await, WorkState::Stopped);
+}
+
+#[tokio::test]
 async fn deleting_logs_removes_each_named_session_s_events_and_no_other() {
     // E-4.
     if !enabled() {
