@@ -14,7 +14,9 @@ use shared::{ApiError, AuthContext, Timestamp};
 
 use crate::service::{map_store, parse_pair, parse_vault_id, VaultsService};
 use crate::store::StoredCredential;
-use crate::types::{CreateCredentialRequest, Credential, CredentialAuthInput, CredentialId, CredentialTag};
+use crate::types::{
+    CreateCredentialRequest, Credential, CredentialAuthInput, CredentialAuthWire, CredentialId, CredentialTag,
+};
 
 impl VaultsService {
     /// `POST /v1/vaults/{id}/credentials`.
@@ -27,7 +29,7 @@ impl VaultsService {
         let vault_id = parse_vault_id(raw_vault_id)?;
         let vault = self.vaults.get_vault(&ctx.workspace, &vault_id).await.map_err(map_store)?;
         if vault.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request("cannot add credentials to an archived vault"));
+            return Err(ApiError::invalid_request("Vault is archived."));
         }
         let display_name = required("display_name", req.display_name)?;
         let auth = required("auth", req.auth)?;
@@ -35,14 +37,15 @@ impl VaultsService {
         let existing =
             self.credentials.list_credentials(&ctx.workspace, &vault_id).await.map_err(map_store)?;
         validate_array_max("credentials", existing.len() + 1, values::CREDENTIALS_PER_VAULT_MAX)?;
-        // Unique key among ACTIVE credentials (archived ones freed theirs).
-        let key = auth.unique_key().to_owned();
-        if existing.iter().any(|c| {
-            c.wire.archived_at.is_none() && c.auth.as_ref().map(|a| a.unique_key()) == Some(key.as_str())
-        }) {
-            return Err(ApiError::conflict_invalid_request(format!(
-                "a credential for `{key}` already exists in this vault"
-            )));
+        // One active credential per MCP server URL, across MCP types, and per
+        // environment variable; an archived credential frees its key (Q10).
+        if existing.iter().any(|c| c.wire.archived_at.is_none() && same_key(&c.wire.auth, &auth)) {
+            return Err(ApiError::conflict_invalid_request(match auth {
+                CredentialAuthInput::EnvironmentVariable { .. } => {
+                    "A credential already exists for this environment variable."
+                }
+                _ => "A credential already exists for this MCP server URL.",
+            }));
         }
         let now = Timestamp::now();
         req.metadata.validate(MetadataPolicy::capped())?;
@@ -147,5 +150,23 @@ pub(crate) fn validate_auth(auth: &CredentialAuthInput) -> Result<(), ApiError> 
             Err(ApiError::invalid_request("auth.refresh.client_id: Field required"))
         }
         _ => Ok(()),
+    }
+}
+
+/// Whether `stored` holds the key `new` would take: the MCP server URL for
+/// either MCP type, the variable name for an environment variable.
+fn same_key(stored: &CredentialAuthWire, new: &CredentialAuthInput) -> bool {
+    match (stored, new) {
+        (
+            CredentialAuthWire::EnvironmentVariable { secret_name, .. },
+            CredentialAuthInput::EnvironmentVariable { .. },
+        ) => secret_name == new.unique_key(),
+        (CredentialAuthWire::EnvironmentVariable { .. }, _)
+        | (_, CredentialAuthInput::EnvironmentVariable { .. }) => false,
+        (
+            CredentialAuthWire::McpOauth { mcp_server_url, .. }
+            | CredentialAuthWire::StaticBearer { mcp_server_url },
+            _,
+        ) => mcp_server_url == new.unique_key(),
     }
 }

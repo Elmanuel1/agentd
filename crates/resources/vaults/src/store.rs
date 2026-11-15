@@ -5,7 +5,7 @@
 //! [`Credential`] projection ever leaves through the service.
 
 use async_trait::async_trait;
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 
 use crate::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
 
@@ -28,6 +28,12 @@ pub enum StoreError {
     /// No such credential.
     #[error("credential not found")]
     CredentialNotFound,
+    /// The vault is archived.
+    #[error("vault archived")]
+    VaultArchived,
+    /// The credential is archived.
+    #[error("credential archived")]
+    CredentialArchived,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
@@ -42,9 +48,13 @@ pub trait VaultStore: Send + Sync {
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// Replace a vault.
     async fn replace_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError>;
-    /// Delete a vault (and its credentials).
+    /// Archive a vault and its unarchived credentials, purging their secrets;
+    /// an archived vault is answered as it is.
+    async fn archive_vault(&self, ws: &WorkspaceId, id: &VaultId, at: Timestamp)
+        -> Result<Vault, StoreError>;
+    /// Delete a vault and its credentials, purging their secrets.
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
-    /// All vaults, insertion order.
+    /// All vaults, newest first.
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
 }
 

@@ -69,7 +69,7 @@ impl VaultsService {
         let id = parse_vault_id(raw_id)?;
         let mut vault = self.vaults.get_vault(&ctx.workspace, &id).await.map_err(map_store)?;
         if vault.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request("cannot update an archived vault"));
+            return Err(ApiError::invalid_request("Vault is archived."));
         }
         if let Some(n) = req.display_name {
             validate_string_len("display_name", &n, values::NAME_MIN, values::NAME_MAX)?;
@@ -84,16 +84,11 @@ impl VaultsService {
         Ok(vault)
     }
 
-    /// `POST /v1/vaults/{id}/archive`.
+    /// `POST /v1/vaults/{id}/archive`: its credentials are archived with it
+    /// and their secrets purged (VA-3).
     pub async fn archive_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        let mut vault = self.vaults.get_vault(&ctx.workspace, &id).await.map_err(map_store)?;
-        if vault.archived_at.is_none() {
-            vault.archived_at = Some(Timestamp::now());
-            vault.updated_at = Timestamp::now();
-            self.vaults.replace_vault(&ctx.workspace, vault.clone()).await.map_err(map_store)?;
-        }
-        Ok(vault)
+        self.vaults.archive_vault(&ctx.workspace, &id, Timestamp::now()).await.map_err(map_store)
     }
 
     /// `DELETE /v1/vaults/{id}`.
@@ -120,6 +115,8 @@ pub(crate) fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::VaultNotFound => ApiError::not_found("Vault not found."),
         StoreError::CredentialNotFound => ApiError::not_found("Credential not found."),
+        StoreError::VaultArchived => ApiError::invalid_request("Vault is archived."),
+        StoreError::CredentialArchived => ApiError::invalid_request("Credential is archived."),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

@@ -4,18 +4,19 @@
 
 use std::sync::Arc;
 
-use ::vaults::store::{StoreError, VaultCredentialStore, VaultStore};
+use ::vaults::store::{StoreError, VaultStore};
 use ::vaults::types::{Vault, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::ports::secrets::SecretStore;
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 
-use crate::schema::{credentials, vaults};
+use crate::schema::vaults;
 use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
 
+mod archive;
 mod secret;
 
 /// Postgres + secret-store backed vaults store (Diesel).
@@ -96,32 +97,17 @@ impl VaultStore for PgVaultsStore {
         Ok(())
     }
 
+    async fn archive_vault(
+        &self,
+        ws: &WorkspaceId,
+        id: &VaultId,
+        at: Timestamp,
+    ) -> Result<Vault, StoreError> {
+        self.archive_cascade(ws, id, at).await
+    }
+
     async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
-        // Secrets go first, with no connection held: a failure leaves the rows,
-        // so a retry finds and deletes the rest instead of orphaning them.
-        let creds = self.list_credentials(ws, id).await?;
-        let vault = self.get_vault(ws, id).await?;
-        for c in creds {
-            self.put_secret(ws, id, &c.wire.id, &None).await?;
-        }
-        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        diesel::delete(
-            credentials::table
-                .filter(credentials::workspace_id.eq(ws.as_str()))
-                .filter(credentials::vault_id.eq(id.as_str())),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        diesel::delete(
-            vaults::table
-                .filter(vaults::workspace_id.eq(ws.as_str()))
-                .filter(vaults::vault_id.eq(id.as_str())),
-        )
-        .execute(&mut conn)
-        .await
-        .map_err(diesel_be)?;
-        Ok(vault)
+        self.delete_cascade(ws, id).await
     }
 
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError> {

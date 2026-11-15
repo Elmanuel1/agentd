@@ -14,7 +14,9 @@ use shared::WorkspaceId;
 
 use super::vaults::PgVaultsStore;
 use crate::schema::{credentials, vaults};
-use crate::{diesel_be, parse_doc, pool_be, to_doc};
+use crate::{diesel_be, parse_doc, pool_be};
+
+mod write;
 
 impl PgVaultsStore {
     async fn require_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<(), StoreError> {
@@ -72,29 +74,7 @@ impl VaultCredentialStore for PgVaultsStore {
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError> {
-        self.require_vault(ws, vault).await?;
-        let row = NewCredential {
-            workspace_id: ws.as_str().to_owned(),
-            vault_id: vault.as_str().to_owned(),
-            credential_id: cred.wire.id.as_str().to_owned(),
-            display_name: cred.wire.display_name.clone(),
-            has_secret: cred.auth.is_some(),
-            created_at: cred.wire.created_at.as_datetime(),
-            doc: to_doc(&cred.wire)?,
-        };
-        self.put_secret(ws, vault, &cred.wire.id, &cred.auth).await?;
-        // The connection is taken after the secret write and released before
-        // any cleanup, so no call to the secret store holds one.
-        let inserted: Result<usize, StoreError> = async {
-            let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-            diesel::insert_into(credentials::table).values(row).execute(&mut conn).await.map_err(diesel_be)
-        }
-        .await;
-        if inserted.is_err() {
-            // No row will ever point at the secret just written: take it back out.
-            self.put_secret(ws, vault, &cred.wire.id, &None).await?;
-        }
-        inserted.map(|_| ())
+        self.insert_locked(ws, vault, cred).await
     }
 
     async fn get_credential(
@@ -114,24 +94,7 @@ impl VaultCredentialStore for PgVaultsStore {
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError> {
-        let affected = diesel::update(
-            credentials::table
-                .filter(credentials::workspace_id.eq(ws.as_str()))
-                .filter(credentials::vault_id.eq(vault.as_str()))
-                .filter(credentials::credential_id.eq(cred.wire.id.as_str())),
-        )
-        .set((
-            credentials::display_name.eq(&cred.wire.display_name),
-            credentials::has_secret.eq(cred.auth.is_some()),
-            credentials::doc.eq(to_doc(&cred.wire)?),
-        ))
-        .execute(&mut *self.backend.diesel.write().await.map_err(pool_be)?)
-        .await
-        .map_err(diesel_be)?;
-        if affected == 0 {
-            return Err(StoreError::CredentialNotFound);
-        }
-        self.put_secret(ws, vault, &cred.wire.id, &cred.auth).await
+        self.replace_guarded(ws, vault, cred).await
     }
 
     async fn delete_credential(
