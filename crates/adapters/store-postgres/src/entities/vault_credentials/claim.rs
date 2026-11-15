@@ -4,8 +4,9 @@
 //! what the writer read, so a second claim of the same read matches nothing
 //! (MC-7, MC-23), and the claimed write lands only while the claim holds.
 
-use ::vaults::store::{ClaimedWrite, StoreError, StoredCredential};
+use ::vaults::store::{ClaimedWrite, CredentialClaims, StoreError, StoredCredential};
 use ::vaults::types::{CredentialId, VaultId};
+use async_trait::async_trait;
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::RunQueryDsl;
 use shared::{Timestamp, WorkspaceId};
@@ -15,8 +16,9 @@ use crate::{diesel_be, pool_be, to_doc};
 
 const KEY: &str = "workspace_id = $1 AND vault_id = $2 AND credential_id = $3";
 
-impl PgVaultsStore {
-    pub(super) async fn claim_row(
+#[async_trait]
+impl CredentialClaims for PgVaultsStore {
+    async fn claim_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -40,7 +42,7 @@ impl PgVaultsStore {
         Ok(affected == 1)
     }
 
-    pub(super) async fn write_claimed_row(
+    async fn write_claimed(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,

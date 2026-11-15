@@ -11,7 +11,7 @@ use shared::ports::secrets::SecretKey;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
-use vaults::store::VaultCredentialStore;
+use vaults::store::CredentialReads;
 use vaults::VaultsService;
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use ::vaults::store::{Cascade, StoreError, VaultStore};
+use ::vaults::store::{StoreError, VaultStore};
 use ::vaults::types::{Vault, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -12,7 +12,7 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::secrets::SecretStore;
-use shared::{Pagination, Timestamp, WorkspaceId};
+use shared::{Pagination, WorkspaceId};
 use webhooks::Delivery;
 
 use super::webhook_deliveries::insert_deliveries;
@@ -119,25 +119,6 @@ impl VaultStore for PgVaultsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(parse_doc).collect()
-    }
-
-    async fn archive_vault(
-        &self,
-        ws: &WorkspaceId,
-        id: &VaultId,
-        at: Timestamp,
-        sent: &Cascade<'_>,
-    ) -> Result<Vault, StoreError> {
-        self.archive_cascade(ws, id, at, sent).await
-    }
-
-    async fn delete_vault(
-        &self,
-        ws: &WorkspaceId,
-        id: &VaultId,
-        sent: &[Delivery],
-    ) -> Result<Vault, StoreError> {
-        self.delete_cascade(ws, id, sent).await
     }
 
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError> {

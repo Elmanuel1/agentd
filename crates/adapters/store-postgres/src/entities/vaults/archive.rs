@@ -5,8 +5,9 @@
 //! that wrote its secret first finds the credential archived or gone and takes
 //! the secret back out, so no archived credential keeps one.
 
-use ::vaults::store::StoreError;
+use ::vaults::store::{StoreError, VaultCascade};
 use ::vaults::types::{CredentialId, Vault, VaultId};
+use async_trait::async_trait;
 use diesel::sql_types::{Jsonb, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, QueryableByName};
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -42,10 +43,11 @@ async fn locked(
         .optional()
 }
 
-impl PgVaultsStore {
+#[async_trait]
+impl VaultCascade for PgVaultsStore {
     /// Archive the vault and its unarchived credentials at `at`; an archived
     /// vault is answered as it is.
-    pub(super) async fn archive_cascade(
+    async fn archive_vault(
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
@@ -103,7 +105,7 @@ impl PgVaultsStore {
     }
 
     /// Delete the vault and every credential in it, archived ones included.
-    pub(super) async fn delete_cascade(
+    async fn delete_vault(
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
@@ -139,7 +141,9 @@ impl PgVaultsStore {
         self.purge_secrets(ws, id, deleted).await;
         parse_doc(doc)
     }
+}
 
+impl PgVaultsStore {
     /// Delete each credential's secret. The rows are already gone or archived,
     /// so a secret that cannot be deleted is left behind for a person to remove.
     async fn purge_secrets(&self, ws: &WorkspaceId, vault: &VaultId, ids: impl IntoIterator<Item = String>) {

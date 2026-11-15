@@ -2,14 +2,13 @@
 //! their secret material sealed to the secret store and never written to the
 //! database.
 
-use ::vaults::store::{ClaimedWrite, StoreError, StoredCredential, VaultCredentialStore};
-use ::vaults::types::{Credential, CredentialAuthInput, CredentialId, VaultId};
+use ::vaults::store::{StoreError, StoredCredential, VaultCredentialStore};
+use ::vaults::types::{Credential, CredentialId, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::{Timestamp, WorkspaceId};
-use webhooks::Delivery;
+use shared::WorkspaceId;
 
 use super::vaults::PgVaultsStore;
 use crate::schema::{credentials, vaults};
@@ -69,16 +68,6 @@ struct NewCredential {
 
 #[async_trait]
 impl VaultCredentialStore for PgVaultsStore {
-    async fn insert_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: StoredCredential,
-        sent: &[Delivery],
-    ) -> Result<(), StoreError> {
-        self.insert_locked(ws, vault, cred, sent).await
-    }
-
     async fn get_credential(
         &self,
         ws: &WorkspaceId,
@@ -88,26 +77,6 @@ impl VaultCredentialStore for PgVaultsStore {
         let (wire, has_secret) = self.credential_row(ws, vault, id).await?;
         let auth = if has_secret { Some(self.read_secret(ws, vault, id).await?) } else { None };
         Ok(StoredCredential { wire, auth })
-    }
-
-    async fn archive_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: StoredCredential,
-        sent: &[Delivery],
-    ) -> Result<(), StoreError> {
-        self.replace_guarded(ws, vault, cred, sent).await
-    }
-
-    async fn delete_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        id: &CredentialId,
-        sent: &[Delivery],
-    ) -> Result<StoredCredential, StoreError> {
-        self.delete_row(ws, vault, id, sent).await
     }
 
     async fn list_credentials(
@@ -127,56 +96,5 @@ impl VaultCredentialStore for PgVaultsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(|d| Ok(StoredCredential { wire: parse_doc(d)?, auth: None })).collect()
-    }
-
-    async fn mcp_credentials(
-        &self,
-        ws: &WorkspaceId,
-        vaults: &[String],
-        urls: &[String],
-    ) -> Result<Vec<Credential>, StoreError> {
-        self.mcp_rows(ws, vaults, urls).await
-    }
-
-    async fn credential_secret(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        id: &CredentialId,
-    ) -> Result<CredentialAuthInput, StoreError> {
-        self.read_secret(ws, vault, id).await
-    }
-
-    async fn claim_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        id: &CredentialId,
-        read: Timestamp,
-        now: Timestamp,
-    ) -> Result<bool, StoreError> {
-        self.claim_row(ws, vault, id, read, now).await
-    }
-
-    async fn write_claimed(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: &StoredCredential,
-        claimed: Timestamp,
-    ) -> Result<ClaimedWrite, StoreError> {
-        self.write_claimed_row(ws, vault, cred, claimed).await
-    }
-
-    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError> {
-        super::webhook_deliveries::publish(&self.backend, sent).await.map_err(StoreError::Backend)
-    }
-
-    async fn environment_credentials(
-        &self,
-        ws: &WorkspaceId,
-        vaults: &[String],
-    ) -> Result<Vec<Credential>, StoreError> {
-        self.environment_rows(ws, vaults).await
     }
 }

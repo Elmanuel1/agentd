@@ -58,7 +58,7 @@ pub type Cascade<'a> = dyn Fn(&[String]) -> Vec<Delivery> + Send + Sync + 'a;
 
 /// Persistence port for vault rows.
 #[async_trait]
-pub trait VaultStore: Send + Sync {
+pub trait VaultStore: VaultCascade {
     /// Insert a vault.
     /// Insert a vault and `sent`, its webhook deliveries, in one transaction.
     async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault, sent: &[Delivery])
@@ -69,6 +69,32 @@ pub trait VaultStore: Send + Sync {
     async fn replace_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError>;
     /// The vaults of `ids` that exist in the workspace, in one read.
     async fn named_vaults(&self, ws: &WorkspaceId, ids: &[VaultId]) -> Result<Vec<Vault>, StoreError>;
+    /// All vaults, newest first.
+    async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
+}
+
+/// Persistence port for credential rows and their secrets, implemented by the
+/// same store as [`VaultStore`]: the vault aggregate keeps one repository.
+#[async_trait]
+pub trait VaultCredentialStore: CredentialReads + CredentialClaims + CredentialWrites {
+    /// Fetch one credential.
+    async fn get_credential(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<StoredCredential, StoreError>;
+    /// All credentials in a vault.
+    async fn list_credentials(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+    ) -> Result<Vec<StoredCredential>, StoreError>;
+}
+
+/// A vault's archive and delete, each taking its credentials with it.
+#[async_trait]
+pub trait VaultCascade: Send + Sync {
     /// Archive a vault and its unarchived credentials, purging their secrets,
     /// with the deliveries `sent` builds from the archived credentials' ids;
     /// an archived vault is answered as it is.
@@ -86,51 +112,11 @@ pub trait VaultStore: Send + Sync {
         id: &VaultId,
         sent: &[Delivery],
     ) -> Result<Vault, StoreError>;
-    /// All vaults, newest first.
-    async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
 }
 
-/// Persistence port for credential rows and their secrets, implemented by the
-/// same store as [`VaultStore`]: the vault aggregate keeps one repository.
+/// The reads of credentials across a session's vaults, and of one secret.
 #[async_trait]
-pub trait VaultCredentialStore: Send + Sync {
-    /// Insert a credential into a vault.
-    async fn insert_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: StoredCredential,
-        sent: &[Delivery],
-    ) -> Result<(), StoreError>;
-    /// Fetch one credential.
-    async fn get_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        id: &CredentialId,
-    ) -> Result<StoredCredential, StoreError>;
-    /// Archive one credential: `cred` with its archive stamp and no secret.
-    async fn archive_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        cred: StoredCredential,
-        sent: &[Delivery],
-    ) -> Result<(), StoreError>;
-    /// Delete one credential, with `sent` when a row was deleted.
-    async fn delete_credential(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-        id: &CredentialId,
-        sent: &[Delivery],
-    ) -> Result<StoredCredential, StoreError>;
-    /// All credentials in a vault.
-    async fn list_credentials(
-        &self,
-        ws: &WorkspaceId,
-        vault: &VaultId,
-    ) -> Result<Vec<StoredCredential>, StoreError>;
+pub trait CredentialReads: Send + Sync {
     /// The unarchived MCP credentials of `vaults` whose `mcp_server_url` is
     /// one of `urls`, in one read.
     async fn mcp_credentials(
@@ -146,6 +132,17 @@ pub trait VaultCredentialStore: Send + Sync {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<CredentialAuthInput, StoreError>;
+    /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
+    async fn environment_credentials(
+        &self,
+        ws: &WorkspaceId,
+        vaults: &[String],
+    ) -> Result<Vec<Credential>, StoreError>;
+}
+
+/// A credential write claimed on the `updated_at` the writer read.
+#[async_trait]
+pub trait CredentialClaims: Send + Sync {
     /// Claim a refresh: move the unarchived row's `updated_at` from `read`
     /// to `now`; `false` when it no longer reads `read`.
     async fn claim_credential(
@@ -165,12 +162,35 @@ pub trait VaultCredentialStore: Send + Sync {
         cred: &StoredCredential,
         claimed: Timestamp,
     ) -> Result<ClaimedWrite, StoreError>;
-    /// Write `sent`, deliveries of a change with no row to write beside them.
-    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError>;
-    /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
-    async fn environment_credentials(
+}
+
+/// A credential's create, archive and delete, with their webhook deliveries.
+#[async_trait]
+pub trait CredentialWrites: Send + Sync {
+    /// Insert a credential into a vault.
+    async fn insert_credential(
         &self,
         ws: &WorkspaceId,
-        vaults: &[String],
-    ) -> Result<Vec<Credential>, StoreError>;
+        vault: &VaultId,
+        cred: StoredCredential,
+        sent: &[Delivery],
+    ) -> Result<(), StoreError>;
+    /// Archive one credential: `cred` with its archive stamp and no secret.
+    async fn archive_credential(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        cred: StoredCredential,
+        sent: &[Delivery],
+    ) -> Result<(), StoreError>;
+    /// Delete one credential, with `sent` when a row was deleted.
+    async fn delete_credential(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+        sent: &[Delivery],
+    ) -> Result<StoredCredential, StoreError>;
+    /// Write `sent`, deliveries of a change with no row to write beside them.
+    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError>;
 }

@@ -4,8 +4,9 @@
 //! is unarchived. A row the write cannot make takes its secret back out, so a
 //! secret written while the vault was archived or deleted never stays.
 
-use ::vaults::store::{StoreError, StoredCredential};
+use ::vaults::store::{CredentialWrites, StoreError, StoredCredential};
 use ::vaults::types::{CredentialId, Vault, VaultId};
+use async_trait::async_trait;
 use diesel::dsl::sql;
 use diesel::sql_types::Bool;
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
@@ -20,8 +21,9 @@ use crate::entities::webhook_deliveries::insert_deliveries;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be, to_doc};
 
-impl PgVaultsStore {
-    pub(super) async fn insert_locked(
+#[async_trait]
+impl CredentialWrites for PgVaultsStore {
+    async fn insert_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -76,7 +78,7 @@ impl PgVaultsStore {
         inserted
     }
 
-    pub(super) async fn replace_guarded(
+    async fn archive_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -140,7 +142,7 @@ impl PgVaultsStore {
     /// Delete one credential with its delivery, in one statement whose
     /// returned row is the answer, so a repeated delete is `404` and sends no
     /// second delivery; then its secret, which may already be gone.
-    pub(super) async fn delete_row(
+    async fn delete_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
@@ -174,5 +176,9 @@ impl PgVaultsStore {
         let wire = parse_doc(doc.ok_or(StoreError::CredentialNotFound)?)?;
         self.put_secret(ws, vault, id, &None).await?;
         Ok(StoredCredential { wire, auth: None })
+    }
+
+    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError> {
+        crate::entities::webhook_deliveries::publish(&self.backend, sent).await.map_err(StoreError::Backend)
     }
 }

@@ -2,8 +2,9 @@
 //! credentials, keyed by the agent's server URLs, and the work secret's
 //! `environment_variable` ones.
 
-use ::vaults::store::StoreError;
-use ::vaults::types::Credential;
+use ::vaults::store::{CredentialReads, StoreError};
+use ::vaults::types::{Credential, CredentialAuthInput, CredentialId, VaultId};
+use async_trait::async_trait;
 use diesel::dsl::sql;
 use diesel::sql_types::{Array, Bool, Text};
 use diesel::{ExpressionMethods, QueryDsl};
@@ -14,8 +15,9 @@ use crate::entities::vaults::PgVaultsStore;
 use crate::schema::credentials;
 use crate::{diesel_be, parse_doc, pool_be};
 
-impl PgVaultsStore {
-    pub(super) async fn mcp_rows(
+#[async_trait]
+impl CredentialReads for PgVaultsStore {
+    async fn mcp_credentials(
         &self,
         ws: &WorkspaceId,
         vaults: &[String],
@@ -37,7 +39,7 @@ impl PgVaultsStore {
         docs.into_iter().map(parse_doc).collect()
     }
 
-    pub(super) async fn environment_rows(
+    async fn environment_credentials(
         &self,
         ws: &WorkspaceId,
         vaults: &[String],
@@ -55,5 +57,14 @@ impl PgVaultsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(parse_doc).collect()
+    }
+
+    async fn credential_secret(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<CredentialAuthInput, StoreError> {
+        self.read_secret(ws, vault, id).await
     }
 }

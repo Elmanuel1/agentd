@@ -11,7 +11,7 @@ use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
-use vaults::store::{ClaimedWrite, VaultCredentialStore};
+use vaults::store::{ClaimedWrite, CredentialClaims, VaultCredentialStore};
 use vaults::types::VaultId;
 use vaults::VaultsService;
 
