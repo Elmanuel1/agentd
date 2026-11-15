@@ -92,10 +92,10 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 evaluated_permission: Some("allow".into()),
                 evaluation: evaluation.clone(),
             }),
-            Some(Disposition::Mcp { server, ask, evaluation }) => {
+            Some(Disposition::Mcp { server, tool, ask, evaluation }) => {
                 let call = turn.event(AgentEvent::McpToolUse {
                     mcp_server_name: server.clone(),
-                    name: name.to_owned(),
+                    name: tool.clone(),
                     input: input.clone(),
                     evaluated_permission: Some(if *ask { "ask" } else { "allow" }.into()),
                     evaluation: evaluation.clone(),

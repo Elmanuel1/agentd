@@ -7,8 +7,13 @@ use shared::ContentBlock;
 
 use super::client::{Failure, Rpc, PROTOCOL};
 
-/// The client agentd names at `initialize`, as live's does.
-const CLIENT: (&str, &str) = ("mcp", "0.1.0");
+/// The client the loop names at `initialize`, as live's session-time client does.
+const CLIENT: &str = "claude-ai";
+
+/// `initialize`'s params, naming `client` (live's validate names `mcp`).
+pub fn initialize_params(client: &str) -> Value {
+    json!({"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": client, "version": "0.1.0"}})
+}
 
 /// What a tool call answered.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,12 +29,7 @@ pub struct Called {
 /// Open the session: `rpc` comes back holding the server's session id.
 pub async fn initialize(rpc: &mut Rpc) -> Result<(), Failure> {
     rpc.session = None;
-    let params = json!({
-        "protocolVersion": PROTOCOL,
-        "capabilities": {},
-        "clientInfo": {"name": CLIENT.0, "version": CLIENT.1},
-    });
-    let answer = rpc.request("initialize", params).await?;
+    let answer = rpc.request("initialize", initialize_params(CLIENT)).await?;
     if answer.result.is_none() {
         return Err(Failure::Status(200));
     }

@@ -19,8 +19,11 @@ const VERSION: &str = "mcp-protocol-version";
 pub enum Failure {
     /// The host does not resolve, refuses, times out or resolves inward.
     Unreachable,
-    /// The server answered 401: the credential is missing or refused.
+    /// The server answered 401 to the credential the loop sent.
     Unauthorized,
+    /// The server answered 401, and the session's vaults hold no credential
+    /// for its URL.
+    Unauthenticated,
     /// The server answered 403.
     Forbidden,
     /// The server answered 404 to a stored session id: it ended the session.

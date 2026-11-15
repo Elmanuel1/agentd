@@ -9,7 +9,7 @@ use shared::net::Guard;
 use vaults::refresh::HttpResponse;
 use vaults::validate::{McpProbe, Probed};
 
-use super::client::PROTOCOL;
+use super::server::initialize_params;
 
 /// Probes MCP servers through `guard`.
 #[derive(Debug, Clone)]
@@ -30,8 +30,8 @@ impl McpProbe for Probe {
     async fn initialize(&self, url: &str, bearer: &str) -> Probed {
         let Ok(url) = url.parse::<reqwest::Url>() else { return Probed::Failed(None) };
         let Ok(client) = self.guard.client(&url, self.timeout).await else { return Probed::Failed(None) };
-        let body = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "mcp", "version": "0.1.0"}}});
+        let body =
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize_params("mcp")});
         let sent = client
             .post(url)
             .header(reqwest::header::ACCEPT, "application/json, text/event-stream")

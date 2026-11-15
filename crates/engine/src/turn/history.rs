@@ -109,7 +109,7 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 evaluated_permission,
                 ..
             }) => {
-                b.call(id.clone(), name, input);
+                b.call(id.clone(), &super::policy::model_name(mcp_server_name, name), input);
                 if evaluated_permission.as_deref() == Some("ask") {
                     b.owed.insert(id.clone());
                 }

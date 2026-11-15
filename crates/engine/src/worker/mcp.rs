@@ -12,6 +12,7 @@ use super::turn::batch;
 use super::Loop;
 use crate::mcp::CallOutcome;
 use crate::turn::history::Unanswered;
+use crate::turn::policy::model_name;
 
 impl Loop {
     /// Call each allowed MCP call in `unanswered` and commit its result. A
@@ -47,7 +48,9 @@ impl Loop {
         for call in unanswered.iter().filter(|u| u.for_loop()) {
             let Ok(id) = EventId::parse(&call.id) else { continue };
             let server = call.mcp.as_deref().unwrap_or_default();
-            let (content, is_error) = match servers.call(server, &call.name, &call.input).await? {
+            let prefix = model_name(server, "");
+            let tool = call.name.strip_prefix(&prefix).unwrap_or(&call.name);
+            let (content, is_error) = match servers.call(server, tool, &call.input).await? {
                 CallOutcome::Called(called) => {
                     crate::metrics::mcp_call(if called.is_error { "tool_error" } else { "ok" });
                     (called.content, called.is_error)
@@ -58,7 +61,7 @@ impl Loop {
                 CallOutcome::Deferred => return self.defer_refresh(claim).await,
                 CallOutcome::Failed { content, error } => {
                     crate::metrics::mcp_call("unreachable");
-                    events.push(turn.event(SessionEvent::Error { error }));
+                    events.extend(error.map(|error| turn.event(SessionEvent::Error { error })));
                     (content, true)
                 }
             };

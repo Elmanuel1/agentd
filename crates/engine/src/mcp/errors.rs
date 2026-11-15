@@ -20,6 +20,11 @@ fn reason(failure: &Failure) -> String {
         }
         Failure::Forbidden => "access forbidden".into(),
         Failure::Unauthorized => "authentication required".into(),
+        Failure::Unauthenticated => {
+            "no credential is stored for this server URL \u{2014} check that the agent's MCP \
+            server URL matches the URL in the vault"
+                .into()
+        }
         Failure::Gone => "the server ended the session".into(),
         Failure::Refresh => "the access token expired and could not be refreshed".into(),
         Failure::Busy => "the access token is being refreshed".into(),
@@ -31,7 +36,7 @@ fn reason(failure: &Failure) -> String {
 /// tries the server again, so it is always `retrying` (MC-14).
 pub(super) fn session_error(server: &str, stage: &str, failure: &Failure) -> Value {
     let kind = match failure {
-        Failure::Unauthorized | Failure::Refresh => AUTHENTICATION_FAILED,
+        Failure::Unauthorized | Failure::Unauthenticated | Failure::Refresh => AUTHENTICATION_FAILED,
         _ => CONNECTION_FAILED,
     };
     json!({
@@ -42,9 +47,16 @@ pub(super) fn session_error(server: &str, stage: &str, failure: &Failure) -> Val
     })
 }
 
-/// The result of a call whose server could not be reached.
-pub(super) fn unavailable(server: &str) -> Vec<ContentBlock> {
-    vec![ContentBlock::text(format!("MCP server '{server}' is unavailable."))]
+/// The result of a call the server did not answer, in live's words (B27).
+pub(super) fn unanswered(failure: &Failure) -> Vec<ContentBlock> {
+    let why = match failure {
+        Failure::Status(code) => format!("upstream server error (HTTP {code})"),
+        Failure::Unauthorized | Failure::Unauthenticated => "upstream server error (HTTP 401)".into(),
+        Failure::Forbidden => "upstream server error (HTTP 403)".into(),
+        Failure::Gone => "upstream server error (HTTP 404)".into(),
+        _ => "upstream server error (unreachable)".into(),
+    };
+    vec![ContentBlock::text(why)]
 }
 
 /// Whether `e` is an MCP server's `session.error`, and for which server.

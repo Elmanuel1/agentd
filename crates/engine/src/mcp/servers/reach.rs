@@ -105,6 +105,10 @@ impl Servers {
                 Ok(Ok(()))
             }
             Err(f) => {
+                let f = match (f, &s.credential) {
+                    (Failure::Unauthorized, None) => Failure::Unauthenticated,
+                    (f, _) => f,
+                };
                 let error = session_error(&s.name, "initialize", &f);
                 s.failed = Some(f);
                 s.rpc = None;

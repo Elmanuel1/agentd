@@ -22,6 +22,9 @@ pub enum NetError {
     Client(String),
 }
 
+/// The `user-agent` live's MCP client sends.
+const USER_AGENT: &str = "Claude-User";
+
 /// Builds HTTP clients pinned to a host's public addresses. `allowed` names
 /// internal addresses that may still be reached: none in production, the
 /// test servers' own sockets in tests.
@@ -52,10 +55,12 @@ impl Guard {
     }
 
     /// A client for `url` alone: its host pinned to the addresses just
-    /// checked, no redirects, `timeout` per request.
+    /// checked, no redirects, `timeout` per request, sending live's
+    /// `user-agent: Claude-User`.
     pub async fn client(&self, url: &reqwest::Url, timeout: Duration) -> Result<reqwest::Client, NetError> {
         let (host, addrs) = self.resolve(url).await?;
         reqwest::Client::builder()
+            .user_agent(USER_AGENT)
             .resolve_to_addrs(&host, &addrs)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)

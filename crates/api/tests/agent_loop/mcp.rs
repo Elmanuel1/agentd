@@ -141,7 +141,10 @@ async fn an_allowed_mcp_call_runs_in_the_loop_and_the_next_call_hears_its_result
     // MC-1, MC-8, MC-13, MC-15, MC-24, MC-25.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let model = Scripted::new(vec![Say::Calls(vec![("lookup", json!({"q": "cat"}))]), Say::Text("found it")]);
+    let model = Scripted::new(vec![
+        Say::Calls(vec![("mcp__docs__lookup", json!({"q": "cat"}))]),
+        Say::Text("found it"),
+    ]);
     let (app, _worker) = worker(&rig, model.clone(), Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
@@ -185,7 +188,10 @@ async fn an_allowed_mcp_call_runs_in_the_loop_and_the_next_call_hears_its_result
     {
         let asked = model.asked.lock();
         assert_eq!(asked.len(), 2, "the tool step calls no model");
-        assert!(asked[0].tools.iter().any(|t| t.name == "lookup"));
+        assert!(
+            asked[0].tools.iter().any(|t| t.name == "mcp__docs__lookup"),
+            "live's name for the model (B27)"
+        );
         let fed = serde_json::to_string(&asked[1].messages).unwrap();
         assert!(fed.contains("found \\\"cat\\\""), "{fed}");
     }
@@ -194,7 +200,7 @@ async fn an_allowed_mcp_call_runs_in_the_loop_and_the_next_call_hears_its_result
     assert_eq!(rows(&s).await, 1);
     send(&app, &s, message("again")).await;
     events_until(&app, &s, "session.status_idle", 2).await;
-    assert_eq!(server.count("initialize"), 2, "a new turn reconnects (MC-15)");
+    assert_eq!(server.count("initialize"), 1, "a new turn keeps a live connection, as live does (B27)");
 }
 
 #[tokio::test]
@@ -202,7 +208,7 @@ async fn an_asked_mcp_call_waits_for_the_client_and_runs_only_when_allowed() {
     // MC-12: an `mcp_toolset` asks by default.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let lookup = || Say::Calls(vec![("lookup", json!({"q": "dog"}))]);
+    let lookup = || Say::Calls(vec![("mcp__docs__lookup", json!({"q": "dog"}))]);
     let model = Scripted::new(vec![lookup(), Say::Text("ok"), lookup(), Say::Text("fine")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
@@ -261,7 +267,7 @@ async fn a_server_agentd_may_not_reach_records_a_connection_error_and_the_turn_g
     );
     assert_eq!(e["retry_status"], json!({"type": "retrying"}));
     assert!(server.methods().is_empty(), "a loopback server is refused before any request (MC-11)");
-    assert!(model.asked.lock()[0].tools.iter().all(|t| t.name != "lookup"));
+    assert!(model.asked.lock()[0].tools.iter().all(|t| t.name != "mcp__docs__lookup"));
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
 
     let limited = json!({"name": "limited", "config": {"type": "cloud",
@@ -284,18 +290,21 @@ async fn a_call_whose_server_fails_gets_an_error_result_and_the_turn_goes_on() {
     // MC-26.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let calls = vec![("flaky", json!({})), ("lookup", json!({"q": "x"}))];
+    let calls = vec![("mcp__docs__flaky", json!({})), ("mcp__docs__lookup", json!({"q": "x"}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("try")).await;
     let events = events_until(&app, &s, "session.status_idle", 1).await;
-    let results = of(&events, "agent.mcp_tool_result");
-    assert_eq!(results.len(), 2, "no allowed call stays unanswered");
-    assert!(results.iter().all(|r| r["is_error"] == true));
-    assert_eq!(of(&events, "session.error").len(), 2);
-    assert_eq!(server.count("tools/call"), 1, "the failed server is not tried again in the turn (MC-14)");
+    let (calls, results) = (of(&events, "agent.mcp_tool_use"), of(&events, "agent.mcp_tool_result"));
+    let result = |r: &Value| (r["mcp_tool_use_id"].clone(), r["content"].clone(), r["is_error"].clone());
+    let failed = json!([{"type": "text", "text": "upstream server error (HTTP 502)"}]);
+    assert_eq!(result(results[0]), (calls[0]["id"].clone(), failed, json!(true)), "live's content (B27)");
+    let found = json!([{"type": "text", "text": "found \"x\""}]);
+    assert_eq!(result(results[1]), (calls[1]["id"].clone(), found, json!(false)), "the server stays usable");
+    assert!(of(&events, "session.error").is_empty(), "a failed call records no session.error (B27)");
+    assert_eq!(server.count("tools/call"), 2);
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
 }
 
@@ -304,7 +313,8 @@ async fn a_vault_credential_authenticates_and_never_reaches_the_log() {
     // MC-2, MC-9, MC-22.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let model = Scripted::new(vec![Say::Calls(vec![("lookup", json!({"q": "k"}))]), Say::Text("done")]);
+    let model =
+        Scripted::new(vec![Say::Calls(vec![("mcp__docs__lookup", json!({"q": "k"}))]), Say::Text("done")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
@@ -328,14 +338,21 @@ async fn a_session_the_server_ended_reconnects_and_the_call_goes_through() {
     // MC-15: a 404 to the stored session id.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let model = Scripted::new(vec![Say::Calls(vec![("lookup", json!({"q": "z"}))]), Say::Text("done")]);
+    let model =
+        Scripted::new(vec![Say::Calls(vec![("mcp__docs__lookup", json!({"q": "z"}))]), Say::Text("done")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     server.forget.store(true, Ordering::SeqCst);
     send(&app, &s, message("go")).await;
     let events = events_until(&app, &s, "session.status_idle", 1).await;
-    assert_eq!(of(&events, "agent.mcp_tool_result")[0]["is_error"], false);
+    let result = of(&events, "agent.mcp_tool_result")[0];
+    let call = of(&events, "agent.mcp_tool_use")[0];
+    assert_eq!(result["mcp_tool_use_id"], call["id"]);
+    assert_eq!(
+        (&result["content"], &result["is_error"]),
+        (&json!([{"type": "text", "text": "found \"z\""}]), &json!(false))
+    );
     assert_eq!(server.count("initialize"), 2);
 }
 
@@ -373,7 +390,8 @@ async fn an_expired_token_is_refreshed_once_stored_and_used() {
     // MC-7, MC-9.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let model = Scripted::new(vec![Say::Calls(vec![("lookup", json!({"q": "r"}))]), Say::Text("done")]);
+    let model =
+        Scripted::new(vec![Say::Calls(vec![("mcp__docs__lookup", json!({"q": "r"}))]), Say::Text("done")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let (vault, id) = expired(&rig, &url, &url.replace("/mcp", "/token"), 120).await;
@@ -431,7 +449,10 @@ async fn a_refused_or_internal_token_endpoint_records_an_authentication_error() 
         let events = events_until(&app, &s, "session.status_idle", 1).await;
         let errors = of(&events, "session.error");
         assert_eq!(errors.len(), 1, "{endpoint}");
-        assert_eq!(errors[0]["error"]["type"], "mcp_authentication_failed_error");
+        let refused = json!({"type": "mcp_authentication_failed_error", "mcp_server_name": "docs",
+            "message": "MCP server 'docs' initialize failed: the access token expired and could not be refreshed",
+            "retry_status": {"type": "retrying"}});
+        assert_eq!(errors[0]["error"], refused);
         assert!(server.methods().is_empty(), "the server is not called with a dead token");
         assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
         let sent = super::webhooks_about(&cred).await;
@@ -445,7 +466,7 @@ async fn a_crowded_prompt_clears_old_results_and_caps_long_ones() {
     // CP-2, CP-3: the prompt changes, the stored events stay whole.
     let Some(rig) = Rig::new().await else { return };
     let (_server, url, guard) = serve().await;
-    let calls = (0..5).map(|i| Say::Calls(vec![("lookup", json!({"q": format!("w{i}")}))]));
+    let calls = (0..5).map(|i| Say::Calls(vec![("mcp__docs__lookup", json!({"q": format!("w{i}")}))]));
     let model = Scripted::new(calls.chain([Say::Text("done")]).collect());
     let compaction = engine::turn::compact::Compaction { clear_at: 1, keep_results: 3, tool_output_limit: 2 };
     let (app, _worker) = worker(&rig, model.clone(), Tune { guard, compaction, ..Tune::default() }).await;

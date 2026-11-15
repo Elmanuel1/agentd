@@ -37,6 +37,8 @@ pub enum Disposition {
     Mcp {
         /// The server's name.
         server: String,
+        /// The tool's own name, as its events carry it.
+        tool: String,
         /// The call waits for the client's confirmation.
         ask: bool,
         /// How the permission was reached.
@@ -145,6 +147,7 @@ fn send_to_agent() -> ModelTool {
 }
 
 mod mcp;
+pub use mcp::model_name;
 
 #[cfg(test)]
 mod tests;
