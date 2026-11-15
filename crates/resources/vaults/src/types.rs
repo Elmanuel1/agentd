@@ -104,10 +104,12 @@ pub struct CreateVaultRequest {
 }
 
 mod auth;
+mod update;
 mod wire;
 pub use auth::{
     CredentialAuthInput, CredentialNetworking, InjectionLocation, OauthRefreshInput, TokenEndpointAuthInput,
 };
+pub use update::{ClientSecretUpdate, CredentialAuthUpdate, RefreshUpdate, UpdateCredentialRequest};
 pub use wire::{CredentialAuthWire, OauthRefreshWire, TokenEndpointAuthWire, TokenEndpointMethod};
 
 /// Constant `"type":"vault_credential"`; a doc stored with agentd's earlier
@@ -155,17 +157,6 @@ pub struct CreateCredentialRequest {
     /// Optional user metadata.
     #[serde(default)]
     pub metadata: Metadata,
-}
-
-/// `POST /v1/vaults/{vid}/credentials/{cid}` body — rotation only: secret
-/// values and display_name can change; keys are immutable.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateCredentialRequest {
-    /// Replace display name.
-    pub display_name: Option<String>,
-    /// Replace auth (must keep the same variant and unique key).
-    pub auth: Option<CredentialAuthInput>,
 }
 
 /// `POST /v1/vaults/{id}` body.
