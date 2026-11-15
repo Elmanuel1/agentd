@@ -1,19 +1,19 @@
 //! One step's view of a thread agent's MCP servers: what is stored of each,
 //! the credential it connects with, and whether it already failed this turn.
 
-use agents::types::McpServer;
-use agents::AgentSnapshot;
 use serde_json::Value;
-use sessions::events::{Event, EventPayload, SessionEvent};
 use sessions::mcp::McpConnection;
-use sessions::types::{Session, SessionId};
+use sessions::types::SessionId;
 use shared::{BackendError, ContentBlock, WorkspaceId};
 use vaults::Credential;
 
 use super::client::{Failure, Rpc};
-use super::errors::{is_mcp_error, session_error, unavailable};
+use super::errors::{session_error, unavailable};
 use super::server::{self, Called};
 use super::Mcp;
+
+mod open;
+mod reach;
 
 /// A tool one of the agent's servers lists.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,60 +74,6 @@ pub struct Servers {
 impl std::fmt::Debug for Servers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Servers").field("session", &self.session).finish_non_exhaustive()
-    }
-}
-
-/// The servers that failed since the turn started: the log after its last
-/// `session.status_running`.
-fn failed_this_turn(log: &[Event]) -> Vec<&str> {
-    let turn = log
-        .iter()
-        .rposition(|e| matches!(e.payload, EventPayload::Session(SessionEvent::StatusRunning {})))
-        .map_or(log, |i| log.get(i..).unwrap_or_default());
-    turn.iter().filter_map(is_mcp_error).collect()
-}
-
-impl Mcp {
-    /// `agent`'s servers in `session`, read in three statements (its
-    /// environment, its stored connections, its credentials); none when the
-    /// agent declares no server.
-    pub async fn servers(
-        &self,
-        ws: &WorkspaceId,
-        session: &Session,
-        agent: &AgentSnapshot,
-        log: &[Event],
-    ) -> Result<Servers, BackendError> {
-        let mut servers =
-            Servers { mcp: None, ws: ws.clone(), session: session.id.clone(), list: Vec::new() };
-        if agent.config.mcp_servers.is_empty() {
-            return Ok(servers);
-        }
-        let env = self.environments.config(ws, session.id.as_str(), &session.environment_id).await?;
-        let stored = self.connections.connections(ws, &session.id).await.map_err(BackendError::new)?;
-        let urls: Vec<String> =
-            agent.config.mcp_servers.iter().map(|McpServer::Url { url, .. }| url.clone()).collect();
-        let mut creds = self.vaults.mcp_credentials(ws, &session.vault_ids, &urls).await?;
-        let failed = failed_this_turn(log);
-        servers.list = agent
-            .config
-            .mcp_servers
-            .iter()
-            .map(|McpServer::Url { name, url }| Server {
-                name: name.clone(),
-                url: url.clone(),
-                allowed: reqwest::Url::parse(url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(|h| env.mcp_allowed(h)))
-                    .unwrap_or(false),
-                credential: creds.remove(url),
-                stored: stored.iter().find(|s| s.server_url == *url).cloned(),
-                failed: failed.contains(&name.as_str()).then_some(Failure::Unreachable),
-                rpc: None,
-            })
-            .collect();
-        servers.mcp = Some(self.clone());
-        Ok(servers)
     }
 }
 
@@ -227,94 +173,6 @@ impl Servers {
         }
         Ok(failed(server, "tools/call", &Failure::Gone))
     }
-
-    async fn token(&self, i: usize) -> Result<Option<String>, BackendError> {
-        let (Some(mcp), Some(cred)) = (&self.mcp, self.list.get(i).and_then(|s| s.credential.as_ref()))
-        else {
-            return Ok(None);
-        };
-        Ok(mcp.vaults.mcp_token(&self.ws, cred).await?.map(|t| t.bearer.expose().to_owned()))
-    }
-
-    /// Open the stored session again, reading the credential's token.
-    async fn resume(&mut self, i: usize) -> Result<Result<(), Failure>, BackendError> {
-        let bearer = self.token(i).await?;
-        let (Some(mcp), Some(s)) = (self.mcp.clone(), self.list.get_mut(i)) else {
-            return Ok(Err(Failure::Unreachable));
-        };
-        let session = s.stored.as_ref().and_then(|c| c.mcp_session_id.clone());
-        let opened = match s.allowed {
-            true => Rpc::open(&mcp.guard, &s.url, bearer, session, mcp.timeout).await,
-            false => Err(Failure::Unreachable),
-        };
-        match opened {
-            Ok(rpc) => {
-                s.rpc = Some(rpc);
-                Ok(Ok(()))
-            }
-            Err(f) => {
-                s.failed = Some(f.clone());
-                Ok(Err(f))
-            }
-        }
-    }
-
-    /// Connect server `i` afresh and store what it lists; the
-    /// `session.error` body when it fails.
-    async fn reach(&mut self, i: usize) -> Result<Result<(), Value>, BackendError> {
-        let Some(mcp) = self.mcp.clone() else { return Ok(Ok(())) };
-        let allowed = self.list.get(i).is_some_and(|s| s.allowed);
-        let bearer = match allowed {
-            true => self.token(i).await?,
-            false => None,
-        };
-        let Some(s) = self.list.get_mut(i) else { return Ok(Ok(())) };
-        let opened = match allowed {
-            true => connect(&mcp, &s.url, bearer).await,
-            false => Err(Failure::Unreachable),
-        };
-        match opened {
-            Ok((rpc, tools)) => {
-                let row = McpConnection {
-                    server_url: s.url.clone(),
-                    mcp_session_id: rpc.session.clone(),
-                    tools: Value::Array(tools),
-                    credential_updated_at: s.credential.as_ref().map(|c| c.updated_at),
-                };
-                mcp.connections.save(&self.ws, &self.session, &row).await.map_err(BackendError::new)?;
-                s.stored = Some(row);
-                s.rpc = Some(rpc);
-                s.failed = None;
-                Ok(Ok(()))
-            }
-            Err(f) => {
-                let error = session_error(&s.name, "initialize", &f);
-                s.failed = Some(f);
-                s.rpc = None;
-                Ok(Err(error))
-            }
-        }
-    }
-
-    /// List server `i`'s tools again and store them (MC-16).
-    async fn relist(&mut self, i: usize) -> Result<(), BackendError> {
-        let Some(mcp) = self.mcp.clone() else { return Ok(()) };
-        let Some(s) = self.list.get_mut(i) else { return Ok(()) };
-        let (Some(rpc), Some(stored)) = (s.rpc.as_mut(), s.stored.as_mut()) else { return Ok(()) };
-        if let Ok(tools) = server::list(rpc).await {
-            stored.tools = Value::Array(tools);
-            stored.mcp_session_id = rpc.session.clone();
-            mcp.connections.save(&self.ws, &self.session, stored).await.map_err(BackendError::new)?;
-        }
-        Ok(())
-    }
-}
-
-async fn connect(mcp: &Mcp, url: &str, bearer: Option<String>) -> Result<(Rpc, Vec<Value>), Failure> {
-    let mut rpc = Rpc::open(&mcp.guard, url, bearer, None, mcp.timeout).await?;
-    server::initialize(&mut rpc).await?;
-    let tools = server::list(&mut rpc).await?;
-    Ok((rpc, tools))
 }
 
 fn failed(server: &str, stage: &str, f: &Failure) -> CallOutcome {
