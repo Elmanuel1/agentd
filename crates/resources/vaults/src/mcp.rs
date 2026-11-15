@@ -6,11 +6,12 @@ use std::collections::HashMap;
 
 use shared::{BackendError, OrgId, Timestamp, WorkspaceId};
 
-use crate::refresh::{request_token, Refreshed};
+use crate::refresh::{request_token, HttpResponse};
 use crate::service::VaultsService;
 use crate::store::{RefreshWrite, StoreError, StoredCredential};
 use crate::types::{
-    Credential, CredentialAuthInput, CredentialAuthWire, OauthRefreshInput, SecretString, VaultId,
+    Credential, CredentialAuthInput, CredentialAuthWire, CredentialId, OauthRefreshInput, SecretString,
+    VaultId,
 };
 
 /// How long a refresh claim holds: a row updated more recently than this
@@ -25,8 +26,9 @@ pub enum Refresh {
     Token(McpToken, Box<Credential>),
     /// Another worker holds the refresh: the step runs again a second later.
     Busy,
-    /// The refresh failed; the server is not called (MC-21, MC-27).
-    Failed,
+    /// The refresh failed, with the token endpoint's answer when it gave
+    /// one; the server is not called (MC-21, MC-27).
+    Failed(Option<HttpResponse>),
 }
 
 /// What a server is called with.
@@ -36,6 +38,8 @@ pub struct McpToken {
     pub bearer: SecretString,
     /// An `mcp_oauth` token past its `expires_at`.
     pub expired: bool,
+    /// The secret it was read from, which a refresh starts from.
+    pub secret: CredentialAuthInput,
 }
 
 impl VaultsService {
@@ -72,12 +76,17 @@ impl VaultsService {
     ) -> Result<Option<McpToken>, BackendError> {
         let vault = VaultId::parse(&cred.vault_id).map_err(BackendError::new)?;
         match self.credentials.credential_secret(ws, &vault, &cred.id).await {
-            Ok(CredentialAuthInput::McpOauth { access_token, expires_at, .. }) => Ok(Some(McpToken {
-                bearer: access_token,
-                expired: expires_at.is_some_and(|at| at <= Timestamp::now()),
-            })),
-            Ok(CredentialAuthInput::StaticBearer { token, .. }) => {
-                Ok(Some(McpToken { bearer: token, expired: false }))
+            Ok(secret @ CredentialAuthInput::McpOauth { .. }) => {
+                let CredentialAuthInput::McpOauth { access_token, expires_at, .. } = &secret else {
+                    return Ok(None);
+                };
+                let (bearer, expired) =
+                    (access_token.clone(), expires_at.is_some_and(|at| at <= Timestamp::now()));
+                Ok(Some(McpToken { bearer, expired, secret }))
+            }
+            Ok(secret @ CredentialAuthInput::StaticBearer { .. }) => {
+                let CredentialAuthInput::StaticBearer { token, .. } = &secret else { return Ok(None) };
+                Ok(Some(McpToken { bearer: token.clone(), expired: false, secret }))
             }
             Ok(CredentialAuthInput::EnvironmentVariable { .. }) => Ok(None),
             Err(StoreError::CredentialNotFound) => Ok(None),
@@ -87,71 +96,99 @@ impl VaultsService {
 }
 
 impl VaultsService {
-    /// Refresh `cred`'s expired token, claimed by moving the row's
-    /// `updated_at` from what the step read, so one worker refreshes (MC-7).
+    /// Refresh `stored`'s token (the row and secret the caller read),
+    /// claimed by moving the row's `updated_at` from what was read, so one
+    /// writer refreshes (MC-7). With `hold`, a row updated in the last 30 s
+    /// is another worker's refresh in flight (MC-20).
     pub async fn refresh_mcp_oauth(
         &self,
         ws: &WorkspaceId,
         org: &OrgId,
-        cred: &Credential,
+        stored: StoredCredential,
+        hold: bool,
     ) -> Result<Refresh, BackendError> {
         let now = Timestamp::now();
-        let held = now.as_datetime() - cred.updated_at.as_datetime() < chrono::Duration::seconds(CLAIM_HOLDS);
-        if held {
+        let read = stored.wire.updated_at;
+        if hold && now.as_datetime() - read.as_datetime() < chrono::Duration::seconds(CLAIM_HOLDS) {
             return Ok(Refresh::Busy);
         }
-        let vault = VaultId::parse(&cred.vault_id).map_err(BackendError::new)?;
-        let claimed = self
-            .credentials
-            .claim_refresh(ws, &vault, &cred.id, cred.updated_at, now)
-            .await
-            .map_err(BackendError::new)?;
-        let stored = match self.credentials.get_credential(ws, &vault, &cred.id).await {
-            Ok(stored) => stored,
-            Err(StoreError::CredentialNotFound) => return Ok(Refresh::Failed),
-            Err(e) => return Err(BackendError::new(e)),
-        };
-        let Some(CredentialAuthInput::McpOauth { mcp_server_url, expires_at, refresh, access_token }) =
-            stored.auth
-        else {
-            return Ok(Refresh::Failed);
-        };
-        let fresh = expires_at.is_none_or(|at| at > Timestamp::now());
-        if !claimed {
-            // Another worker's claim (MC-23): its token, once it is stored.
-            let token = McpToken { bearer: access_token, expired: false };
-            return Ok(if fresh { Refresh::Token(token, Box::new(stored.wire)) } else { Refresh::Busy });
+        let vault = VaultId::parse(&stored.wire.vault_id).map_err(BackendError::new)?;
+        let id = stored.wire.id.clone();
+        if !self.credentials.claim_refresh(ws, &vault, &id, read, now).await.map_err(BackendError::new)? {
+            return self.claimed_elsewhere(ws, &vault, &id).await;
         }
-        let (Some(refresh), Some(mcp)) = (refresh, &self.mcp) else { return Ok(Refresh::Failed) };
-        let Refreshed::Token { access_token, expires_at, refresh_token } =
-            request_token(&mcp.guard, &refresh).await
-        else {
-            self.credentials.refresh_failed(ws, org, &vault, &cred.id).await.map_err(BackendError::new)?;
-            return Ok(Refresh::Failed);
+        let refresh = match &stored.auth {
+            Some(CredentialAuthInput::McpOauth { refresh: Some(r), .. }) => r.clone(),
+            _ => return Ok(Refresh::Failed(None)),
         };
-        let refresh = OauthRefreshInput {
-            refresh_token: refresh_token.unwrap_or(refresh.refresh_token.clone()),
-            ..refresh
+        let Some(mcp) = &self.mcp else { return Ok(Refresh::Failed(None)) };
+        let token = request_token(&mcp.guard, &refresh).await;
+        let Some(written) = refreshed(stored, token.clone_token()) else {
+            self.credentials.refresh_failed(ws, org, &vault, &id).await.map_err(BackendError::new)?;
+            return Ok(Refresh::Failed(token.refusal()));
         };
-        let auth = CredentialAuthInput::McpOauth {
-            mcp_server_url,
-            access_token: access_token.clone(),
-            expires_at,
-            refresh: Some(refresh),
-        };
-        let mut wire = stored.wire;
-        wire.auth = auth.to_wire();
-        wire.updated_at = Timestamp::now();
-        let written = StoredCredential { wire: wire.clone(), auth: Some(auth) };
         match self.credentials.finish_refresh(ws, &vault, &written, now).await.map_err(BackendError::new)? {
             RefreshWrite::Matched => {}
             RefreshWrite::Changed => {
-                tracing::warn!(credential = %wire.id, "refresh_overwrote_update: an update came during the refresh");
+                tracing::warn!(credential = %id, "refresh_overwrote_update: an update came during the refresh");
             }
-            RefreshWrite::Gone => return Ok(Refresh::Failed),
+            RefreshWrite::Gone => return Ok(Refresh::Failed(None)),
         }
-        Ok(Refresh::Token(McpToken { bearer: access_token, expired: false }, Box::new(wire)))
+        let Some(secret) = written.auth.clone() else { return Ok(Refresh::Failed(None)) };
+        let CredentialAuthInput::McpOauth { access_token, .. } = &secret else {
+            return Ok(Refresh::Failed(None));
+        };
+        let token = McpToken { bearer: access_token.clone(), expired: false, secret: secret.clone() };
+        Ok(Refresh::Token(token, Box::new(written.wire)))
     }
+
+    /// Another writer's claim won (MC-23): its token once it is stored and
+    /// fresh, else the step waits.
+    async fn claimed_elsewhere(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<Refresh, BackendError> {
+        let stored = match self.credentials.get_credential(ws, vault, id).await {
+            Ok(stored) => stored,
+            Err(StoreError::CredentialNotFound) => return Ok(Refresh::Failed(None)),
+            Err(e) => return Err(BackendError::new(e)),
+        };
+        let Some(secret @ CredentialAuthInput::McpOauth { .. }) = stored.auth else {
+            return Ok(Refresh::Failed(None));
+        };
+        let CredentialAuthInput::McpOauth { access_token, expires_at, .. } = &secret else {
+            return Ok(Refresh::Failed(None));
+        };
+        if expires_at.is_some_and(|at| at <= Timestamp::now()) {
+            return Ok(Refresh::Busy);
+        }
+        let token = McpToken { bearer: access_token.clone(), expired: false, secret: secret.clone() };
+        Ok(Refresh::Token(token, Box::new(stored.wire)))
+    }
+}
+
+/// `stored` with a token endpoint's new token: the access token, its expiry
+/// and a rotated refresh token, the stored refresh token kept when none came.
+fn refreshed(
+    mut stored: StoredCredential,
+    token: Option<(SecretString, Option<Timestamp>, Option<SecretString>)>,
+) -> Option<StoredCredential> {
+    let (access_token, expires_at, rotated) = token?;
+    let Some(CredentialAuthInput::McpOauth { mcp_server_url, refresh: Some(refresh), .. }) =
+        stored.auth.take()
+    else {
+        return None;
+    };
+    let refresh =
+        OauthRefreshInput { refresh_token: rotated.unwrap_or(refresh.refresh_token.clone()), ..refresh };
+    let auth =
+        CredentialAuthInput::McpOauth { mcp_server_url, access_token, expires_at, refresh: Some(refresh) };
+    stored.wire.auth = auth.to_wire();
+    stored.wire.updated_at = Timestamp::now();
+    stored.auth = Some(auth);
+    Some(stored)
 }
 
 fn server_url(cred: &Credential) -> Option<String> {

@@ -5,6 +5,7 @@ use serde_json::Value;
 use sessions::mcp::McpConnection;
 use shared::BackendError;
 use vaults::mcp::Refresh;
+use vaults::store::StoredCredential;
 use vaults::types::CredentialAuthWire;
 
 use super::super::client::{Failure, Rpc};
@@ -26,7 +27,8 @@ impl Servers {
             return Ok(Ok(Some(token.bearer.expose().to_owned())));
         }
         let Some(org) = self.org.clone() else { return Ok(Err(Failure::Refresh)) };
-        match mcp.vaults.refresh_mcp_oauth(&self.ws, &org, &cred).await? {
+        let read = StoredCredential { wire: cred, auth: Some(token.secret) };
+        match mcp.vaults.refresh_mcp_oauth(&self.ws, &org, read, true).await? {
             Refresh::Token(token, wire) => {
                 if let Some(s) = self.list.get_mut(i) {
                     s.credential = Some(*wire);
@@ -37,7 +39,7 @@ impl Servers {
                 self.deferred = true;
                 Ok(Err(Failure::Busy))
             }
-            Refresh::Failed => Ok(Err(Failure::Refresh)),
+            Refresh::Failed(_) => Ok(Err(Failure::Refresh)),
         }
     }
 

@@ -69,6 +69,26 @@ pub enum Refreshed {
     Failed(Option<HttpResponse>),
 }
 
+impl Refreshed {
+    /// The new token, its expiry and a rotated refresh token, when it came.
+    pub fn clone_token(&self) -> Option<(SecretString, Option<Timestamp>, Option<SecretString>)> {
+        match self {
+            Self::Token { access_token, expires_at, refresh_token } => {
+                Some((access_token.clone(), *expires_at, refresh_token.clone()))
+            }
+            Self::Failed(_) => None,
+        }
+    }
+
+    /// The endpoint's refusal, when it answered one.
+    pub fn refusal(&self) -> Option<HttpResponse> {
+        match self {
+            Self::Failed(answer) => answer.clone(),
+            Self::Token { .. } => None,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct TokenBody {
     access_token: SecretString,

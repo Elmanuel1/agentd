@@ -7,8 +7,10 @@ use async_trait::async_trait;
 use serde::Serialize;
 use shared::{ApiError, AuthContext, Timestamp};
 
-use crate::refresh::{request_token, HttpResponse, Refreshed};
+use crate::mcp::Refresh;
+use crate::refresh::HttpResponse;
 use crate::service::{map_store, parse_pair, VaultsService};
+use crate::store::StoreError;
 use crate::types::CredentialAuthInput;
 
 /// What a server answered to `initialize`.
@@ -78,8 +80,7 @@ impl VaultsService {
         raw_cred_id: &str,
     ) -> Result<Validation, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
-        let mut stored =
-            self.credentials.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
+        let stored = self.credentials.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
         let Some(CredentialAuthInput::McpOauth { mcp_server_url, access_token, refresh, .. }) =
             stored.auth.clone()
         else {
@@ -105,32 +106,20 @@ impl VaultsService {
             }
             Probed::Refused(http_response) => {
                 v.mcp_probe = report(Some(http_response));
-                let (status, outcome) = match &refresh {
+                let (status, outcome) = match refresh {
                     None => ("invalid", RefreshReport { http_response: None, status: "no_refresh_token" }),
-                    Some(r) => match request_token(&probe.guard, r).await {
-                        Refreshed::Token { access_token, expires_at, refresh_token } => {
-                            stored.auth = Some(CredentialAuthInput::McpOauth {
-                                mcp_server_url,
-                                access_token,
-                                expires_at,
-                                refresh: Some(crate::types::OauthRefreshInput {
-                                    refresh_token: refresh_token.unwrap_or_else(|| r.refresh_token.clone()),
-                                    ..r.clone()
-                                }),
-                            });
-                            if let Some(auth) = &stored.auth {
-                                stored.wire.auth = auth.to_wire();
-                            }
-                            stored.wire.updated_at = Timestamp::now();
-                            self.credentials
-                                .replace_credential(&ctx.workspace, &vid, stored)
-                                .await
-                                .map_err(map_store)?;
+                    Some(_) => match self
+                        .refresh_mcp_oauth(&ctx.workspace, &ctx.org, stored, false)
+                        .await
+                        .map_err(|e| map_store(StoreError::Backend(e)))?
+                    {
+                        Refresh::Token(..) => {
                             ("unknown", RefreshReport { http_response: None, status: "succeeded" })
                         }
-                        Refreshed::Failed(http_response) => {
+                        Refresh::Failed(http_response) => {
                             ("invalid", RefreshReport { http_response, status: "failed" })
                         }
+                        Refresh::Busy => ("unknown", RefreshReport { http_response: None, status: "failed" }),
                     },
                 };
                 v.status = status;
