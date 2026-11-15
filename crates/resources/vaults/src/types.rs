@@ -104,10 +104,11 @@ pub struct CreateVaultRequest {
 }
 
 mod auth;
+mod wire;
 pub use auth::{
-    CredentialAuthInput, CredentialAuthWire, CredentialNetworking, InjectionLocation, OauthRefreshInput,
-    OauthRefreshWire, TokenEndpointAuthInput, TokenEndpointAuthWire, TokenEndpointMethod,
+    CredentialAuthInput, CredentialNetworking, InjectionLocation, OauthRefreshInput, TokenEndpointAuthInput,
 };
+pub use wire::{CredentialAuthWire, OauthRefreshWire, TokenEndpointAuthWire, TokenEndpointMethod};
 
 /// Constant `"type":"vault_credential"`; a doc stored with agentd's earlier
 /// `"credential"` still reads.
