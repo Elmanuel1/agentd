@@ -170,7 +170,10 @@ impl SessionsService {
             s.archived_at = Some(Timestamp::now());
             s.status = SessionStatus::Terminated;
             s.updated_at = Timestamp::now();
-            self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
+            let kind = webhooks::EventKind::SessionTerminated;
+            let sent =
+                self.webhooks.deliveries(ctx.org.as_str(), ctx.workspace.as_str(), kind, s.id.as_str());
+            self.store.archive(&ctx.workspace, &read, s.clone(), &sent).await.map_err(map_store)?;
             // Every replica's streams of the session end.
             self.publish(&ctx.workspace, &id).await;
         }

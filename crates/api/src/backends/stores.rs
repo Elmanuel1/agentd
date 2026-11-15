@@ -21,7 +21,6 @@ use store_postgres::{
     PgSkillVersionsStore, PgSkillsStore, PgSteps, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
 };
 use vaults::{VaultCredentialStore, VaultStore};
-use webhooks::Webhooks;
 use work::{WorkReads, WorkStore};
 
 /// The entity stores.
@@ -78,18 +77,7 @@ impl std::fmt::Debug for Stores {
 impl Stores {
     /// Every store on Postgres, with bytes in `blobs` and secrets in `secrets`.
     pub fn postgres(backend: PgBackend, blobs: Arc<dyn BlobStore>, secrets: Arc<dyn SecretStore>) -> Self {
-        Self::postgres_sending(backend, blobs, secrets, &Arc::default())
-    }
-
-    /// [`Stores::postgres`], whose session status changes and vault
-    /// lifecycle writes send `hooks`' webhooks in their commits.
-    pub fn postgres_sending(
-        backend: PgBackend,
-        blobs: Arc<dyn BlobStore>,
-        secrets: Arc<dyn SecretStore>,
-        hooks: &Arc<Webhooks>,
-    ) -> Self {
-        let vaults = Arc::new(PgVaultsStore::new(backend.clone(), secrets).with_webhooks(hooks.clone()));
+        let vaults = Arc::new(PgVaultsStore::new(backend.clone(), secrets));
         let work = Arc::new(PgWorkStore::new(backend.clone()));
         let events = Arc::new(PgSessionEventLog::new(backend.clone()));
         Self {
@@ -101,7 +89,7 @@ impl Stores {
             files: Arc::new(PgFilesStore::new(backend.clone(), blobs.clone())),
             skills: Arc::new(PgSkillsStore::new(backend.clone(), blobs.clone())),
             skill_versions: Arc::new(PgSkillVersionsStore::new(backend.clone(), blobs)),
-            sessions: Arc::new(PgSessionsStore::new(backend.clone()).with_webhooks(hooks.clone())),
+            sessions: Arc::new(PgSessionsStore::new(backend.clone())),
             session_events: events.clone(),
             session_event_list: events,
             deployments: Arc::new(PgDeploymentsStore::new(backend.clone())),
@@ -111,7 +99,7 @@ impl Stores {
             admin_keys: Arc::new(PgAdminKeysStore::new(backend.clone())),
             work: work.clone(),
             work_reads: work,
-            steps: Arc::new(PgSteps::new(backend.clone()).with_webhooks(hooks.clone())),
+            steps: Arc::new(PgSteps::new(backend.clone())),
             mcp_connections: Arc::new(PgMcpConnections::new(backend)),
         }
     }

@@ -11,13 +11,14 @@ use diesel::sql_types::{Jsonb, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, QueryableByName};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use shared::{OrgId, Timestamp, WorkspaceId};
+use shared::{Timestamp, WorkspaceId};
 
 use super::PgVaultsStore;
 use crate::entities::webhook_deliveries::insert_deliveries;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be, to_doc};
-use webhooks::EventKind;
+use ::vaults::store::Cascade;
+use webhooks::Delivery;
 
 #[derive(QueryableByName)]
 struct Touched {
@@ -47,9 +48,9 @@ impl PgVaultsStore {
     pub(super) async fn archive_cascade(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         id: &VaultId,
         at: Timestamp,
+        sent: &Cascade<'_>,
     ) -> Result<Vault, StoreError> {
         let stamp =
             serde_json::to_value(at).map_err(|e| StoreError::Backend(shared::BackendError::new(e)))?;
@@ -88,16 +89,8 @@ impl PgVaultsStore {
                     .bind::<Jsonb, _>(&stamp)
                     .load(c)
                     .await?;
-                    // One vault.archived, and one vault_credential.archived per credential (B29).
-                    let vault_id = id.as_str().to_owned();
-                    let mut facts = vec![(EventKind::VaultArchived, vault_id.clone())];
-                    facts.extend(archived.iter().map(|t| {
-                        (
-                            EventKind::CredentialArchived { vault_id: vault_id.clone() },
-                            t.credential_id.clone(),
-                        )
-                    }));
-                    insert_deliveries(c, &self.facts(org, ws, facts)).await?;
+                    let ids: Vec<String> = archived.iter().map(|t| t.credential_id.clone()).collect();
+                    insert_deliveries(c, &sent(&ids)).await?;
                     Ok(Ok((vault, archived)))
                 }
                 .scope_boxed()
@@ -113,11 +106,9 @@ impl PgVaultsStore {
     pub(super) async fn delete_cascade(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         id: &VaultId,
+        sent: &[Delivery],
     ) -> Result<Vault, StoreError> {
-        // One vault.deleted; whether live adds one per credential is B30's probe.
-        let facts = self.facts(org, ws, vec![(EventKind::VaultDeleted, id.as_str().to_owned())]);
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let (doc, deleted) = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
@@ -137,7 +128,7 @@ impl PgVaultsStore {
                         .filter(vaults::vault_id.eq(id.as_str()))
                         .execute(c)
                         .await?;
-                    insert_deliveries(c, &facts).await?;
+                    insert_deliveries(c, sent).await?;
                     Ok(Ok((doc, deleted)))
                 }
                 .scope_boxed()

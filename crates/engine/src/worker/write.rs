@@ -3,9 +3,10 @@
 //! Every replica's streams are told after each.
 
 use sessions::signals::Signal;
-use sessions::steps::{Claim, StepEnd, StepWrite};
+use sessions::steps::{Claim, StatusNotice, StepEnd, StepWrite};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
+use webhooks::EventKind;
 
 use super::turn::Batch;
 use super::Loop;
@@ -18,7 +19,15 @@ impl Loop {
         to: Option<SessionStatus>,
     ) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
+        let notice = self.notice(claim);
+        let w = StepWrite {
+            read: &b.read,
+            at: b.at,
+            events: &b.events,
+            engine: &b.engine,
+            session: &change,
+            notice: notice.as_deref(),
+        };
         crate::metrics::appended(&b.events);
         let wrote = self
             .stores
@@ -44,10 +53,37 @@ impl Loop {
             s.outcome_evaluations = after.outcome_evaluations.clone();
             true
         };
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
+        let notice = self.notice(claim);
+        let w = StepWrite {
+            read: &b.read,
+            at: b.at,
+            events: &b.events,
+            engine: &b.engine,
+            session: &change,
+            notice: notice.as_deref(),
+        };
         crate::metrics::appended(&b.events);
         let done = self.stores.steps.commit(claim, end, w).await.map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(done)
+    }
+
+    /// The deliveries a status change of `claim`'s session sends, when any
+    /// endpoint is configured (H-1).
+    fn notice(&self, claim: &Claim) -> Option<Box<StatusNotice<'_>>> {
+        let hooks = &self.stores.webhooks;
+        if hooks.is_empty() {
+            return None;
+        }
+        let (ws, id) = (claim.workspace.clone(), claim.session.clone());
+        Some(Box::new(move |org: &str, status: SessionStatus| {
+            let kind = match status {
+                SessionStatus::Running => EventKind::SessionRunStarted,
+                SessionStatus::Idle => EventKind::SessionIdled,
+                SessionStatus::Terminated => EventKind::SessionTerminated,
+                SessionStatus::Rescheduling => return Vec::new(),
+            };
+            hooks.deliveries(org, ws.as_str(), kind, id.as_str())
+        }))
     }
 }

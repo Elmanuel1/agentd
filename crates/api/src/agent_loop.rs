@@ -66,7 +66,8 @@ pub async fn spawn(
             system.api_base_url.clone(),
         )),
         files: Arc::new(FilesService::new(stores.files.clone())),
-        mcp: mcp(stores, shared::net::Guard::default()),
+        mcp: mcp(stores, shared::net::Guard::default(), &config.webhooks),
+        webhooks: config.webhooks.clone(),
     };
     let settings = Settings {
         owner: format!("loop-{}", uuid::Uuid::new_v4()),

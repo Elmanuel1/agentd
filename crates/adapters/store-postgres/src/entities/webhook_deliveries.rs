@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use ::sessions::types::{SessionId, SessionStatus};
+use ::sessions::types::SessionId;
 use async_trait::async_trait;
 use diesel::sql_types::{Array, BigInt, Text};
 use diesel::OptionalExtension;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{BackendError, WorkspaceId};
-use webhooks::{Delivery, DeliveryMarks, EventKind, Webhooks};
+use webhooks::{Delivery, DeliveryMarks};
 
 use crate::PgBackend;
 
@@ -43,24 +43,15 @@ struct Org {
     org_id: String,
 }
 
-/// The webhook a session's status change sends, written in its commit: the
-/// organization read from the session's work item, which every session has.
+/// The deliveries `sent` builds for a session's status change, in its
+/// commit: the organization read from the session's work item, which every
+/// session has.
 pub(crate) async fn status_changed(
     c: &mut AsyncPgConnection,
-    hooks: &Webhooks,
     ws: &WorkspaceId,
     id: &SessionId,
-    to: SessionStatus,
+    sent: impl FnOnce(&str) -> Vec<Delivery>,
 ) -> Result<(), diesel::result::Error> {
-    let kind = match to {
-        SessionStatus::Running => EventKind::SessionRunStarted,
-        SessionStatus::Idle => EventKind::SessionIdled,
-        SessionStatus::Terminated => EventKind::SessionTerminated,
-        SessionStatus::Rescheduling => return Ok(()),
-    };
-    if hooks.is_empty() {
-        return Ok(());
-    }
     let org: Option<Org> =
         diesel::sql_query("SELECT org_id FROM work_items WHERE workspace_id = $1 AND session_id = $2")
             .bind::<Text, _>(ws.as_str())
@@ -69,7 +60,7 @@ pub(crate) async fn status_changed(
             .await
             .optional()?;
     let Some(org) = org else { return Ok(()) };
-    insert_deliveries(c, &hooks.deliveries(&org.org_id, ws.as_str(), kind, id.as_str())).await
+    insert_deliveries(c, &sent(&org.org_id)).await
 }
 
 /// Write `rows` in a transaction of their own, for a change with no other

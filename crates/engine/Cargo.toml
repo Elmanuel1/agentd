@@ -13,6 +13,7 @@ work = { workspace = true }
 files = { workspace = true }
 vaults = { workspace = true }
 environments = { workspace = true }
+webhooks = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

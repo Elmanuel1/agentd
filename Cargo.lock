@@ -1328,6 +1328,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaults",
+ "webhooks",
  "work",
 ]
 
@@ -3160,6 +3161,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "webhooks",
 ]
 
 [[package]]
@@ -3931,6 +3933,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "webhooks",
  "zeroize",
 ]
 

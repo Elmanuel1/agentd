@@ -64,6 +64,8 @@ pub struct Streaming {
     pub role: Role,
     /// Where it may connect for a tenant.
     pub guard: shared::net::Guard,
+    /// The webhook endpoints its writes send to.
+    pub webhooks: Arc<webhooks::Webhooks>,
 }
 
 impl Default for Streaming {
@@ -74,6 +76,7 @@ impl Default for Streaming {
             load: Arc::new(Unloaded),
             role: Role::All,
             guard: shared::net::Guard::default(),
+            webhooks: Arc::default(),
         }
     }
 }
@@ -103,6 +106,7 @@ fn app(
         load: streaming.load,
         role: streaming.role,
         guard: streaming.guard,
+        webhooks: streaming.webhooks,
     };
     build_router(AppState::build(backends).unwrap())
 }

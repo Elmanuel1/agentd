@@ -12,6 +12,8 @@ use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Timestamp};
 
+use webhooks::EventKind;
+
 use crate::service::{map_store, parse_pair, parse_vault_id, VaultsService};
 use crate::store::StoredCredential;
 use crate::types::{
@@ -60,12 +62,14 @@ impl VaultsService {
             updated_at: now,
             vault_id: vault_id.as_str().to_owned(),
         };
+        let kind = EventKind::CredentialCreated { vault_id: vault_id.as_str().to_owned() };
+        let sent = self.notice(&ctx.org, &ctx.workspace, kind, cred.id.as_str());
         self.credentials
             .insert_credential(
                 &ctx.workspace,
-                &ctx.org,
                 &vault_id,
                 StoredCredential { wire: cred.clone(), auth: Some(auth) },
+                &sent,
             )
             .await
             .map_err(map_store)?;
@@ -116,7 +120,17 @@ impl VaultsService {
             stored.wire.updated_at = Timestamp::now();
             stored.auth = None; // secret purged
             self.credentials
-                .archive_credential(&ctx.workspace, &ctx.org, &vid, stored.clone())
+                .archive_credential(
+                    &ctx.workspace,
+                    &vid,
+                    stored.clone(),
+                    &self.notice(
+                        &ctx.org,
+                        &ctx.workspace,
+                        EventKind::CredentialArchived { vault_id: vid.as_str().to_owned() },
+                        cid.as_str(),
+                    ),
+                )
                 .await
                 .map_err(map_store)?;
         }
@@ -132,7 +146,17 @@ impl VaultsService {
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
         self.credentials
-            .delete_credential(&ctx.workspace, &ctx.org, &vid, &cid)
+            .delete_credential(
+                &ctx.workspace,
+                &vid,
+                &cid,
+                &self.notice(
+                    &ctx.org,
+                    &ctx.workspace,
+                    EventKind::CredentialDeleted { vault_id: vid.as_str().to_owned() },
+                    cid.as_str(),
+                ),
+            )
             .await
             .map(|c| c.wire)
             .map_err(map_store)

@@ -13,6 +13,7 @@ use crate::types::{
     Credential, CredentialAuthInput, CredentialAuthWire, CredentialId, OauthRefreshInput, SecretString,
     VaultId,
 };
+use webhooks::EventKind;
 
 /// How long a refresh claim holds: a row updated more recently than this
 /// is another worker's refresh in flight (MC-20).
@@ -128,7 +129,11 @@ impl VaultsService {
         let Some(mcp) = &self.mcp else { return Ok(Refresh::Failed(None)) };
         let token = request_token(&mcp.guard, &refresh).await;
         let Some(written) = refreshed(stored, token.clone_token()) else {
-            self.credentials.refresh_failed(ws, org, &vault, &id).await.map_err(BackendError::new)?;
+            let kind = EventKind::CredentialRefreshFailed { vault_id: vault.as_str().to_owned() };
+            self.credentials
+                .send(&self.notice(org, ws, kind, id.as_str()))
+                .await
+                .map_err(BackendError::new)?;
             return Ok(Refresh::Failed(token.refusal()));
         };
         match self.credentials.write_claimed(ws, &vault, &written, now).await.map_err(BackendError::new)? {

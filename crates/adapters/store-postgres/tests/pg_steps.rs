@@ -172,6 +172,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 events: std::slice::from_ref(&start),
                 engine: &[],
                 session: &running,
+                notice: None,
             },
         )
         .await
@@ -190,6 +191,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 events: std::slice::from_ref(&last),
                 engine: &[],
                 session: &unchanged,
+                notice: None,
             },
         )
         .await
@@ -223,7 +225,14 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
         .write(
             &first,
             60,
-            StepWrite { read: &[], at: Timestamp::now(), events: none, engine: &[], session: &unchanged }
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: none,
+                engine: &[],
+                session: &unchanged,
+                notice: None
+            }
         )
         .await
         .unwrap());
@@ -232,7 +241,14 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
         .commit(
             &first,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: none, engine: &[], session: &unchanged }
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: none,
+                engine: &[],
+                session: &unchanged,
+                notice: None
+            }
         )
         .await
         .unwrap());
@@ -246,7 +262,8 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                 at: Timestamp::now(),
                 events: &[reply()],
                 engine: &[],
-                session: &unchanged
+                session: &unchanged,
+                notice: None
             }
         )
         .await
@@ -278,7 +295,8 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                 at: Timestamp::now(),
                 events: &[reply()],
                 engine: &[],
-                session: &unchanged
+                session: &unchanged,
+                notice: None
             }
         )
         .await
@@ -290,7 +308,14 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
         .commit(
             &next,
             StepEnd::Again,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged }
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[],
+                engine: &[],
+                session: &unchanged,
+                notice: None
+            }
         )
         .await
         .unwrap());
@@ -320,7 +345,8 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
                 at: Timestamp::now(),
                 events: &[reply()],
                 engine: &[],
-                session: &unchanged
+                session: &unchanged,
+                notice: None
             }
         )
         .await
@@ -360,7 +386,14 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
         .commit(
             &held,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged },
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[],
+                engine: &[],
+                session: &unchanged,
+                notice: None,
+            },
         )
         .await
         .unwrap();
@@ -415,6 +448,7 @@ async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() 
                 events: &[reply()],
                 engine: &[],
                 session: &unchanged,
+                notice: None,
             },
         )
         .await
@@ -447,7 +481,14 @@ async fn the_counts_see_due_and_leased_steps() {
         .commit(
             &c,
             StepEnd::Done,
-            StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged },
+            StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[],
+                engine: &[],
+                session: &unchanged,
+                notice: None,
+            },
         )
         .await
         .unwrap();
@@ -497,7 +538,14 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
     .bind::<diesel::sql_types::Text, _>(c.id.as_str());
     let due: DueIn = diesel_async::RunQueryDsl::get_result(q, &mut *conn).await.unwrap();
     assert!(due.seconds > 50, "a step deferred for a minute stays deferred: {}s", due.seconds);
-    let w = StepWrite { read: &[], at: Timestamp::now(), events: &[], engine: &[], session: &unchanged };
+    let w = StepWrite {
+        read: &[],
+        at: Timestamp::now(),
+        events: &[],
+        engine: &[],
+        session: &unchanged,
+        notice: None,
+    };
     r.steps.commit(&held, StepEnd::Done, w).await.unwrap();
 }
 
@@ -519,6 +567,7 @@ async fn what_a_step_keeps_beside_an_event_only_the_engine_read_returns() {
         events: std::slice::from_ref(&said),
         engine: &kept,
         session: &unchanged,
+        notice: None,
     };
     r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
     let read = r.log.engine_events(&ws, &s.id).await.unwrap();
@@ -559,6 +608,7 @@ async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
             events: std::slice::from_ref(&event),
             engine: &engine,
             session: &unchanged,
+            notice: None,
         };
         ends.push(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
     }

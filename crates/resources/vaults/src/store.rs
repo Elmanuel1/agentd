@@ -5,7 +5,8 @@
 //! [`Credential`] projection ever leaves through the service.
 
 use async_trait::async_trait;
-use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
+use webhooks::Delivery;
 
 use crate::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
 
@@ -51,28 +52,40 @@ pub enum ClaimedWrite {
     Gone,
 }
 
+/// The deliveries a vault's archive sends, from the ids of the credentials it
+/// archives.
+pub type Cascade<'a> = dyn Fn(&[String]) -> Vec<Delivery> + Send + Sync + 'a;
+
 /// Persistence port for vault rows.
 #[async_trait]
 pub trait VaultStore: Send + Sync {
     /// Insert a vault.
-    async fn insert_vault(&self, ws: &WorkspaceId, org: &OrgId, vault: Vault) -> Result<(), StoreError>;
+    /// Insert a vault and `sent`, its webhook deliveries, in one transaction.
+    async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault, sent: &[Delivery])
+        -> Result<(), StoreError>;
     /// Fetch a vault.
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// Replace a vault.
     async fn replace_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError>;
     /// The vaults of `ids` that exist in the workspace, in one read.
     async fn named_vaults(&self, ws: &WorkspaceId, ids: &[VaultId]) -> Result<Vec<Vault>, StoreError>;
-    /// Archive a vault and its unarchived credentials, purging their secrets;
+    /// Archive a vault and its unarchived credentials, purging their secrets,
+    /// with the deliveries `sent` builds from the archived credentials' ids;
     /// an archived vault is answered as it is.
     async fn archive_vault(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         id: &VaultId,
         at: Timestamp,
+        sent: &Cascade<'_>,
     ) -> Result<Vault, StoreError>;
-    /// Delete a vault and its credentials, purging their secrets.
-    async fn delete_vault(&self, ws: &WorkspaceId, org: &OrgId, id: &VaultId) -> Result<Vault, StoreError>;
+    /// Delete a vault and its credentials, purging their secrets, with `sent`.
+    async fn delete_vault(
+        &self,
+        ws: &WorkspaceId,
+        id: &VaultId,
+        sent: &[Delivery],
+    ) -> Result<Vault, StoreError>;
     /// All vaults, newest first.
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
 }
@@ -85,9 +98,9 @@ pub trait VaultCredentialStore: Send + Sync {
     async fn insert_credential(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
+        sent: &[Delivery],
     ) -> Result<(), StoreError>;
     /// Fetch one credential.
     async fn get_credential(
@@ -100,17 +113,17 @@ pub trait VaultCredentialStore: Send + Sync {
     async fn archive_credential(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
+        sent: &[Delivery],
     ) -> Result<(), StoreError>;
-    /// Delete one credential.
+    /// Delete one credential, with `sent` when a row was deleted.
     async fn delete_credential(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         id: &CredentialId,
+        sent: &[Delivery],
     ) -> Result<StoredCredential, StoreError>;
     /// All credentials in a vault.
     async fn list_credentials(
@@ -152,14 +165,8 @@ pub trait VaultCredentialStore: Send + Sync {
         cred: &StoredCredential,
         claimed: Timestamp,
     ) -> Result<ClaimedWrite, StoreError>;
-    /// Send `vault_credential.refresh_failed` for credential `id` (H-5).
-    async fn refresh_failed(
-        &self,
-        ws: &WorkspaceId,
-        org: &OrgId,
-        vault: &VaultId,
-        id: &CredentialId,
-    ) -> Result<(), StoreError>;
+    /// Write `sent`, deliveries of a change with no row to write beside them.
+    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError>;
     /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
     async fn environment_credentials(
         &self,

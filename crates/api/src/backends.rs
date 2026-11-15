@@ -62,6 +62,8 @@ pub struct Backends {
     pub role: Role,
     /// Where agentd itself may connect for a tenant: MCP servers, token endpoints.
     pub guard: shared::net::Guard,
+    /// Each organization's webhook endpoints.
+    pub webhooks: Arc<webhooks::Webhooks>,
 }
 
 /// The deployment's own keys, from its configuration.
@@ -137,7 +139,7 @@ impl Backends {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
                 let hooks = config.webhooks.clone();
-                let outside = postgres::Outside { blobs, secrets: secrets.clone(), hooks: hooks.clone() };
+                let outside = postgres::Outside { blobs, secrets: secrets.clone() };
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
                 let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
@@ -181,6 +183,7 @@ impl Backends {
             load,
             role,
             guard: shared::net::Guard::default(),
+            webhooks: config.webhooks.clone(),
         })
     }
 }

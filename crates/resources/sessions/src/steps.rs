@@ -31,6 +31,11 @@ pub struct Claim {
 /// Changes a step makes to its session's row; `false` when nothing changed.
 pub type SessionChange<'a> = dyn Fn(&mut Session) -> bool + Send + Sync + 'a;
 
+/// The webhook deliveries of the session's status becoming the given one,
+/// for the given organization.
+pub type StatusNotice<'a> =
+    dyn Fn(&str, crate::types::SessionStatus) -> Vec<webhooks::Delivery> + Send + Sync + 'a;
+
 /// What one write of a held step lands, in one transaction.
 pub struct StepWrite<'a> {
     /// The client events the step read, stamped processed at `at`.
@@ -44,6 +49,8 @@ pub struct StepWrite<'a> {
     pub engine: &'a [(EventId, serde_json::Value)],
     /// What it changes on the session's row.
     pub session: &'a SessionChange<'a>,
+    /// The deliveries a status change sends, when any endpoint is configured.
+    pub notice: Option<&'a StatusNotice<'a>>,
 }
 
 impl std::fmt::Debug for StepWrite<'_> {

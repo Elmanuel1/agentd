@@ -52,6 +52,8 @@ pub struct Stores {
     pub files: Arc<FilesService>,
     /// The agents' MCP servers.
     pub mcp: crate::mcp::Mcp,
+    /// The endpoints a session's status changes are sent to.
+    pub webhooks: Arc<webhooks::Webhooks>,
 }
 
 /// The model a step calls.

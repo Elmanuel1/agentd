@@ -62,15 +62,18 @@ impl McpEnvironments for Environments {
     }
 }
 
-/// The loop's MCP reach over `stores`, connecting where `guard` allows.
-pub fn mcp(stores: &Stores, guard: Guard) -> Mcp {
+/// The loop's MCP reach over `stores`, connecting where `guard` allows and
+/// sending a failed refresh to `webhooks`' endpoints.
+pub fn mcp(stores: &Stores, guard: Guard, webhooks: &Arc<webhooks::Webhooks>) -> Mcp {
     Mcp {
         connections: stores.mcp_connections.clone(),
         vaults: Arc::new(
-            VaultsService::new(stores.vaults.clone(), stores.vault_credentials.clone()).with_mcp(McpReach {
-                probe: Arc::new(Probe::new(guard.clone(), MCP_TIMEOUT)),
-                guard: guard.clone(),
-            }),
+            VaultsService::new(stores.vaults.clone(), stores.vault_credentials.clone())
+                .with_mcp(McpReach {
+                    probe: Arc::new(Probe::new(guard.clone(), MCP_TIMEOUT)),
+                    guard: guard.clone(),
+                })
+                .with_webhooks(webhooks.clone()),
         ),
         environments: Arc::new(Environments {
             work: stores.work_reads.clone(),

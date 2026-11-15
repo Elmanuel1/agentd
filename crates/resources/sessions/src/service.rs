@@ -46,6 +46,8 @@ pub struct SessionsService {
     catalog: ModelCatalog,
     /// Queues and stops each session's work item; `None` queues none.
     work: Option<Arc<dyn SessionWork>>,
+    /// The endpoints an archive's termination is sent to.
+    webhooks: Arc<webhooks::Webhooks>,
 }
 
 impl std::fmt::Debug for SessionsService {
@@ -64,7 +66,16 @@ impl SessionsService {
         catalog: ModelCatalog,
     ) -> Self {
         let list_reads = events.clone();
-        Self { store, events, list_reads, deps, catalog, streams: Streams::default(), work: None }
+        Self {
+            store,
+            events,
+            list_reads,
+            deps,
+            catalog,
+            streams: Streams::default(),
+            work: None,
+            webhooks: Arc::default(),
+        }
     }
 
     /// Stream through `streams`, for every replica.
@@ -85,6 +96,13 @@ impl SessionsService {
     #[must_use]
     pub fn with_work(mut self, work: Arc<dyn SessionWork>) -> Self {
         self.work = Some(work);
+        self
+    }
+
+    /// Send an archive's `session.status_terminated` to `webhooks`' endpoints.
+    #[must_use]
+    pub fn with_webhooks(mut self, webhooks: Arc<webhooks::Webhooks>) -> Self {
+        self.webhooks = webhooks;
         self
     }
 }

@@ -250,22 +250,15 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
     }
     let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
     let app = rig.replica(&rig.stores, Streaming { signals: signals.clone(), ..Streaming::default() });
-    let mut hooked = rig.stores.clone();
-    if let Some(hooks) = hooks {
-        hooked.steps = Arc::new(store_postgres::PgSteps::new(pg.clone()).with_webhooks(hooks.clone()));
-        let vaults = Arc::new(
-            store_postgres::PgVaultsStore::new(pg.clone(), rig.secrets.clone()).with_webhooks(hooks),
-        );
-        hooked.vaults = vaults.clone();
-        hooked.vault_credentials = vaults;
-    }
+    let hooks = hooks.unwrap_or_default();
     let stores = LoopStores {
-        steps: hooked.steps.clone(),
+        steps: rig.stores.steps.clone(),
         sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
-        mcp: api::agent_loop::mcp(&hooked, guard),
+        mcp: api::agent_loop::mcp(&rig.stores, guard, &hooks),
+        webhooks: hooks,
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };

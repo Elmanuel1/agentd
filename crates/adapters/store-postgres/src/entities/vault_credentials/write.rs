@@ -11,8 +11,8 @@ use diesel::sql_types::Bool;
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use shared::{OrgId, WorkspaceId};
-use webhooks::{Delivery, EventKind};
+use shared::WorkspaceId;
+use webhooks::Delivery;
 
 use super::NewCredential;
 use crate::entities::vaults::PgVaultsStore;
@@ -24,13 +24,10 @@ impl PgVaultsStore {
     pub(super) async fn insert_locked(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
+        facts: &[Delivery],
     ) -> Result<(), StoreError> {
-        let kind = EventKind::CredentialCreated { vault_id: vault.as_str().to_owned() };
-        let facts = self.facts(org, ws, vec![(kind, cred.wire.id.as_str().to_owned())]);
-        let facts = &facts;
         let row = NewCredential {
             workspace_id: ws.as_str().to_owned(),
             vault_id: vault.as_str().to_owned(),
@@ -146,12 +143,10 @@ impl PgVaultsStore {
     pub(super) async fn delete_row(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         id: &CredentialId,
+        facts: &[Delivery],
     ) -> Result<StoredCredential, StoreError> {
-        let kind = EventKind::CredentialDeleted { vault_id: vault.as_str().to_owned() };
-        let facts = self.facts(org, ws, vec![(kind, id.as_str().to_owned())]);
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
@@ -167,7 +162,7 @@ impl PgVaultsStore {
                     .await
                     .optional()?;
                     if doc.is_some() {
-                        insert_deliveries(c, &facts).await?;
+                        insert_deliveries(c, facts).await?;
                     }
                     Ok(doc)
                 }

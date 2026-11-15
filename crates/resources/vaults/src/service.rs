@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use shared::limits::{required, validate_string_len, values};
 use shared::metadata::MetadataPolicy;
-use shared::{ApiError, AuthContext, Pagination, Timestamp};
+use shared::{ApiError, AuthContext, OrgId, Pagination, Timestamp, WorkspaceId};
+use webhooks::{Delivery, EventKind, Webhooks};
 
 use crate::store::{StoreError, VaultCredentialStore, VaultStore};
 use crate::types::{CreateVaultRequest, CredentialId, UpdateVaultRequest, Vault, VaultId, VaultTag};
@@ -16,6 +17,7 @@ pub struct VaultsService {
     pub(crate) vaults: Arc<dyn VaultStore>,
     pub(crate) credentials: Arc<dyn VaultCredentialStore>,
     pub(crate) mcp: Option<McpReach>,
+    webhooks: Arc<Webhooks>,
 }
 
 /// How the service reaches MCP servers and token endpoints itself.
@@ -42,7 +44,21 @@ impl std::fmt::Debug for VaultsService {
 impl VaultsService {
     /// Build with the vault aggregate's two ports, usually one store.
     pub fn new(vaults: Arc<dyn VaultStore>, credentials: Arc<dyn VaultCredentialStore>) -> Self {
-        Self { vaults, credentials, mcp: None }
+        Self { vaults, credentials, mcp: None, webhooks: Arc::default() }
+    }
+
+    /// The service, sending each vault and credential lifecycle event, and
+    /// each failed refresh, to `webhooks`' endpoints in the write's own
+    /// transaction (H-5, H-6).
+    #[must_use]
+    pub fn with_webhooks(mut self, webhooks: Arc<Webhooks>) -> Self {
+        self.webhooks = webhooks;
+        self
+    }
+
+    /// The deliveries of `kind` about `id` to `org`'s endpoints.
+    pub(crate) fn notice(&self, org: &OrgId, ws: &WorkspaceId, kind: EventKind, id: &str) -> Vec<Delivery> {
+        self.webhooks.deliveries(org.as_str(), ws.as_str(), kind, id)
     }
 
     /// The service, reaching MCP servers through `mcp`.
@@ -69,7 +85,8 @@ impl VaultsService {
             tag: VaultTag::Vault,
             updated_at: now,
         };
-        self.vaults.insert_vault(&ctx.workspace, &ctx.org, vault.clone()).await.map_err(map_store)?;
+        let sent = self.notice(&ctx.org, &ctx.workspace, EventKind::VaultCreated, vault.id.as_str());
+        self.vaults.insert_vault(&ctx.workspace, vault.clone(), &sent).await.map_err(map_store)?;
         Ok(vault)
     }
 
@@ -113,7 +130,14 @@ impl VaultsService {
     /// and their secrets purged (VA-3).
     pub async fn archive_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        self.vaults.archive_vault(&ctx.workspace, &ctx.org, &id, Timestamp::now()).await.map_err(map_store)
+        // One vault.archived, and one vault_credential.archived for each credential it archives (B29).
+        let cascade = |credentials: &[String]| {
+            let mut sent = self.notice(&ctx.org, &ctx.workspace, EventKind::VaultArchived, id.as_str());
+            let kind = || EventKind::CredentialArchived { vault_id: id.as_str().to_owned() };
+            sent.extend(credentials.iter().flat_map(|c| self.notice(&ctx.org, &ctx.workspace, kind(), c)));
+            sent
+        };
+        self.vaults.archive_vault(&ctx.workspace, &id, Timestamp::now(), &cascade).await.map_err(map_store)
     }
 
     /// Refuse a session that names a vault it may not use (VA-2): live's 404
@@ -136,7 +160,9 @@ impl VaultsService {
     /// `DELETE /v1/vaults/{id}`.
     pub async fn delete_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        self.vaults.delete_vault(&ctx.workspace, &ctx.org, &id).await.map_err(map_store)
+        // One vault.deleted; whether live adds one per credential is B30's probe.
+        let sent = self.notice(&ctx.org, &ctx.workspace, EventKind::VaultDeleted, id.as_str());
+        self.vaults.delete_vault(&ctx.workspace, &id, &sent).await.map_err(map_store)
     }
 }
 

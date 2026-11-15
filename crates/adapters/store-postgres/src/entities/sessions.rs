@@ -1,6 +1,7 @@
 //! `SessionsStore` on Postgres via Diesel: the session rows.
 
 mod archived;
+mod replace;
 mod terminate;
 
 use ::sessions::store::{Order, SessionFilter, SessionsStore, StoreError};
@@ -24,20 +25,12 @@ use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 #[derive(Debug, Clone)]
 pub struct PgSessionsStore {
     backend: PgBackend,
-    hooks: std::sync::Arc<webhooks::Webhooks>,
 }
 
 impl PgSessionsStore {
     /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
-        Self { backend, hooks: std::sync::Arc::default() }
-    }
-
-    /// The store, sending an archive's termination to `hooks`' endpoints.
-    #[must_use]
-    pub fn with_webhooks(mut self, hooks: std::sync::Arc<webhooks::Webhooks>) -> Self {
-        self.hooks = hooks;
-        self
+        Self { backend }
     }
 }
 
@@ -83,47 +76,17 @@ impl SessionsStore for PgSessionsStore {
     }
 
     async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
-        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let doc = to_doc(&s)?;
-        let hooks = &self.hooks;
-        // The row is locked and compared as a Session, not as raw JSON: a doc
-        // written before a field existed re-serializes differently but holds
-        // the same session.
-        let outcome = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let stored: Option<serde_json::Value> = sessions::table
-                        .filter(sessions::workspace_id.eq(ws.as_str()))
-                        .filter(sessions::session_id.eq(s.id.as_str()))
-                        .select(sessions::doc)
-                        .for_update()
-                        .first(c)
-                        .await
-                        .optional()?;
-                    let Some(stored) = stored else {
-                        return Ok(Err(StoreError::NotFound));
-                    };
-                    if serde_json::from_value::<Session>(stored).ok().as_ref() != Some(read) {
-                        return Ok(Err(StoreError::Conflict));
-                    }
-                    diesel::update(
-                        sessions::table
-                            .filter(sessions::workspace_id.eq(ws.as_str()))
-                            .filter(sessions::session_id.eq(s.id.as_str())),
-                    )
-                    .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
-                    .execute(c)
-                    .await?;
-                    if read.archived_at.is_none() && s.archived_at.is_some() {
-                        terminate::archived(c, hooks, ws, read, &s).await?;
-                    }
-                    Ok(Ok(()))
-                }
-                .scope_boxed()
-            })
-            .await
-            .map_err(diesel_be)?;
-        outcome
+        self.replace_sending(ws, read, s, &[]).await
+    }
+
+    async fn archive(
+        &self,
+        ws: &WorkspaceId,
+        read: &Session,
+        s: Session,
+        sent: &[webhooks::Delivery],
+    ) -> Result<(), StoreError> {
+        self.replace_sending(ws, read, s, sent).await
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {

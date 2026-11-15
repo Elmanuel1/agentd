@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::{OrgId, Timestamp, WorkspaceId};
-use webhooks::EventKind;
+use shared::{Timestamp, WorkspaceId};
+use webhooks::Delivery;
 
 use super::vaults::PgVaultsStore;
 use crate::schema::{credentials, vaults};
@@ -72,11 +72,11 @@ impl VaultCredentialStore for PgVaultsStore {
     async fn insert_credential(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
+        sent: &[Delivery],
     ) -> Result<(), StoreError> {
-        self.insert_locked(ws, org, vault, cred).await
+        self.insert_locked(ws, vault, cred, sent).await
     }
 
     async fn get_credential(
@@ -93,23 +93,21 @@ impl VaultCredentialStore for PgVaultsStore {
     async fn archive_credential(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
+        sent: &[Delivery],
     ) -> Result<(), StoreError> {
-        let kind = EventKind::CredentialArchived { vault_id: vault.as_str().to_owned() };
-        let facts = self.facts(org, ws, vec![(kind, cred.wire.id.as_str().to_owned())]);
-        self.replace_guarded(ws, vault, cred, &facts).await
+        self.replace_guarded(ws, vault, cred, sent).await
     }
 
     async fn delete_credential(
         &self,
         ws: &WorkspaceId,
-        org: &OrgId,
         vault: &VaultId,
         id: &CredentialId,
+        sent: &[Delivery],
     ) -> Result<StoredCredential, StoreError> {
-        self.delete_row(ws, org, vault, id).await
+        self.delete_row(ws, vault, id, sent).await
     }
 
     async fn list_credentials(
@@ -170,16 +168,8 @@ impl VaultCredentialStore for PgVaultsStore {
         self.write_claimed_row(ws, vault, cred, claimed).await
     }
 
-    async fn refresh_failed(
-        &self,
-        ws: &WorkspaceId,
-        org: &OrgId,
-        vault: &VaultId,
-        id: &CredentialId,
-    ) -> Result<(), StoreError> {
-        let kind = EventKind::CredentialRefreshFailed { vault_id: vault.as_str().to_owned() };
-        let facts = self.facts(org, ws, vec![(kind, id.as_str().to_owned())]);
-        super::webhook_deliveries::publish(&self.backend, &facts).await.map_err(StoreError::Backend)
+    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError> {
+        super::webhook_deliveries::publish(&self.backend, sent).await.map_err(StoreError::Backend)
     }
 
     async fn environment_credentials(

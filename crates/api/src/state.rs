@@ -71,13 +71,14 @@ impl AppState {
             load,
             role,
             guard,
+            webhooks,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let probe = Arc::new(engine::mcp::Probe::new(guard.clone(), MCP_PROBE_TIMEOUT));
         let vaults = VaultsService::new(stores.vaults, stores.vault_credentials.clone());
-        let vaults = Arc::new(vaults.with_mcp(McpReach { probe, guard }));
+        let vaults = Arc::new(vaults.with_mcp(McpReach { probe, guard }).with_webhooks(webhooks.clone()));
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
@@ -93,6 +94,7 @@ impl AppState {
             catalog,
         )
         .with_streams(Streams::new(signals, load))
+        .with_webhooks(webhooks)
         .with_list_reads(stores.session_event_list);
         let cloud =
             CloudVariables { source: reach.clone(), placeholders: Placeholders::new(&system.placeholders) };

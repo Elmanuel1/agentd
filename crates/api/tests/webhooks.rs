@@ -11,19 +11,13 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use common::{Auth, Rig, Streaming, KEY};
 use serde_json::{json, Value};
-use store_postgres::{PgSessionsStore, PgVaultsStore};
 use webhooks::Webhooks;
 
 /// The rig's app, its sessions and vaults sending to one endpoint of the rig's organization.
 fn sending(rig: &Rig) -> axum::Router {
     let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_c2VjcmV0"}]);
-    let hooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
-    let mut stores = rig.stores.clone();
-    stores.sessions = Arc::new(PgSessionsStore::new(rig.pg.clone()).with_webhooks(hooks.clone()));
-    let vaults = Arc::new(PgVaultsStore::new(rig.pg.clone(), rig.secrets.clone()).with_webhooks(hooks));
-    stores.vaults = vaults.clone();
-    stores.vault_credentials = vaults;
-    rig.replica(&stores, Streaming::default())
+    let webhooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
+    rig.replica(&rig.stores, Streaming { webhooks, ..Streaming::default() })
 }
 
 #[derive(diesel::QueryableByName)]
@@ -133,11 +127,7 @@ async fn a_pending_delivery_is_sent_by_a_sender_started_after_it_was_written() {
     tokio::spawn(async move { axum::serve(listener, receiver).await.ok() });
     let json = json!([{"id": "e1", "organization_id": rig.org, "url": url, "secret": "whsec_c2VjcmV0"}]);
     let hooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
-    let mut stores = rig.stores.clone();
-    let vaults =
-        Arc::new(PgVaultsStore::new(rig.pg.clone(), rig.secrets.clone()).with_webhooks(hooks.clone()));
-    (stores.vaults, stores.vault_credentials) = (vaults.clone(), vaults);
-    let app = rig.replica(&stores, Streaming::default());
+    let app = rig.replica(&rig.stores, Streaming { webhooks: hooks.clone(), ..Streaming::default() });
     let (_, vault) = common::send_to(
         &app,
         common::request("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))),
