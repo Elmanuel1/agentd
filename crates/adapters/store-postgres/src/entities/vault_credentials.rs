@@ -10,7 +10,8 @@ use diesel::dsl::sql;
 use diesel::sql_types::Bool;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::{Timestamp, WorkspaceId};
+use shared::{OrgId, Timestamp, WorkspaceId};
+use webhooks::EventKind;
 
 use super::vaults::PgVaultsStore;
 use crate::schema::{credentials, vaults};
@@ -73,10 +74,11 @@ impl VaultCredentialStore for PgVaultsStore {
     async fn insert_credential(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError> {
-        self.insert_locked(ws, vault, cred).await
+        self.insert_locked(ws, org, vault, cred).await
     }
 
     async fn get_credential(
@@ -96,29 +98,29 @@ impl VaultCredentialStore for PgVaultsStore {
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError> {
-        self.replace_guarded(ws, vault, cred).await
+        self.replace_guarded(ws, vault, cred, &[]).await
+    }
+
+    async fn archive_credential(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        vault: &VaultId,
+        cred: StoredCredential,
+    ) -> Result<(), StoreError> {
+        let kind = EventKind::CredentialArchived { vault_id: vault.as_str().to_owned() };
+        let facts = self.facts(org, ws, vec![(kind, cred.wire.id.as_str().to_owned())]);
+        self.replace_guarded(ws, vault, cred, &facts).await
     }
 
     async fn delete_credential(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError> {
-        // The secret is not read: a credential whose secret is already gone
-        // must still be deletable, and the caller returns only the wire object.
-        let (wire, _) = self.credential_row(ws, vault, id).await?;
-        diesel::delete(
-            credentials::table
-                .filter(credentials::workspace_id.eq(ws.as_str()))
-                .filter(credentials::vault_id.eq(vault.as_str()))
-                .filter(credentials::credential_id.eq(id.as_str())),
-        )
-        .execute(&mut *self.backend.diesel.write().await.map_err(pool_be)?)
-        .await
-        .map_err(diesel_be)?;
-        self.put_secret(ws, vault, id, &None).await?;
-        Ok(StoredCredential { wire, auth: None })
+        self.delete_row(ws, org, vault, id).await
     }
 
     async fn list_credentials(
@@ -177,6 +179,18 @@ impl VaultCredentialStore for PgVaultsStore {
         claimed: Timestamp,
     ) -> Result<RefreshWrite, StoreError> {
         self.finish_refresh_row(ws, vault, cred, claimed).await
+    }
+
+    async fn refresh_failed(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<(), StoreError> {
+        let kind = EventKind::CredentialRefreshFailed { vault_id: vault.as_str().to_owned() };
+        let facts = self.facts(org, ws, vec![(kind, id.as_str().to_owned())]);
+        super::webhook_deliveries::publish(&self.backend, &facts).await.map_err(StoreError::Backend)
     }
 
     async fn environment_credentials(

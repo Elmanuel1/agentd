@@ -25,7 +25,8 @@ impl Servers {
         if !token.expired || !refreshable {
             return Ok(Ok(Some(token.bearer.expose().to_owned())));
         }
-        match mcp.vaults.refresh_mcp_oauth(&self.ws, &cred).await? {
+        let Some(org) = self.org.clone() else { return Ok(Err(Failure::Refresh)) };
+        match mcp.vaults.refresh_mcp_oauth(&self.ws, &org, &cred).await? {
             Refresh::Token(token, wire) => {
                 if let Some(s) = self.list.get_mut(i) {
                     s.credential = Some(*wire);

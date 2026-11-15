@@ -25,9 +25,13 @@ use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::{SecretError, SecretStore};
 use signals_valkey::{Valkey, ValkeySignals};
-use store_postgres::{PgError, PgFireClaims, PgScheduler, ScheduleOutbox};
+use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgScheduler, ScheduleOutbox};
+use webhooks::WebhookSender;
 
 use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
+
+/// The spacing of a webhook's attempts: live retries about 31 s apart (H-3).
+const WEBHOOK_RETRY: std::time::Duration = std::time::Duration::from_secs(31);
 
 /// One backend per port.
 pub struct Backends {
@@ -132,13 +136,20 @@ impl Backends {
         let (stores, load, keys, fires, sources) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
-                let s = secrets.clone();
+                let hooks = config.webhooks.clone();
+                let outside = postgres::Outside { blobs, secrets: secrets.clone(), hooks: hooks.clone() };
                 let pg =
-                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
+                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
                 let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
                 let scheduler = PgScheduler::new(pg.backend.clone(), fires.clone());
                 let feed = feed::ChangeFeed::from_config(streams, &valkey);
-                drop(feed.spawn(vec![Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone())))]));
+                let sender =
+                    WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
+                        .map_err(BootError::Signals)?;
+                drop(feed.spawn(vec![
+                    Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone()))),
+                    Arc::new(sender),
+                ]));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys, fires, FireSources::new(scheduler, feed))

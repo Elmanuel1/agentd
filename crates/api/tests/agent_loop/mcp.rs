@@ -418,13 +418,14 @@ async fn a_refused_or_internal_token_endpoint_records_an_authentication_error() 
     for endpoint in ["/badtoken", "http://169.254.169.254/token"] {
         let (server, url, guard) = serve().await;
         let model = Scripted::new(vec![Say::Text("done")]);
-        let (app, worker_) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+        let tune = Tune { guard, hooks: Some(super::hooks(&rig)), ..Tune::default() };
+        let (app, worker_) = worker(&rig, model, tune).await;
         let env = rig.environment("cloud").await;
         let endpoint = match endpoint.starts_with('/') {
             true => url.replace("/mcp", endpoint),
             false => endpoint.to_owned(),
         };
-        let (vault, _) = expired(&rig, &url, &endpoint, 120).await;
+        let (vault, cred) = expired(&rig, &url, &endpoint, 120).await;
         let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
         send(&app, &s, message("go")).await;
         let events = events_until(&app, &s, "session.status_idle", 1).await;
@@ -433,6 +434,8 @@ async fn a_refused_or_internal_token_endpoint_records_an_authentication_error() 
         assert_eq!(errors[0]["error"]["type"], "mcp_authentication_failed_error");
         assert!(server.methods().is_empty(), "the server is not called with a dead token");
         assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+        let sent = super::webhooks_about(&cred).await;
+        assert_eq!(sent, ["vault_credential.refresh_failed"], "H-5: {endpoint}");
         drop(worker_);
     }
 }

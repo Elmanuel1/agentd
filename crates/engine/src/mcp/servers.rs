@@ -73,6 +73,7 @@ pub struct Servers {
     session: SessionId,
     list: Vec<Server>,
     deferred: bool,
+    org: Option<shared::OrgId>,
 }
 
 impl std::fmt::Debug for Servers {

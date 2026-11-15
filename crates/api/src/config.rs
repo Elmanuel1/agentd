@@ -29,6 +29,8 @@ pub struct Config {
     pub streams: StreamsConfig,
     /// What this replica runs, and the loop's settings.
     pub agent_loop: LoopConfig,
+    /// Each organization's webhook endpoints.
+    pub webhooks: std::sync::Arc<::webhooks::Webhooks>,
 }
 
 /// `AGENTD_BLOBS`.
@@ -70,7 +72,20 @@ impl Config {
         let work = WorkConfig::from_lookup(&get)?;
         let streams = StreamsConfig::from_lookup(&get)?;
         let agent_loop = LoopConfig::from_lookup(&get)?;
-        Ok(Self { addr, store, blobs, secrets, keys, telemetry, extra_models, work, streams, agent_loop })
+        let webhooks = hooks::from_lookup(&get)?;
+        Ok(Self {
+            addr,
+            store,
+            blobs,
+            secrets,
+            keys,
+            telemetry,
+            extra_models,
+            work,
+            streams,
+            agent_loop,
+            webhooks,
+        })
     }
 }
 
@@ -138,6 +153,7 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
     })
 }
 
+mod hooks;
 mod keys;
 mod role;
 mod secrets;

@@ -5,16 +5,18 @@
 //! secret written while the vault was archived or deleted never stays.
 
 use ::vaults::store::{StoreError, StoredCredential};
-use ::vaults::types::{Vault, VaultId};
+use ::vaults::types::{CredentialId, Vault, VaultId};
 use diesel::dsl::sql;
 use diesel::sql_types::Bool;
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use shared::WorkspaceId;
+use shared::{OrgId, WorkspaceId};
+use webhooks::{Delivery, EventKind};
 
 use super::NewCredential;
 use crate::entities::vaults::PgVaultsStore;
+use crate::entities::webhook_deliveries::insert_deliveries;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be, to_doc};
 
@@ -22,9 +24,13 @@ impl PgVaultsStore {
     pub(super) async fn insert_locked(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError> {
+        let kind = EventKind::CredentialCreated { vault_id: vault.as_str().to_owned() };
+        let facts = self.facts(org, ws, vec![(kind, cred.wire.id.as_str().to_owned())]);
+        let facts = &facts;
         let row = NewCredential {
             workspace_id: ws.as_str().to_owned(),
             vault_id: vault.as_str().to_owned(),
@@ -58,6 +64,7 @@ impl PgVaultsStore {
                         Some(Ok(true)) => {}
                     }
                     diesel::insert_into(credentials::table).values(row).execute(c).await?;
+                    insert_deliveries(c, facts).await?;
                     Ok(Ok(()))
                 }
                 .scope_boxed()
@@ -77,6 +84,7 @@ impl PgVaultsStore {
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: StoredCredential,
+        facts: &[Delivery],
     ) -> Result<(), StoreError> {
         let rotates = cred.auth.is_some();
         if rotates {
@@ -87,14 +95,27 @@ impl PgVaultsStore {
             .and(credentials::vault_id.eq(vault.as_str()))
             .and(credentials::credential_id.eq(cred.wire.id.as_str()));
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let affected = diesel::update(credentials::table.filter(key))
-            .filter(sql::<Bool>("doc->>'archived_at' IS NULL"))
-            .set((
-                credentials::display_name.eq(&cred.wire.display_name),
-                credentials::has_secret.eq(rotates),
-                credentials::doc.eq(to_doc(&cred.wire)?),
-            ))
-            .execute(&mut conn)
+        let doc = to_doc(&cred.wire)?;
+        let name = &cred.wire.display_name;
+        let affected = conn
+            .transaction::<_, diesel::result::Error, _>(|c| {
+                async move {
+                    let affected = diesel::update(credentials::table.filter(key))
+                        .filter(sql::<Bool>("doc->>'archived_at' IS NULL"))
+                        .set((
+                            credentials::display_name.eq(name),
+                            credentials::has_secret.eq(rotates),
+                            credentials::doc.eq(doc),
+                        ))
+                        .execute(c)
+                        .await?;
+                    if affected == 1 {
+                        insert_deliveries(c, facts).await?;
+                    }
+                    Ok(affected)
+                }
+                .scope_boxed()
+            })
             .await
             .map_err(diesel_be)?;
         if affected == 1 {
@@ -117,5 +138,39 @@ impl PgVaultsStore {
             self.put_secret(ws, vault, &cred.wire.id, &None).await?;
         }
         Err(exists.map_or(StoreError::CredentialNotFound, |_| StoreError::CredentialArchived))
+    }
+
+    /// Delete one credential with its delivery, then its secret, which a
+    /// credential whose secret is already gone does not need.
+    pub(super) async fn delete_row(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<StoredCredential, StoreError> {
+        let (wire, _) = self.credential_row(ws, vault, id).await?;
+        let kind = EventKind::CredentialDeleted { vault_id: vault.as_str().to_owned() };
+        let facts = self.facts(org, ws, vec![(kind, id.as_str().to_owned())]);
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        conn.transaction::<_, diesel::result::Error, _>(|c| {
+            async move {
+                diesel::delete(
+                    credentials::table
+                        .filter(credentials::workspace_id.eq(ws.as_str()))
+                        .filter(credentials::vault_id.eq(vault.as_str()))
+                        .filter(credentials::credential_id.eq(id.as_str())),
+                )
+                .execute(c)
+                .await?;
+                insert_deliveries(c, &facts).await
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(diesel_be)?;
+        drop(conn);
+        self.put_secret(ws, vault, id, &None).await?;
+        Ok(StoredCredential { wire, auth: None })
     }
 }

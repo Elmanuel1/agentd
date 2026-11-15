@@ -10,6 +10,8 @@ use async_trait::async_trait;
 use diesel::sql_types::Text;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::WorkspaceId;
+use std::sync::Arc;
+use webhooks::Webhooks;
 
 use crate::{diesel_be, pool_be, PgBackend};
 
@@ -17,12 +19,20 @@ use crate::{diesel_be, pool_be, PgBackend};
 #[derive(Debug, Clone)]
 pub struct PgSteps {
     backend: PgBackend,
+    hooks: Arc<Webhooks>,
 }
 
 impl PgSteps {
     /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
-        Self { backend }
+        Self { backend, hooks: Arc::default() }
+    }
+
+    /// The steps, sending each status change to `hooks`' endpoints.
+    #[must_use]
+    pub fn with_webhooks(mut self, hooks: Arc<Webhooks>) -> Self {
+        self.hooks = hooks;
+        self
     }
 }
 
@@ -79,11 +89,11 @@ impl Steps for PgSteps {
     }
 
     async fn write(&self, claim: &Claim, lease: i64, write: StepWrite<'_>) -> Result<bool, StoreError> {
-        held::write(&self.backend, claim, lease, write).await
+        held::write(&self.backend, &self.hooks, claim, lease, write).await
     }
 
     async fn commit(&self, claim: &Claim, end: StepEnd, write: StepWrite<'_>) -> Result<bool, StoreError> {
-        held::commit(&self.backend, claim, end, write).await
+        held::commit(&self.backend, &self.hooks, claim, end, write).await
     }
 
     async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError> {

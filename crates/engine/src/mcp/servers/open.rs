@@ -39,11 +39,13 @@ impl Mcp {
             session: session.id.clone(),
             list: Vec::new(),
             deferred: false,
+            org: None,
         };
         if agent.config.mcp_servers.is_empty() {
             return Ok(servers);
         }
         let env = self.environments.config(ws, session.id.as_str(), &session.environment_id).await?;
+        servers.org = Some(self.environments.org(ws, session.id.as_str()).await?);
         let stored = self.connections.connections(ws, &session.id).await.map_err(BackendError::new)?;
         let urls: Vec<String> =
             agent.config.mcp_servers.iter().map(|McpServer::Url { url, .. }| url.clone()).collect();

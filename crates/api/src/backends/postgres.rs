@@ -29,6 +29,14 @@ pub(super) struct Postgres {
     pub(super) backend: PgBackend,
 }
 
+/// What the stores keep outside Postgres: bytes, secrets, and the endpoints
+/// their webhooks go to.
+pub(super) struct Outside {
+    pub(super) blobs: Arc<dyn BlobStore>,
+    pub(super) secrets: Arc<dyn SecretStore>,
+    pub(super) hooks: Arc<webhooks::Webhooks>,
+}
+
 /// Connect the pools; the load measure and, with a `retention` period, the
 /// retention runs start here.
 pub(super) async fn connect(
@@ -37,14 +45,14 @@ pub(super) async fn connect(
     pool: PoolSettings,
     retention: Option<Duration>,
     metrics: &Arc<Metrics>,
-    blobs: Arc<dyn BlobStore>,
-    secrets: Arc<dyn SecretStore>,
+    outside: Outside,
 ) -> Result<Postgres, PgError> {
     let observer = telemetry::db::observer(metrics.clone());
     let pg = PgBackend::connect_observed(url, pool, observer.clone()).await?;
     let meter = opentelemetry::global::meter("agentd");
     telemetry::db::watch_pool(&meter, pg.diesel.clone());
-    let mut stores = Stores::postgres(pg.clone(), blobs, secrets);
+    let Outside { blobs, secrets, hooks } = outside;
+    let mut stores = Stores::postgres_sending(pg.clone(), blobs, secrets, &hooks);
     if let Some(read_url) = read_url {
         stores = stores.reading_events_from(PgBackend::connect_observed(read_url, pool, observer).await?);
     }

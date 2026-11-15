@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use shared::{BackendError, Timestamp, WorkspaceId};
+use shared::{BackendError, OrgId, Timestamp, WorkspaceId};
 
 use crate::refresh::{request_token, Refreshed};
 use crate::service::VaultsService;
@@ -92,6 +92,7 @@ impl VaultsService {
     pub async fn refresh_mcp_oauth(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         cred: &Credential,
     ) -> Result<Refresh, BackendError> {
         let now = Timestamp::now();
@@ -125,6 +126,7 @@ impl VaultsService {
         let Refreshed::Token { access_token, expires_at, refresh_token } =
             request_token(&mcp.guard, &refresh).await
         else {
+            self.credentials.refresh_failed(ws, org, &vault, &cred.id).await.map_err(BackendError::new)?;
             return Ok(Refresh::Failed);
         };
         let refresh = OauthRefreshInput {

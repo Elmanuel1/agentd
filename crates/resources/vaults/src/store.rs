@@ -5,7 +5,7 @@
 //! [`Credential`] projection ever leaves through the service.
 
 use async_trait::async_trait;
-use shared::{Pagination, Timestamp, WorkspaceId};
+use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 
 use crate::types::{Credential, CredentialAuthInput, CredentialId, Vault, VaultId};
 
@@ -55,7 +55,7 @@ pub enum RefreshWrite {
 #[async_trait]
 pub trait VaultStore: Send + Sync {
     /// Insert a vault.
-    async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError>;
+    async fn insert_vault(&self, ws: &WorkspaceId, org: &OrgId, vault: Vault) -> Result<(), StoreError>;
     /// Fetch a vault.
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// Replace a vault.
@@ -64,10 +64,15 @@ pub trait VaultStore: Send + Sync {
     async fn named_vaults(&self, ws: &WorkspaceId, ids: &[VaultId]) -> Result<Vec<Vault>, StoreError>;
     /// Archive a vault and its unarchived credentials, purging their secrets;
     /// an archived vault is answered as it is.
-    async fn archive_vault(&self, ws: &WorkspaceId, id: &VaultId, at: Timestamp)
-        -> Result<Vault, StoreError>;
+    async fn archive_vault(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        id: &VaultId,
+        at: Timestamp,
+    ) -> Result<Vault, StoreError>;
     /// Delete a vault and its credentials, purging their secrets.
-    async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
+    async fn delete_vault(&self, ws: &WorkspaceId, org: &OrgId, id: &VaultId) -> Result<Vault, StoreError>;
     /// All vaults, newest first.
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError>;
 }
@@ -80,6 +85,7 @@ pub trait VaultCredentialStore: Send + Sync {
     async fn insert_credential(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError>;
@@ -97,10 +103,19 @@ pub trait VaultCredentialStore: Send + Sync {
         vault: &VaultId,
         cred: StoredCredential,
     ) -> Result<(), StoreError>;
+    /// Archive one credential: `cred` with its archive stamp and no secret.
+    async fn archive_credential(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        vault: &VaultId,
+        cred: StoredCredential,
+    ) -> Result<(), StoreError>;
     /// Delete one credential.
     async fn delete_credential(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<StoredCredential, StoreError>;
@@ -144,6 +159,14 @@ pub trait VaultCredentialStore: Send + Sync {
         cred: &StoredCredential,
         claimed: Timestamp,
     ) -> Result<RefreshWrite, StoreError>;
+    /// Send `vault_credential.refresh_failed` for credential `id` (H-5).
+    async fn refresh_failed(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<(), StoreError>;
     /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
     async fn environment_credentials(
         &self,

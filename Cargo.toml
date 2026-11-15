@@ -7,6 +7,7 @@ members = [
     "crates/resources/api-keys",
     "crates/resources/organizations",
     "crates/resources/vaults",
+    "crates/resources/webhooks",
     "crates/resources/memory",
     "crates/resources/files",
     "crates/resources/skills",
@@ -40,6 +41,7 @@ environments = { path = "crates/resources/environments" }
 api-keys = { path = "crates/resources/api-keys" }
 organizations = { path = "crates/resources/organizations" }
 vaults = { path = "crates/resources/vaults" }
+webhooks = { path = "crates/resources/webhooks" }
 memory = { path = "crates/resources/memory" }
 files = { path = "crates/resources/files" }
 skills = { path = "crates/resources/skills" }

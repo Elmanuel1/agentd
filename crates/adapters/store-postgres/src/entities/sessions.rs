@@ -1,6 +1,7 @@
 //! `SessionsStore` on Postgres via Diesel: the session rows.
 
 mod archived;
+mod terminate;
 
 use ::sessions::store::{Order, SessionFilter, SessionsStore, StoreError};
 use ::sessions::types::{Session, SessionId, SessionStatus};
@@ -23,12 +24,20 @@ use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, DocRow, PgBackend};
 #[derive(Debug, Clone)]
 pub struct PgSessionsStore {
     backend: PgBackend,
+    hooks: std::sync::Arc<webhooks::Webhooks>,
 }
 
 impl PgSessionsStore {
     /// Wrap a backend.
     pub fn new(backend: PgBackend) -> Self {
-        Self { backend }
+        Self { backend, hooks: std::sync::Arc::default() }
+    }
+
+    /// The store, sending an archive's termination to `hooks`' endpoints.
+    #[must_use]
+    pub fn with_webhooks(mut self, hooks: std::sync::Arc<webhooks::Webhooks>) -> Self {
+        self.hooks = hooks;
+        self
     }
 }
 
@@ -76,6 +85,7 @@ impl SessionsStore for PgSessionsStore {
     async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc = to_doc(&s)?;
+        let hooks = &self.hooks;
         // The row is locked and compared as a Session, not as raw JSON: a doc
         // written before a field existed re-serializes differently but holds
         // the same session.
@@ -105,7 +115,7 @@ impl SessionsStore for PgSessionsStore {
                     .execute(c)
                     .await?;
                     if read.archived_at.is_none() && s.archived_at.is_some() {
-                        stop(c, ws, s.id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
+                        terminate::archived(c, hooks, ws, read, &s).await?;
                     }
                     Ok(Ok(()))
                 }

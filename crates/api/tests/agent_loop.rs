@@ -190,6 +190,8 @@ struct Tune {
     guard: shared::net::Guard,
     /// Its compaction settings.
     compaction: engine::turn::compact::Compaction,
+    /// The webhooks its commits and vault writes send.
+    hooks: Option<Arc<webhooks::Webhooks>>,
 }
 
 impl Default for Tune {
@@ -200,6 +202,7 @@ impl Default for Tune {
             sessions: None,
             guard: shared::net::Guard::default(),
             compaction: engine::turn::compact::Compaction::default(),
+            hooks: None,
         }
     }
 }
@@ -237,7 +240,7 @@ impl SessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction } = tune;
+    let Tune { steps, budget, sessions, guard, compaction, hooks } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -247,13 +250,22 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
     }
     let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
     let app = rig.replica(&rig.stores, Streaming { signals: signals.clone(), ..Streaming::default() });
+    let mut hooked = rig.stores.clone();
+    if let Some(hooks) = hooks {
+        hooked.steps = Arc::new(store_postgres::PgSteps::new(pg.clone()).with_webhooks(hooks.clone()));
+        let vaults = Arc::new(
+            store_postgres::PgVaultsStore::new(pg.clone(), rig.secrets.clone()).with_webhooks(hooks),
+        );
+        hooked.vaults = vaults.clone();
+        hooked.vault_credentials = vaults;
+    }
     let stores = LoopStores {
-        steps: rig.stores.steps.clone(),
+        steps: hooked.steps.clone(),
         sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
-        mcp: api::agent_loop::mcp(&rig.stores, guard),
+        mcp: api::agent_loop::mcp(&hooked, guard),
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
@@ -782,4 +794,44 @@ async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the
     };
     assert!(rubric(&asked[0]), "the agent reads the rubric");
     assert!(rubric(&asked[1]), "the grader reads the rubric");
+}
+
+/// One endpoint for the rig's organization.
+fn hooks(rig: &Rig) -> Arc<webhooks::Webhooks> {
+    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_c2VjcmV0"}]);
+    Arc::new(webhooks::Webhooks::parse(&json.to_string()).unwrap())
+}
+
+/// The `data.type` of each delivery about `id`, oldest first.
+async fn webhooks_about(id: &str) -> Vec<String> {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        kind: String,
+    }
+    let pg = db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "SELECT body::jsonb->'data'->>'type' AS kind FROM webhook_deliveries \
+         WHERE body::jsonb->'data'->>'id' = $1 ORDER BY next_attempt_at, webhook_id",
+    )
+    .bind::<diesel::sql_types::Text, _>(id);
+    let rows: Vec<Row> = diesel_async::RunQueryDsl::load(q, &mut *conn).await.unwrap();
+    rows.into_iter().map(|r| r.kind).collect()
+}
+
+#[tokio::test]
+async fn each_status_change_of_a_turn_sends_its_webhook_in_its_commit() {
+    // H-1: running, then idle; an interrupt of an idle session sends none.
+    let Some(rig) = Rig::new().await else { return };
+    let model = Scripted::new(vec![Say::Text("hi")]);
+    let (app, _worker) = worker(&rig, model, Tune { hooks: Some(hooks(&rig)), ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, json!([])).await;
+    send(&app, &s, message("hello")).await;
+    events_until(&app, &s, "session.status_idle", 1).await;
+    assert_eq!(webhooks_about(&s).await, ["session.status_run_started", "session.status_idled"]);
+    send(&app, &s, json!({"events": [{"type": "user.interrupt"}]})).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(webhooks_about(&s).await.len(), 2, "no status change, no webhook");
 }

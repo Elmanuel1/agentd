@@ -94,7 +94,12 @@ async fn a_write_into_an_archived_vault_or_credential_is_refused_and_leaves_no_s
     .unwrap();
     let insert = rig
         .store
-        .insert_credential(&ws, &vault_id, StoredCredential { wire: late.clone(), auth: Some(auth) })
+        .insert_credential(
+            &ws,
+            &rig.ctx.org,
+            &vault_id,
+            StoredCredential { wire: late.clone(), auth: Some(auth) },
+        )
         .await;
     assert_eq!(insert, Err(StoreError::VaultArchived));
     assert_eq!(rig.secret(&vault, late.id.as_str()), None, "the create took its secret back out");

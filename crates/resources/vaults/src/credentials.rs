@@ -63,6 +63,7 @@ impl VaultsService {
         self.credentials
             .insert_credential(
                 &ctx.workspace,
+                &ctx.org,
                 &vault_id,
                 StoredCredential { wire: cred.clone(), auth: Some(auth) },
             )
@@ -115,7 +116,7 @@ impl VaultsService {
             stored.wire.updated_at = Timestamp::now();
             stored.auth = None; // secret purged
             self.credentials
-                .replace_credential(&ctx.workspace, &vid, stored.clone())
+                .archive_credential(&ctx.workspace, &ctx.org, &vid, stored.clone())
                 .await
                 .map_err(map_store)?;
         }
@@ -131,7 +132,7 @@ impl VaultsService {
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
         self.credentials
-            .delete_credential(&ctx.workspace, &vid, &cid)
+            .delete_credential(&ctx.workspace, &ctx.org, &vid, &cid)
             .await
             .map(|c| c.wire)
             .map_err(map_store)

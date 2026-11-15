@@ -9,10 +9,13 @@ use ::vaults::types::{Vault, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::RunQueryDsl;
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::secrets::SecretStore;
-use shared::{Pagination, Timestamp, WorkspaceId};
+use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
+use webhooks::{Delivery, EventKind, Webhooks};
 
+use super::webhook_deliveries::insert_deliveries;
 use crate::schema::vaults;
 use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
 
@@ -24,6 +27,7 @@ mod secret;
 pub struct PgVaultsStore {
     pub(super) backend: PgBackend,
     secrets: Arc<dyn SecretStore>,
+    hooks: Arc<Webhooks>,
 }
 
 impl std::fmt::Debug for PgVaultsStore {
@@ -35,7 +39,28 @@ impl std::fmt::Debug for PgVaultsStore {
 impl PgVaultsStore {
     /// Wrap a backend + secret store.
     pub fn new(backend: PgBackend, secrets: Arc<dyn SecretStore>) -> Self {
-        Self { backend, secrets }
+        Self { backend, secrets, hooks: Arc::default() }
+    }
+
+    /// The store, sending each vault and credential lifecycle event to
+    /// `hooks`' endpoints in the write's own transaction (H-6).
+    #[must_use]
+    pub fn with_webhooks(mut self, hooks: Arc<Webhooks>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    /// The deliveries of `facts` (an event and the id it is about) in `org`.
+    pub(super) fn facts(
+        &self,
+        org: &OrgId,
+        ws: &WorkspaceId,
+        facts: Vec<(EventKind, String)>,
+    ) -> Vec<Delivery> {
+        facts
+            .into_iter()
+            .flat_map(|(kind, id)| self.hooks.deliveries(org.as_str(), ws.as_str(), kind, &id))
+            .collect()
     }
 }
 
@@ -51,20 +76,25 @@ struct NewVault {
 
 #[async_trait]
 impl VaultStore for PgVaultsStore {
-    async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError> {
+    async fn insert_vault(&self, ws: &WorkspaceId, org: &OrgId, vault: Vault) -> Result<(), StoreError> {
+        let row = NewVault {
+            workspace_id: ws.as_str().to_owned(),
+            vault_id: vault.id.as_str().to_owned(),
+            display_name: vault.display_name.clone(),
+            created_at: vault.created_at.as_datetime(),
+            doc: to_doc(&vault)?,
+        };
+        let facts = self.facts(org, ws, vec![(EventKind::VaultCreated, vault.id.as_str().to_owned())]);
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        diesel::insert_into(vaults::table)
-            .values(NewVault {
-                workspace_id: ws.as_str().to_owned(),
-                vault_id: vault.id.as_str().to_owned(),
-                display_name: vault.display_name.clone(),
-                created_at: vault.created_at.as_datetime(),
-                doc: to_doc(&vault)?,
-            })
-            .execute(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        Ok(())
+        conn.transaction::<_, diesel::result::Error, _>(|c| {
+            async move {
+                diesel::insert_into(vaults::table).values(row).execute(c).await?;
+                insert_deliveries(c, &facts).await
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(diesel_be)
     }
 
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
@@ -112,14 +142,15 @@ impl VaultStore for PgVaultsStore {
     async fn archive_vault(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         id: &VaultId,
         at: Timestamp,
     ) -> Result<Vault, StoreError> {
-        self.archive_cascade(ws, id, at).await
+        self.archive_cascade(ws, org, id, at).await
     }
 
-    async fn delete_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
-        self.delete_cascade(ws, id).await
+    async fn delete_vault(&self, ws: &WorkspaceId, org: &OrgId, id: &VaultId) -> Result<Vault, StoreError> {
+        self.delete_cascade(ws, org, id).await
     }
 
     async fn list_vaults(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Vault>, StoreError> {

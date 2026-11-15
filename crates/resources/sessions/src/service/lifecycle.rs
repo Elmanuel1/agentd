@@ -155,7 +155,9 @@ impl SessionsService {
             return Err(ApiError::conflict_invalid_request("cannot archive a running session"));
         }
         if s.archived_at.is_none() {
+            // As live: an archived session is terminated (U3).
             s.archived_at = Some(Timestamp::now());
+            s.status = SessionStatus::Terminated;
             s.updated_at = Timestamp::now();
             self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
             // Every replica's streams of the session end.

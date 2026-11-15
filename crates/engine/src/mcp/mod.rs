@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use environments::types::EnvironmentConfig;
 use sessions::mcp::McpConnections;
 use shared::net::Guard;
-use shared::{BackendError, WorkspaceId};
+use shared::{BackendError, OrgId, WorkspaceId};
 use vaults::VaultsService;
 
 pub mod client;
@@ -33,6 +33,8 @@ pub trait McpEnvironments: Send + Sync {
         session: &str,
         environment_id: &str,
     ) -> Result<EnvironmentConfig, BackendError>;
+    /// The organization of `session` in `ws`.
+    async fn org(&self, ws: &WorkspaceId, session: &str) -> Result<OrgId, BackendError>;
 }
 
 /// What the loop reaches MCP servers with.

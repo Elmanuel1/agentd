@@ -14,6 +14,7 @@ deployments = { workspace = true }
 files = { workspace = true }
 environments = { workspace = true }
 vaults = { workspace = true }
+webhooks = { workspace = true }
 skills = { workspace = true }
 sessions = { workspace = true }
 dreams = { workspace = true }

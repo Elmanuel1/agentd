@@ -11,11 +11,13 @@ use diesel::sql_types::{Jsonb, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, QueryableByName};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use shared::{Timestamp, WorkspaceId};
+use shared::{OrgId, Timestamp, WorkspaceId};
 
 use super::PgVaultsStore;
+use crate::entities::webhook_deliveries::insert_deliveries;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be, to_doc};
+use webhooks::EventKind;
 
 #[derive(QueryableByName)]
 struct Touched {
@@ -45,6 +47,7 @@ impl PgVaultsStore {
     pub(super) async fn archive_cascade(
         &self,
         ws: &WorkspaceId,
+        org: &OrgId,
         id: &VaultId,
         at: Timestamp,
     ) -> Result<Vault, StoreError> {
@@ -85,6 +88,16 @@ impl PgVaultsStore {
                     .bind::<Jsonb, _>(&stamp)
                     .load(c)
                     .await?;
+                    // One vault.archived, and one vault_credential.archived per credential (B29).
+                    let vault_id = id.as_str().to_owned();
+                    let mut facts = vec![(EventKind::VaultArchived, vault_id.clone())];
+                    facts.extend(archived.iter().map(|t| {
+                        (
+                            EventKind::CredentialArchived { vault_id: vault_id.clone() },
+                            t.credential_id.clone(),
+                        )
+                    }));
+                    insert_deliveries(c, &self.facts(org, ws, facts)).await?;
                     Ok(Ok((vault, archived)))
                 }
                 .scope_boxed()
@@ -97,7 +110,14 @@ impl PgVaultsStore {
     }
 
     /// Delete the vault and every credential in it, archived ones included.
-    pub(super) async fn delete_cascade(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError> {
+    pub(super) async fn delete_cascade(
+        &self,
+        ws: &WorkspaceId,
+        org: &OrgId,
+        id: &VaultId,
+    ) -> Result<Vault, StoreError> {
+        // One vault.deleted; whether live adds one per credential is B30's probe.
+        let facts = self.facts(org, ws, vec![(EventKind::VaultDeleted, id.as_str().to_owned())]);
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let (doc, deleted) = conn
             .transaction::<_, diesel::result::Error, _>(|c| {
@@ -117,6 +137,7 @@ impl PgVaultsStore {
                         .filter(vaults::vault_id.eq(id.as_str()))
                         .execute(c)
                         .await?;
+                    insert_deliveries(c, &facts).await?;
                     Ok(Ok((doc, deleted)))
                 }
                 .scope_boxed()

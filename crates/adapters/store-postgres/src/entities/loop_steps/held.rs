@@ -14,13 +14,16 @@ use super::super::session_events::{insert, lock, stamp};
 use super::super::work_items::stop::requeue;
 use super::rows::Doc;
 use super::{HELD, KEY};
+use crate::entities::webhook_deliveries::status_changed;
 use crate::{diesel_be, enum_str, pool_be, to_doc, PgBackend};
+use webhooks::Webhooks;
 
 /// The step's events and session changes, after the held step was checked.
 async fn land(
     c: &mut AsyncPgConnection,
     claim: &Claim,
     write: &StepWrite<'_>,
+    hooks: &Webhooks,
 ) -> Result<(), diesel::result::Error> {
     let (ws, id) = (&claim.workspace, &claim.session);
     stamp(c, ws, id, write.read, write.at).await?;
@@ -47,6 +50,7 @@ async fn land(
     };
     let mut session: Session =
         serde_json::from_value(row.doc).map_err(|e| diesel::result::Error::DeserializationError(e.into()))?;
+    let before = session.status;
     if !(write.session)(&mut session) {
         return Ok(());
     }
@@ -59,8 +63,11 @@ async fn land(
         .bind::<Text, _>(enum_str(&session.status))
         .bind::<Jsonb, _>(doc)
         .execute(c)
-        .await
-        .map(drop)
+        .await?;
+    match session.status == before {
+        true => Ok(()),
+        false => status_changed(c, hooks, ws, id, session.status).await,
+    }
 }
 
 fn serde_be(e: StoreError) -> diesel::result::Error {
@@ -92,6 +99,7 @@ fn lost(e: diesel::result::Error) -> Result<bool, StoreError> {
 /// See `Steps::write`.
 pub(super) async fn write(
     backend: &PgBackend,
+    hooks: &Webhooks,
     claim: &Claim,
     lease: i64,
     write: StepWrite<'_>,
@@ -110,7 +118,7 @@ pub(super) async fn write(
             if kept == 0 {
                 return Err(diesel::result::Error::RollbackTransaction);
             }
-            land(c, claim, &write).await.map(|()| true)
+            land(c, claim, &write, hooks).await.map(|()| true)
         }
         .scope_boxed()
     })
@@ -121,6 +129,7 @@ pub(super) async fn write(
 /// See `Steps::commit`.
 pub(super) async fn commit(
     backend: &PgBackend,
+    hooks: &Webhooks,
     claim: &Claim,
     end: StepEnd,
     write: StepWrite<'_>,
@@ -151,7 +160,7 @@ pub(super) async fn commit(
                 if released == 0 {
                     return Err(diesel::result::Error::RollbackTransaction);
                 }
-                land(c, claim, &write).await?;
+                land(c, claim, &write, hooks).await?;
                 if end == StepEnd::Requeue {
                     requeue(c, &claim.workspace, claim.session.as_str()).await?;
                 }

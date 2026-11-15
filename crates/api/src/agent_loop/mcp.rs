@@ -56,6 +56,10 @@ impl McpEnvironments for Environments {
         let id = environment_id.parse().map_err(BackendError::new)?;
         Ok(self.environments.get(&org, &id).await.map_err(BackendError::new)?.config)
     }
+
+    async fn org(&self, ws: &WorkspaceId, session: &str) -> Result<OrgId, BackendError> {
+        Environments::org(self, ws, session).await
+    }
 }
 
 /// The loop's MCP reach over `stores`, connecting where `guard` allows.

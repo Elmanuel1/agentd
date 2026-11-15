@@ -69,7 +69,7 @@ impl VaultsService {
             tag: VaultTag::Vault,
             updated_at: now,
         };
-        self.vaults.insert_vault(&ctx.workspace, vault.clone()).await.map_err(map_store)?;
+        self.vaults.insert_vault(&ctx.workspace, &ctx.org, vault.clone()).await.map_err(map_store)?;
         Ok(vault)
     }
 
@@ -113,7 +113,7 @@ impl VaultsService {
     /// and their secrets purged (VA-3).
     pub async fn archive_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        self.vaults.archive_vault(&ctx.workspace, &id, Timestamp::now()).await.map_err(map_store)
+        self.vaults.archive_vault(&ctx.workspace, &ctx.org, &id, Timestamp::now()).await.map_err(map_store)
     }
 
     /// Refuse a session that names a vault it may not use (VA-2): live's 404
@@ -136,7 +136,7 @@ impl VaultsService {
     /// `DELETE /v1/vaults/{id}`.
     pub async fn delete_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        self.vaults.delete_vault(&ctx.workspace, &id).await.map_err(map_store)
+        self.vaults.delete_vault(&ctx.workspace, &ctx.org, &id).await.map_err(map_store)
     }
 }
 

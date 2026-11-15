@@ -16,6 +16,7 @@ environments = { workspace = true }
 api-keys = { workspace = true }
 organizations = { workspace = true }
 vaults = { workspace = true }
+webhooks = { workspace = true }
 memory = { workspace = true }
 files = { workspace = true }
 skills = { workspace = true }
@@ -53,6 +54,7 @@ tracing-opentelemetry = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+webhooks = { workspace = true }
 test-support = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 http-body-util = { workspace = true }

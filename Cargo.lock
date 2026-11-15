@@ -104,6 +104,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vaults",
+ "webhooks",
  "work",
 ]
 
@@ -3365,6 +3366,7 @@ dependencies = [
  "tower",
  "tracing",
  "vaults",
+ "webhooks",
  "work",
 ]
 
@@ -4064,6 +4066,27 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webhooks"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "hex",
+ "hmac",
+ "parking_lot",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shared",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
