@@ -24,6 +24,8 @@ pub struct Claim {
     pub attempts: i64,
     /// The wakes the step had when this claim took it.
     pub wakes: i64,
+    /// How long the step waited past its due time before this claim.
+    pub waited_ms: i64,
 }
 
 /// Changes a step makes to its session's row; `false` when nothing changed.

@@ -11,11 +11,13 @@ pub(super) struct Due {
 }
 
 #[derive(diesel::QueryableByName)]
-pub(super) struct Held {
+pub(super) struct Claimed {
     #[diesel(sql_type = BigInt)]
     pub(super) attempts: i64,
     #[diesel(sql_type = BigInt)]
     pub(super) wakes: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) waited_ms: i64,
 }
 
 #[derive(diesel::QueryableByName)]

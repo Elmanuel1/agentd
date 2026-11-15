@@ -7,6 +7,7 @@
 
 mod json;
 pub mod mcp;
+mod metrics;
 pub mod model;
 pub mod turn;
 pub mod worker;

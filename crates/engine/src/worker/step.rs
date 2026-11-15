@@ -30,6 +30,7 @@ impl Loop {
     /// Run `claim`'s step; a step that fails goes back on the queue for a
     /// retry after a pause.
     pub(super) async fn step(&self, claim: Claim) {
+        crate::metrics::claimed(claim.waited_ms);
         let Err(e) = self.run(&claim).await else { return };
         tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
         if let Err(e) = self.stores.steps.defer(&claim, 5).await {
@@ -40,6 +41,7 @@ impl Loop {
     async fn write(&self, claim: &Claim, b: &Batch, to: Option<SessionStatus>) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
         let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
+        crate::metrics::appended(&b.events);
         let wrote = self
             .stores
             .steps
@@ -65,6 +67,7 @@ impl Loop {
             true
         };
         let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
+        crate::metrics::appended(&b.events);
         let done = self.stores.steps.commit(claim, end, w).await.map_err(BackendError::new)?;
         self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
         Ok(done)
@@ -79,6 +82,7 @@ impl Loop {
             Err(e) => return Err(BackendError::new(e)),
         };
         let read = self.stores.log.engine_events(ws, id).await.map_err(BackendError::new)?;
+        crate::metrics::read(read.len());
         let kept: Kept = read.iter().filter_map(|(e, k)| Some((e.id.clone(), k.clone()?))).collect();
         let log: Vec<Event> = read.into_iter().map(|(e, _)| e).collect();
         let queue = self.stores.work.queue_of(ws, id.as_str()).await.map_err(BackendError::new)?;

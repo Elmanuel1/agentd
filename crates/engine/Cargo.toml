@@ -23,6 +23,7 @@ chrono = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+opentelemetry = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }

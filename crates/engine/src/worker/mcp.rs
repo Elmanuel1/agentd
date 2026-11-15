@@ -48,12 +48,16 @@ impl Loop {
             let Ok(id) = EventId::parse(&call.id) else { continue };
             let server = call.mcp.as_deref().unwrap_or_default();
             let (content, is_error) = match servers.call(server, &call.name, &call.input).await? {
-                CallOutcome::Called(called) => (called.content, called.is_error),
+                CallOutcome::Called(called) => {
+                    crate::metrics::mcp_call(if called.is_error { "tool_error" } else { "ok" });
+                    (called.content, called.is_error)
+                }
                 // Another worker refreshes the token: what ran is kept, the
                 // rest runs in a later step.
                 CallOutcome::Deferred if called_any => break,
                 CallOutcome::Deferred => return self.defer_refresh(claim).await,
                 CallOutcome::Failed { content, error } => {
+                    crate::metrics::mcp_call("unreachable");
                     events.push(turn.event(SessionEvent::Error { error }));
                     (content, true)
                 }

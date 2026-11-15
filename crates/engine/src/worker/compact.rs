@@ -122,7 +122,9 @@ impl Loop {
                         speed: Some(ModelSpeed::Standard),
                     },
                 }));
-                if let Some(cp) = summary::checkpoint(&reply, &model, c.anthropic, c.through) {
+                let cp = summary::checkpoint(&reply, &model, c.anthropic, c.through);
+                crate::metrics::compaction(if cp.is_some() { "compacted" } else { "no_summary" });
+                if let Some(cp) = cp {
                     let compacted = turn.event(AgentEvent::ThreadContextCompacted {});
                     engine.push((compacted.id.clone(), cp.kept()));
                     events.push(compacted);
@@ -130,6 +132,7 @@ impl Loop {
             }
             Err(e) => {
                 tracing::warn!(session = %claim.session, error = %e, "loop: a compaction call failed");
+                crate::metrics::compaction("failed");
                 events.extend(turn.failed(start, None));
             }
         }

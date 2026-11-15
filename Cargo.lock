@@ -1316,6 +1316,7 @@ dependencies = [
  "chrono",
  "environments",
  "files",
+ "opentelemetry",
  "parking_lot",
  "rand 0.8.6",
  "reqwest 0.12.28",

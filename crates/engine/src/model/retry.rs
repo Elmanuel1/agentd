@@ -35,6 +35,19 @@ impl Retry {
         client: &dyn ModelClient,
         req: ModelRequest,
     ) -> Result<ModelResponse, ModelError> {
+        let started = Instant::now();
+        let provider = super::ModelProvider::of(&req.model).name();
+        let answer = self.attempts(client, req).await;
+        let outcome = if answer.is_ok() { "ok" } else { "error" };
+        crate::metrics::model_call(provider, started.elapsed().as_secs_f64(), outcome);
+        answer
+    }
+
+    async fn attempts(
+        &self,
+        client: &dyn ModelClient,
+        req: ModelRequest,
+    ) -> Result<ModelResponse, ModelError> {
         let end = Instant::now() + self.deadline;
         let mut backoff = self.first;
         let mut tried = 0;
