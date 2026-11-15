@@ -21,6 +21,8 @@ fn reason(failure: &Failure) -> String {
         Failure::Forbidden => "access forbidden".into(),
         Failure::Unauthorized => "authentication required".into(),
         Failure::Gone => "the server ended the session".into(),
+        Failure::Refresh => "the access token expired and could not be refreshed".into(),
+        Failure::Busy => "the access token is being refreshed".into(),
         Failure::Status(code) => format!("unexpected HTTP status {code}"),
     }
 }
@@ -29,7 +31,7 @@ fn reason(failure: &Failure) -> String {
 /// tries the server again, so it is always `retrying` (MC-14).
 pub(super) fn session_error(server: &str, stage: &str, failure: &Failure) -> Value {
     let kind = match failure {
-        Failure::Unauthorized => AUTHENTICATION_FAILED,
+        Failure::Unauthorized | Failure::Refresh => AUTHENTICATION_FAILED,
         _ => CONNECTION_FAILED,
     };
     json!({

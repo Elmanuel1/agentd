@@ -6,9 +6,28 @@ use std::collections::HashMap;
 
 use shared::{BackendError, Timestamp, WorkspaceId};
 
+use crate::refresh::{request_token, Refreshed};
 use crate::service::VaultsService;
-use crate::store::StoreError;
-use crate::types::{Credential, CredentialAuthInput, CredentialAuthWire, SecretString, VaultId};
+use crate::store::{RefreshWrite, StoreError, StoredCredential};
+use crate::types::{
+    Credential, CredentialAuthInput, CredentialAuthWire, OauthRefreshInput, SecretString, VaultId,
+};
+
+/// How long a refresh claim holds: a row updated more recently than this
+/// is another worker's refresh in flight (MC-20).
+const CLAIM_HOLDS: i64 = 30;
+
+/// What an expired token's refresh came to.
+#[derive(Debug)]
+pub enum Refresh {
+    /// A token to call with: refreshed, or another worker's that is fresh,
+    /// and the credential as it now reads.
+    Token(McpToken, Box<Credential>),
+    /// Another worker holds the refresh: the step runs again a second later.
+    Busy,
+    /// The refresh failed; the server is not called (MC-21, MC-27).
+    Failed,
+}
 
 /// What a server is called with.
 #[derive(Debug, Clone)]
@@ -64,6 +83,72 @@ impl VaultsService {
             Err(StoreError::CredentialNotFound) => Ok(None),
             Err(e) => Err(BackendError::new(e)),
         }
+    }
+}
+
+impl VaultsService {
+    /// Refresh `cred`'s expired token, claimed by moving the row's
+    /// `updated_at` from what the step read, so one worker refreshes (MC-7).
+    pub async fn refresh_mcp_oauth(
+        &self,
+        ws: &WorkspaceId,
+        cred: &Credential,
+    ) -> Result<Refresh, BackendError> {
+        let now = Timestamp::now();
+        let held = now.as_datetime() - cred.updated_at.as_datetime() < chrono::Duration::seconds(CLAIM_HOLDS);
+        if held {
+            return Ok(Refresh::Busy);
+        }
+        let vault = VaultId::parse(&cred.vault_id).map_err(BackendError::new)?;
+        let claimed = self
+            .credentials
+            .claim_refresh(ws, &vault, &cred.id, cred.updated_at, now)
+            .await
+            .map_err(BackendError::new)?;
+        let stored = match self.credentials.get_credential(ws, &vault, &cred.id).await {
+            Ok(stored) => stored,
+            Err(StoreError::CredentialNotFound) => return Ok(Refresh::Failed),
+            Err(e) => return Err(BackendError::new(e)),
+        };
+        let Some(CredentialAuthInput::McpOauth { mcp_server_url, expires_at, refresh, access_token }) =
+            stored.auth
+        else {
+            return Ok(Refresh::Failed);
+        };
+        let fresh = expires_at.is_none_or(|at| at > Timestamp::now());
+        if !claimed {
+            // Another worker's claim (MC-23): its token, once it is stored.
+            let token = McpToken { bearer: access_token, expired: false };
+            return Ok(if fresh { Refresh::Token(token, Box::new(stored.wire)) } else { Refresh::Busy });
+        }
+        let (Some(refresh), Some(mcp)) = (refresh, &self.mcp) else { return Ok(Refresh::Failed) };
+        let Refreshed::Token { access_token, expires_at, refresh_token } =
+            request_token(&mcp.guard, &refresh).await
+        else {
+            return Ok(Refresh::Failed);
+        };
+        let refresh = OauthRefreshInput {
+            refresh_token: refresh_token.unwrap_or(refresh.refresh_token.clone()),
+            ..refresh
+        };
+        let auth = CredentialAuthInput::McpOauth {
+            mcp_server_url,
+            access_token: access_token.clone(),
+            expires_at,
+            refresh: Some(refresh),
+        };
+        let mut wire = stored.wire;
+        wire.auth = auth.to_wire();
+        wire.updated_at = Timestamp::now();
+        let written = StoredCredential { wire: wire.clone(), auth: Some(auth) };
+        match self.credentials.finish_refresh(ws, &vault, &written, now).await.map_err(BackendError::new)? {
+            RefreshWrite::Matched => {}
+            RefreshWrite::Changed => {
+                tracing::warn!(credential = %wire.id, "refresh_overwrote_update: an update came during the refresh");
+            }
+            RefreshWrite::Gone => return Ok(Refresh::Failed),
+        }
+        Ok(Refresh::Token(McpToken { bearer: access_token, expired: false }, Box::new(wire)))
     }
 }
 

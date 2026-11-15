@@ -33,8 +33,13 @@ impl Mcp {
         agent: &AgentSnapshot,
         log: &[Event],
     ) -> Result<Servers, BackendError> {
-        let mut servers =
-            Servers { mcp: None, ws: ws.clone(), session: session.id.clone(), list: Vec::new() };
+        let mut servers = Servers {
+            mcp: None,
+            ws: ws.clone(),
+            session: session.id.clone(),
+            list: Vec::new(),
+            deferred: false,
+        };
         if agent.config.mcp_servers.is_empty() {
             return Ok(servers);
         }

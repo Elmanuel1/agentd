@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use engine::mcp::{Mcp, McpEnvironments};
+use engine::mcp::{Mcp, McpEnvironments, Probe};
 use environments::store::EnvironmentsStore;
 use environments::types::EnvironmentConfig;
 use parking_lot::RwLock;
 use shared::net::Guard;
 use shared::{BackendError, OrgId, WorkspaceId};
-use vaults::VaultsService;
+use vaults::{McpReach, VaultsService};
 use work::store::Reach;
 use work::WorkReads;
 
@@ -62,7 +62,12 @@ impl McpEnvironments for Environments {
 pub fn mcp(stores: &Stores, guard: Guard) -> Mcp {
     Mcp {
         connections: stores.mcp_connections.clone(),
-        vaults: Arc::new(VaultsService::new(stores.vaults.clone(), stores.vault_credentials.clone())),
+        vaults: Arc::new(
+            VaultsService::new(stores.vaults.clone(), stores.vault_credentials.clone()).with_mcp(McpReach {
+                probe: Arc::new(Probe::new(guard.clone(), MCP_TIMEOUT)),
+                guard: guard.clone(),
+            }),
+        ),
         environments: Arc::new(Environments {
             work: stores.work_reads.clone(),
             environments: stores.environments.clone(),

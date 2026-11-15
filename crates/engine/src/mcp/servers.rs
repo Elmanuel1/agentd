@@ -33,6 +33,9 @@ pub struct McpTool {
 pub enum CallOutcome {
     /// The server answered.
     Called(Called),
+    /// Another worker is refreshing the server's token: the step runs
+    /// again a second later (MC-20, MC-23).
+    Deferred,
     /// The server could not be reached: the call's error content, and the
     /// `session.error` to record for it (MC-26).
     Failed {
@@ -69,6 +72,7 @@ pub struct Servers {
     ws: WorkspaceId,
     session: SessionId,
     list: Vec<Server>,
+    deferred: bool,
 }
 
 impl std::fmt::Debug for Servers {
@@ -94,8 +98,16 @@ impl Servers {
             if let Err(e) = self.reach(i).await? {
                 errors.push(e);
             }
+            if self.deferred {
+                break;
+            }
         }
         Ok(errors)
+    }
+
+    /// A refresh another worker holds deferred the step (MC-20).
+    pub fn deferred(&self) -> bool {
+        self.deferred
     }
 
     /// The tools of every server whose connection holds, in the agent's
@@ -146,6 +158,9 @@ impl Servers {
                     true => self.resume(i).await?.map_err(|f| session_error(server, "initialize", &f)),
                     false => self.reach(i).await?,
                 };
+                if self.deferred {
+                    return Ok(CallOutcome::Deferred);
+                }
                 if let Err(error) = reached {
                     return Ok(CallOutcome::Failed { content: unavailable(server), error });
                 }

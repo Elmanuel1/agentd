@@ -4,6 +4,8 @@
 use serde_json::Value;
 use sessions::mcp::McpConnection;
 use shared::BackendError;
+use vaults::mcp::Refresh;
+use vaults::types::CredentialAuthWire;
 
 use super::super::client::{Failure, Rpc};
 use super::super::errors::session_error;
@@ -12,17 +14,44 @@ use super::super::Mcp;
 use super::Servers;
 
 impl Servers {
-    pub(super) async fn token(&self, i: usize) -> Result<Option<String>, BackendError> {
-        let (Some(mcp), Some(cred)) = (&self.mcp, self.list.get(i).and_then(|s| s.credential.as_ref()))
-        else {
-            return Ok(None);
-        };
-        Ok(mcp.vaults.mcp_token(&self.ws, cred).await?.map(|t| t.bearer.expose().to_owned()))
+    /// Server `i`'s bearer: none with no credential or a secret gone, the
+    /// stored token while it holds, else a refreshed one (MC-7). A refresh
+    /// another worker holds defers the step.
+    pub(super) async fn token(&mut self, i: usize) -> Result<Result<Option<String>, Failure>, BackendError> {
+        let Some(mcp) = self.mcp.clone() else { return Ok(Ok(None)) };
+        let Some(cred) = self.list.get(i).and_then(|s| s.credential.clone()) else { return Ok(Ok(None)) };
+        let Some(token) = mcp.vaults.mcp_token(&self.ws, &cred).await? else { return Ok(Ok(None)) };
+        let refreshable = matches!(&cred.auth, CredentialAuthWire::McpOauth { refresh: Some(_), .. });
+        if !token.expired || !refreshable {
+            return Ok(Ok(Some(token.bearer.expose().to_owned())));
+        }
+        match mcp.vaults.refresh_mcp_oauth(&self.ws, &cred).await? {
+            Refresh::Token(token, wire) => {
+                if let Some(s) = self.list.get_mut(i) {
+                    s.credential = Some(*wire);
+                }
+                Ok(Ok(Some(token.bearer.expose().to_owned())))
+            }
+            Refresh::Busy => {
+                self.deferred = true;
+                Ok(Err(Failure::Busy))
+            }
+            Refresh::Failed => Ok(Err(Failure::Refresh)),
+        }
     }
 
     /// Open the stored session again, reading the credential's token.
     pub(super) async fn resume(&mut self, i: usize) -> Result<Result<(), Failure>, BackendError> {
-        let bearer = self.token(i).await?;
+        let bearer = match self.token(i).await? {
+            Ok(bearer) => bearer,
+            Err(Failure::Busy) => return Ok(Err(Failure::Busy)),
+            Err(f) => {
+                if let Some(s) = self.list.get_mut(i) {
+                    s.failed = Some(f.clone());
+                }
+                return Ok(Err(f));
+            }
+        };
         let (Some(mcp), Some(s)) = (self.mcp.clone(), self.list.get_mut(i)) else {
             return Ok(Err(Failure::Unreachable));
         };
@@ -50,12 +79,15 @@ impl Servers {
         let allowed = self.list.get(i).is_some_and(|s| s.allowed);
         let bearer = match allowed {
             true => self.token(i).await?,
-            false => None,
-        };
-        let Some(s) = self.list.get_mut(i) else { return Ok(Ok(())) };
-        let opened = match allowed {
-            true => connect(&mcp, &s.url, bearer).await,
             false => Err(Failure::Unreachable),
+        };
+        if bearer == Err(Failure::Busy) {
+            return Ok(Ok(()));
+        }
+        let Some(s) = self.list.get_mut(i) else { return Ok(Ok(())) };
+        let opened = match bearer {
+            Ok(bearer) => connect(&mcp, &s.url, bearer).await,
+            Err(f) => Err(f),
         };
         match opened {
             Ok((rpc, tools)) => {

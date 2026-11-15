@@ -40,20 +40,35 @@ impl Loop {
             let errors = servers.connect(true).await?;
             events.extend(errors.into_iter().map(|error| turn.event(SessionEvent::Error { error })));
         }
+        if servers.deferred() {
+            return self.defer_refresh(claim).await;
+        }
+        let mut called_any = false;
         for call in unanswered.iter().filter(|u| u.for_loop()) {
             let Ok(id) = EventId::parse(&call.id) else { continue };
             let server = call.mcp.as_deref().unwrap_or_default();
             let (content, is_error) = match servers.call(server, &call.name, &call.input).await? {
                 CallOutcome::Called(called) => (called.content, called.is_error),
+                // Another worker refreshes the token: what ran is kept, the
+                // rest runs in a later step.
+                CallOutcome::Deferred if called_any => break,
+                CallOutcome::Deferred => return self.defer_refresh(claim).await,
                 CallOutcome::Failed { content, error } => {
                     events.push(turn.event(SessionEvent::Error { error }));
                     (content, true)
                 }
             };
             events.push(turn.event(AgentEvent::McpToolResult { mcp_tool_use_id: id, content, is_error }));
+            called_any = true;
         }
         session.status = SessionStatus::Running;
         self.commit(claim, StepEnd::Again, &batch(taken, running, events), &session).await?;
         Ok(())
+    }
+
+    /// Release the step unrun, due again in a second, while another worker
+    /// refreshes a credential's token (MC-20, MC-23).
+    pub(super) async fn defer_refresh(&self, claim: &Claim) -> Result<(), BackendError> {
+        self.stores.steps.defer(claim, 1).await.map_err(BackendError::new)
     }
 }

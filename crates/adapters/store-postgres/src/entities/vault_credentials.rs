@@ -2,20 +2,22 @@
 //! their secret material sealed to the secret store and never written to the
 //! database.
 
-use ::vaults::store::{StoreError, StoredCredential, VaultCredentialStore};
+use ::vaults::store::{RefreshWrite, StoreError, StoredCredential, VaultCredentialStore};
 use ::vaults::types::{Credential, CredentialAuthInput, CredentialId, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::dsl::sql;
-use diesel::sql_types::{Array, Bool, Text};
+use diesel::sql_types::Bool;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
-use shared::WorkspaceId;
+use shared::{Timestamp, WorkspaceId};
 
 use super::vaults::PgVaultsStore;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be};
 
+mod mcp;
+mod refresh;
 mod write;
 
 impl PgVaultsStore {
@@ -144,20 +146,7 @@ impl VaultCredentialStore for PgVaultsStore {
         vaults: &[String],
         urls: &[String],
     ) -> Result<Vec<Credential>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = credentials::table
-            .filter(credentials::workspace_id.eq(ws.as_str()))
-            .filter(credentials::vault_id.eq_any(vaults))
-            .filter(
-                sql::<Bool>("doc->>'archived_at' IS NULL AND doc->'auth'->>'mcp_server_url' = ANY(")
-                    .bind::<Array<Text>, _>(urls)
-                    .sql(")"),
-            )
-            .select(credentials::doc)
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        docs.into_iter().map(parse_doc).collect()
+        self.mcp_rows(ws, vaults, urls).await
     }
 
     async fn credential_secret(
@@ -167,6 +156,27 @@ impl VaultCredentialStore for PgVaultsStore {
         id: &CredentialId,
     ) -> Result<CredentialAuthInput, StoreError> {
         self.read_secret(ws, vault, id).await
+    }
+
+    async fn claim_refresh(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+        read: Timestamp,
+        now: Timestamp,
+    ) -> Result<bool, StoreError> {
+        self.claim_refresh_row(ws, vault, id, read, now).await
+    }
+
+    async fn finish_refresh(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        cred: &StoredCredential,
+        claimed: Timestamp,
+    ) -> Result<RefreshWrite, StoreError> {
+        self.finish_refresh_row(ws, vault, cred, claimed).await
     }
 
     async fn environment_credentials(

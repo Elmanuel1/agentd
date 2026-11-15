@@ -122,6 +122,9 @@ impl Loop {
         }
         let mut servers = self.stores.mcp.servers(ws, &session, &agent, &read).await?;
         let errors = servers.connect(idle).await?;
+        if servers.deferred() {
+            return self.defer_refresh(claim).await;
+        }
         let errors = errors.into_iter().map(|error| turn.event(SessionEvent::Error { error }));
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();

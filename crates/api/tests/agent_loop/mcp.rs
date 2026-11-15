@@ -32,6 +32,7 @@ struct Server {
     got: Mutex<Vec<Got>>,
     sessions: AtomicUsize,
     forget: AtomicBool,
+    tokens: AtomicUsize,
 }
 
 impl Server {
@@ -75,12 +76,24 @@ async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<
     Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
 }
 
+async fn token(State(s): State<Arc<Server>>) -> Json<Value> {
+    s.tokens.fetch_add(1, Ordering::SeqCst);
+    Json(json!({"access_token": "fresh-token-7", "token_type": "Bearer", "expires_in": 3600}))
+}
+
 /// Start a server; its URL and the guard that lets the loop reach it.
 async fn serve() -> (Arc<Server>, String, Guard) {
     let server = Arc::new(Server::default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
-    let app = Router::new().route("/mcp", post(rpc)).with_state(server.clone());
+    let app = Router::new()
+        .route("/mcp", post(rpc))
+        .route("/token", post(token))
+        .route(
+            "/badtoken",
+            post(|| async { (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_grant"}))) }),
+        )
+        .with_state(server.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.ok() });
     (server, format!("http://{addr}/mcp"), Guard::allowing(vec![addr]))
 }
@@ -324,4 +337,102 @@ async fn a_session_the_server_ended_reconnects_and_the_call_goes_through() {
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     assert_eq!(of(&events, "agent.mcp_tool_result")[0]["is_error"], false);
     assert_eq!(server.count("initialize"), 2);
+}
+
+/// A vault holding an expired `mcp_oauth` token for `url`, refreshed at
+/// `endpoint`, its row last updated `age` seconds ago.
+async fn expired(rig: &Rig, url: &str, endpoint: &str, age: i64) -> (String, String) {
+    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
+    let vault = vault["id"].as_str().unwrap().to_owned();
+    let auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "stale-token-3",
+        "expires_at": "2020-01-01T00:00:00Z", "refresh": {"client_id": "c", "token_endpoint": endpoint,
+        "token_endpoint_auth": {"type": "none"}, "refresh_token": "r"}});
+    let path = format!("/v1/vaults/{vault}/credentials");
+    let (st, cred) =
+        rig.call("POST", &path, Auth::Key(KEY), Some(json!({"display_name": "c", "auth": auth}))).await;
+    assert_eq!(st, StatusCode::OK, "{cred}");
+    let id = cred["id"].as_str().unwrap().to_owned();
+    age_row(&id, age).await;
+    (vault, id)
+}
+
+/// Make credential `id`'s row read as updated `age` seconds ago.
+async fn age_row(id: &str, age: i64) {
+    let pg = db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let at =
+        (chrono::Utc::now() - chrono::Duration::seconds(age)).format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+    let q = diesel::sql_query("UPDATE credentials SET doc = jsonb_set(doc, '{updated_at}', to_jsonb($1::text)) WHERE credential_id = $2")
+        .bind::<diesel::sql_types::Text, _>(at)
+        .bind::<diesel::sql_types::Text, _>(id);
+    diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+}
+
+#[tokio::test]
+async fn an_expired_token_is_refreshed_once_stored_and_used() {
+    // MC-7, MC-9.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let model = Scripted::new(vec![Say::Calls(vec![("lookup", json!({"q": "r"}))]), Say::Text("done")]);
+    let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let (vault, id) = expired(&rig, &url, &url.replace("/mcp", "/token"), 120).await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
+    send(&app, &s, message("go")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    assert_eq!(server.tokens.load(Ordering::SeqCst), 1, "one refresh");
+    assert!(server.got.lock().iter().all(|g| g.bearer.as_deref() == Some("Bearer fresh-token-7")));
+    assert_eq!(of(&events, "agent.mcp_tool_result")[0]["is_error"], false);
+    let log = serde_json::to_string(&events).unwrap();
+    assert!(!log.contains("fresh-token-7") && !log.contains("stale-token-3"));
+    let (_, cred) =
+        rig.call("GET", &format!("/v1/vaults/{vault}/credentials/{id}"), Auth::Key(KEY), None).await;
+    assert!(cred["auth"]["expires_at"].as_str().is_some_and(|at| at > "2026"), "{cred}");
+}
+
+#[tokio::test]
+async fn a_refresh_another_worker_holds_waits_without_a_model_call() {
+    // MC-20: a row updated less than 30 s ago is a refresh in flight.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let model = Scripted::new(vec![Say::Text("done")]);
+    let (app, _worker) = worker(&rig, model.clone(), Tune { guard, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let (vault, id) = expired(&rig, &url, &url.replace("/mcp", "/token"), 5).await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
+    send(&app, &s, message("go")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    assert!(model.asked.lock().is_empty(), "the step waits for the refresh");
+    assert_eq!(server.tokens.load(Ordering::SeqCst), 0);
+    let step = super::step_of(&s).await.expect("the step stays queued");
+    assert!(step.due_in <= 1);
+    age_row(&id, 120).await;
+    events_until(&app, &s, "session.status_idle", 1).await;
+    assert_eq!((server.tokens.load(Ordering::SeqCst), model.asked.lock().len()), (1, 1));
+}
+
+#[tokio::test]
+async fn a_refused_or_internal_token_endpoint_records_an_authentication_error() {
+    // MC-21, MC-27.
+    let Some(rig) = Rig::new().await else { return };
+    for endpoint in ["/badtoken", "http://169.254.169.254/token"] {
+        let (server, url, guard) = serve().await;
+        let model = Scripted::new(vec![Say::Text("done")]);
+        let (app, worker_) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+        let env = rig.environment("cloud").await;
+        let endpoint = match endpoint.starts_with('/') {
+            true => url.replace("/mcp", endpoint),
+            false => endpoint.to_owned(),
+        };
+        let (vault, _) = expired(&rig, &url, &endpoint, 120).await;
+        let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
+        send(&app, &s, message("go")).await;
+        let events = events_until(&app, &s, "session.status_idle", 1).await;
+        let errors = of(&events, "session.error");
+        assert_eq!(errors.len(), 1, "{endpoint}");
+        assert_eq!(errors[0]["error"]["type"], "mcp_authentication_failed_error");
+        assert!(server.methods().is_empty(), "the server is not called with a dead token");
+        assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+        drop(worker_);
+    }
 }

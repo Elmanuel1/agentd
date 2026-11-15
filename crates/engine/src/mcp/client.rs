@@ -27,6 +27,10 @@ pub enum Failure {
     Gone,
     /// Any other status, or an answer that is not JSON-RPC.
     Status(u16),
+    /// The credential's token expired and its refresh failed.
+    Refresh,
+    /// Another worker is refreshing the credential's token.
+    Busy,
 }
 
 impl From<NetError> for Failure {

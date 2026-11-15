@@ -39,6 +39,18 @@ pub enum StoreError {
     Backend(#[source] shared::BackendError),
 }
 
+/// How a refresh's final write landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshWrite {
+    /// The row still held the claim: the new token and expiry are stored.
+    Matched,
+    /// An update came between the claim and the write: the row is the
+    /// update's, the secret the refresh's.
+    Changed,
+    /// The credential was archived or deleted meanwhile; its secret is out.
+    Gone,
+}
+
 /// Persistence port for vault rows.
 #[async_trait]
 pub trait VaultStore: Send + Sync {
@@ -113,6 +125,25 @@ pub trait VaultCredentialStore: Send + Sync {
         vault: &VaultId,
         id: &CredentialId,
     ) -> Result<CredentialAuthInput, StoreError>;
+    /// Claim a refresh: move the unarchived row's `updated_at` from `read`
+    /// to `now`; `false` when it no longer reads `read`.
+    async fn claim_refresh(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+        read: Timestamp,
+        now: Timestamp,
+    ) -> Result<bool, StoreError>;
+    /// Store a refresh's token, then its row while the row's `updated_at`
+    /// is still `claimed`.
+    async fn finish_refresh(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        cred: &StoredCredential,
+        claimed: Timestamp,
+    ) -> Result<RefreshWrite, StoreError>;
     /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
     async fn environment_credentials(
         &self,
