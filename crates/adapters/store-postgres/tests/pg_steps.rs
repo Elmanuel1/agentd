@@ -523,6 +523,50 @@ async fn what_a_step_keeps_beside_an_event_only_the_engine_read_returns() {
     r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
     let read = r.log.engine_events(&ws, &s.id).await.unwrap();
     let (event, engine) = read.iter().find(|(e, _)| e.id == said.id).unwrap();
-    assert_eq!(engine.as_ref(), Some(&kept[0].1));
+    let mut engine = engine.clone().unwrap();
+    assert!(
+        engine.as_object_mut().unwrap().remove("seq").is_some_and(|seq| seq.is_i64()),
+        "the read names its seq"
+    );
+    assert_eq!(engine, kept[0].1);
     assert!(serde_json::to_value(event).unwrap().get("engine").is_none(), "the event as the API serves it");
+}
+
+#[tokio::test]
+async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
+    // CP-9: V11's unique index on a thread's checkpoint and its covered seq.
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    let ws = uniq_ws("ckpt");
+    let s = r.session(&ws).await;
+    let checkpoint = || {
+        let mut e = Event::new(AgentEvent::ThreadContextCompacted {}.into());
+        e.processed_at = Some(Timestamp::now());
+        let kept =
+            json!({"checkpoint": {"through": e.id.as_str(), "through_seq": 7, "model": "m", "summary": "s"}});
+        (e.clone(), [(e.id, kept)])
+    };
+    let mut ends = Vec::new();
+    for _ in 0..2 {
+        let asked = r.wake(&ws, &s.id).await;
+        let c = r.claim_of("w1", 60, &s.id).await.unwrap();
+        let (event, engine) = checkpoint();
+        let write = StepWrite {
+            read: std::slice::from_ref(&asked.id),
+            at: Timestamp::now(),
+            events: std::slice::from_ref(&event),
+            engine: &engine,
+            session: &unchanged,
+        };
+        ends.push(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
+    }
+    assert_eq!(ends, [true, false], "the duplicate commits nothing");
+    let kept = r.log.engine_events(&ws, &s.id).await.unwrap();
+    let count = kept
+        .iter()
+        .filter(|(e, _)| matches!(e.payload, EventPayload::Agent(AgentEvent::ThreadContextCompacted {})))
+        .count();
+    assert_eq!(count, 1);
 }

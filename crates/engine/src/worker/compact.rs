@@ -27,7 +27,7 @@ use crate::turn::history::{rebuild, thread_events, History, Kept};
 /// A compaction the step runs instead of its turn.
 pub(super) struct Compacting {
     messages: Vec<Message>,
-    through: EventId,
+    through: (EventId, i64),
     instructions: String,
     anthropic: bool,
 }
@@ -109,9 +109,9 @@ impl Loop {
             messages.insert(0, cp.message());
         }
         tidy(&mut messages);
-        let Some(through) = cut.checked_sub(1).and_then(|i| view.prompt.get(i)).map(|e| e.id.clone()) else {
-            return Ok(None);
-        };
+        let Some(last) = cut.checked_sub(1).and_then(|i| view.prompt.get(i)) else { return Ok(None) };
+        let seq = log.kept.get(&last.id).and_then(|k| k.get("seq")).and_then(serde_json::Value::as_i64);
+        let through = (last.id.clone(), seq.unwrap_or_default());
         let anthropic = ModelProvider::of(model) == ModelProvider::Anthropic;
         let instructions = summary::instructions(&view.prompt, anthropic);
         Ok(Some(Compacting { messages, through, instructions, anthropic }))

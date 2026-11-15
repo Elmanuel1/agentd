@@ -45,16 +45,23 @@ impl SessionEventReads for PgSessionEventLog {
         id: &SessionId,
     ) -> Result<Vec<(Event, Option<serde_json::Value>)>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = session_events::table
+        let rows: Vec<(i64, serde_json::Value)> = session_events::table
             .filter(session_events::workspace_id.eq(ws.as_str()))
             .filter(session_events::session_id.eq(id.as_str()))
             .order(session_events::seq.asc())
-            .select(session_events::doc)
+            .select((session_events::seq, session_events::doc))
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter()
-            .map(|doc| Ok((doc.get("engine").cloned(), parse_doc(doc)?)).map(|(kept, e)| (e, kept)))
+        // Each event's kept object names its `seq`, which a checkpoint records.
+        rows.into_iter()
+            .map(|(seq, doc)| {
+                let mut kept = doc.get("engine").cloned().unwrap_or_else(|| serde_json::json!({}));
+                if let Some(k) = kept.as_object_mut() {
+                    k.insert("seq".into(), serde_json::json!(seq));
+                }
+                Ok((parse_doc(doc)?, Some(kept)))
+            })
             .collect()
     }
 

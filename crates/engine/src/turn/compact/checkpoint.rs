@@ -15,6 +15,8 @@ use crate::turn::history::Kept;
 pub struct Checkpoint {
     /// The last event the summary covers.
     pub through: EventId,
+    /// That event's `seq`: one checkpoint per thread and covered event (V11).
+    pub through_seq: i64,
     /// The model that wrote it.
     pub model: String,
     /// The Messages API's signed block, for an Anthropic model.

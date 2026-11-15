@@ -33,6 +33,10 @@ async fn land(
     for (doc, event) in docs.iter_mut().zip(write.events) {
         let kept = write.engine.iter().find(|(e, _)| *e == event.id).map(|(_, kept)| kept.clone());
         if let (Some(kept), Some(doc)) = (kept, doc.as_object_mut()) {
+            // A checkpoint's covered seq at the path V11's unique index reads.
+            if let Some(seq) = kept.get("checkpoint").and_then(|c| c.get("through_seq")) {
+                doc.insert("checkpoint".into(), serde_json::json!({ "through_seq": seq }));
+            }
             doc.insert("engine".into(), kept);
         }
     }
@@ -90,8 +94,10 @@ fn held(
 /// The transaction's result: `Ok(false)` when the claim no longer holds the
 /// step, which rolls the transaction back.
 fn lost(e: diesel::result::Error) -> Result<bool, StoreError> {
+    use diesel::result::{DatabaseErrorKind, Error};
     match e {
-        diesel::result::Error::RollbackTransaction => Ok(false),
+        // A second checkpoint of one covered event (V11): another step wrote it.
+        Error::RollbackTransaction | Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => Ok(false),
         e => Err(diesel_be(e)),
     }
 }

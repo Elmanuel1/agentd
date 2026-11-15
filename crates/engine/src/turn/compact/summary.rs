@@ -83,7 +83,7 @@ pub fn checkpoint(
     reply: &ModelResponse,
     model: &str,
     anthropic: bool,
-    through: EventId,
+    (through, through_seq): (EventId, i64),
 ) -> Option<Checkpoint> {
     let (block, summary) = match anthropic {
         true => (reply.content.iter().find(|b| matches!(b, Block::Compaction { .. })).cloned(), None),
@@ -101,6 +101,7 @@ pub fn checkpoint(
     };
     (block.is_some() || summary.is_some()).then(|| Checkpoint {
         through,
+        through_seq,
         model: model.to_owned(),
         block,
         summary,
@@ -117,14 +118,17 @@ mod tests {
         // CP-8.
         let through = EventId::generate();
         let reply = ModelResponse::text("the goal is X");
-        let cp = checkpoint(&reply, "openai/gpt-x", false, through.clone()).unwrap();
+        let cp = checkpoint(&reply, "openai/gpt-x", false, (through.clone(), 7)).unwrap();
         assert_eq!((cp.summary.as_deref(), cp.block.as_ref()), (Some("the goal is X"), None));
         let m = cp.message();
         assert_eq!(m.role, Role::User);
         assert_eq!(m.content, [Block::text("A summary of the conversation so far:\n\nthe goal is X")]);
         assert!(instructions(&[], false).starts_with(HANDOFF));
         let empty = ModelResponse { content: Vec::new(), stop: StopKind::EndTurn, ..ModelResponse::text("") };
-        assert!(checkpoint(&empty, "claude-haiku-4-5", true, through).is_none(), "no summary, no checkpoint");
+        assert!(
+            checkpoint(&empty, "claude-haiku-4-5", true, (through, 7)).is_none(),
+            "no summary, no checkpoint"
+        );
     }
 
     #[test]
