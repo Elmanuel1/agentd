@@ -97,6 +97,18 @@ impl VaultStore for PgVaultsStore {
         Ok(())
     }
 
+    async fn named_vaults(&self, ws: &WorkspaceId, ids: &[VaultId]) -> Result<Vec<Vault>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = vaults::table
+            .filter(vaults::workspace_id.eq(ws.as_str()))
+            .filter(vaults::vault_id.eq_any(ids.iter().map(VaultId::as_str)))
+            .select(vaults::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse_doc).collect()
+    }
+
     async fn archive_vault(
         &self,
         ws: &WorkspaceId,

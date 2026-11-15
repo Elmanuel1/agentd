@@ -91,6 +91,23 @@ impl VaultsService {
         self.vaults.archive_vault(&ctx.workspace, &id, Timestamp::now()).await.map_err(map_store)
     }
 
+    /// Refuse a session that names a vault it may not use (VA-2): live's 404
+    /// for one not in the workspace, 400 for an archived one, first in order.
+    pub async fn check_usable(&self, ctx: &AuthContext, raw_ids: &[String]) -> Result<(), ApiError> {
+        let ids: Vec<VaultId> = raw_ids.iter().filter_map(|raw| VaultId::parse(raw).ok()).collect();
+        let found = self.vaults.named_vaults(&ctx.workspace, &ids).await.map_err(map_store)?;
+        for raw in raw_ids {
+            match found.iter().find(|v| v.id.as_str() == raw) {
+                None => return Err(ApiError::not_found(format!("vault {raw} not found"))),
+                Some(v) if v.archived_at.is_some() => {
+                    return Err(ApiError::invalid_request(format!("vault {raw} is archived")))
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     /// `DELETE /v1/vaults/{id}`.
     pub async fn delete_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;

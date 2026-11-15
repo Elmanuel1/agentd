@@ -150,6 +150,9 @@ impl SessionDeps for NoDeps {
     async fn resolve_environment(&self, _: &AuthContext, _: &str) -> Result<serde_json::Value, ApiError> {
         unimplemented!()
     }
+    async fn check_vaults(&self, _: &AuthContext, _: &[String]) -> Result<(), ApiError> {
+        unimplemented!()
+    }
 }
 
 struct Quiet;

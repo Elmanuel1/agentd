@@ -41,6 +41,7 @@ impl SessionsService {
             agent = overrides.apply(agent, &self.catalog)?;
         }
         let environment = self.deps.resolve_environment(ctx, &environment_id).await?;
+        self.deps.check_vaults(ctx, &req.vault_ids).await?;
         let now = Timestamp::now();
         let session = Session {
             agent,
@@ -121,7 +122,7 @@ impl SessionsService {
         let read = s.clone();
         guard_writable(&s)?;
         if req.vault_ids.is_some() {
-            return Err(ApiError::invalid_request("vault_ids: updating vault_ids is not yet supported"));
+            return Err(ApiError::invalid_request("Updating vault_ids is not yet supported."));
         }
         s.title = req.title.apply_to_option(s.title);
         s.metadata = s.metadata.merged(req.metadata);

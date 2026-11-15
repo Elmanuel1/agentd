@@ -20,6 +20,9 @@ pub trait SessionDeps: Send + Sync {
         agent_id: &str,
         version: Option<u64>,
     ) -> Result<AgentSnapshot, ApiError>;
+    /// Refuse vaults the session may not use: missing from the workspace or
+    /// archived.
+    async fn check_vaults(&self, ctx: &AuthContext, vault_ids: &[String]) -> Result<(), ApiError>;
     /// The environment's `config`, after checking it exists (org-scoped) and
     /// is not archived.
     async fn resolve_environment(

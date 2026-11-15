@@ -15,6 +15,7 @@ use organizations::workspaces::WorkspaceKeys;
 use sessions::service::SessionDeps;
 use sessions::SessionsService;
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
+use vaults::VaultsService;
 
 /// SessionDeps over the real agents + environments services.
 pub struct RealSessionDeps {
@@ -22,6 +23,8 @@ pub struct RealSessionDeps {
     pub agents: Arc<AgentsService>,
     /// Environments service.
     pub environments: Arc<EnvironmentsService>,
+    /// Vaults service.
+    pub vaults: Arc<VaultsService>,
 }
 
 impl std::fmt::Debug for RealSessionDeps {
@@ -75,6 +78,13 @@ impl SessionDeps for RealSessionDeps {
             ));
         }
         serde_json::to_value(&env.config).map_err(|e| ApiError::internal(e.to_string()))
+    }
+
+    async fn check_vaults(&self, ctx: &AuthContext, vault_ids: &[String]) -> Result<(), ApiError> {
+        if vault_ids.is_empty() {
+            return Ok(());
+        }
+        self.vaults.check_usable(ctx, vault_ids).await
     }
 }
 

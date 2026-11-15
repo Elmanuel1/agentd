@@ -119,7 +119,12 @@ no input names a secret outside the prefix or in another workspace. A write
 creates the secret, or puts a new value when it exists, with one
 `ClientRequestToken`, so a retry never adds a second version. A secret deleted
 inside its recovery window is restored and written again. Archiving a
-credential deletes its secret with the recovery window. Reads are not cached.
+credential deletes its secret with the recovery window. Archiving a vault
+archives its credentials, and deleting one deletes them, in one transaction
+under the vault's row lock; their secrets are deleted right after the commit.
+A create or rotation writes its secret first and takes it back out when the
+vault or credential turns out archived or gone, so no archived credential
+keeps a secret. Reads are not cached.
 An `environment_variable` credential's secret is also tagged
 `credential_type=environment_variable` when it is created, so that a sandbox
 worker's egress swap (`agentd-worker`) is granted those secrets and no others; `agentd vault-secrets

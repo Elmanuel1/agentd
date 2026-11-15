@@ -48,6 +48,8 @@ pub trait VaultStore: Send + Sync {
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// Replace a vault.
     async fn replace_vault(&self, ws: &WorkspaceId, vault: Vault) -> Result<(), StoreError>;
+    /// The vaults of `ids` that exist in the workspace, in one read.
+    async fn named_vaults(&self, ws: &WorkspaceId, ids: &[VaultId]) -> Result<Vec<Vault>, StoreError>;
     /// Archive a vault and its unarchived credentials, purging their secrets;
     /// an archived vault is answered as it is.
     async fn archive_vault(&self, ws: &WorkspaceId, id: &VaultId, at: Timestamp)

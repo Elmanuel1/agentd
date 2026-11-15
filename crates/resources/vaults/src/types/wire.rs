@@ -71,8 +71,8 @@ pub enum CredentialAuthWire {
     McpOauth {
         /// Server URL key.
         mcp_server_url: String,
-        /// Expiry, when it has one.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Expiry, when it has one; live writes it to the second, in UTC.
+        #[serde(skip_serializing_if = "Option::is_none", serialize_with = "to_the_second")]
         expires_at: Option<Timestamp>,
         /// How the token refreshes, when it does.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,4 +92,11 @@ pub enum CredentialAuthWire {
         /// Where the value is injected on egress.
         injection_location: InjectionLocation,
     },
+}
+
+fn to_the_second<S: serde::Serializer>(at: &Option<Timestamp>, s: S) -> Result<S::Ok, S::Error> {
+    match at {
+        Some(at) => s.serialize_str(&at.as_datetime().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+        None => s.serialize_none(),
+    }
 }

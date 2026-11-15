@@ -71,6 +71,7 @@ impl AppState {
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
+        let vaults = Arc::new(VaultsService::new(stores.vaults, stores.vault_credentials.clone()));
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
@@ -78,7 +79,11 @@ impl AppState {
         let sessions = SessionsService::new(
             stores.sessions,
             stores.session_events,
-            Arc::new(RealSessionDeps { agents: agents.clone(), environments: environments.clone() }),
+            Arc::new(RealSessionDeps {
+                agents: agents.clone(),
+                environments: environments.clone(),
+                vaults: vaults.clone(),
+            }),
             catalog,
         )
         .with_streams(Streams::new(signals, load))
@@ -103,7 +108,7 @@ impl AppState {
         let modules = vec![
             agents::module(agents),
             environments::module(environments),
-            vaults::module(Arc::new(VaultsService::new(stores.vaults, stores.vault_credentials))),
+            vaults::module(vaults),
             memory::module(Arc::new(MemoriesService::new(stores.memory))),
             files::module(files, reach.clone()),
             skills::module(skills),
