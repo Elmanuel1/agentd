@@ -42,6 +42,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_RUNTIME_KEYS` | unset (no runtime key) | agentd's runtime keys, `sk-ant-oat01-…`, comma separated, the current one first |
 | `AGENTD_ANTHROPIC_API_KEY` | unset (no Anthropic models) | The loop's key for the Messages API |
 | `AGENTD_OPENROUTER_API_KEY` | unset (no OpenAI-compatible models) | The loop's key for the API at `AGENTD_MODEL_BASE_URL` |
+| `AGENTD_WEBHOOK_ENDPOINTS` | unset (no webhook is sent) | Each organization's webhook endpoints, a JSON array of `{"id", "organization_id", "url", "secret": "whsec_…", "enabled"}` (see [Webhooks](#webhooks)) |
 | `RUST_LOG` | `info` | Log level |
 
 
@@ -96,6 +97,50 @@ step's 10 minute deadline.
 | `AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM` | unset (no limit) | Requests and input tokens per provider and minute, shared by every replica in Valkey (`AGENTD_VALKEY_URL`); a step over it waits for the next minute. Without Valkey there is no limit |
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
+| `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
+| `AGENTD_COMPACTION_KEEP_RESULTS` | `3` | The newest tool results kept whole when clearing, from 3 to 5 |
+| `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` | `16000` | The most of one tool result a prompt carries; the stored event stays whole |
+
+Each model's context window comes from its provider's model list, read once
+per process: the Messages API's `GET /v1/models/{id}` (`max_input_tokens`) and
+the OpenAI-compatible list's `context_length`. A model its provider does not
+list fails its step as a model error. The loop estimates a thread's prompt from
+its last call's tokens and a token per 4 bytes since. Every tool result is
+capped at `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`. Past the clear threshold, tool
+results older than the newest `AGENTD_COMPACTION_KEEP_RESULTS` become
+`[tool result cleared: event <id>]`; inputs and error results stay. Past 80% of
+the window, and when no tool call is waiting, the step runs a compaction call
+instead of the turn, with the turn's system prompt and tools: on-demand
+compaction (`compact-2026-09-04`) for an Anthropic model, a handoff prompt for
+any other. It summarises from the thread's latest checkpoint, keeps the last
+two calls verbatim and quotes the user's messages newest first. Its
+`agent.thread_context_compacted` event is the thread's checkpoint; the summary
+is kept beside it and never served. Every later call starts with the signed
+block, sent back unmodified, or with the summary. A compaction that returns
+no summary lets the turn run on the cleared prompt.
+
+### MCP servers
+
+The loop connects to an agent's MCP servers itself, over streamable HTTP, and
+never from a worker. Each step reads the session's environment, its stored
+connections (`mcp_connections`) and its vault credentials once, and connects
+only a server that needs it: at the start of each turn, with no stored
+connection, after its credential changed, or when the server answers 404 to the
+stored `Mcp-Session-Id`. A server is reached only at a public address: a URL
+that resolves to a loopback, private or link-local address, or a host the
+environment's `limited` networking does not allow, is not called. A server that
+cannot be reached gets `mcp_connection_failed_error` (a refused credential,
+`mcp_authentication_failed_error`) before the turn's model call; the turn goes
+on without its tools, and the next turn tries again. The credential is the
+first of the session's vaults' `mcp_oauth` or `static_bearer` credentials
+keyed by the server's URL; with none the connection is unauthenticated. An
+expired `mcp_oauth` token is refreshed by one worker, claimed on the
+credential's row; a worker that finds the row updated less than 30 s ago runs
+the step again a second later. An allowed call is committed with its step and
+called by the next one, with no model call in between; an asked one idles the
+session `requires_action`. A deployment's fire whose agent names an MCP host
+its environment blocks creates no session: its run records
+`mcp_egress_blocked_error` and the deployment pauses.
 
 A session's list cost adds each call's provider-reported cost, rounded up to
 the cent so a budget is never passed by rounding. A session whose budget is
@@ -373,7 +418,7 @@ In production:
 - **Debezium's role** has `REPLICATION` (on RDS, `GRANT rds_replication`),
   `SELECT` on the captured tables, and `CREATE` on the schema for its offsets
   table. The publication is made once by the tables' owner,
-  `CREATE PUBLICATION agentd_changes FOR TABLE schedule_outbox`, and Debezium
+  `CREATE PUBLICATION agentd_changes FOR TABLE schedule_outbox, webhook_deliveries`, and Debezium
   runs with `DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE=disabled`. A table
   added to the feed joins `table.include.list` and the publication
   (`ALTER PUBLICATION agentd_changes ADD TABLE …`).
@@ -386,7 +431,8 @@ In production:
   and `_PASSWORD`; and the Kafka sink's
   `DEBEZIUM_SINK_KAFKA_PRODUCER_BOOTSTRAP_SERVERS`. It answers
   `GET /q/health` on port 8080.
-- **Kafka** has the topics `agentd.public.schedule_outbox` and `agentd.fires`
+- **Kafka** has the topics `agentd.public.schedule_outbox`,
+  `agentd.public.webhook_deliveries` and `agentd.fires`
   made before Debezium starts, each with one partition, replication factor 3
   and `min.insync.replicas=2`, so a record Debezium has written survives the
   loss of a broker. Retention is longer than the longest time every replica
@@ -404,6 +450,26 @@ The signals to alarm on, with their thresholds:
 | Slot lag | `pg_current_wal_lsn() - confirmed_flush_lsn` of `agentd_changes` in `pg_replication_slots` (RDS: `OldestReplicationSlotLag`) | over 1 GB, or growing for 15 minutes |
 | Debezium health | `GET /q/health` | down for 2 minutes |
 | Feed backlog | Kafka: the lag of the group `agentd.agentd.public.<table>`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
+
+## Webhooks
+
+agentd sends each organization's endpoints, from `AGENTD_WEBHOOK_ENDPOINTS`,
+live's webhook events: `session.status_run_started`, `session.status_idled`
+and `session.status_terminated` when a session's status changes (an archive
+terminates the session), the vault and credential lifecycle events
+(`vault.created`, `vault.archived` with one `vault_credential.archived` for each
+credential it archives, `vault.deleted`, `vault_credential.created`,
+`vault_credential.archived`, `vault_credential.deleted`), and
+`vault_credential.refresh_failed`. Each delivery is a `webhook_deliveries` row
+written in the commit of the change it reports, one per endpoint. The change
+feed hands each new row to the sender, which posts live's body
+(`{"type": "event", "id": "whe_…", "created_at", "data": {…}}`) signed with
+Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature`, keyed
+with the endpoint's `whsec_` secret) and `user-agent: Claude-Platform`. A
+delivery not answered 2xx is sent twice more, 31 s apart, each attempt signed
+anew under the same `webhook-id`, then dropped; the row records
+`delivered_at` or `dropped_at`. Delivery is at least once, so a receiver
+dedupes on `webhook-id`.
 
 ## Telemetry
 
