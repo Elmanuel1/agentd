@@ -33,6 +33,8 @@ struct Server {
     sessions: AtomicUsize,
     forget: AtomicBool,
     tokens: AtomicUsize,
+    /// `grow` was called: the list has gained `extra`.
+    grown: AtomicBool,
 }
 
 impl Server {
@@ -64,9 +66,22 @@ async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<
             r.headers_mut().insert("mcp-session-id", format!("s-{n}").parse().unwrap());
             return r;
         }
+        "tools/list" if s.grown.load(Ordering::SeqCst) => json!({"tools": [
+            {"name": "lookup", "description": "Look a word up.", "inputSchema": {"type": "object"}},
+            {"name": "extra", "description": "Added later.", "inputSchema": {"type": "object"}}]}),
+        "tools/call" if body["params"]["name"] == "grow" => {
+            s.grown.store(true, Ordering::SeqCst);
+            let stream = format!(
+                "event: message\ndata: {}\n\nevent: message\ndata: {}\n\n",
+                json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}),
+                json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": "grown"}]}})
+            );
+            return ([("content-type", "text/event-stream")], stream).into_response();
+        }
         "tools/list" => json!({"tools": [
             {"name": "lookup", "description": "Look a word up.", "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}}},
-            {"name": "flaky", "description": "Fails.", "inputSchema": {"type": "object"}}]}),
+            {"name": "flaky", "description": "Fails.", "inputSchema": {"type": "object"}},
+            {"name": "grow", "description": "Adds a tool.", "inputSchema": {"type": "object"}}]}),
         "tools/call" if body["params"]["name"] == "flaky" => return StatusCode::BAD_GATEWAY.into_response(),
         "tools/call" => {
             json!({"content": [{"type": "text", "text": format!("found {}", body["params"]["arguments"]["q"])}]})
@@ -496,4 +511,22 @@ async fn a_crowded_prompt_clears_old_results_and_caps_long_ones() {
     for text in &fed[2..] {
         assert_eq!(*text, "found \"w\n[tool result cut at 2 tokens]", "8 bytes, 2 tokens");
     }
+}
+
+#[tokio::test]
+async fn a_list_changed_notification_lists_the_tools_again_and_stores_them() {
+    // MC-16: the answer comes as an event stream carrying the notification.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let model = Scripted::new(vec![Say::Calls(vec![("mcp__docs__grow", json!({}))]), Say::Text("done")]);
+    let (app, _worker) = worker(&rig, model.clone(), Tune { guard, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("grow")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let result = of(&events, "agent.mcp_tool_result")[0];
+    assert_eq!(result["content"], json!([{"type": "text", "text": "grown"}]), "read from the event stream");
+    assert_eq!(server.count("tools/list"), 2, "listed again after the notification");
+    let asked = model.asked.lock();
+    assert!(asked[1].tools.iter().any(|t| t.name == "mcp__docs__extra"), "the stored list is the new one");
 }

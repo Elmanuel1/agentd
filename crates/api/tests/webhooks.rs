@@ -111,3 +111,72 @@ async fn vault_and_credential_writes_send_live_s_lifecycle_events() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(kinds(&sent(&rig, &v).await), ["vault.created", "vault.archived", "vault.deleted"]);
 }
+
+#[tokio::test]
+async fn a_pending_delivery_is_sent_by_a_sender_started_after_it_was_written() {
+    // H-4: the row is written in the change's commit; a replica that starts
+    // later sends it when the feed hands it over, and records its end.
+    use axum::routing::post;
+    use shared::ports::changes::{Change, ChangeHandler, ChangeOp};
+    let Some(rig) = Rig::new().await else { return };
+    let got = Arc::new(parking_lot::Mutex::new(0));
+    let seen = got.clone();
+    let receiver = axum::Router::new().route(
+        "/in",
+        post(move || async move {
+            *seen.lock() += 1;
+            StatusCode::OK
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/in", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, receiver).await.ok() });
+    let json = json!([{"id": "e1", "organization_id": rig.org, "url": url, "secret": "whsec_c2VjcmV0"}]);
+    let hooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
+    let mut stores = rig.stores.clone();
+    let vaults =
+        Arc::new(PgVaultsStore::new(rig.pg.clone(), rig.secrets.clone()).with_webhooks(hooks.clone()));
+    (stores.vaults, stores.vault_credentials) = (vaults.clone(), vaults);
+    let app = rig.replica(&stores, Streaming::default());
+    let (_, vault) = common::send_to(
+        &app,
+        common::request("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))),
+    )
+    .await;
+    let v = vault["id"].as_str().unwrap();
+
+    #[derive(diesel::QueryableByName)]
+    struct Pending {
+        #[diesel(sql_type = diesel::sql_types::Jsonb)]
+        row: Value,
+    }
+    let q = diesel::sql_query(
+        "SELECT to_jsonb(d) AS row FROM webhook_deliveries d WHERE body::jsonb->'data'->>'id' = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(v);
+    let mut conn = rig.pg.diesel.get().await.unwrap();
+    let rows: Vec<Pending> = diesel_async::RunQueryDsl::load(q, &mut *conn).await.unwrap();
+    assert_eq!(rows.len(), 1, "the delivery waits in Postgres");
+    assert!(rows[0].row["delivered_at"].is_null());
+
+    let marks = store_postgres::PgDeliveryMarks::new(rig.pg.clone());
+    let sender = webhooks::WebhookSender::new(hooks, marks, std::time::Duration::from_millis(10)).unwrap();
+    let change = Change {
+        table: "webhook_deliveries".into(),
+        op: ChangeOp::Insert,
+        before: None,
+        after: Some(rows[0].row.clone()),
+    };
+    sender.handle(&change).await.unwrap();
+    assert_eq!(*got.lock(), 1);
+    let rows: Vec<Pending> = diesel_async::RunQueryDsl::load(
+        diesel::sql_query(
+            "SELECT to_jsonb(d) AS row FROM webhook_deliveries d WHERE body::jsonb->'data'->>'id' = $1",
+        )
+        .bind::<diesel::sql_types::Text, _>(v),
+        &mut *conn,
+    )
+    .await
+    .unwrap();
+    assert!(rows[0].row["delivered_at"].is_string(), "its end is recorded");
+}

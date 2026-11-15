@@ -103,3 +103,56 @@ async fn a_compaction_with_no_summary_lets_the_turn_run_and_tries_again_later() 
     let compacted = events.iter().filter(|e| e["type"] == "agent.thread_context_compacted").count();
     assert_eq!(compacted, 1);
 }
+
+#[tokio::test]
+async fn an_oversized_compaction_request_leaves_out_its_oldest_calls() {
+    // CP-11: the summarised part is trimmed before the call until it fits.
+    let Some(rig) = Rig::new().await else { return };
+    let model = Scripted::new(vec![]);
+    *model.window.lock() = 2_000;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, json!([])).await;
+    let long = "w".repeat(8_000);
+    for (i, text) in [long.as_str(), "one", "two", "three", "four"].into_iter().enumerate() {
+        if i == 3 {
+            *model.input.lock() = 1_700;
+        }
+        send(&app, &s, message(text)).await;
+        events_until(&app, &s, "session.status_idle", i + 1).await;
+    }
+    let at = compactions(&model);
+    assert_eq!(at.len(), 1, "{at:?}");
+    let fed = serde_json::to_string(&model.asked.lock()[at[0]].messages).unwrap();
+    assert!(!fed.contains(&long), "the oldest call is left out of the request");
+    assert!(fed.contains("one"), "the later calls are summarised");
+}
+
+#[tokio::test]
+async fn a_checkpoint_written_by_another_model_compacts_again() {
+    // CP-12.
+    let Some(rig) = Rig::new().await else { return };
+    let model = crowded(vec![]);
+    model.summaries.lock().extend([Some("first"), Some("again")]);
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, json!([])).await;
+    for i in 0..3 {
+        send(&app, &s, message(&format!("message {i}"))).await;
+        events_until(&app, &s, "session.status_idle", i + 1).await;
+    }
+    assert_eq!(compactions(&model).len(), 1);
+    *model.input.lock() = 10;
+    let pg = super::db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "UPDATE session_events SET doc = jsonb_set(doc, '{engine,checkpoint,model}', '\"another-model\"') \
+         WHERE session_id = $1 AND doc->>'type' = 'agent.thread_context_compacted'",
+    )
+    .bind::<diesel::sql_types::Text, _>(&s);
+    diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+    send(&app, &s, message("message 3")).await;
+    events_until(&app, &s, "session.status_idle", 4).await;
+    let at = compactions(&model);
+    assert_eq!(at.len(), 2, "the uncrowded thread compacts again for its own model: {at:?}");
+}

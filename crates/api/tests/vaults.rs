@@ -223,3 +223,56 @@ async fn mcp_oauth_validate_answers_as_live_does() {
         )
     );
 }
+
+#[tokio::test]
+async fn a_lost_refresh_claim_uses_the_winner_s_token_or_waits() {
+    // MC-7, MC-20, MC-23: one token request for two refreshes of one read.
+    use std::sync::Arc;
+    use vaults::mcp::Refresh;
+    use vaults::store::{StoredCredential, VaultCredentialStore};
+    let Some(rig) = Rig::new().await else { return };
+    let (base, guard, forms) = validation_server().await;
+    let probe = Arc::new(engine::mcp::Probe::new(guard.clone(), std::time::Duration::from_secs(5)));
+    let svc = vaults::VaultsService::new(rig.stores.vaults.clone(), rig.stores.vault_credentials.clone())
+        .with_mcp(vaults::McpReach { probe, guard });
+    let v = vault(&rig).await;
+    let auth = json!({"type": "mcp_oauth", "mcp_server_url": format!("{base}/locked"), "access_token": "old",
+        "expires_at": "2020-01-01T00:00:00Z", "refresh": {"client_id": "c", "token_endpoint": format!("{base}/token"),
+        "token_endpoint_auth": {"type": "none"}, "refresh_token": "r"}});
+    let path = format!("/v1/vaults/{v}/credentials");
+    let (_, cred) =
+        rig.call("POST", &path, Auth::Key(KEY), Some(json!({"display_name": "c", "auth": auth}))).await;
+    let (ws, org) = (shared::WorkspaceId::new(rig.ws.clone()), shared::OrgId::new(rig.org.clone()));
+    let (vid, cid) = (
+        vaults::VaultId::parse(&v).unwrap(),
+        vaults::types::CredentialId::parse(cred["id"].as_str().unwrap()).unwrap(),
+    );
+    let read = |store: Arc<dyn VaultCredentialStore>| {
+        let (ws, vid, cid) = (ws.clone(), vid.clone(), cid.clone());
+        async move { store.get_credential(&ws, &vid, &cid).await.unwrap() }
+    };
+    let first: StoredCredential = read(rig.stores.vault_credentials.clone()).await;
+
+    // Another writer holds a claim and has not written yet: the stored token is still expired.
+    let held = rig.stores.vault_credentials.claim_credential(
+        &ws,
+        &vid,
+        &cid,
+        first.wire.updated_at,
+        shared::Timestamp::now(),
+    );
+    assert!(held.await.unwrap());
+    assert!(matches!(svc.refresh_mcp_oauth(&ws, &org, first.clone(), false).await.unwrap(), Refresh::Busy));
+    assert!(forms.lock().is_empty(), "the loser calls no token endpoint");
+
+    // The winner refreshes; a second refresh of the same read uses its token.
+    let now: StoredCredential = read(rig.stores.vault_credentials.clone()).await;
+    let Refresh::Token(won, _) = svc.refresh_mcp_oauth(&ws, &org, now.clone(), false).await.unwrap() else {
+        panic!()
+    };
+    let Refresh::Token(lost, _) = svc.refresh_mcp_oauth(&ws, &org, now, false).await.unwrap() else {
+        panic!()
+    };
+    assert_eq!((won.bearer.expose(), lost.bearer.expose()), ("fresh", "fresh"));
+    assert_eq!(forms.lock().len(), 1, "one token request");
+}
