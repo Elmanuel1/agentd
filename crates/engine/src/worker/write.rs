@@ -54,7 +54,6 @@ impl Loop {
         change: &SessionChange<'_>,
         how: Landing,
     ) -> Result<bool, BackendError> {
-        // A status change's deliveries, when any endpoint is configured (H-1).
         let hooks = &self.stores.webhooks;
         let (ws, id) = (claim.workspace.clone(), claim.session.clone());
         let deliveries: Option<Box<StatusDeliveries<'_>>> = (!hooks.is_empty()).then(|| {

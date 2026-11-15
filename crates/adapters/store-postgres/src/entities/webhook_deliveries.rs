@@ -15,7 +15,6 @@ use webhooks::{Delivery, DeliveryMarks};
 
 use crate::PgBackend;
 
-/// Write `deliveries` in the transaction on `c`.
 pub(crate) async fn insert_deliveries(
     c: &mut AsyncPgConnection,
     deliveries: &[Delivery],
