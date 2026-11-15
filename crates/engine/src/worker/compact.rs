@@ -18,7 +18,7 @@ use super::usage::{charged, spent};
 use super::Loop;
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
-use crate::turn::compact::checkpoint::{self, View};
+use crate::turn::compact::checkpoint;
 use crate::turn::compact::estimate::estimate;
 use crate::turn::compact::prompt::{cap, clear};
 use crate::turn::compact::{summary, Tier, BYTES_PER_TOKEN};
@@ -30,6 +30,13 @@ pub(super) struct Compacting {
     through: EventId,
     instructions: String,
     anthropic: bool,
+}
+
+/// The call a step opened: its turn, its thread and its `span.model_request_start`.
+pub(super) struct Opened<'a> {
+    pub(super) turn: &'a Turn,
+    pub(super) thread: &'a Thread,
+    pub(super) start: &'a EventId,
 }
 
 /// What the step's call needs from the thread's log.
@@ -68,7 +75,30 @@ impl Loop {
             return Ok(None);
         }
         let Some(cut) = summary::cut(&view.prompt) else { return Ok(None) };
-        let from = fitting(&view, cut, window);
+        // The oldest model calls go until the request fits the window (CP-11).
+        let from = {
+            let size = |from: usize| {
+                let part = view.prompt.get(from..cut).unwrap_or_default();
+                let n: usize = part.iter().map(|e| serde_json::to_string(e).map_or(0, |s| s.len())).sum();
+                u64::try_from(n).unwrap_or(u64::MAX) / BYTES_PER_TOKEN
+                    + view.checkpoint.as_ref().map_or(0, |c| c.bytes() / BYTES_PER_TOKEN)
+            };
+            let starts = view.prompt.iter().enumerate().filter(|(i, e)| {
+                *i < cut
+                    && matches!(
+                        e.payload,
+                        sessions::events::EventPayload::Span(SpanEvent::ModelRequestStart {})
+                    )
+            });
+            let mut from = 0;
+            for (i, _) in starts {
+                if size(from) * 10 <= window * 9 {
+                    break;
+                }
+                from = i;
+            }
+            from
+        };
         let part: Vec<&Event> = view.prompt.get(from..cut).unwrap_or_default().to_vec();
         let mut summarised = rebuild(&part, log.rubrics, log.kept);
         if let Some(outcome) = &thread.grading {
@@ -91,17 +121,15 @@ impl Loop {
     /// holds, and commit its call's end and the thread's checkpoint. A call
     /// that fails or leaves no summary is ended as it came; the next step
     /// takes the turn with the cleared prompt.
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn compact(
         &self,
         claim: &Claim,
-        turn: &Turn,
-        thread: &Thread,
         mut session: Session,
-        start: &EventId,
+        opened: Opened<'_>,
         c: Compacting,
         mcp: &[McpTool],
     ) -> Result<(), BackendError> {
+        let Opened { turn, thread, start } = opened;
         let (_, mut request) = self.request(&session, thread, c.messages, mcp);
         request.compact = Some(c.instructions);
         let model = request.model.clone();
@@ -123,7 +151,7 @@ impl Loop {
                     },
                 }));
                 let cp = summary::checkpoint(&reply, &model, c.anthropic, c.through);
-                crate::metrics::compaction(if cp.is_some() { "compacted" } else { "no_summary" });
+                crate::metrics::compaction(cp.as_ref().map_or("no_summary", |_| "compacted"));
                 if let Some(cp) = cp {
                     let compacted = turn.event(AgentEvent::ThreadContextCompacted {});
                     engine.push((compacted.id.clone(), cp.kept()));
@@ -158,26 +186,4 @@ impl Loop {
         self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), &session).await?;
         Ok(())
     }
-}
-
-/// The first event of `view`'s prompt a compaction request up to `cut`
-/// keeps: the oldest model calls go until it fits the window (CP-11).
-fn fitting(view: &View<'_>, cut: usize, window: u64) -> usize {
-    let size = |from: usize| {
-        let part = view.prompt.get(from..cut).unwrap_or_default();
-        let n: usize = part.iter().map(|e| serde_json::to_string(e).map_or(0, |s| s.len())).sum();
-        u64::try_from(n).unwrap_or(u64::MAX) / BYTES_PER_TOKEN
-            + view.checkpoint.as_ref().map_or(0, |c| c.bytes() / BYTES_PER_TOKEN)
-    };
-    let starts = view.prompt.iter().enumerate().filter(|(i, e)| {
-        *i < cut && matches!(e.payload, sessions::events::EventPayload::Span(SpanEvent::ModelRequestStart {}))
-    });
-    let mut from = 0;
-    for (i, _) in starts {
-        if size(from) * 10 <= window * 9 {
-            break;
-        }
-        from = i;
-    }
-    from
 }

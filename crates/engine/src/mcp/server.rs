@@ -66,20 +66,15 @@ pub async fn call(rpc: &mut Rpc, name: &str, input: &Value) -> Result<Called, Fa
     let result = answer.result.unwrap_or_default();
     let content = result.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
     Ok(Called {
-        content: content.iter().map(block).collect(),
+        // Text and images as they are, anything else as its JSON text.
+        content: content.iter().map(|item| match item.get("type").and_then(Value::as_str) {
+                Some("text") => ContentBlock::text(item.get("text").and_then(Value::as_str).unwrap_or_default()),
+                Some("image") => ContentBlock::Image {
+                    source: json!({"type": "base64", "media_type": item.get("mimeType"), "data": item.get("data")}),
+                },
+                _ => ContentBlock::text(item.to_string()),
+            }).collect(),
         is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(false),
         list_changed,
     })
-}
-
-/// An MCP content item as a session event's block: text and images as they
-/// are, anything else as its JSON text.
-fn block(item: &Value) -> ContentBlock {
-    match item.get("type").and_then(Value::as_str) {
-        Some("text") => ContentBlock::text(item.get("text").and_then(Value::as_str).unwrap_or_default()),
-        Some("image") => ContentBlock::Image {
-            source: json!({"type": "base64", "media_type": item.get("mimeType"), "data": item.get("data")}),
-        },
-        _ => ContentBlock::text(item.to_string()),
-    }
 }

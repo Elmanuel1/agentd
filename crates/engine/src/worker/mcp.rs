@@ -18,15 +18,13 @@ impl Loop {
     /// Call each allowed MCP call in `unanswered` and commit its result. A
     /// session idle when the step starts (a confirmation allowed the call)
     /// runs again, and its servers connect again as at any turn's start.
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn call_mcp(
         &self,
         claim: &Claim,
         mut session: Session,
         thread: &Thread,
         log: &[Event],
-        taken: Vec<EventId>,
-        answers: Vec<Event>,
+        (taken, answers): (Vec<EventId>, Vec<Event>),
         unanswered: &[Unanswered],
     ) -> Result<(), BackendError> {
         let turn = thread.turn();
@@ -52,7 +50,10 @@ impl Loop {
             let tool = call.name.strip_prefix(&prefix).unwrap_or(&call.name);
             let (content, is_error) = match servers.call(server, tool, &call.input).await? {
                 CallOutcome::Called(called) => {
-                    crate::metrics::mcp_call(if called.is_error { "tool_error" } else { "ok" });
+                    crate::metrics::mcp_call(match called.is_error {
+                        true => "tool_error",
+                        false => "ok",
+                    });
                     (called.content, called.is_error)
                 }
                 // Another worker refreshes the token: what ran is kept, the

@@ -61,10 +61,9 @@ pub(crate) async fn find<K: Keyed + Send, S: KeyDigests<K> + ?Sized>(
     let Some((found, under)) = store.find_active(&digests).await.map_err(key_error)? else {
         return Ok(None);
     };
-    if let Some(current) = digests.first().filter(|current| **current != under) {
-        if let Err(e) = store.rehash(found.id(), current).await {
-            tracing::warn!(key = found.id(), error = %e, "keys: a key under an older pepper was not moved to the current one");
-        }
+    let Some(current) = digests.first().filter(|current| **current != under) else { return Ok(Some(found)) };
+    if let Err(e) = store.rehash(found.id(), current).await {
+        tracing::warn!(key = found.id(), error = %e, "keys: a key under an older pepper was not moved to the current one");
     }
     Ok(Some(found))
 }

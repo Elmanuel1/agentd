@@ -58,7 +58,11 @@ impl VaultsService {
         let found = self.credentials.mcp_credentials(ws, vault_ids, urls).await.map_err(BackendError::new)?;
         let mut chosen: HashMap<String, Credential> = HashMap::new();
         for cred in found {
-            let Some(url) = server_url(&cred) else { continue };
+            let url = match &cred.auth {
+                CredentialAuthWire::McpOauth { mcp_server_url, .. }
+                | CredentialAuthWire::StaticBearer { mcp_server_url } => mcp_server_url.clone(),
+                CredentialAuthWire::EnvironmentVariable { .. } => continue,
+            };
             let rank = |c: &Credential| vault_ids.iter().position(|v| *v == c.vault_id);
             if chosen.get(&url).is_none_or(|held| rank(&cred) < rank(held)) {
                 chosen.insert(url, cred);
@@ -189,12 +193,4 @@ fn refreshed(
     stored.wire.updated_at = Timestamp::now();
     stored.auth = Some(auth);
     Some(stored)
-}
-
-fn server_url(cred: &Credential) -> Option<String> {
-    match &cred.auth {
-        CredentialAuthWire::McpOauth { mcp_server_url, .. }
-        | CredentialAuthWire::StaticBearer { mcp_server_url } => Some(mcp_server_url.clone()),
-        CredentialAuthWire::EnvironmentVariable { .. } => None,
-    }
 }

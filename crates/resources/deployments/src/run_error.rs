@@ -61,19 +61,16 @@ pub(crate) fn classify_fire_error(refusal: &FireRefusal) -> RunError {
         }
         FireRefusal::Api(e) => e,
     };
-    let msg = e.message.clone();
-    let kind = if msg.contains("agent") && msg.contains("archived") {
-        RunErrorKind::AgentArchived
-    } else if msg.contains("environment") && msg.contains("archived") {
-        RunErrorKind::EnvironmentArchived
-    } else if msg.contains("vault") {
-        RunErrorKind::VaultNotFound
-    } else if e.status == 429 {
-        RunErrorKind::SessionRateLimited
-    } else {
-        RunErrorKind::ServiceUnavailable
+    let msg = &e.message;
+    let has = |a: &str, b: &str| msg.contains(a) && msg.contains(b);
+    let kind = match () {
+        () if has("agent", "archived") => RunErrorKind::AgentArchived,
+        () if has("environment", "archived") => RunErrorKind::EnvironmentArchived,
+        () if msg.contains("vault") => RunErrorKind::VaultNotFound,
+        () if e.status == 429 => RunErrorKind::SessionRateLimited,
+        () => RunErrorKind::ServiceUnavailable,
     };
-    RunError { kind, message: msg }
+    RunError { kind, message: msg.clone() }
 }
 
 /// What a failed fire does to its deployment's schedule.

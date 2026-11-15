@@ -69,7 +69,7 @@ impl Default for InjectionLocation {
     }
 }
 
-/// Credential auth — **input** shape (secrets flow in).
+/// Credential auth, the **input** shape: secrets flow in.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialAuthInput {
@@ -97,7 +97,7 @@ pub enum CredentialAuthInput {
         secret_name: String,
         /// The secret value (write-only).
         secret_value: SecretString,
-        /// Host restriction. Required by the live API — validated in the service
+        /// Host restriction. Required by the live API, validated in the service
         /// so the error is the exact `auth.networking: Field required`.
         #[serde(default)]
         networking: Option<CredentialNetworking>,
@@ -118,7 +118,7 @@ impl CredentialAuthInput {
         }
     }
 
-    /// The wire projection — provably secret-free (see [`CredentialAuthWire`]).
+    /// The wire projection, provably secret-free (see [`CredentialAuthWire`]).
     pub fn to_wire(&self) -> CredentialAuthWire {
         match self {
             Self::McpOauth { mcp_server_url, expires_at, refresh, .. } => CredentialAuthWire::McpOauth {

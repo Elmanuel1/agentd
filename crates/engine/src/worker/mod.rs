@@ -32,6 +32,7 @@ mod tests;
 mod turn;
 mod usage;
 mod watch;
+mod write;
 
 /// How long an idle worker waits for a signal before it looks again.
 const IDLE: Duration = Duration::from_secs(1);

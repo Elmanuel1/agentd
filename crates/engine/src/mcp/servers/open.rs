@@ -12,16 +12,6 @@ use super::super::errors::is_mcp_error;
 use super::super::Mcp;
 use super::{Server, Servers};
 
-/// The servers that failed since the turn started: the log after its last
-/// `session.status_running`.
-fn failed_this_turn(log: &[Event]) -> Vec<&str> {
-    let turn = log
-        .iter()
-        .rposition(|e| matches!(e.payload, EventPayload::Session(SessionEvent::StatusRunning {})))
-        .map_or(log, |i| log.get(i..).unwrap_or_default());
-    turn.iter().filter_map(is_mcp_error).collect()
-}
-
 impl Mcp {
     /// `agent`'s servers in `session`, read in three statements (its
     /// environment, its stored connections, its credentials); none when the
@@ -50,7 +40,15 @@ impl Mcp {
         let urls: Vec<String> =
             agent.config.mcp_servers.iter().map(|McpServer::Url { url, .. }| url.clone()).collect();
         let mut creds = self.vaults.mcp_credentials(ws, &session.vault_ids, &urls).await?;
-        let failed = failed_this_turn(log);
+        // The servers that failed since the turn started: the log after its
+        // last `session.status_running`.
+        let failed: Vec<&str> = {
+            let turn = log
+                .iter()
+                .rposition(|e| matches!(e.payload, EventPayload::Session(SessionEvent::StatusRunning {})))
+                .map_or(log, |i| log.get(i..).unwrap_or_default());
+            turn.iter().filter_map(is_mcp_error).collect()
+        };
         servers.list = agent
             .config
             .mcp_servers

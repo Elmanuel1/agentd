@@ -11,7 +11,6 @@ use vaults::types::CredentialAuthWire;
 use super::super::client::{Failure, Rpc};
 use super::super::errors::session_error;
 use super::super::server;
-use super::super::Mcp;
 use super::Servers;
 
 impl Servers {
@@ -89,7 +88,15 @@ impl Servers {
         }
         let Some(s) = self.list.get_mut(i) else { return Ok(Ok(())) };
         let opened = match bearer {
-            Ok(bearer) => connect(&mcp, &s.url, bearer).await,
+            Ok(bearer) => {
+                async {
+                    let mut rpc = Rpc::open(&mcp.guard, &s.url, bearer, None, mcp.timeout).await?;
+                    server::initialize(&mut rpc).await?;
+                    let tools = server::list(&mut rpc).await?;
+                    Ok((rpc, tools))
+                }
+                .await
+            }
             Err(f) => Err(f),
         };
         match opened {
@@ -131,11 +138,4 @@ impl Servers {
         }
         Ok(())
     }
-}
-
-async fn connect(mcp: &Mcp, url: &str, bearer: Option<String>) -> Result<(Rpc, Vec<Value>), Failure> {
-    let mut rpc = Rpc::open(&mcp.guard, url, bearer, None, mcp.timeout).await?;
-    server::initialize(&mut rpc).await?;
-    let tools = server::list(&mut rpc).await?;
-    Ok((rpc, tools))
 }

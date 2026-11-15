@@ -6,19 +6,18 @@
 use std::collections::HashSet;
 
 use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
-use sessions::signals::Signal;
-use sessions::steps::{Claim, StepEnd, StepWrite};
+use sessions::steps::{Claim, StepEnd};
 use sessions::store::StoreError;
-use sessions::types::{Session, SessionStatus};
+use sessions::types::SessionStatus;
 use shared::tenancy::RUNTIME_QUEUE;
 use shared::BackendError;
 
-use super::compact::Log;
+use super::compact::{Log, Opened};
 use super::reply::{led, Call};
 use super::rubrics;
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
-use super::turn::{batch, opening, Batch};
+use super::turn::{batch, opening};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
@@ -36,41 +35,6 @@ impl Loop {
         if let Err(e) = self.stores.steps.defer(&claim, 5).await {
             tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
         }
-    }
-
-    async fn write(&self, claim: &Claim, b: &Batch, to: Option<SessionStatus>) -> Result<bool, BackendError> {
-        let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
-        crate::metrics::appended(&b.events);
-        let wrote = self
-            .stores
-            .steps
-            .write(claim, self.settings.lease_seconds(), w)
-            .await
-            .map_err(BackendError::new)?;
-        self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
-        Ok(wrote)
-    }
-
-    pub(super) async fn commit(
-        &self,
-        claim: &Claim,
-        end: StepEnd,
-        b: &Batch,
-        session: &Session,
-    ) -> Result<bool, BackendError> {
-        let after = session.clone();
-        let change = move |s: &mut Session| {
-            s.status = after.status;
-            s.usage = after.usage.clone();
-            s.outcome_evaluations = after.outcome_evaluations.clone();
-            true
-        };
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, engine: &b.engine, session: &change };
-        crate::metrics::appended(&b.events);
-        let done = self.stores.steps.commit(claim, end, w).await.map_err(BackendError::new)?;
-        self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
-        Ok(done)
     }
 
     async fn run(&self, claim: &Claim) -> Result<(), BackendError> {
@@ -103,7 +67,9 @@ impl Loop {
             return Ok(());
         }
         if history.unanswered.iter().any(Unanswered::for_loop) {
-            return self.call_mcp(claim, session, &thread, &read, taken, answers, &history.unanswered).await;
+            return self
+                .call_mcp(claim, session, &thread, &read, (taken, answers), &history.unanswered)
+                .await;
         }
         if !history.awaits_model() {
             let end = match allowed {
@@ -155,7 +121,8 @@ impl Loop {
         match fit {
             Err(e) => return self.unfit(claim, &turn, session, &start_id, &e).await,
             Ok(Some(c)) => {
-                return self.compact(claim, &turn, &thread, session, &start_id, c, &servers.tools()).await
+                let opened = Opened { turn: &turn, thread: &thread, start: &start_id };
+                return self.compact(claim, session, opened, c, &servers.tools()).await;
             }
             Ok(None) => {}
         }

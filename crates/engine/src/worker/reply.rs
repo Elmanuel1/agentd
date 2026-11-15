@@ -55,9 +55,7 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
             .iter()
             .filter(|b| matches!(b, Block::Thinking { .. } | Block::RedactedThinking { .. }))
             .collect();
-        if !blocks.is_empty() {
-            engine.push((thinking.id.clone(), json!({ "thinking": blocks })));
-        }
+        engine.extend((!blocks.is_empty()).then(|| (thinking.id.clone(), json!({ "thinking": blocks }))));
         events.push(thinking);
     }
     let text: Vec<ContentBlock> = r
@@ -97,7 +95,13 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                     mcp_server_name: server.clone(),
                     name: tool.clone(),
                     input: input.clone(),
-                    evaluated_permission: Some(if *ask { "ask" } else { "allow" }.into()),
+                    evaluated_permission: Some(
+                        match ask {
+                            true => "ask",
+                            false => "allow",
+                        }
+                        .into(),
+                    ),
                     evaluation: evaluation.clone(),
                 });
                 // An allowed call runs in the next step, before the model is called again (MC-24).

@@ -44,11 +44,11 @@ impl Compaction {
     /// The tier of a prompt of `estimate` tokens for a `window`-token model.
     pub fn tier(&self, estimate: u64, window: u64) -> Tier {
         if estimate.saturating_mul(10) >= window.saturating_mul(8) {
-            Tier::Compact
-        } else if estimate >= self.clear_at.min(window / 2) {
-            Tier::Clear
-        } else {
-            Tier::Whole
+            return Tier::Compact;
+        }
+        match estimate >= self.clear_at.min(window / 2) {
+            true => Tier::Clear,
+            false => Tier::Whole,
         }
     }
 }

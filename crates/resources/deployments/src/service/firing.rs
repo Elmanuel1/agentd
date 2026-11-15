@@ -13,7 +13,7 @@ use crate::types::{
 };
 
 impl DeploymentsService {
-    /// `POST /v1/deployments/{id}/run` — manual fire; allowed while paused.
+    /// `POST /v1/deployments/{id}/run`: a manual fire, allowed while paused.
     pub async fn run_manual(&self, ctx: &AuthContext, raw_id: &str) -> Result<DeploymentRun, ApiError> {
         let id = parse_id(raw_id)?;
         let d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;

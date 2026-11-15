@@ -62,7 +62,7 @@ pub enum TokenEndpointMethod {
     ClientSecretPost,
 }
 
-/// Credential auth — **wire** shape. Contains no [`SecretString`] by
+/// Credential auth, the **wire** shape. Contains no [`SecretString`] by
 /// construction, so serializing it can never leak a secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
