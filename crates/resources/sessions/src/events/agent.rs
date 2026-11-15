@@ -58,6 +58,12 @@ pub enum AgentEvent {
         name: String,
         /// Input.
         input: serde_json::Value,
+        /// `allow` (called) or `ask` (awaiting confirmation).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evaluated_permission: Option<String>,
+        /// How the permission was reached, as on `agent.tool_use`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        evaluation: Option<serde_json::Value>,
     },
     /// MCP tool result.
     #[serde(rename = "agent.mcp_tool_result")]

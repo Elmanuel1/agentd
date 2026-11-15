@@ -1313,6 +1313,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "environments",
  "files",
  "parking_lot",
  "rand 0.8.6",
@@ -1324,6 +1325,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "vaults",
  "work",
 ]
 
@@ -3212,6 +3214,7 @@ dependencies = [
  "hex",
  "hmac",
  "rand 0.8.6",
+ "reqwest 0.12.28",
  "secrecy",
  "serde",
  "serde_json",

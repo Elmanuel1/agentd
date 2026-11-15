@@ -139,6 +139,7 @@ impl SessionsStore for PgSessionsStore {
                     };
                     stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
                     forget(c, ws, id).await?;
+                    super::mcp_connections::forget(c, ws, id).await?;
                     Ok(Ok(doc))
                 }
                 .scope_boxed()

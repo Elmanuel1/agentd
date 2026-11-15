@@ -1,7 +1,7 @@
 //! Assembling a conversation step by step: each step's assistant message,
 //! then the user-side inputs that followed it, tool results first.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{History, Unanswered};
 use crate::model::{Block, Message, Role};
@@ -19,6 +19,7 @@ pub(super) struct Builder {
     pub(super) answered: HashSet<String>,
     pub(super) owed: HashSet<String>,
     pub(super) custom: HashSet<String>,
+    pub(super) mcp: HashMap<String, String>,
     pub(super) halted: bool,
 }
 
@@ -83,6 +84,7 @@ impl Builder {
                 input: input.clone(),
                 custom: self.custom.contains(id),
                 asked: self.owed.contains(id),
+                mcp: self.mcp.get(id).cloned(),
             })
             .collect();
         self.flush();

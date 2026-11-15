@@ -1,0 +1,74 @@
+//! What the loop reaches MCP servers with: the stored connections, the
+//! vaults' credentials, and each session's environment, read in the
+//! organization its work item names. Every session has a work item from its
+//! create, while a workspace key may name a workspace with no row.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use engine::mcp::{Mcp, McpEnvironments};
+use environments::store::EnvironmentsStore;
+use environments::types::EnvironmentConfig;
+use parking_lot::RwLock;
+use shared::net::Guard;
+use shared::{BackendError, OrgId, WorkspaceId};
+use vaults::VaultsService;
+use work::store::Reach;
+use work::WorkReads;
+
+use crate::backends::Stores;
+
+/// How long one MCP request may take.
+const MCP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Environments read by workspace: a workspace's organization never changes,
+/// so each is looked up once per process.
+struct Environments {
+    work: Arc<dyn WorkReads>,
+    environments: Arc<dyn EnvironmentsStore>,
+    orgs: RwLock<HashMap<String, OrgId>>,
+}
+
+impl Environments {
+    async fn org(&self, ws: &WorkspaceId, session: &str) -> Result<OrgId, BackendError> {
+        if let Some(org) = self.orgs.read().get(ws.as_str()) {
+            return Ok(org.clone());
+        }
+        let item = self.work.get(ws, session, &Reach::default()).await.map_err(BackendError::new)?;
+        let org =
+            item.map(|i| i.org).ok_or_else(|| BackendError::new(std::io::Error::other("no work item")))?;
+        self.orgs.write().insert(ws.as_str().to_owned(), org.clone());
+        Ok(org)
+    }
+}
+
+#[async_trait]
+impl McpEnvironments for Environments {
+    async fn config(
+        &self,
+        ws: &WorkspaceId,
+        session: &str,
+        environment_id: &str,
+    ) -> Result<EnvironmentConfig, BackendError> {
+        let org = self.org(ws, session).await?;
+        let id = environment_id.parse().map_err(BackendError::new)?;
+        Ok(self.environments.get(&org, &id).await.map_err(BackendError::new)?.config)
+    }
+}
+
+/// The loop's MCP reach over `stores`, connecting where `guard` allows.
+pub fn mcp(stores: &Stores, guard: Guard) -> Mcp {
+    Mcp {
+        connections: stores.mcp_connections.clone(),
+        vaults: Arc::new(VaultsService::new(stores.vaults.clone(), stores.vault_credentials.clone())),
+        environments: Arc::new(Environments {
+            work: stores.work_reads.clone(),
+            environments: stores.environments.clone(),
+            orgs: RwLock::default(),
+        }),
+        guard,
+        timeout: MCP_TIMEOUT,
+    }
+}

@@ -14,31 +14,10 @@ use shared::ContentBlock;
 pub use super::prompt::{feedback_prompt, outcome_prompt};
 use crate::model::{Block, Message, Role};
 use builder::Builder;
+pub use unanswered::Unanswered;
 
 /// The coordinator's delegation tool, as history replays it.
 pub const SEND_TO_AGENT: &str = "send_to_agent";
-
-/// A tool call the client still has to answer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Unanswered {
-    /// The `agent.tool_use` / `agent.custom_tool_use` event id.
-    pub id: String,
-    /// The tool.
-    pub name: String,
-    /// Its input.
-    pub input: serde_json::Value,
-    /// A custom tool (the client runs it).
-    pub custom: bool,
-    /// A built-in call waiting on the client's confirmation.
-    pub asked: bool,
-}
-
-impl Unanswered {
-    /// The session's worker runs it: a built-in call the policy allowed.
-    pub fn for_worker(&self) -> bool {
-        !self.custom && !self.asked
-    }
-}
 
 /// What a thread's log says.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -123,7 +102,19 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 b.call(id.clone(), name, input);
                 b.custom.insert(id);
             }
-            EventPayload::Agent(AgentEvent::McpToolUse { name, input, .. }) => b.call(id, name, input),
+            EventPayload::Agent(AgentEvent::McpToolUse {
+                mcp_server_name,
+                name,
+                input,
+                evaluated_permission,
+                ..
+            }) => {
+                b.call(id.clone(), name, input);
+                if evaluated_permission.as_deref() == Some("ask") {
+                    b.owed.insert(id.clone());
+                }
+                b.mcp.insert(id, mcp_server_name.clone());
+            }
             EventPayload::Agent(AgentEvent::ThreadMessageSent {
                 content,
                 to_agent_name,
@@ -186,6 +177,7 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
 }
 
 mod builder;
+mod unanswered;
 
 #[cfg(test)]
 mod tests;

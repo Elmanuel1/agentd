@@ -9,6 +9,7 @@ use environments::EnvironmentsStore;
 use files::store::FilesStore;
 use memory::MemoryPersistence;
 use organizations::workspaces::WorkspacesStore;
+use sessions::mcp::McpConnections;
 use sessions::steps::Steps;
 use sessions::{SessionEventLog, SessionEventReads, SessionsStore};
 use shared::ports::blobs::BlobStore;
@@ -16,7 +17,7 @@ use shared::ports::secrets::SecretStore;
 use skills::{SkillVersionsStore, SkillsStore};
 use store_postgres::{
     PgAdminKeysStore, PgAgentsStore, PgApiKeysStore, PgBackend, PgDeploymentsStore, PgEnvironmentKeysStore,
-    PgEnvironmentsStore, PgFilesStore, PgMemoryStore, PgSessionEventLog, PgSessionsStore,
+    PgEnvironmentsStore, PgFilesStore, PgMcpConnections, PgMemoryStore, PgSessionEventLog, PgSessionsStore,
     PgSkillVersionsStore, PgSkillsStore, PgSteps, PgVaultsStore, PgWorkStore, PgWorkspacesStore,
 };
 use vaults::{VaultCredentialStore, VaultStore};
@@ -63,6 +64,8 @@ pub struct Stores {
     pub work_reads: Arc<dyn WorkReads>,
     /// The loop's step queue.
     pub steps: Arc<dyn Steps>,
+    /// The loop's MCP connections.
+    pub mcp_connections: Arc<dyn McpConnections>,
 }
 
 impl std::fmt::Debug for Stores {
@@ -96,7 +99,8 @@ impl Stores {
             admin_keys: Arc::new(PgAdminKeysStore::new(backend.clone())),
             work: work.clone(),
             work_reads: work,
-            steps: Arc::new(PgSteps::new(backend)),
+            steps: Arc::new(PgSteps::new(backend.clone())),
+            mcp_connections: Arc::new(PgMcpConnections::new(backend)),
         }
     }
 

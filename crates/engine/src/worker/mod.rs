@@ -17,7 +17,9 @@ use crate::model::retry::Retry;
 use crate::model::ModelClient;
 
 mod grade;
+mod mcp;
 mod reply;
+mod request;
 mod rubrics;
 mod settle;
 mod stall;
@@ -46,6 +48,8 @@ pub struct Stores {
     pub work: Arc<WorkService>,
     /// The files outcomes name as rubrics.
     pub files: Arc<FilesService>,
+    /// The agents' MCP servers.
+    pub mcp: crate::mcp::Mcp,
 }
 
 /// The model a step calls.

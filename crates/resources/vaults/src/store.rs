@@ -98,6 +98,21 @@ pub trait VaultCredentialStore: Send + Sync {
         ws: &WorkspaceId,
         vault: &VaultId,
     ) -> Result<Vec<StoredCredential>, StoreError>;
+    /// The unarchived MCP credentials of `vaults` whose `mcp_server_url` is
+    /// one of `urls`, in one read.
+    async fn mcp_credentials(
+        &self,
+        ws: &WorkspaceId,
+        vaults: &[String],
+        urls: &[String],
+    ) -> Result<Vec<Credential>, StoreError>;
+    /// A credential's secret alone, with no row read.
+    async fn credential_secret(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<CredentialAuthInput, StoreError>;
     /// The unarchived `environment_variable` credentials of `vaults`, oldest first.
     async fn environment_credentials(
         &self,

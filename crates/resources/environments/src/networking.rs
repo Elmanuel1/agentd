@@ -1,7 +1,9 @@
-//! Which hosts an environment's sandbox may reach: the one reading of its
-//! networking policy, for the agent's web tools and the egress proxy alike.
+//! Which hosts an environment allows: the one reading of its networking
+//! policy, for the agent's web tools, its sandbox and its MCP servers.
 
-use crate::types::Networking;
+use shared::net::host_matches;
+
+use crate::types::{EnvironmentConfig, Networking};
 
 /// What `allow_package_managers` opens under `limited` networking.
 pub const PACKAGE_HOSTS: [&str; 9] = [
@@ -29,6 +31,20 @@ impl Networking {
                 }
                 Some(hosts)
             }
+        }
+    }
+}
+
+impl EnvironmentConfig {
+    /// Whether the agent's MCP server at `host` may be reached: always under
+    /// `unrestricted` networking or a `self_hosted` environment; under
+    /// `limited`, when `allow_mcp_servers` is set or `allowed_hosts` lists it.
+    pub fn mcp_allowed(&self, host: &str) -> bool {
+        match self {
+            Self::Cloud {
+                networking: Networking::Limited { allowed_hosts, allow_mcp_servers, .. }, ..
+            } => *allow_mcp_servers || allowed_hosts.iter().any(|rule| host_matches(rule, host)),
+            Self::Cloud { networking: Networking::Unrestricted, .. } | Self::SelfHosted {} => true,
         }
     }
 }
@@ -62,5 +78,18 @@ mod tests {
         assert!(allowed_hosts(&registries).unwrap().contains(&"pypi.org".to_owned()));
         let unreadable = json!({"networking": {"type": "limited", "allowed_hosts": "everything"}});
         assert_eq!(allowed_hosts(&unreadable), Some(vec![]));
+    }
+
+    #[test]
+    fn mcp_hosts_pass_under_unrestricted_or_when_allowed_or_listed() {
+        let config = |networking: serde_json::Value| -> EnvironmentConfig {
+            serde_json::from_value(json!({"type": "cloud", "networking": networking})).unwrap()
+        };
+        assert!(config(json!({"type": "unrestricted"})).mcp_allowed("mcp.example.com"));
+        let closed = config(json!({"type": "limited", "allowed_hosts": ["*.example.com"]}));
+        assert!(closed.mcp_allowed("mcp.example.com"));
+        assert!(!closed.mcp_allowed("mcp.other.com"));
+        assert!(config(json!({"type": "limited", "allow_mcp_servers": true})).mcp_allowed("mcp.other.com"));
+        assert!(EnvironmentConfig::SelfHosted {}.mcp_allowed("mcp.other.com"));
     }
 }

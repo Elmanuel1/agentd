@@ -11,6 +11,7 @@ pub mod environments;
 pub mod files;
 pub mod fire_claims;
 pub mod loop_steps;
+pub mod mcp_connections;
 pub mod memory;
 pub mod run_lock;
 pub mod schedules;

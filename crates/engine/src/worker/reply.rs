@@ -92,6 +92,22 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 evaluated_permission: Some("allow".into()),
                 evaluation: evaluation.clone(),
             }),
+            Some(Disposition::Mcp { server, ask, evaluation }) => {
+                let call = turn.event(AgentEvent::McpToolUse {
+                    mcp_server_name: server.clone(),
+                    name: name.to_owned(),
+                    input: input.clone(),
+                    evaluated_permission: Some(if *ask { "ask" } else { "allow" }.into()),
+                    evaluation: evaluation.clone(),
+                });
+                // An allowed call runs in the next step, before the model is called again (MC-24).
+                match ask {
+                    true => waiting.push(call.id.clone()),
+                    false => unknown = true,
+                }
+                calls.push(call);
+                continue;
+            }
             Some(Disposition::Delegate) => {
                 unknown = true;
                 let (call, led): (Vec<Event>, Vec<Event>) =

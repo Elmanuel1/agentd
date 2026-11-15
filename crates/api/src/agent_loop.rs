@@ -19,6 +19,10 @@ use work::{WorkService, WorkTokens};
 use crate::backends::{BootError, Stores, SystemKeys};
 use crate::config::Config;
 
+mod mcp;
+
+pub use mcp::mcp;
+
 /// A claim's lease outlasts the step's model deadline by this much.
 const LEASE_MARGIN: Duration = Duration::from_secs(120);
 
@@ -61,6 +65,7 @@ pub async fn spawn(
             system.api_base_url.clone(),
         )),
         files: Arc::new(FilesService::new(stores.files.clone())),
+        mcp: mcp(stores, shared::net::Guard::default()),
     };
     let settings = Settings {
         owner: format!("loop-{}", uuid::Uuid::new_v4()),

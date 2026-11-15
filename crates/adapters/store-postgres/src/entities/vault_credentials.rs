@@ -3,11 +3,11 @@
 //! database.
 
 use ::vaults::store::{StoreError, StoredCredential, VaultCredentialStore};
-use ::vaults::types::{Credential, CredentialId, VaultId};
+use ::vaults::types::{Credential, CredentialAuthInput, CredentialId, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::dsl::sql;
-use diesel::sql_types::Bool;
+use diesel::sql_types::{Array, Bool, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::WorkspaceId;
@@ -136,6 +136,37 @@ impl VaultCredentialStore for PgVaultsStore {
             .await
             .map_err(diesel_be)?;
         docs.into_iter().map(|d| Ok(StoredCredential { wire: parse_doc(d)?, auth: None })).collect()
+    }
+
+    async fn mcp_credentials(
+        &self,
+        ws: &WorkspaceId,
+        vaults: &[String],
+        urls: &[String],
+    ) -> Result<Vec<Credential>, StoreError> {
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let docs: Vec<serde_json::Value> = credentials::table
+            .filter(credentials::workspace_id.eq(ws.as_str()))
+            .filter(credentials::vault_id.eq_any(vaults))
+            .filter(
+                sql::<Bool>("doc->>'archived_at' IS NULL AND doc->'auth'->>'mcp_server_url' = ANY(")
+                    .bind::<Array<Text>, _>(urls)
+                    .sql(")"),
+            )
+            .select(credentials::doc)
+            .load(&mut conn)
+            .await
+            .map_err(diesel_be)?;
+        docs.into_iter().map(parse_doc).collect()
+    }
+
+    async fn credential_secret(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<CredentialAuthInput, StoreError> {
+        self.read_secret(ws, vault, id).await
     }
 
     async fn environment_credentials(

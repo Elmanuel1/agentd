@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
+#[path = "agent_loop/mcp.rs"]
+mod mcp;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -32,6 +34,8 @@ use shared::{BackendError, WorkspaceId};
 enum Say {
     Text(&'static str),
     Tool(&'static str, Value),
+    /// Several tool calls in one reply.
+    Calls(Vec<(&'static str, Value)>),
     /// Pend until the call is cancelled.
     Hold,
     /// End the turn with no content at all.
@@ -62,6 +66,18 @@ impl ModelClient for Scripted {
             Say::Text(t) => (vec![Block::text(t)], StopKind::EndTurn),
             Say::Tool(name, input) => {
                 (vec![Block::ToolUse { id: "toolu_1".into(), name: name.into(), input }], StopKind::ToolUse)
+            }
+            Say::Calls(calls) => {
+                let blocks = calls
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (name, input))| Block::ToolUse {
+                        id: format!("toolu_{i}"),
+                        name: name.into(),
+                        input,
+                    })
+                    .collect();
+                (blocks, StopKind::ToolUse)
             }
             Say::Hold => return std::future::pending().await,
             Say::Empty => (Vec::new(), StopKind::EndTurn),
@@ -142,11 +158,13 @@ struct Tune {
     budget: Arc<dyn ModelBudget>,
     /// The session rows it reads, when not the rig's.
     sessions: Option<Arc<dyn SessionsStore>>,
+    /// Where its MCP client may connect.
+    guard: shared::net::Guard,
 }
 
 impl Default for Tune {
     fn default() -> Self {
-        Self { steps: 8, budget: Arc::new(Unlimited), sessions: None }
+        Self { steps: 8, budget: Arc::new(Unlimited), sessions: None, guard: shared::net::Guard::default() }
     }
 }
 
@@ -183,7 +201,7 @@ impl SessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions } = tune;
+    let Tune { steps, budget, sessions, guard } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -199,6 +217,7 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
+        mcp: api::agent_loop::mcp(&rig.stores, guard),
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000 };

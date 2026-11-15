@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use sessions::events::{Event, EventId, SpanEvent, StopReason};
+use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
 use sessions::signals::Signal;
 use sessions::steps::{Claim, StepEnd, StepWrite};
 use sessions::store::StoreError;
@@ -17,15 +17,12 @@ use super::reply::{led, Call};
 use super::rubrics;
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
-use super::team::roster;
 use super::turn::{batch, opening, Batch};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
-use crate::model::{ModelError, ModelProvider, ModelRequest};
-use crate::turn::history::Kept;
-use crate::turn::policy::Toolbox;
-use crate::turn::prompt::system_prompt;
+use crate::model::{ModelError, ModelProvider};
+use crate::turn::history::{Kept, Unanswered};
 
 impl Loop {
     /// Run `claim`'s step; a step that fails goes back on the queue for a
@@ -51,7 +48,7 @@ impl Loop {
         Ok(wrote)
     }
 
-    async fn commit(
+    pub(super) async fn commit(
         &self,
         claim: &Claim,
         end: StepEnd,
@@ -94,10 +91,13 @@ impl Loop {
         }
         if interrupt != Interrupt::None {
             session.status = SessionStatus::Idle;
-            let mut events = cut_off(&turn, &history);
+            let mut events = cut_off(&turn, &history, &log);
             events.extend(turn.idle(&session, StopReason::EndTurn {}));
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
+        }
+        if history.unanswered.iter().any(Unanswered::for_loop) {
+            return self.call_mcp(claim, session, &thread, &read, taken, answers, &history.unanswered).await;
         }
         if !history.awaits_model() {
             let end = match allowed {
@@ -115,11 +115,14 @@ impl Loop {
             return Ok(());
         }
         let agent = thread.agent.clone();
-        let model = agent.config.model.id.clone();
-        let provider = ModelProvider::of(&model).name();
+        let model = &agent.config.model.id;
+        let provider = ModelProvider::of(model).name();
         if !self.admitted(claim, provider).await? {
             return Ok(());
         }
+        let mut servers = self.stores.mcp.servers(ws, &session, &agent, &read).await?;
+        let errors = servers.connect(idle).await?;
+        let errors = errors.into_iter().map(|error| turn.event(SessionEvent::Error { error }));
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
         let mut running = match idle {
@@ -129,36 +132,13 @@ impl Loop {
         let ongoing =
             thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
         running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
-        let opening = opening(taken, arrived, running, answers.into_iter().chain([start]).collect());
+        let opening =
+            opening(taken, arrived, running, answers.into_iter().chain(errors).chain([start]).collect());
         if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
         }
         session.status = SessionStatus::Running;
-        let roster = roster(&session);
-        let coordinator = thread.primary && !roster.is_empty();
-        let delegates = match coordinator {
-            true => roster.as_slice(),
-            false => &[],
-        };
-        let tools = match &thread.grading {
-            Some(_) => Toolbox::read_only(),
-            None => Toolbox::for_agent(&agent, coordinator),
-        };
-        let effort = agent
-            .config
-            .model
-            .effort
-            .as_ref()
-            .and_then(|e| serde_json::to_value(e).ok()?.as_str().map(str::to_owned));
-        let request = ModelRequest {
-            model,
-            agent: agent.config.name.clone(),
-            system: system_prompt(&agent, &[], delegates),
-            messages: history.messages,
-            tools: tools.tools.clone(),
-            max_tokens: self.models.max_tokens,
-            effort,
-        };
+        let (tools, request) = self.request(&session, &thread, history.messages, &servers.tools());
         let mut watch = Watch {
             rx: self.signals.subscribe(),
             log: self.stores.log.clone(),

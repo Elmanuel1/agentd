@@ -7,12 +7,15 @@ use sessions::events::{
     AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, UserEvent,
 };
 use sessions::types::Session;
-use shared::{ContentBlock, Timestamp};
+use shared::Timestamp;
 
 use super::grade::{active, conversation};
 use super::team::{threads, Thread};
 use super::turn::Turn;
-use crate::turn::history::{rebuild, thread_events, History, Kept};
+use crate::turn::history::{rebuild, thread_events, History, Kept, Unanswered};
+use mcp::{answered, is_mcp, refusal};
+
+mod mcp;
 
 /// The result a denied call gets when the client gave no reason.
 const DENIED: &str = "The user denied this tool call.";
@@ -43,8 +46,8 @@ pub(super) struct Taken {
     pub(super) answers: Vec<Event>,
     /// A confirmation allowed a call, which the session's worker now runs.
     pub(super) allowed: bool,
-    /// The thread the step runs: the primary when it awaits the model, else
-    /// the oldest thread that does.
+    /// The thread the step runs: the first that awaits the model or has an
+    /// MCP call to run, else the primary.
     pub(super) thread: Thread,
     /// That thread's conversation, with the taken events in it.
     pub(super) history: History,
@@ -95,14 +98,15 @@ pub(super) fn take(
                 deny_message,
             }) => {
                 let why = deny_message.clone().unwrap_or_else(|| DENIED.to_owned());
-                Some(turn.event(AgentEvent::ToolResult {
-                    tool_use_id: tool_use_id.clone(),
-                    content: vec![ContentBlock::text(why)],
-                    is_error: true,
-                }))
+                Some(refusal(log, turn, tool_use_id, why))
             }
-            EventPayload::User(UserEvent::ToolConfirmation { result: ConfirmationResult::Allow, .. }) => {
-                allowed = true;
+            EventPayload::User(UserEvent::ToolConfirmation {
+                tool_use_id,
+                result: ConfirmationResult::Allow,
+                ..
+            }) => {
+                // The loop runs an allowed MCP call; the worker the rest.
+                allowed |= !is_mcp(log, tool_use_id);
                 None
             }
             _ => None,
@@ -146,7 +150,8 @@ pub(super) fn take(
     };
     let mut candidates = threads(session, &read);
     candidates.extend(active(&read).and_then(|o| o.thread(session)));
-    let chosen = candidates.iter().map(|t| (t, history_of(t))).find(|(_, h)| h.awaits_model());
+    let due = |h: &History| h.awaits_model() || h.unanswered.iter().any(Unanswered::for_loop);
+    let chosen = candidates.iter().map(|t| (t, history_of(t))).find(|(_, h)| due(h));
     let (thread, history) = match chosen {
         Some((t, h)) => (t.clone(), h),
         None => (primary.clone(), history_of(&primary)),
@@ -156,25 +161,17 @@ pub(super) fn take(
 
 /// The thread of the call `answer` answers.
 fn thread_of(log: &[Event], answer: &Event) -> Option<sessions::types::ThreadId> {
-    let EventPayload::Agent(AgentEvent::ToolResult { tool_use_id, .. }) = &answer.payload else {
-        return None;
-    };
+    let tool_use_id = answered(answer)?;
     log.iter().find(|e| e.id == *tool_use_id).and_then(|e| e.session_thread_id.clone())
 }
 
 /// The error results live posts for the built-in calls an interrupt cut off.
-pub(super) fn cut_off(turn: &Turn, history: &History) -> Vec<Event> {
+pub(super) fn cut_off(turn: &Turn, history: &History, log: &[Event]) -> Vec<Event> {
     history
         .unanswered
         .iter()
-        .filter(|u| u.for_worker())
+        .filter(|u| u.for_worker() || u.for_loop())
         .filter_map(|u| EventId::parse(&u.id).ok())
-        .map(|tool_use_id| {
-            turn.event(AgentEvent::ToolResult {
-                tool_use_id,
-                content: vec![ContentBlock::text(INTERRUPTED)],
-                is_error: true,
-            })
-        })
+        .map(|id| refusal(log, turn, &id, INTERRUPTED.to_owned()))
         .collect()
 }
