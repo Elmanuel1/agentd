@@ -168,6 +168,9 @@ async fn archiving_through_one_replica_ends_another_s_stream() {
     let archive = format!("/v1/sessions/{session}/archive");
     let (st, _) = send_to(&a, request("POST", &archive, Auth::Key(KEY), None)).await;
     assert_eq!(st, StatusCode::OK);
+    // The archive terminates the session (U3): its event, then the end.
+    let last = stream.next(SIGNALLED).await.flatten().unwrap();
+    assert_eq!(last["type"], "session.status_terminated");
     assert_eq!(stream.next(SIGNALLED).await, Some(None));
 }
 
