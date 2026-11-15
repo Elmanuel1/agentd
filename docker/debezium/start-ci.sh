@@ -14,7 +14,9 @@ esac
 docker exec "$pg" psql -U agentd -d agentd -qc "ALTER SYSTEM SET wal_level = logical"
 docker restart "$pg" >/dev/null
 until docker exec "$pg" pg_isready -U agentd -d agentd >/dev/null 2>&1; do sleep 1; done
+# On the host's network Debezium Server's HTTP port would take agentd's 8080.
 docker run -d --name debezium --network host \
+  -e QUARKUS_HTTP_PORT=8083 \
   -v "$PWD/docker/debezium:/debezium/config:ro" \
   -e DEBEZIUM_SOURCE_DATABASE_HOSTNAME=localhost \
   -e DEBEZIUM_SOURCE_DATABASE_PASSWORD=agentd \

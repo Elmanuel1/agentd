@@ -16,6 +16,10 @@ use shared::ports::{FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, Sch
 use shared::AuthContext;
 use store_postgres::{PgBackend, PgFireClaims, PgScheduler, ScheduleOutbox};
 
+/// A tick claims every due schedule in the database, so the tests that tick
+/// take turns: another test's tick would fire this one's schedule.
+static TICKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
 }
@@ -76,6 +80,7 @@ async fn a_due_schedule_fires_once_across_two_schedulers_and_moves_to_its_next_t
     if !enabled() {
         return;
     }
+    let _turn = TICKS.lock().await;
     let pg = backend().await;
     let (seen, fires) =
         (Arc::new(Seen::default()), Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))));
@@ -99,6 +104,7 @@ async fn a_fire_more_than_a_minute_late_is_skipped_and_a_paused_one_waits() {
     if !enabled() {
         return;
     }
+    let _turn = TICKS.lock().await;
     let pg = backend().await;
     let (seen, fires) =
         (Arc::new(Seen::default()), Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))));
