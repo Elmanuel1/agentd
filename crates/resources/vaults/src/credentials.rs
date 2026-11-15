@@ -53,7 +53,7 @@ impl VaultsService {
             display_name,
             id: CredentialId::generate(),
             metadata: req.metadata,
-            tag: CredentialTag::Credential,
+            tag: CredentialTag::VaultCredential,
             updated_at: now,
             vault_id: vault_id.as_str().to_owned(),
         };
@@ -135,12 +135,17 @@ impl VaultsService {
     }
 }
 
-/// Live: env-var credentials REQUIRE `auth.networking` — a missing one is
-/// `auth.networking: Field required` (an exact nested field-path message serde
-/// can't produce, so it's validated here).
+/// Live requires an env-var credential's `auth.networking` and a refresh's
+/// `client_id`, naming each by its nested path (`auth.networking: Field
+/// required`), which serde cannot, so they are checked here.
 pub(crate) fn validate_auth(auth: &CredentialAuthInput) -> Result<(), ApiError> {
-    if let CredentialAuthInput::EnvironmentVariable { networking: None, .. } = auth {
-        return Err(ApiError::invalid_request("auth.networking: Field required"));
+    match auth {
+        CredentialAuthInput::EnvironmentVariable { networking: None, .. } => {
+            Err(ApiError::invalid_request("auth.networking: Field required"))
+        }
+        CredentialAuthInput::McpOauth { refresh: Some(r), .. } if r.client_id.is_none() => {
+            Err(ApiError::invalid_request("auth.refresh.client_id: Field required"))
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }

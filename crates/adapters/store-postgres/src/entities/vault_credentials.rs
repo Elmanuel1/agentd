@@ -167,7 +167,7 @@ impl VaultCredentialStore for PgVaultsStore {
         let docs: Vec<serde_json::Value> = credentials::table
             .filter(credentials::workspace_id.eq(ws.as_str()))
             .filter(credentials::vault_id.eq(vault.as_str()))
-            .order(credentials::created_at.asc())
+            .order((credentials::created_at.desc(), credentials::credential_id.desc()))
             .select(credentials::doc)
             .load(&mut conn)
             .await

@@ -80,3 +80,16 @@ fn request_id_grammar() {
     assert!(r.as_str().starts_with("req_01"));
     assert_eq!(r.as_str().len(), "req_".len() + 24);
 }
+
+struct RenamedRes;
+impl Resource for RenamedRes {
+    const PREFIX: &'static str = "vcrd";
+    const EARLIER_PREFIXES: &'static [&'static str] = &["cred"];
+}
+
+#[test]
+fn a_new_id_takes_the_current_prefix_and_an_earlier_one_still_parses() {
+    assert!(Id::<RenamedRes>::generate().as_str().starts_with("vcrd_01"));
+    assert!(Id::<RenamedRes>::parse("cred_01AAAAAAAAAAAAAAAAAAAAAA").is_ok());
+    assert!(Id::<RenamedRes>::parse("other_01AAAAAAAAAAAAAAAAAAAAAA").is_err());
+}

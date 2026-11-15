@@ -128,7 +128,7 @@ impl VaultStore for PgVaultsStore {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let docs: Vec<serde_json::Value> = vaults::table
             .filter(vaults::workspace_id.eq(ws.as_str()))
-            .order(vaults::created_at.asc())
+            .order((vaults::created_at.desc(), vaults::vault_id.desc()))
             .select(vaults::doc)
             .limit(page.fetch_limit())
             .offset(page.sql_offset())

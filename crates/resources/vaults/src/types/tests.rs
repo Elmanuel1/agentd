@@ -27,7 +27,20 @@ fn wire_projection_carries_no_secret_material() {
     assert!(!raw.contains("abc"));
     assert_eq!(v["type"], "mcp_oauth");
     assert_eq!(v["mcp_server_url"], "https://mcp.slack.com/mcp");
-    assert_eq!(v["has_refresh"], true);
+    assert_eq!(
+        v["refresh"],
+        serde_json::json!({"client_id": "123.456", "scope": "channels:read",
+            "token_endpoint": "https://slack.com/api/oauth.v2.access",
+            "token_endpoint_auth": {"type": "client_secret_post"}})
+    );
+    let plain: CredentialAuthInput =
+        serde_json::from_str(r#"{"type":"mcp_oauth","mcp_server_url":"https://b/mcp","access_token":"t"}"#)
+            .unwrap();
+    assert_eq!(
+        serde_json::to_value(plain.to_wire()).unwrap(),
+        serde_json::json!({"type": "mcp_oauth", "mcp_server_url": "https://b/mcp"}),
+        "live leaves out an unset expiry and refresh"
+    );
 }
 
 #[test]

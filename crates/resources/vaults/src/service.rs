@@ -103,20 +103,23 @@ impl VaultsService {
     }
 }
 
+/// Live answers a malformed vault id with its generic message.
 pub(crate) fn parse_vault_id(raw: &str) -> Result<VaultId, ApiError> {
-    VaultId::parse(raw).map_err(|e| ApiError::invalid_request(e.to_string()))
+    VaultId::parse(raw).map_err(|_| ApiError::invalid_request("The request was invalid"))
 }
 
 pub(crate) fn parse_pair(v: &str, c: &str) -> Result<(VaultId, CredentialId), ApiError> {
     let vid = parse_vault_id(v)?;
-    let cid = CredentialId::parse(c).map_err(|e| ApiError::invalid_request(e.to_string()))?;
+    let cid = CredentialId::parse(c).map_err(|_| {
+        ApiError::invalid_request(format!("Invalid credential_id \"{c}\": expected vcrd_ prefix."))
+    })?;
     Ok((vid, cid))
 }
 
 pub(crate) fn map_store(e: StoreError) -> ApiError {
     match e {
-        StoreError::VaultNotFound => ApiError::not_found("vault not found"),
-        StoreError::CredentialNotFound => ApiError::not_found("credential not found"),
+        StoreError::VaultNotFound => ApiError::not_found("Vault not found."),
+        StoreError::CredentialNotFound => ApiError::not_found("Credential not found."),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

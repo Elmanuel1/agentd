@@ -23,6 +23,8 @@ pub trait Resource {
     /// Human label used in the malformed-ID error message (e.g. `"agent"` →
     /// `"Invalid agent ID."`).
     const LABEL: &'static str = Self::PREFIX;
+    /// Earlier prefixes whose stored ids still parse; new ids take [`Self::PREFIX`].
+    const EARLIER_PREFIXES: &'static [&'static str] = &[];
 }
 
 const BASE62: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -94,10 +96,9 @@ impl<T: Resource> Id<T> {
 
     /// Parse and validate a raw wire string.
     pub fn parse(raw: &str) -> Result<Self, InvalidId> {
-        let prefix = T::PREFIX;
-        let rest = raw
-            .strip_prefix(prefix)
-            .and_then(|r| r.strip_prefix('_'))
+        let rest = std::iter::once(T::PREFIX)
+            .chain(T::EARLIER_PREFIXES.iter().copied())
+            .find_map(|prefix| raw.strip_prefix(prefix).and_then(|r| r.strip_prefix('_')))
             .ok_or(InvalidId { label: T::LABEL })?;
         if !body_is_valid(rest) {
             return Err(InvalidId { label: T::LABEL });

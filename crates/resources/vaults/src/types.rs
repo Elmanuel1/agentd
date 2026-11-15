@@ -21,13 +21,14 @@ impl Resource for VaultResource {
 /// `Id<VaultResource>` alias.
 pub type VaultId = Id<VaultResource>;
 
-/// Marker for `cred_…` ids (prefix unverified against live — flagged for
-/// conformance once a credential is created against the real API).
+/// Marker for `vcrd_…` ids, as live makes them; agentd's earlier `cred_`
+/// ids still parse.
 #[derive(Debug, Clone, Copy)]
 pub struct CredentialResource;
 impl Resource for CredentialResource {
-    const PREFIX: &'static str = "cred";
+    const PREFIX: &'static str = "vcrd";
     const LABEL: &'static str = "credential";
+    const EARLIER_PREFIXES: &'static [&'static str] = &["cred"];
 }
 /// `Id<CredentialResource>` alias.
 pub type CredentialId = Id<CredentialResource>;
@@ -105,15 +106,17 @@ pub struct CreateVaultRequest {
 mod auth;
 pub use auth::{
     CredentialAuthInput, CredentialAuthWire, CredentialNetworking, InjectionLocation, OauthRefreshInput,
-    TokenEndpointAuthInput,
+    OauthRefreshWire, TokenEndpointAuthInput, TokenEndpointAuthWire, TokenEndpointMethod,
 };
 
-/// Constant `"type":"credential"`.
+/// Constant `"type":"vault_credential"`; a doc stored with agentd's earlier
+/// `"credential"` still reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialTag {
-    /// Always `credential`.
-    Credential,
+    /// Always `vault_credential`.
+    #[serde(alias = "credential")]
+    VaultCredential,
 }
 
 /// Wire credential object — secret-free by type.
@@ -127,11 +130,11 @@ pub struct Credential {
     pub created_at: Timestamp,
     /// Display name.
     pub display_name: String,
-    /// `cred_…`.
+    /// `vcrd_…`.
     pub id: CredentialId,
     /// User metadata.
     pub metadata: Metadata,
-    /// Always `"credential"`.
+    /// Always `"vault_credential"`.
     #[serde(rename = "type")]
     pub tag: CredentialTag,
     /// Updated.
