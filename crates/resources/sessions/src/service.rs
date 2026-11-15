@@ -17,6 +17,7 @@ use shared::ApiError;
 use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
 use crate::types::{Session, SessionId};
 
+mod egress;
 mod events;
 mod lifecycle;
 mod ports;
@@ -28,6 +29,7 @@ mod work;
 
 pub use threads::threads_projection;
 
+pub use egress::MCP_EGRESS_BLOCKED;
 pub use ports::{SessionDeps, SessionWork};
 pub use stream::{Streams, Subscription};
 

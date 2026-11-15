@@ -2,6 +2,7 @@ use shared::limits::required;
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
+use super::egress::check_mcp_egress;
 use super::events::validate_sendable;
 use super::{guard_writable, map_store, parse_id, SessionsService};
 use crate::events::{EventPayload, UserEvent};
@@ -41,6 +42,9 @@ impl SessionsService {
             agent = overrides.apply(agent, &self.catalog)?;
         }
         let environment = self.deps.resolve_environment(ctx, &environment_id).await?;
+        if req.deployment_id.is_some() {
+            check_mcp_egress(&agent, &environment)?;
+        }
         self.deps.check_vaults(ctx, &req.vault_ids).await?;
         let now = Timestamp::now();
         let session = Session {

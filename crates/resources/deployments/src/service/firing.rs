@@ -7,7 +7,7 @@ use shared::{ApiError, AuthContext, Timestamp};
 
 use super::{map_store, parse_id, DeploymentsService};
 use crate::fire::target;
-use crate::run_error::{apply_run_error, classify_fire_error};
+use crate::run_error::{apply_run_error, classify_fire_error, Applied};
 use crate::types::{
     Deployment, DeploymentRun, DeploymentRunId, DeploymentRunTag, DeploymentStatus, TriggerContext,
 };
@@ -95,8 +95,11 @@ impl DeploymentsService {
             d.schedule.last_run_at = Some(*scheduled_at);
             let _ = d.schedule.refresh_upcoming(Utc::now());
         }
-        let archived = error.as_ref().is_some_and(|e| apply_run_error(&mut d, e));
-        let change = archived.then(|| ScheduleChange::Delete { target: target(&d.id) });
+        let change = match error.as_ref().map(|e| apply_run_error(&mut d, e)) {
+            Some(Applied::Archive) => Some(ScheduleChange::Delete { target: target(&d.id) }),
+            Some(Applied::Pause) => Some(ScheduleChange::Pause { target: target(&d.id) }),
+            Some(Applied::Keep) | None => None,
+        };
         d.updated_at = Timestamp::now();
         self.store.replace(&ctx.workspace, d, change.as_ref()).await.map_err(map_store)?;
         Ok(run)

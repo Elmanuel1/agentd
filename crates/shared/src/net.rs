@@ -64,6 +64,11 @@ impl Guard {
     }
 }
 
+/// The host `url` names, when it parses.
+pub fn host_of(url: &str) -> Option<String> {
+    reqwest::Url::parse(url).ok()?.host_str().map(|h| h.trim_matches(['[', ']']).to_owned())
+}
+
 /// Whether `host` matches `rule`: a bare host matches only itself;
 /// `*.example.com` matches every subdomain of `example.com`, not the apex.
 pub fn host_matches(rule: &str, host: &str) -> bool {

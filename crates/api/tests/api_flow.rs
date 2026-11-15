@@ -322,6 +322,62 @@ async fn deployment_create_and_internal_fire_through_http() {
 }
 
 #[tokio::test]
+async fn a_fire_whose_agent_reaches_a_blocked_mcp_host_pauses_the_deployment() {
+    // MC-18, MC-19.
+    let Some(app) = app().await else {
+        return;
+    };
+    let env =
+        |networking: &str| format!(r#"{{"name":"m","config":{{"type":"cloud","networking":{networking}}}}}"#);
+    let (_, closed) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(&env(r#"{"type":"limited","allowed_hosts":["other.com"]}"#)),
+    )
+    .await;
+    let (_, open) =
+        call(&app, "POST", "/v1/environments", Some(&env(r#"{"type":"limited","allow_mcp_servers":true}"#)))
+            .await;
+    let agent = r#"{"name":"m","model":"claude-sonnet-4-6",
+        "mcp_servers":[{"type":"url","name":"docs","url":"https://mcp.example.com/mcp"}],
+        "tools":[{"type":"mcp_toolset","mcp_server_name":"docs"}]}"#;
+    let (st, agent) = call(&app, "POST", "/v1/agents", Some(agent)).await;
+    assert_eq!(st, StatusCode::OK, "{agent}");
+    let deploy = |env: &serde_json::Value| {
+        format!(
+            r#"{{"name":"m","agent":"{}","environment_id":"{}","initial_events":[{{"type":"user.message","content":[{{"type":"text","text":"go"}}]}}],"schedule":{{"type":"cron","expression":"0 20 * * 5","timezone":"UTC"}}}}"#,
+            agent["id"].as_str().unwrap(),
+            env["id"].as_str().unwrap()
+        )
+    };
+    let fire =
+        |id: &str| format!(r#"{{"deployment_id":"{id}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#);
+    let (_, blocked) = call(&app, "POST", "/v1/deployments", Some(&deploy(&closed))).await;
+    let did = blocked["id"].as_str().expect(&blocked.to_string());
+    let (st, fired) = call(&app, "POST", "/internal/fire", Some(&fire(did))).await;
+    assert_eq!(st, StatusCode::OK, "{fired}");
+    assert_eq!(fired["run"]["session_id"], serde_json::Value::Null, "no session is created");
+    let error = serde_json::json!({"type": "mcp_egress_blocked_error",
+        "message": "An MCP server host used by the deployment's agent is blocked by the environment's network policy"});
+    assert_eq!(fired["run"]["error"], error);
+    let (_, got) = call(&app, "GET", &format!("/v1/deployments/{did}"), None).await;
+    assert_eq!(got["status"], "paused");
+    assert_eq!(got["paused_reason"], serde_json::json!({"type": "error", "error": error}));
+
+    let (_, allowed) = call(&app, "POST", "/v1/deployments", Some(&deploy(&open))).await;
+    let (_, fired) = call(&app, "POST", "/internal/fire", Some(&fire(allowed["id"].as_str().unwrap()))).await;
+    assert!(fired["run"]["session_id"].as_str().is_some_and(|s| s.starts_with("sesn_")), "{fired}");
+    let direct = format!(
+        r#"{{"agent":"{}","environment_id":"{}"}}"#,
+        agent["id"].as_str().unwrap(),
+        closed["id"].as_str().unwrap()
+    );
+    let (st, _) = call(&app, "POST", "/v1/sessions", Some(&direct)).await;
+    assert_eq!(st, StatusCode::OK, "a session created directly is not checked at create");
+}
+
+#[tokio::test]
 async fn list_pagination_matches_live_cursor_shape() {
     let Some(app) = app().await else {
         return;
