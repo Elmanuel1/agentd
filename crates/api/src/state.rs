@@ -15,7 +15,7 @@ use shared::ports::fire::FireError;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use shared::Module;
 use skills::SkillsService;
-use vaults::VaultsService;
+use vaults::{McpReach, VaultsService};
 
 use crate::backends::Backends;
 use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealWorkspaceKeys};
@@ -49,6 +49,9 @@ impl std::fmt::Debug for AppState {
     }
 }
 
+/// How long `mcp_oauth_validate` waits for a server's `initialize`.
+const MCP_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl AppState {
     /// Build every service over `backends`, assemble the modules, and register
     /// their fire handlers with the scheduler's registry. Two modules claiming
@@ -67,11 +70,14 @@ impl AppState {
             signals,
             load,
             role,
+            guard,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
-        let vaults = Arc::new(VaultsService::new(stores.vaults, stores.vault_credentials.clone()));
+        let probe = Arc::new(engine::mcp::Probe::new(guard.clone(), MCP_PROBE_TIMEOUT));
+        let vaults = VaultsService::new(stores.vaults, stores.vault_credentials.clone());
+        let vaults = Arc::new(vaults.with_mcp(McpReach { probe, guard }));
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),

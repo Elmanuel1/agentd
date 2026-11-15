@@ -62,12 +62,19 @@ pub struct Streaming {
     pub signals: Arc<dyn Signals>,
     pub load: Arc<dyn DatabaseLoad>,
     pub role: Role,
+    /// Where it may connect for a tenant.
+    pub guard: shared::net::Guard,
 }
 
 impl Default for Streaming {
-    /// Signals in this app alone, never overloaded.
+    /// Signals in this app alone, never overloaded, reaching no internal address.
     fn default() -> Self {
-        Self { signals: Arc::new(LocalSignals::default()), load: Arc::new(Unloaded), role: Role::All }
+        Self {
+            signals: Arc::new(LocalSignals::default()),
+            load: Arc::new(Unloaded),
+            role: Role::All,
+            guard: shared::net::Guard::default(),
+        }
     }
 }
 
@@ -95,6 +102,7 @@ fn app(
         signals: streaming.signals,
         load: streaming.load,
         role: streaming.role,
+        guard: streaming.guard,
     };
     build_router(AppState::build(backends).unwrap())
 }

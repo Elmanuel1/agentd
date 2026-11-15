@@ -56,6 +56,8 @@ pub struct Backends {
     pub load: Arc<dyn DatabaseLoad>,
     /// What this replica runs; a `loop` replica serves no route.
     pub role: Role,
+    /// Where agentd itself may connect for a tenant: MCP servers, token endpoints.
+    pub guard: shared::net::Guard,
 }
 
 /// The deployment's own keys, from its configuration.
@@ -167,6 +169,7 @@ impl Backends {
             signals,
             load,
             role,
+            guard: shared::net::Guard::default(),
         })
     }
 }

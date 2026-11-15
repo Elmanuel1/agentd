@@ -60,6 +60,7 @@ async fn app() -> Option<Router> {
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,
         role: api::config::Role::All,
+        guard: shared::net::Guard::default(),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

@@ -8,11 +8,29 @@ use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
 use crate::store::{StoreError, VaultCredentialStore, VaultStore};
 use crate::types::{CreateVaultRequest, CredentialId, UpdateVaultRequest, Vault, VaultId, VaultTag};
+use crate::validate::McpProbe;
+use shared::net::Guard;
 
 /// Vault service.
 pub struct VaultsService {
     pub(crate) vaults: Arc<dyn VaultStore>,
     pub(crate) credentials: Arc<dyn VaultCredentialStore>,
+    pub(crate) mcp: Option<McpReach>,
+}
+
+/// How the service reaches MCP servers and token endpoints itself.
+#[derive(Clone)]
+pub struct McpReach {
+    /// Sends `initialize`.
+    pub probe: Arc<dyn McpProbe>,
+    /// Where token requests may go.
+    pub guard: Guard,
+}
+
+impl std::fmt::Debug for McpReach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpReach").field("guard", &self.guard).finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for VaultsService {
@@ -24,7 +42,14 @@ impl std::fmt::Debug for VaultsService {
 impl VaultsService {
     /// Build with the vault aggregate's two ports, usually one store.
     pub fn new(vaults: Arc<dyn VaultStore>, credentials: Arc<dyn VaultCredentialStore>) -> Self {
-        Self { vaults, credentials }
+        Self { vaults, credentials, mcp: None }
+    }
+
+    /// The service, reaching MCP servers through `mcp`.
+    #[must_use]
+    pub fn with_mcp(mut self, mcp: McpReach) -> Self {
+        self.mcp = Some(mcp);
+        self
     }
 
     // ── Vault CRUD ────────────────────────────────────────────────────────

@@ -15,10 +15,12 @@ use vaults::VaultsService;
 
 pub mod client;
 mod errors;
+mod probe;
 pub mod server;
 mod servers;
 
 pub use errors::{is_mcp_error, CONNECTION_FAILED};
+pub use probe::Probe;
 pub use servers::{CallOutcome, McpTool, Servers};
 
 /// The session's environment, as the MCP networking check reads it.

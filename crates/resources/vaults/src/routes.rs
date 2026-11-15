@@ -29,6 +29,7 @@ pub fn router() -> Router {
             get(get_credential).post(update_credential).delete(delete_credential),
         )
         .route("/v1/vaults/{id}/credentials/{cid}/archive", post(archive_credential))
+        .route("/v1/vaults/{id}/credentials/{cid}/mcp_oauth_validate", post(validate_credential))
 }
 
 async fn create_vault(
@@ -116,6 +117,14 @@ async fn update_credential(
     ApiJson(body): ApiJson<UpdateCredentialRequest>,
 ) -> Result<Response, RouteError> {
     Ok(Json(svc.update_credential(&ctx, &id, &cid, body).await?).into_response())
+}
+
+async fn validate_credential(
+    Extension(svc): Extension<Arc<VaultsService>>,
+    Extension(ctx): Extension<AuthContext>,
+    Path((id, cid)): Path<(String, String)>,
+) -> Result<Response, RouteError> {
+    Ok(Json(svc.validate_mcp_oauth(&ctx, &id, &cid).await?).into_response())
 }
 
 async fn archive_credential(

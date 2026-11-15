@@ -100,3 +100,126 @@ async fn a_credential_reads_with_live_s_shape() {
         "VA-4"
     );
 }
+
+/// A server for `mcp_oauth_validate`: `/ok` answers `initialize`, `/locked`
+/// refuses it, `/token` grants a token and `/badtoken` refuses the grant.
+async fn validation_server() -> (String, shared::net::Guard, std::sync::Arc<parking_lot::Mutex<Vec<String>>>)
+{
+    use axum::routing::post;
+    let forms = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let seen = forms.clone();
+    let app = axum::Router::new()
+        .route(
+            "/ok",
+            post(|| async {
+                axum::Json(json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-11-25"}}))
+            }),
+        )
+        .route(
+            "/locked",
+            post(|| async { (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "unauthorized"}))) }),
+        )
+        .route(
+            "/token",
+            post(move |body: String| async move {
+                seen.lock().push(body);
+                axum::Json(json!({"access_token": "fresh", "token_type": "Bearer", "expires_in": 3600}))
+            }),
+        )
+        .route(
+            "/badtoken",
+            post(|| async { (StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid_grant"}))) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+    (format!("http://{addr}"), shared::net::Guard::allowing(vec![addr]), forms)
+}
+
+#[tokio::test]
+async fn mcp_oauth_validate_answers_as_live_does() {
+    // VA-6, B23; live's answers captured 2026-11-15.
+    let Some(rig) = Rig::new().await else { return };
+    let (base, guard, forms) = validation_server().await;
+    let app = rig.replica(&rig.stores, common::Streaming { guard, ..common::Streaming::default() });
+    let v = vault(&rig).await;
+    let validate = |auth: Value| {
+        let app = app.clone();
+        let v = v.clone();
+        async move {
+            let path = format!("/v1/vaults/{v}/credentials");
+            let body = json!({"display_name": "c", "auth": auth});
+            let (st, cred) =
+                common::send_to(&app, common::request("POST", &path, Auth::Key(KEY), Some(body))).await;
+            assert_eq!(st, StatusCode::OK, "{cred}");
+            let path =
+                format!("/v1/vaults/{v}/credentials/{}/mcp_oauth_validate", cred["id"].as_str().unwrap());
+            let (st, got) = common::send_to(&app, common::request("POST", &path, Auth::Key(KEY), None)).await;
+            (st, got, cred["id"].as_str().unwrap().to_owned())
+        }
+    };
+    let oauth = |url: String, refresh: Option<&str>| {
+        let mut auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "old"});
+        if let Some(endpoint) = refresh {
+            auth["refresh"] = json!({"client_id": "c", "token_endpoint": format!("{base}/{endpoint}"),
+                "token_endpoint_auth": {"type": "none"}, "refresh_token": "r", "scope": "s"});
+        }
+        auth
+    };
+
+    let (st, ok, _) = validate(oauth(format!("{base}/ok"), None)).await;
+    assert_eq!(st, StatusCode::OK, "{ok}");
+    assert_eq!(
+        (ok["type"].as_str(), ok["status"].as_str()),
+        (Some("vault_credential_validation"), Some("valid"))
+    );
+    assert_eq!(
+        (&ok["mcp_probe"], &ok["refresh"], &ok["has_refresh_token"]),
+        (&Value::Null, &Value::Null, &json!(false))
+    );
+    assert!(ok["validated_at"].is_string());
+
+    let (_, locked, _) = validate(oauth(format!("{base}/locked"), None)).await;
+    assert_eq!(locked["status"], "invalid");
+    assert_eq!(locked["mcp_probe"]["method"], "initialize");
+    assert_eq!(locked["mcp_probe"]["http_response"]["status_code"], 401);
+    assert_eq!(locked["mcp_probe"]["http_response"]["body_truncated"], false);
+    assert_eq!(locked["refresh"], json!({"status": "no_refresh_token", "http_response": null}));
+
+    let (_, refreshed, id) = validate(oauth(format!("{base}/locked?a"), Some("token"))).await;
+    assert_eq!(
+        (refreshed["status"].as_str(), refreshed["has_refresh_token"].as_bool()),
+        (Some("unknown"), Some(true))
+    );
+    assert_eq!(refreshed["refresh"], json!({"status": "succeeded", "http_response": null}));
+    assert_eq!(
+        forms.lock().as_slice(),
+        ["grant_type=refresh_token&refresh_token=r&client_id=c"],
+        "no scope, as live"
+    );
+    let (_, cred) = rig.call("GET", &format!("/v1/vaults/{v}/credentials/{id}"), Auth::Key(KEY), None).await;
+    assert!(cred["auth"]["expires_at"].is_string(), "the new token's expiry is stored: {cred}");
+
+    let (_, refused, _) = validate(oauth(format!("{base}/locked?b"), Some("badtoken"))).await;
+    assert_eq!(refused["status"], "invalid");
+    assert_eq!(
+        (refused["refresh"]["status"].as_str(), refused["refresh"]["http_response"]["status_code"].as_u64()),
+        (Some("failed"), Some(400))
+    );
+
+    let (_, gone, _) = validate(oauth("https://agentd-validate.invalid/mcp".into(), None)).await;
+    assert_eq!(
+        (gone["status"].as_str(), &gone["mcp_probe"]),
+        (Some("unknown"), &json!({"method": "initialize", "http_response": null}))
+    );
+
+    let bearer = json!({"type": "static_bearer", "mcp_server_url": format!("{base}/bearer"), "token": "t"});
+    let (st, body, _) = validate(bearer).await;
+    assert_eq!(
+        (st, error(&body)),
+        (
+            StatusCode::BAD_REQUEST,
+            ("invalid_request_error", "Credentials of this auth.type cannot be validated.")
+        )
+    );
+}
