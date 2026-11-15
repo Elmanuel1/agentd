@@ -53,8 +53,11 @@ impl Loop {
         let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
         let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
-        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } =
-            take(&log, &session, cloud, &rubrics, &kept);
+        let step = take(&log, &session, cloud, &rubrics, &kept);
+        if step.interrupt == Interrupt::None && step.history.unanswered.iter().any(Unanswered::for_loop) {
+            return self.call_mcp(claim, session, step).await;
+        }
+        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } = step;
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
             self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
@@ -65,11 +68,6 @@ impl Loop {
             events.extend(turn.idle(&session, StopReason::EndTurn {}));
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
-        }
-        if history.unanswered.iter().any(Unanswered::for_loop) {
-            return self
-                .call_mcp(claim, session, &thread, &read, (taken, answers), &history.unanswered)
-                .await;
         }
         if !history.awaits_model() {
             let end = match allowed {

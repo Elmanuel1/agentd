@@ -12,7 +12,8 @@ use serde_json::json;
 use sessions::events::{Event, EventPayload, SessionEvent, StopReason, UserEvent};
 use sessions::retention::{ArchivedCursor, ArchivedSessions, Retention, RunLock};
 use sessions::store::{
-    DatabaseLoad, Head, SessionEventLog, SessionEventReads, SessionsStore, StoreError, Tail, Wake,
+    DatabaseLoad, Head, SessionEventLog, SessionEventReads, SessionReplace, SessionsStore, StoreError, Tail,
+    Wake,
 };
 use sessions::types::{Session, SessionId, SessionStatus};
 use shared::{OrgId, Timestamp, WorkspaceId};
@@ -195,7 +196,7 @@ async fn the_tail_reads_after_its_cursor_with_its_pending_events_until_the_sessi
 
     let mut archived = s.clone();
     archived.archived_at = Some(now());
-    store.replace(&ws, &s, archived.clone()).await.unwrap();
+    store.replace(&ws, &s, archived.clone(), &[]).await.unwrap();
     assert_eq!(
         log.tail(&ws, &s.id, head.seq, &[], 10).await.unwrap(),
         Some(Tail { archived: true, events: vec![] })
@@ -246,13 +247,13 @@ async fn a_delete_refuses_a_running_session_and_stops_the_work_item_of_one_it_de
 
     let mut running = s.clone();
     running.status = SessionStatus::Running;
-    store.replace(&ws, &s, running.clone()).await.unwrap();
+    store.replace(&ws, &s, running.clone(), &[]).await.unwrap();
     assert!(matches!(store.delete(&ws, &s.id).await, Err(StoreError::Conflict)));
     let item = work.get(&ws, s.id.as_str(), &Reach::default()).await.unwrap().unwrap();
     assert_eq!(item.work.state, WorkState::Queued, "a refused delete stops nothing");
     assert_eq!(store.get(&ws, &s.id).await.unwrap(), running);
 
-    store.replace(&ws, &running, s.clone()).await.unwrap();
+    store.replace(&ws, &running, s.clone(), &[]).await.unwrap();
     assert_eq!(store.delete(&ws, &s.id).await.unwrap(), s);
     let item = work.get(&ws, s.id.as_str(), &Reach::default()).await.unwrap().unwrap();
     assert_eq!(item.work.state, WorkState::Stopped);
@@ -275,12 +276,12 @@ async fn the_write_that_archives_a_session_stops_its_work_item_and_no_other_writ
 
     let mut renamed = s.clone();
     renamed.title = Some("renamed".into());
-    store.replace(&ws, &s, renamed.clone()).await.unwrap();
+    store.replace(&ws, &s, renamed.clone(), &[]).await.unwrap();
     assert_eq!(state().await, WorkState::Queued, "a write that does not archive stops nothing");
 
     let mut archived = renamed.clone();
     archived.archived_at = Some(Timestamp::now());
-    store.replace(&ws, &renamed, archived).await.unwrap();
+    store.replace(&ws, &renamed, archived, &[]).await.unwrap();
     assert_eq!(state().await, WorkState::Stopped);
 }
 

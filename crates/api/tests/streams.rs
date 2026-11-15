@@ -318,7 +318,7 @@ async fn a_running_session_is_not_deleted() {
     let (ws, id) = (WorkspaceId::new(&rig.ws), SessionId::parse(&session).unwrap());
     let read = rig.stores.sessions.get(&ws, &id).await.unwrap();
     let running = sessions::Session { status: sessions::SessionStatus::Running, ..read.clone() };
-    rig.stores.sessions.replace(&ws, &read, running).await.unwrap();
+    rig.stores.sessions.replace(&ws, &read, running, &[]).await.unwrap();
     let (st, refused) = rig.call("DELETE", &format!("/v1/sessions/{session}"), Auth::Key(KEY), None).await;
     assert_eq!(st, StatusCode::CONFLICT);
     assert_eq!(refused["error"]["message"], "cannot delete a running session");

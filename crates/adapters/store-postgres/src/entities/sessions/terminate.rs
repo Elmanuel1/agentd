@@ -19,7 +19,7 @@ pub(super) async fn archived(
     ws: &WorkspaceId,
     read: &Session,
     s: &Session,
-    sent: &[Delivery],
+    deliveries: &[Delivery],
 ) -> Result<(), diesel::result::Error> {
     stop(c, ws, s.id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
     if read.status == s.status || s.status != SessionStatus::Terminated {
@@ -31,5 +31,5 @@ pub(super) async fn archived(
     let doc =
         serde_json::to_value(&event).map_err(|e| diesel::result::Error::SerializationError(Box::new(e)))?;
     insert(c, ws, &s.id, &[event.id.as_str()], vec![doc]).await?;
-    insert_deliveries(c, sent).await
+    insert_deliveries(c, deliveries).await
 }

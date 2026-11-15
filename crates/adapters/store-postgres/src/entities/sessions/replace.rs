@@ -2,8 +2,9 @@
 //! writer read; an archive's also stops the work item and terminates the
 //! session in the same commit.
 
-use ::sessions::store::StoreError;
+use ::sessions::store::{SessionReplace, StoreError};
 use ::sessions::types::Session;
+use async_trait::async_trait;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -13,20 +14,17 @@ use super::PgSessionsStore;
 use crate::schema::sessions;
 use crate::{diesel_be, enum_str, pool_be, to_doc};
 
-impl PgSessionsStore {
-    /// `replace`, with the webhook deliveries `sent` in its commit.
-    pub(super) async fn replace_sending(
+#[async_trait]
+impl SessionReplace for PgSessionsStore {
+    async fn replace(
         &self,
         ws: &WorkspaceId,
         read: &Session,
         s: Session,
-        sent: &[webhooks::Delivery],
+        deliveries: &[webhooks::Delivery],
     ) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc = to_doc(&s)?;
-        // The row is locked and compared as a Session, not as raw JSON: a doc
-        // written before a field existed re-serializes differently but holds
-        // the same session.
         // The row is locked and compared as a Session, not as raw JSON: a doc
         // written before a field existed re-serializes differently but holds
         // the same session.
@@ -56,7 +54,7 @@ impl PgSessionsStore {
                     .execute(c)
                     .await?;
                     if read.archived_at.is_none() && s.archived_at.is_some() {
-                        super::terminate::archived(c, ws, read, &s, sent).await?;
+                        super::terminate::archived(c, ws, read, &s, deliveries).await?;
                     }
                     Ok(Ok(()))
                 }

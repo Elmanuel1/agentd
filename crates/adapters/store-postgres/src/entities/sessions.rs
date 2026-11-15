@@ -75,20 +75,6 @@ impl SessionsStore for PgSessionsStore {
         parse_doc(doc.ok_or(StoreError::NotFound)?)
     }
 
-    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
-        self.replace_sending(ws, read, s, &[]).await
-    }
-
-    async fn archive(
-        &self,
-        ws: &WorkspaceId,
-        read: &Session,
-        s: Session,
-        sent: &[webhooks::Delivery],
-    ) -> Result<(), StoreError> {
-        self.replace_sending(ws, read, s, sent).await
-    }
-
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let running = enum_str(&SessionStatus::Running);

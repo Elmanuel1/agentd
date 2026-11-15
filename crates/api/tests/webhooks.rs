@@ -92,6 +92,8 @@ async fn vault_and_credential_writes_send_live_s_lifecycle_events() {
     }
     let (st, _) = call("DELETE", format!("/v1/vaults/{v}/credentials/{}", creds[0]), None).await;
     assert_eq!(st, StatusCode::OK);
+    let (st, _) = call("DELETE", format!("/v1/vaults/{v}/credentials/{}", creds[0]), None).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a repeated delete finds nothing and sends nothing");
     let (st, _) = call("POST", format!("/v1/vaults/{v}/archive"), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(kinds(&sent(&rig, &v).await), ["vault.created", "vault.archived"]);
@@ -168,5 +170,7 @@ async fn a_pending_delivery_is_sent_by_a_sender_started_after_it_was_written() {
     )
     .await
     .unwrap();
-    assert!(rows[0].row["delivered_at"].is_string(), "its end is recorded");
+    let row = &rows[0].row;
+    assert!(row["delivered_at"].is_string(), "its end is recorded");
+    assert_eq!((&row["dropped_at"], &row["attempt"]), (&Value::Null, &json!(1)));
 }

@@ -58,7 +58,7 @@ impl VaultStore for PgVaultsStore {
         &self,
         ws: &WorkspaceId,
         vault: Vault,
-        sent: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<(), StoreError> {
         let row = NewVault {
             workspace_id: ws.as_str().to_owned(),
@@ -71,7 +71,7 @@ impl VaultStore for PgVaultsStore {
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
                 diesel::insert_into(vaults::table).values(row).execute(c).await?;
-                insert_deliveries(c, sent).await
+                insert_deliveries(c, deliveries).await
             }
             .scope_boxed()
         })

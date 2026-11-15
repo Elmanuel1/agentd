@@ -172,7 +172,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 events: std::slice::from_ref(&start),
                 engine: &[],
                 session: &running,
-                notice: None,
+                deliveries: None,
             },
         )
         .await
@@ -191,7 +191,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 events: std::slice::from_ref(&last),
                 engine: &[],
                 session: &unchanged,
-                notice: None,
+                deliveries: None,
             },
         )
         .await
@@ -231,7 +231,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                 events: none,
                 engine: &[],
                 session: &unchanged,
-                notice: None
+                deliveries: None
             }
         )
         .await
@@ -247,7 +247,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                 events: none,
                 engine: &[],
                 session: &unchanged,
-                notice: None
+                deliveries: None
             }
         )
         .await
@@ -263,7 +263,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                 events: &[reply()],
                 engine: &[],
                 session: &unchanged,
-                notice: None
+                deliveries: None
             }
         )
         .await
@@ -296,7 +296,7 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                 events: &[reply()],
                 engine: &[],
                 session: &unchanged,
-                notice: None
+                deliveries: None
             }
         )
         .await
@@ -314,7 +314,7 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                 events: &[],
                 engine: &[],
                 session: &unchanged,
-                notice: None
+                deliveries: None
             }
         )
         .await
@@ -346,7 +346,7 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
                 events: &[reply()],
                 engine: &[],
                 session: &unchanged,
-                notice: None
+                deliveries: None
             }
         )
         .await
@@ -392,7 +392,7 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
                 events: &[],
                 engine: &[],
                 session: &unchanged,
-                notice: None,
+                deliveries: None,
             },
         )
         .await
@@ -448,7 +448,7 @@ async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() 
                 events: &[reply()],
                 engine: &[],
                 session: &unchanged,
-                notice: None,
+                deliveries: None,
             },
         )
         .await
@@ -487,7 +487,7 @@ async fn the_counts_see_due_and_leased_steps() {
                 events: &[],
                 engine: &[],
                 session: &unchanged,
-                notice: None,
+                deliveries: None,
             },
         )
         .await
@@ -544,7 +544,7 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
         events: &[],
         engine: &[],
         session: &unchanged,
-        notice: None,
+        deliveries: None,
     };
     r.steps.commit(&held, StepEnd::Done, w).await.unwrap();
 }
@@ -567,7 +567,7 @@ async fn what_a_step_keeps_beside_an_event_only_the_engine_read_returns() {
         events: std::slice::from_ref(&said),
         engine: &kept,
         session: &unchanged,
-        notice: None,
+        deliveries: None,
     };
     r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
     let read = r.log.engine_events(&ws, &s.id).await.unwrap();
@@ -608,7 +608,7 @@ async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
             events: std::slice::from_ref(&event),
             engine: &engine,
             session: &unchanged,
-            notice: None,
+            deliveries: None,
         };
         ends.push(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
     }

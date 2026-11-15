@@ -18,7 +18,7 @@ use super::PgVaultsStore;
 use crate::entities::webhook_deliveries::insert_deliveries;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be, to_doc};
-use ::vaults::store::Cascade;
+use ::vaults::store::CascadeDeliveries;
 use webhooks::Delivery;
 
 #[derive(QueryableByName)]
@@ -52,7 +52,7 @@ impl VaultCascade for PgVaultsStore {
         ws: &WorkspaceId,
         id: &VaultId,
         at: Timestamp,
-        sent: &Cascade<'_>,
+        deliveries: &CascadeDeliveries<'_>,
     ) -> Result<Vault, StoreError> {
         let stamp =
             serde_json::to_value(at).map_err(|e| StoreError::Backend(shared::BackendError::new(e)))?;
@@ -92,7 +92,7 @@ impl VaultCascade for PgVaultsStore {
                     .load(c)
                     .await?;
                     let ids: Vec<String> = archived.iter().map(|t| t.credential_id.clone()).collect();
-                    insert_deliveries(c, &sent(&ids)).await?;
+                    insert_deliveries(c, &deliveries(&ids)).await?;
                     Ok(Ok((vault, archived)))
                 }
                 .scope_boxed()
@@ -109,7 +109,7 @@ impl VaultCascade for PgVaultsStore {
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
-        sent: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<Vault, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let (doc, deleted) = conn
@@ -130,7 +130,7 @@ impl VaultCascade for PgVaultsStore {
                         .filter(vaults::vault_id.eq(id.as_str()))
                         .execute(c)
                         .await?;
-                    insert_deliveries(c, sent).await?;
+                    insert_deliveries(c, deliveries).await?;
                     Ok(Ok((doc, deleted)))
                 }
                 .scope_boxed()

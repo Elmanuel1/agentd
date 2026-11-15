@@ -43,14 +43,14 @@ struct Org {
     org_id: String,
 }
 
-/// The deliveries `sent` builds for a session's status change, in its
+/// The deliveries `build` makes for a session's status change, in its
 /// commit: the organization read from the session's work item, which every
 /// session has.
 pub(crate) async fn status_changed(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     id: &SessionId,
-    sent: impl FnOnce(&str) -> Vec<Delivery>,
+    build: impl FnOnce(&str) -> Vec<Delivery>,
 ) -> Result<(), diesel::result::Error> {
     let org: Option<Org> =
         diesel::sql_query("SELECT org_id FROM work_items WHERE workspace_id = $1 AND session_id = $2")
@@ -60,7 +60,7 @@ pub(crate) async fn status_changed(
             .await
             .optional()?;
     let Some(org) = org else { return Ok(()) };
-    insert_deliveries(c, &sent(&org.org_id)).await
+    insert_deliveries(c, &build(&org.org_id)).await
 }
 
 /// Write `rows` in a transaction of their own, for a change with no other

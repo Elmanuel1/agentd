@@ -33,7 +33,7 @@ pub type SessionChange<'a> = dyn Fn(&mut Session) -> bool + Send + Sync + 'a;
 
 /// The webhook deliveries of the session's status becoming the given one,
 /// for the given organization.
-pub type StatusNotice<'a> =
+pub type StatusDeliveries<'a> =
     dyn Fn(&str, crate::types::SessionStatus) -> Vec<webhooks::Delivery> + Send + Sync + 'a;
 
 /// What one write of a held step lands, in one transaction.
@@ -49,8 +49,8 @@ pub struct StepWrite<'a> {
     pub engine: &'a [(EventId, serde_json::Value)],
     /// What it changes on the session's row.
     pub session: &'a SessionChange<'a>,
-    /// The deliveries a status change sends, when any endpoint is configured.
-    pub notice: Option<&'a StatusNotice<'a>>,
+    /// The webhook deliveries of a status change, when any endpoint is configured.
+    pub deliveries: Option<&'a StatusDeliveries<'a>>,
 }
 
 impl std::fmt::Debug for StepWrite<'_> {

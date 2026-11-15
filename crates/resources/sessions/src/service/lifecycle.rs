@@ -152,7 +152,7 @@ impl SessionsService {
         }
         s.change_budget(req.budget)?;
         s.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, &read, s.clone()).await.map_err(map_store)?;
+        self.store.replace(&ctx.workspace, &read, s.clone(), &[]).await.map_err(map_store)?;
         Ok(s)
     }
 
@@ -171,9 +171,9 @@ impl SessionsService {
             s.status = SessionStatus::Terminated;
             s.updated_at = Timestamp::now();
             let kind = webhooks::EventKind::SessionTerminated;
-            let sent =
+            let deliveries =
                 self.webhooks.deliveries(ctx.org.as_str(), ctx.workspace.as_str(), kind, s.id.as_str());
-            self.store.archive(&ctx.workspace, &read, s.clone(), &sent).await.map_err(map_store)?;
+            self.store.replace(&ctx.workspace, &read, s.clone(), &deliveries).await.map_err(map_store)?;
             // Every replica's streams of the session end.
             self.publish(&ctx.workspace, &id).await;
         }

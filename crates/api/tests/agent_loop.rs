@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 use sessions::signals::{LocalSignals, Signals};
-use sessions::store::{SessionFilter, SessionsStore, StoreError};
+use sessions::store::{SessionFilter, SessionReplace, SessionsStore, StoreError};
 use sessions::types::{Session, SessionId};
 use shared::Pagination;
 use shared::{BackendError, WorkspaceId};
@@ -211,6 +211,19 @@ impl Default for Tune {
 struct Unreadable(Arc<dyn SessionsStore>);
 
 #[async_trait]
+impl SessionReplace for Unreadable {
+    async fn replace(
+        &self,
+        ws: &WorkspaceId,
+        read: &Session,
+        s: Session,
+        deliveries: &[webhooks::Delivery],
+    ) -> Result<(), StoreError> {
+        self.0.replace(ws, read, s, deliveries).await
+    }
+}
+
+#[async_trait]
 impl SessionsStore for Unreadable {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
         self.0.insert(ws, s).await
@@ -218,10 +231,6 @@ impl SessionsStore for Unreadable {
 
     async fn get(&self, _: &WorkspaceId, _: &SessionId) -> Result<Session, StoreError> {
         Err(StoreError::Backend(BackendError::new(std::io::Error::other("database down"))))
-    }
-
-    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
-        self.0.replace(ws, read, s).await
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {

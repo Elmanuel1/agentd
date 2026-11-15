@@ -54,15 +54,18 @@ pub enum ClaimedWrite {
 
 /// The deliveries a vault's archive sends, from the ids of the credentials it
 /// archives.
-pub type Cascade<'a> = dyn Fn(&[String]) -> Vec<Delivery> + Send + Sync + 'a;
+pub type CascadeDeliveries<'a> = dyn Fn(&[String]) -> Vec<Delivery> + Send + Sync + 'a;
 
 /// Persistence port for vault rows.
 #[async_trait]
 pub trait VaultStore: VaultCascade {
-    /// Insert a vault.
-    /// Insert a vault and `sent`, its webhook deliveries, in one transaction.
-    async fn insert_vault(&self, ws: &WorkspaceId, vault: Vault, sent: &[Delivery])
-        -> Result<(), StoreError>;
+    /// Its webhook deliveries are written in the same transaction.
+    async fn insert_vault(
+        &self,
+        ws: &WorkspaceId,
+        vault: Vault,
+        deliveries: &[Delivery],
+    ) -> Result<(), StoreError>;
     /// Fetch a vault.
     async fn get_vault(&self, ws: &WorkspaceId, id: &VaultId) -> Result<Vault, StoreError>;
     /// Replace a vault.
@@ -96,21 +99,21 @@ pub trait VaultCredentialStore: CredentialReads + CredentialClaims + CredentialW
 #[async_trait]
 pub trait VaultCascade: Send + Sync {
     /// Archive a vault and its unarchived credentials, purging their secrets,
-    /// with the deliveries `sent` builds from the archived credentials' ids;
+    /// with the `deliveries` built from the archived credentials' ids;
     /// an archived vault is answered as it is.
     async fn archive_vault(
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
         at: Timestamp,
-        sent: &Cascade<'_>,
+        deliveries: &CascadeDeliveries<'_>,
     ) -> Result<Vault, StoreError>;
-    /// Delete a vault and its credentials, purging their secrets, with `sent`.
+    /// Delete a vault and its credentials, purging their secrets, with `deliveries`.
     async fn delete_vault(
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
-        sent: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<Vault, StoreError>;
 }
 
@@ -143,8 +146,8 @@ pub trait CredentialReads: Send + Sync {
 /// A credential write claimed on the `updated_at` the writer read.
 #[async_trait]
 pub trait CredentialClaims: Send + Sync {
-    /// Claim a refresh: move the unarchived row's `updated_at` from `read`
-    /// to `now`; `false` when it no longer reads `read`.
+    /// Move the unarchived row's `updated_at` from `read` to `now`; `false`
+    /// when it no longer reads `read`.
     async fn claim_credential(
         &self,
         ws: &WorkspaceId,
@@ -153,8 +156,8 @@ pub trait CredentialClaims: Send + Sync {
         read: Timestamp,
         now: Timestamp,
     ) -> Result<bool, StoreError>;
-    /// Store a refresh's token, then its row while the row's `updated_at`
-    /// is still `claimed`.
+    /// Store the secret, then the row while its `updated_at` is still
+    /// `claimed`.
     async fn write_claimed(
         &self,
         ws: &WorkspaceId,
@@ -173,7 +176,7 @@ pub trait CredentialWrites: Send + Sync {
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: StoredCredential,
-        sent: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<(), StoreError>;
     /// Archive one credential: `cred` with its archive stamp and no secret.
     async fn archive_credential(
@@ -181,16 +184,16 @@ pub trait CredentialWrites: Send + Sync {
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: StoredCredential,
-        sent: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<(), StoreError>;
-    /// Delete one credential, with `sent` when a row was deleted.
+    /// `deliveries` are written only when a row was deleted.
     async fn delete_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
         id: &CredentialId,
-        sent: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<StoredCredential, StoreError>;
-    /// Write `sent`, deliveries of a change with no row to write beside them.
-    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError>;
+    /// For a change with no row to write beside its deliveries.
+    async fn insert_deliveries(&self, deliveries: &[Delivery]) -> Result<(), StoreError>;
 }

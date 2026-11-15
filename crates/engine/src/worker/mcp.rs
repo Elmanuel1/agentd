@@ -2,34 +2,32 @@
 //! commits each result and stays due, so the next step calls the model with
 //! them (MC-25).
 
-use sessions::events::{AgentEvent, Event, EventId, SessionEvent};
+use sessions::events::{AgentEvent, EventId, SessionEvent};
 use sessions::steps::{Claim, StepEnd};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
 
-use super::team::Thread;
+use super::take::Taken;
 use super::turn::batch;
 use super::Loop;
 use crate::mcp::CallOutcome;
-use crate::turn::history::Unanswered;
 use crate::turn::policy::model_name;
 
 impl Loop {
-    /// Call each allowed MCP call in `unanswered` and commit its result. A
-    /// session idle when the step starts (a confirmation allowed the call)
-    /// runs again, and its servers connect again as at any turn's start.
+    /// Call each allowed MCP call the step's thread has unanswered and commit
+    /// its result. A session idle when the step starts (a confirmation
+    /// allowed the call) runs again, and its servers connect again as at any
+    /// turn's start.
     pub(super) async fn call_mcp(
         &self,
         claim: &Claim,
         mut session: Session,
-        thread: &Thread,
-        log: &[Event],
-        (taken, answers): (Vec<EventId>, Vec<Event>),
-        unanswered: &[Unanswered],
+        step: Taken,
     ) -> Result<(), BackendError> {
+        let Taken { taken, answers, thread, history, read, .. } = step;
         let turn = thread.turn();
         let starting = session.status == SessionStatus::Idle;
-        let mut servers = self.stores.mcp.servers(&claim.workspace, &session, &thread.agent, log).await?;
+        let mut servers = self.stores.mcp.servers(&claim.workspace, &session, &thread.agent, &read).await?;
         let mut events = answers;
         let running = match starting {
             true => turn.running(),
@@ -43,7 +41,7 @@ impl Loop {
             return self.defer_refresh(claim).await;
         }
         let mut called_any = false;
-        for call in unanswered.iter().filter(|u| u.for_loop()) {
+        for call in history.unanswered.iter().filter(|u| u.for_loop()) {
             let Ok(id) = EventId::parse(&call.id) else { continue };
             let server = call.mcp.as_deref().unwrap_or_default();
             let prefix = model_name(server, "");

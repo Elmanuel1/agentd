@@ -57,7 +57,13 @@ impl VaultsService {
     }
 
     /// The deliveries of `kind` about `id` to `org`'s endpoints.
-    pub(crate) fn notice(&self, org: &OrgId, ws: &WorkspaceId, kind: EventKind, id: &str) -> Vec<Delivery> {
+    pub(crate) fn deliveries(
+        &self,
+        org: &OrgId,
+        ws: &WorkspaceId,
+        kind: EventKind,
+        id: &str,
+    ) -> Vec<Delivery> {
         self.webhooks.deliveries(org.as_str(), ws.as_str(), kind, id)
     }
 
@@ -85,8 +91,9 @@ impl VaultsService {
             tag: VaultTag::Vault,
             updated_at: now,
         };
-        let sent = self.notice(&ctx.org, &ctx.workspace, EventKind::VaultCreated, vault.id.as_str());
-        self.vaults.insert_vault(&ctx.workspace, vault.clone(), &sent).await.map_err(map_store)?;
+        let deliveries =
+            self.deliveries(&ctx.org, &ctx.workspace, EventKind::VaultCreated, vault.id.as_str());
+        self.vaults.insert_vault(&ctx.workspace, vault.clone(), &deliveries).await.map_err(map_store)?;
         Ok(vault)
     }
 
@@ -132,10 +139,13 @@ impl VaultsService {
         let id = parse_vault_id(raw_id)?;
         // One vault.archived, and one vault_credential.archived for each credential it archives (B29).
         let cascade = |credentials: &[String]| {
-            let mut sent = self.notice(&ctx.org, &ctx.workspace, EventKind::VaultArchived, id.as_str());
+            let mut deliveries =
+                self.deliveries(&ctx.org, &ctx.workspace, EventKind::VaultArchived, id.as_str());
             let kind = || EventKind::CredentialArchived { vault_id: id.as_str().to_owned() };
-            sent.extend(credentials.iter().flat_map(|c| self.notice(&ctx.org, &ctx.workspace, kind(), c)));
-            sent
+            deliveries.extend(
+                credentials.iter().flat_map(|c| self.deliveries(&ctx.org, &ctx.workspace, kind(), c)),
+            );
+            deliveries
         };
         self.vaults.archive_vault(&ctx.workspace, &id, Timestamp::now(), &cascade).await.map_err(map_store)
     }
@@ -161,8 +171,8 @@ impl VaultsService {
     pub async fn delete_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
         // One vault.deleted; whether live adds one per credential is B30's probe.
-        let sent = self.notice(&ctx.org, &ctx.workspace, EventKind::VaultDeleted, id.as_str());
-        self.vaults.delete_vault(&ctx.workspace, &id, &sent).await.map_err(map_store)
+        let deliveries = self.deliveries(&ctx.org, &ctx.workspace, EventKind::VaultDeleted, id.as_str());
+        self.vaults.delete_vault(&ctx.workspace, &id, &deliveries).await.map_err(map_store)
     }
 }
 

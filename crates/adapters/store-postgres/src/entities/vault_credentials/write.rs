@@ -28,7 +28,7 @@ impl CredentialWrites for PgVaultsStore {
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: StoredCredential,
-        facts: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<(), StoreError> {
         let row = NewCredential {
             workspace_id: ws.as_str().to_owned(),
@@ -63,7 +63,7 @@ impl CredentialWrites for PgVaultsStore {
                         Some(Ok(true)) => {}
                     }
                     diesel::insert_into(credentials::table).values(row).execute(c).await?;
-                    insert_deliveries(c, facts).await?;
+                    insert_deliveries(c, deliveries).await?;
                     Ok(Ok(()))
                 }
                 .scope_boxed()
@@ -83,7 +83,7 @@ impl CredentialWrites for PgVaultsStore {
         ws: &WorkspaceId,
         vault: &VaultId,
         cred: StoredCredential,
-        facts: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<(), StoreError> {
         let rotates = cred.auth.is_some();
         if rotates {
@@ -109,7 +109,7 @@ impl CredentialWrites for PgVaultsStore {
                         .execute(c)
                         .await?;
                     if affected == 1 {
-                        insert_deliveries(c, facts).await?;
+                        insert_deliveries(c, deliveries).await?;
                     }
                     Ok(affected)
                 }
@@ -139,15 +139,12 @@ impl CredentialWrites for PgVaultsStore {
         Err(exists.map_or(StoreError::CredentialNotFound, |_| StoreError::CredentialArchived))
     }
 
-    /// Delete one credential with its delivery, in one statement whose
-    /// returned row is the answer, so a repeated delete is `404` and sends no
-    /// second delivery; then its secret, which may already be gone.
     async fn delete_credential(
         &self,
         ws: &WorkspaceId,
         vault: &VaultId,
         id: &CredentialId,
-        facts: &[Delivery],
+        deliveries: &[Delivery],
     ) -> Result<StoredCredential, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = conn
@@ -164,7 +161,7 @@ impl CredentialWrites for PgVaultsStore {
                     .await
                     .optional()?;
                     if doc.is_some() {
-                        insert_deliveries(c, facts).await?;
+                        insert_deliveries(c, deliveries).await?;
                     }
                     Ok(doc)
                 }
@@ -178,7 +175,9 @@ impl CredentialWrites for PgVaultsStore {
         Ok(StoredCredential { wire, auth: None })
     }
 
-    async fn send(&self, sent: &[Delivery]) -> Result<(), StoreError> {
-        crate::entities::webhook_deliveries::publish(&self.backend, sent).await.map_err(StoreError::Backend)
+    async fn insert_deliveries(&self, deliveries: &[Delivery]) -> Result<(), StoreError> {
+        crate::entities::webhook_deliveries::publish(&self.backend, deliveries)
+            .await
+            .map_err(StoreError::Backend)
     }
 }

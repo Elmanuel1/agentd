@@ -30,13 +30,11 @@ async fn land(
         write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
     for (doc, event) in docs.iter_mut().zip(write.events) {
         let kept = write.engine.iter().find(|(e, _)| *e == event.id).map(|(_, kept)| kept.clone());
-        if let (Some(kept), Some(doc)) = (kept, doc.as_object_mut()) {
-            // A checkpoint's covered seq at the path V11's unique index reads.
-            if let Some(seq) = kept.get("checkpoint").and_then(|c| c.get("through_seq")) {
-                doc.insert("checkpoint".into(), serde_json::json!({ "through_seq": seq }));
-            }
-            doc.insert("engine".into(), kept);
-        }
+        let (Some(kept), Some(doc)) = (kept, doc.as_object_mut()) else { continue };
+        // A checkpoint's covered seq at the path V11's unique index reads.
+        let seq = kept.get("checkpoint").and_then(|c| c.get("through_seq")).cloned();
+        doc.extend(seq.map(|seq| ("checkpoint".to_owned(), serde_json::json!({ "through_seq": seq }))));
+        doc.insert("engine".into(), kept);
     }
     if insert(c, ws, id, &ids, docs).await? != ids.len() {
         return Err(diesel::result::Error::RollbackTransaction);
@@ -66,8 +64,8 @@ async fn land(
         .bind::<Jsonb, _>(doc)
         .execute(c)
         .await?;
-    match (session.status == before, write.notice) {
-        (false, Some(notice)) => status_changed(c, ws, id, |org| notice(org, session.status)).await,
+    match (session.status == before, write.deliveries) {
+        (false, Some(deliveries)) => status_changed(c, ws, id, |org| deliveries(org, session.status)).await,
         _ => Ok(()),
     }
 }
@@ -94,8 +92,13 @@ fn held(
 fn lost(e: diesel::result::Error) -> Result<bool, StoreError> {
     use diesel::result::{DatabaseErrorKind, Error};
     match e {
+        Error::RollbackTransaction => Ok(false),
         // A second checkpoint of one covered event (V11): another step wrote it.
-        Error::RollbackTransaction | Error::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => Ok(false),
+        Error::DatabaseError(DatabaseErrorKind::UniqueViolation, info)
+            if info.constraint_name() == Some("session_events_checkpoint") =>
+        {
+            Ok(false)
+        }
         e => Err(diesel_be(e)),
     }
 }

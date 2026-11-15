@@ -63,13 +63,13 @@ impl VaultsService {
             vault_id: vault_id.as_str().to_owned(),
         };
         let kind = EventKind::CredentialCreated { vault_id: vault_id.as_str().to_owned() };
-        let sent = self.notice(&ctx.org, &ctx.workspace, kind, cred.id.as_str());
+        let deliveries = self.deliveries(&ctx.org, &ctx.workspace, kind, cred.id.as_str());
         self.credentials
             .insert_credential(
                 &ctx.workspace,
                 &vault_id,
                 StoredCredential { wire: cred.clone(), auth: Some(auth) },
-                &sent,
+                &deliveries,
             )
             .await
             .map_err(map_store)?;
@@ -124,7 +124,7 @@ impl VaultsService {
                     &ctx.workspace,
                     &vid,
                     stored.clone(),
-                    &self.notice(
+                    &self.deliveries(
                         &ctx.org,
                         &ctx.workspace,
                         EventKind::CredentialArchived { vault_id: vid.as_str().to_owned() },
@@ -150,7 +150,7 @@ impl VaultsService {
                 &ctx.workspace,
                 &vid,
                 &cid,
-                &self.notice(
+                &self.deliveries(
                     &ctx.org,
                     &ctx.workspace,
                     EventKind::CredentialDeleted { vault_id: vid.as_str().to_owned() },

@@ -77,30 +77,29 @@ impl Default for EventFilter {
     }
 }
 
-/// Persistence port.
+/// A session's compare-and-write.
 #[async_trait]
-pub trait SessionsStore: Send + Sync {
-    /// Insert a session.
-    async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
-    /// Fetch a session.
-    async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
+pub trait SessionReplace: Send + Sync {
     /// Write `s` only while the stored session is still `read`; a session
-    /// another writer changed first is [`StoreError::Conflict`]. A write that
-    /// archives the session stops its work item in the same commit.
-    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError>;
-    /// [`Self::replace`] for an archive, which terminates the session as
-    /// live's does (U3): the log gains `session.status_terminated` and
-    /// `sent`, its webhook deliveries, land in the same commit.
-    async fn archive(
+    /// another writer changed first is [`StoreError::Conflict`]. `deliveries`
+    /// land in the same commit. A write that archives the session stops its
+    /// work item and terminates it as live's does (U3).
+    async fn replace(
         &self,
         ws: &WorkspaceId,
         read: &Session,
         s: Session,
-        sent: &[webhooks::Delivery],
-    ) -> Result<(), StoreError> {
-        let _ = sent;
-        self.replace(ws, read, s).await
-    }
+        deliveries: &[webhooks::Delivery],
+    ) -> Result<(), StoreError>;
+}
+
+/// Persistence port.
+#[async_trait]
+pub trait SessionsStore: SessionReplace {
+    /// Insert a session.
+    async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
+    /// Fetch a session.
+    async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
     /// Under the session's append lock, delete the session unless it is
     /// running ([`StoreError::Conflict`]) and stop its work item.
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;

@@ -17,21 +17,25 @@ use shared::net::Guard;
 use super::common::{request, send_to, Auth, Rig, KEY};
 use super::{db, events_until, message, send, types, worker, Say, Scripted, Tune};
 
-/// One request the server got: its method, session id and bearer.
+/// One request the server got: its method, session id, bearer, user agent
+/// and `clientInfo`.
 #[derive(Debug, Clone)]
 struct Got {
     method: String,
     session: Option<String>,
     bearer: Option<String>,
+    agent: Option<String>,
+    client: Value,
 }
 
-/// A scripted MCP server: `lookup` answers, `flaky` fails with a 502, and
-/// `forget` makes it end every session it gave.
+/// A scripted MCP server: `lookup` answers, `flaky` fails with a 502,
+/// `forget` makes it end every session it gave, and `refuse` answers 401.
 #[derive(Default)]
 struct Server {
     got: Mutex<Vec<Got>>,
     sessions: AtomicUsize,
     forget: AtomicBool,
+    refuse: AtomicBool,
     tokens: AtomicUsize,
     /// `grow` was called: the list has gained `extra`.
     grown: AtomicBool,
@@ -51,8 +55,12 @@ async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<
     let header = |n: &str| headers.get(n).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let method = body["method"].as_str().unwrap_or_default().to_owned();
     let session = header("mcp-session-id");
-    let bearer = header("authorization");
-    s.got.lock().push(Got { method: method.clone(), session: session.clone(), bearer });
+    let (bearer, agent, client) =
+        (header("authorization"), header("user-agent"), body["params"]["clientInfo"].clone());
+    s.got.lock().push(Got { method: method.clone(), session: session.clone(), bearer, agent, client });
+    if s.refuse.load(Ordering::SeqCst) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     if method == "tools/call" && session.is_some() && s.forget.swap(false, Ordering::SeqCst) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -198,6 +206,12 @@ async fn an_allowed_mcp_call_runs_in_the_loop_and_the_next_call_hears_its_result
         (Some("found \"cat\""), Some(false))
     );
     assert_eq!(server.methods(), ["initialize", "notifications/initialized", "tools/list", "tools/call"]);
+    let init = server.got.lock()[0].clone();
+    assert_eq!(
+        (init.agent.as_deref(), init.client),
+        (Some("Claude-User"), json!({"name": "claude-ai", "version": "0.1.0"})),
+        "live's session-time client (B27)"
+    );
     let call_got = server.got.lock().last().cloned().unwrap();
     assert_eq!(call_got.session.as_deref(), Some("s-0"), "the call reuses the stored session (MC-13)");
     {
@@ -298,6 +312,37 @@ async fn a_server_agentd_may_not_reach_records_a_connection_error_and_the_turn_g
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     assert_eq!(of(&events, "session.error").len(), 1, "a host the networking does not list (MC-10)");
     assert!(server.methods().is_empty());
+}
+
+#[tokio::test]
+async fn a_server_that_refuses_authentication_records_an_authentication_error() {
+    // MC-4: live's words with no vault credential for the URL (B27); with one,
+    // the server refused it.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    server.refuse.store(true, Ordering::SeqCst);
+    let model = Scripted::new(vec![Say::Text("without"), Say::Text("with")]);
+    let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
+    let cred = json!({"display_name": "docs", "auth": {"type": "static_bearer", "mcp_server_url": url, "token": "tok-refused"}});
+    let path = format!("/v1/vaults/{}/credentials", vault["id"].as_str().unwrap());
+    let (st, _) = rig.call("POST", &path, Auth::Key(KEY), Some(cred)).await;
+    assert_eq!(st, StatusCode::OK);
+    let unstored =
+        "no credential is stored for this server URL \u{2014} check that the agent's MCP server URL \
+        matches the URL in the vault";
+    for (vaults, why) in [(json!([]), unstored), (json!([vault["id"]]), "authentication required")] {
+        let s = mcp_session(&app, &env, &url, Some("always_allow"), vaults).await;
+        send(&app, &s, message("go")).await;
+        let events = events_until(&app, &s, "session.status_idle", 1).await;
+        let errors: Vec<&Value> = of(&events, "session.error").into_iter().map(|e| &e["error"]).collect();
+        let refused = json!({"type": "mcp_authentication_failed_error", "mcp_server_name": "docs",
+            "message": format!("MCP server 'docs' initialize failed: {why}"), "retry_status": {"type": "retrying"}});
+        assert_eq!(errors, [&refused], "{why}");
+        assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    }
+    assert_eq!(server.methods(), ["initialize", "initialize"], "nothing after a refused initialize");
 }
 
 #[tokio::test]
@@ -524,8 +569,12 @@ async fn a_list_changed_notification_lists_the_tools_again_and_stores_them() {
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("grow")).await;
     let events = events_until(&app, &s, "session.status_idle", 1).await;
-    let result = of(&events, "agent.mcp_tool_result")[0];
-    assert_eq!(result["content"], json!([{"type": "text", "text": "grown"}]), "read from the event stream");
+    let (call, result) = (of(&events, "agent.mcp_tool_use")[0], of(&events, "agent.mcp_tool_result")[0]);
+    assert_eq!(
+        (&result["mcp_tool_use_id"], &result["content"], &result["is_error"]),
+        (&call["id"], &json!([{"type": "text", "text": "grown"}]), &json!(false)),
+        "read from the event stream"
+    );
     assert_eq!(server.count("tools/list"), 2, "listed again after the notification");
     let asked = model.asked.lock();
     assert!(asked[1].tools.iter().any(|t| t.name == "mcp__docs__extra"), "the stored list is the new one");
