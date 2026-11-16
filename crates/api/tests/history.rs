@@ -126,6 +126,21 @@ async fn every_change_reaches_history_with_its_writer() {
     })
     .await;
 
+    // A redacted version's content leaves history; the head's current version keeps its own.
+    let (_, store, _) = call(&rig, "POST", "/v1/memory_stores", Some(json!({"name": "h"}))).await;
+    let sid = store["id"].as_str().unwrap().to_owned();
+    let memories = format!("/v1/memory_stores/{sid}/memories");
+    let (_, memory, _) =
+        call(&rig, "POST", &memories, Some(json!({"path": "/a.md", "content": "one"}))).await;
+    let (mid, first) =
+        (memory["id"].as_str().unwrap(), memory["memory_version_id"].as_str().unwrap().to_owned());
+    let (_, memory, _) =
+        call(&rig, "POST", &format!("{memories}/{mid}"), Some(json!({"content": "two"}))).await;
+    let second = memory["memory_version_id"].as_str().unwrap().to_owned();
+    let redact = format!("/v1/memory_stores/{sid}/memory_versions/{first}/redact");
+    let (st, redacted, _) = call(&rig, "POST", &redact, None).await;
+    assert_eq!(st, StatusCode::OK, "{redacted}");
+
     // Their own pool, so catching up on the feed never starves the rig's reads.
     let url = std::env::var("DATABASE_URL").unwrap();
     let log = PgHistoryLog::load(store_postgres::PgBackend::connect(&url).await.unwrap()).await.unwrap();
@@ -161,6 +176,19 @@ async fn every_change_reaches_history_with_its_writer() {
     let rows = eventually(&rig, "sessions", "session_id", &session, 2).await;
     assert_eq!(summary(&rows).iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["runtime", "runtime"]);
     assert_eq!(rows[1]["doc"], toast, "the unchanged doc arrives whole");
+
+    let versions = eventually(&rig, "memory_versions", "store_id", &sid, 3).await;
+    let heads = eventually(&rig, "memories", "store_id", &sid, 2).await;
+    let content = |r: &Value| (r["doc"]["content_sha256"].clone(), r["doc"]["path"].clone());
+    let of = |rows: &[Value], key: &str, id: &str| -> Vec<(Value, Value)> {
+        rows.iter().filter(|r| r["doc"][key] == id).map(content).collect()
+    };
+    let none = (Value::Null, Value::Null);
+    assert_eq!(of(&versions, "id", &first), [none.clone(), none.clone()], "the redacted version, twice");
+    assert_eq!(of(&heads, "memory_version_id", &first), [none], "the head that held it");
+    let kept_content = of(&versions, "id", &second);
+    assert!(kept_content.iter().all(|c| c.0.is_string() && c.1 == "/a.md"), "{kept_content:?}");
+    assert!(of(&heads, "memory_version_id", &second).iter().all(|c| c.0.is_string()));
 
     // A delete while Debezium is down reaches history once it is back: the slot keeps it.
     let (_, other, _) = call(&rig, "POST", "/v1/vaults", Some(json!({"display_name": "j"}))).await;

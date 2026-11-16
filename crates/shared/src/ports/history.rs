@@ -57,9 +57,9 @@ pub trait HistoryLog: Send + Sync {
         position: &Position,
         row: &Value,
     ) -> Result<(), HistoryError>;
-    /// Remove the content of the redacted memory version `version` of
-    /// `store` from its history and from the history of every head of that
-    /// memory that held it.
+    /// When history records memory version `version` of `store` as redacted,
+    /// remove its content from the version's history and from the history of
+    /// every head of its memory that held it; otherwise change nothing.
     async fn scrub_memory_content(
         &self,
         workspace: &str,

@@ -7,7 +7,7 @@ use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::BackendError;
 
-use crate::{settle, Applied};
+use crate::{redact, settle, Applied};
 
 /// Records each insert and update of one table.
 pub struct HistoryRecorder {
@@ -31,7 +31,13 @@ impl HistoryRecorder {
     async fn record(&self, change: &Change, op: HistoryOp) -> Result<(), HistoryError> {
         let position = change.position.as_ref().ok_or_else(|| missing("no log position"))?;
         let row = change.after.as_ref().ok_or_else(|| missing("no row after"))?;
-        self.log.record(&self.table, op, position, row).await
+        self.log.record(&self.table, op, position, row).await?;
+        match redact::scrubbed(change) {
+            Some((workspace, store, version)) => {
+                self.log.scrub_memory_content(&workspace, &store, &version).await
+            }
+            None => Ok(()),
+        }
     }
 }
 

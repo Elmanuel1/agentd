@@ -116,52 +116,64 @@ async fn a_table_with_no_history_or_a_row_that_does_not_decode_is_unrecordable()
     assert!(matches!(bad, Err(HistoryError::Unrecordable(_))), "{bad:?}");
 }
 
+/// A memory version's row and its head's, as the feed sends them.
+fn memory_rows(store: &str, memory: &str, version: &str, sha: Option<&str>) -> (Value, Value) {
+    let doc =
+        json!({"content_sha256": sha, "content_size_bytes": sha.map(|_| 3), "path": sha.map(|_| "/a.md"),
+                     "redacted_at": sha.map_or(json!("2026-11-16T10:00:00Z"), |_| Value::Null)})
+        .to_string();
+    let common = json!({"workspace_id": "wrkspc_h", "store_id": store, "memory_id": memory,
+                        "created_at": "2026-11-16T10:00:00Z", "doc": doc});
+    let mut version_row = common.clone();
+    version_row["version_id"] = json!(version);
+    version_row["has_blob"] = json!(sha.is_some());
+    let mut head = common;
+    head["head_version_id"] = json!(version);
+    head["path"] = json!("/a.md");
+    head["deleted"] = json!(false);
+    (version_row, head)
+}
+
 #[tokio::test]
-async fn a_scrub_clears_the_version_and_the_heads_that_held_it_and_nothing_else() {
+async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_they_arrive() {
     if !enabled() {
         return;
     }
     let (pg, log) = log().await;
     let s = stamp();
-    let (store, memory, old, new) =
-        (format!("memstore_h{s}"), format!("mem_h{s}"), format!("memver_o{s}"), format!("memver_n{s}"));
-    let doc = |sha: &str, path: &str| {
-        format!("{{\"content_sha256\":\"{sha}\",\"content_size_bytes\":3,\"path\":\"{path}\"}}")
-    };
-    for (lsn, version, sha) in [(1, &old, "aaa"), (3, &new, "bbb")] {
-        let row = json!({"workspace_id": "wrkspc_h", "store_id": store, "memory_id": memory, "version_id": version,
-                         "seq": lsn, "has_blob": true, "created_at": "2026-11-16T10:00:00Z", "doc": doc(sha, "/a.md")});
-        log.record("memory_versions", HistoryOp::Insert, &at(lsn, 1), &row).await.unwrap();
-        let head = json!({"workspace_id": "wrkspc_h", "store_id": store, "memory_id": memory, "path": "/a.md",
-                          "head_version_id": version, "deleted": false, "created_at": "2026-11-16T10:00:00Z",
-                          "doc": doc(sha, "/a.md")});
-        log.record("memories", HistoryOp::Update, &at(lsn + 1, 1), &head).await.unwrap();
-    }
+    let (store, memory) = (format!("memstore_h{s}"), format!("mem_h{s}"));
+    let (old, new) = (format!("memver_o{s}"), format!("memver_n{s}"));
+    let (old_version, old_head) = memory_rows(&store, &memory, &old, Some("aaa"));
+    let (new_version, new_head) = memory_rows(&store, &memory, &new, Some("bbb"));
+    log.record("memory_versions", HistoryOp::Insert, &at(1, 1), &old_version).await.unwrap();
+    log.record("memory_versions", HistoryOp::Insert, &at(3, 1), &new_version).await.unwrap();
+    log.record("memories", HistoryOp::Update, &at(4, 1), &new_head).await.unwrap();
+    let versions =
+        "SELECT jsonb_build_object('v', version_id, 'sha', doc->'content_sha256', 'path', doc->'path')
+                      AS row FROM history.memory_versions WHERE store_id = $1 ORDER BY lsn";
+    let heads = "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', path) AS row
+                   FROM history.memories WHERE store_id = $1 ORDER BY lsn";
     log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
-    let versions = rows(
-        &pg,
-        "SELECT jsonb_build_object('v', version_id, 'sha', doc->'content_sha256', 'path', doc->'path') AS row
-           FROM history.memory_versions WHERE store_id = $1 ORDER BY lsn",
-        &store,
-    )
-    .await;
     assert_eq!(
-        versions,
-        vec![json!({"v": old, "sha": null, "path": null}), json!({"v": new, "sha": "bbb", "path": "/a.md"})]
+        rows(&pg, versions, &store).await[0],
+        json!({"v": old, "sha": "aaa", "path": "/a.md"}),
+        "not redacted"
     );
-    let heads = rows(
-        &pg,
-        "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', path, 'size', doc->'content_size_bytes') AS row
-           FROM history.memories WHERE store_id = $1 ORDER BY lsn",
-        &store,
-    )
-    .await;
+
+    let (redacted, _) = memory_rows(&store, &memory, &old, None);
+    log.record("memory_versions", HistoryOp::Update, &at(5, 1), &redacted).await.unwrap();
+    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    // The head that held the old version arrives after the redaction, as another topic may deliver it.
+    log.record("memories", HistoryOp::Insert, &at(2, 1), &old_head).await.unwrap();
+    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    let cleared = json!({"v": old, "sha": null, "path": null});
     assert_eq!(
-        heads,
-        vec![
-            json!({"sha": null, "path": null, "size": null}),
-            json!({"sha": "bbb", "path": "/a.md", "size": 3})
-        ]
+        rows(&pg, versions, &store).await,
+        vec![cleared.clone(), json!({"v": new, "sha": "bbb", "path": "/a.md"}), cleared]
+    );
+    assert_eq!(
+        rows(&pg, heads, &store).await,
+        vec![json!({"sha": null, "path": null}), json!({"sha": "bbb", "path": "/a.md"})]
     );
 }
 

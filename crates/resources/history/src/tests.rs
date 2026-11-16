@@ -129,6 +129,16 @@ async fn a_store_failure_is_handled_again_and_an_unrecordable_change_is_passed_o
     assert!(kept.recorded.lock().is_empty());
 }
 
+#[tokio::test]
+async fn a_memory_version_s_update_is_scrubbed_once_it_is_recorded() {
+    let Fixture { kept, handlers, .. } = fixture();
+    let versions = handler(&handlers, &Source::Table("memory_versions".into()));
+    let row = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "version_id": "memver_1"});
+    versions.handle(&change("memory_versions", ChangeOp::Update, 60, Some(row))).await.unwrap();
+    assert_eq!(kept.recorded.lock().len(), 1);
+    assert_eq!(*kept.scrubbed.lock(), ["memver_1"]);
+}
+
 /// The tables V17 makes in the schema `history`.
 fn history_tables() -> Vec<String> {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../adapters/store-postgres/migrations");

@@ -7,27 +7,19 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::Engine as _;
 use diesel::sql_types::{Jsonb, Text};
 use diesel::QueryableByName;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use shared::ports::changes::Position;
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 
 use crate::{diesel_be, pool_be, PgBackend, PgError};
 
-/// How the feed encodes a column's value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Encoding {
-    /// `jsonb`, sent as JSON text.
-    JsonText,
-    /// `bytea`, sent as base64.
-    Base64,
-    /// Every other type, sent as Postgres reads it back.
-    Plain,
-}
+mod decode;
+
+use decode::{decoded, lsn_text, Encoding};
 
 /// Records history into the `history` schema.
 #[derive(Clone)]
@@ -71,42 +63,11 @@ impl PgHistoryLog {
         .map_err(|e| fail(e.to_string()))?;
         let mut tables: BTreeMap<String, Vec<(String, Encoding)>> = BTreeMap::new();
         for c in columns {
-            let encoding = match c.data_type.as_str() {
-                "jsonb" => Encoding::JsonText,
-                "bytea" => Encoding::Base64,
-                _ => Encoding::Plain,
-            };
+            let encoding = Encoding::of(&c.data_type);
             tables.entry(c.table_name).or_default().push((c.column_name, encoding));
         }
         Ok(Self { backend, tables: Arc::new(tables) })
     }
-}
-
-/// `row` with each column the feed encodes turned back into what Postgres reads.
-fn decoded(
-    mut row: Map<String, Value>,
-    columns: &[(String, Encoding)],
-) -> Result<Map<String, Value>, String> {
-    for (name, encoding) in columns {
-        let Some(Value::String(text)) = row.get(name) else { continue };
-        let value = match encoding {
-            Encoding::JsonText => serde_json::from_str(text).map_err(|e| format!("{name}: {e}"))?,
-            Encoding::Base64 => {
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(text)
-                    .map_err(|e| format!("{name}: {e}"))?;
-                Value::String(format!("\\x{}", hex::encode(bytes)))
-            }
-            Encoding::Plain => continue,
-        };
-        row.insert(name.clone(), value);
-    }
-    Ok(row)
-}
-
-/// The text form of a log sequence number, as `pg_lsn` reads it.
-fn lsn_text(lsn: u64) -> String {
-    format!("{:X}/{:X}", lsn >> 32, lsn & 0xFFFF_FFFF)
 }
 
 #[async_trait]
@@ -155,13 +116,18 @@ impl HistoryLog for PgHistoryLog {
         store: &str,
         version: &str,
     ) -> Result<(), HistoryError> {
+        // `r` is the version's redaction as history recorded it; without one, nothing changes.
         const CLEARED: &str = r#"'{"content_sha256": null, "content_size_bytes": null, "path": null}'"#;
+        const REDACTED: &str = "r.workspace_id = $1 AND r.store_id = $2 AND r.version_id = $3
+                                AND jsonb_typeof(r.doc->'redacted_at') = 'string'";
         let mut conn = self.backend.diesel.write().await.map_err(pool_be::<HistoryError>)?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
                 diesel::sql_query(format!(
-                    "UPDATE history.memory_versions SET doc = doc || {CLEARED}
-                      WHERE workspace_id = $1 AND store_id = $2 AND version_id = $3"
+                    "UPDATE history.memory_versions h SET doc = h.doc || {CLEARED}
+                       FROM history.memory_versions r
+                      WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
+                        AND h.version_id = r.version_id"
                 ))
                 .bind::<Text, _>(workspace)
                 .bind::<Text, _>(store)
@@ -169,8 +135,10 @@ impl HistoryLog for PgHistoryLog {
                 .execute(c)
                 .await?;
                 diesel::sql_query(format!(
-                    "UPDATE history.memories SET path = NULL, doc = doc || {CLEARED}
-                      WHERE workspace_id = $1 AND store_id = $2 AND head_version_id = $3"
+                    "UPDATE history.memories h SET path = NULL, doc = h.doc || {CLEARED}
+                       FROM history.memory_versions r
+                      WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
+                        AND h.memory_id = r.memory_id AND h.head_version_id = r.version_id"
                 ))
                 .bind::<Text, _>(workspace)
                 .bind::<Text, _>(store)
@@ -183,27 +151,5 @@ impl HistoryLog for PgHistoryLog {
         })
         .await
         .map_err(diesel_be)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn the_feed_s_json_text_and_base64_decode_by_column_type() {
-        let columns = [("doc".to_owned(), Encoding::JsonText), ("key_digest".to_owned(), Encoding::Base64)];
-        let row = json!({"doc": "{\"a\":1}", "key_digest": "AAE=", "name": "n"});
-        let row = decoded(row.as_object().unwrap().clone(), &columns).unwrap();
-        assert_eq!(Value::Object(row), json!({"doc": {"a": 1}, "key_digest": "\\x0001", "name": "n"}));
-        let bad = json!({"doc": "{"}).as_object().unwrap().clone();
-        assert!(decoded(bad, &columns).unwrap_err().starts_with("doc:"));
-    }
-
-    #[test]
-    fn an_lsn_reads_as_pg_lsn_text() {
-        assert_eq!(lsn_text((1 << 32) | 0x16B_3748), "1/16B3748");
-        assert_eq!(lsn_text(28_418_376), "0/1B1A148");
     }
 }

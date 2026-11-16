@@ -15,6 +15,7 @@ use shared::{BackendError, Timestamp};
 
 mod deleted;
 mod recorder;
+mod redact;
 
 pub use deleted::DeletedRecorder;
 pub use recorder::HistoryRecorder;
