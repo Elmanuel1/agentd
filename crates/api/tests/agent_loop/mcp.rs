@@ -19,8 +19,8 @@ use shared::net::Guard;
 use super::common::{request, send_to, Auth, Rig, KEY};
 use super::{db, events_until, message, send, types, worker, Say, Scripted, Tune};
 
-/// One request the server got: its method, session id, bearer, user agent
-/// and `clientInfo`.
+/// One request the server got: its method, session id, bearer, user agent,
+/// `clientInfo`, the call's arguments, and when it came.
 #[derive(Debug, Clone)]
 struct Got {
     method: String,
@@ -28,6 +28,8 @@ struct Got {
     bearer: Option<String>,
     agent: Option<String>,
     client: Value,
+    arguments: Value,
+    at: chrono::DateTime<chrono::Utc>,
 }
 
 /// A scripted MCP server: `lookup` answers, `flaky` fails with a 502,
@@ -52,6 +54,10 @@ impl Server {
     fn count(&self, method: &str) -> usize {
         self.got.lock().iter().filter(|g| g.method == method).count()
     }
+
+    fn calls(&self) -> Vec<Got> {
+        self.got.lock().iter().filter(|g| g.method == "tools/call").cloned().collect()
+    }
 }
 
 async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
@@ -60,7 +66,9 @@ async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<
     let session = header("mcp-session-id");
     let (bearer, agent, client) =
         (header("authorization"), header("user-agent"), body["params"]["clientInfo"].clone());
-    s.got.lock().push(Got { method: method.clone(), session: session.clone(), bearer, agent, client });
+    let (arguments, at) = (body["params"]["arguments"].clone(), chrono::Utc::now());
+    let got = Got { method: method.clone(), session: session.clone(), bearer, agent, client, arguments, at };
+    s.got.lock().push(got);
     if s.refuse.load(Ordering::SeqCst) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -726,8 +734,19 @@ async fn a_step_whose_claim_is_gone_stops_before_its_next_call() {
     assert_eq!(server.count("tools/call"), 1, "the step stopped before its second call");
 }
 
-/// The rig's step queue, failing the first renewal: a write with nothing in it.
-struct FailOnce(Arc<dyn Steps>, AtomicBool);
+/// The rig's step queue, failing the first write or commit `fails` picks.
+struct FailOnce(Arc<dyn Steps>, AtomicBool, fn(&StepWrite<'_>) -> bool);
+
+impl FailOnce {
+    fn fails(&self, write: &StepWrite<'_>) -> Result<(), StoreError> {
+        match (self.2)(write) && !self.1.swap(true, Ordering::SeqCst) {
+            true => {
+                Err(StoreError::Backend(shared::BackendError::new(std::io::Error::other("database down"))))
+            }
+            false => Ok(()),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl Steps for FailOnce {
@@ -736,16 +755,12 @@ impl Steps for FailOnce {
     }
 
     async fn write(&self, claim: &Claim, lease: i64, write: StepWrite<'_>) -> Result<bool, StoreError> {
-        let renewal = write.events.is_empty() && write.read.is_empty();
-        if renewal && !self.1.swap(true, Ordering::SeqCst) {
-            return Err(StoreError::Backend(shared::BackendError::new(std::io::Error::other(
-                "database down",
-            ))));
-        }
+        self.fails(&write)?;
         self.0.write(claim, lease, write).await
     }
 
     async fn commit(&self, claim: &Claim, end: StepEnd, write: StepWrite<'_>) -> Result<bool, StoreError> {
+        self.fails(&write)?;
         self.0.commit(claim, end, write).await
     }
 
@@ -766,7 +781,8 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     let (server, url, guard) = serve().await;
     let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
-    let queue: Arc<dyn Steps> = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false)));
+    let renewal = |w: &StepWrite<'_>| w.events.is_empty() && w.read.is_empty();
+    let queue: Arc<dyn Steps> = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), renewal));
     let tune = Tune {
         guard,
         mcp_timeout: Some(std::time::Duration::from_millis(1500)),
@@ -781,4 +797,50 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     assert_eq!(of(&events, "agent.mcp_tool_result").len(), 2, "one result for each call");
     assert_eq!(server.count("tools/call"), 2, "no claim sent a call again");
+}
+
+/// When an event of the session's log was processed.
+fn processed(e: &Value) -> chrono::DateTime<chrono::Utc> {
+    e["processed_at"].as_str().and_then(|t| t.parse().ok()).unwrap()
+}
+
+#[tokio::test]
+async fn each_mcp_result_is_recorded_before_the_next_call_goes_out() {
+    // MC-25, as live's MC-26 capture shows: each result has its own
+    // `processed_at`, and the second `tools/call` goes out after the first.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__lookup", json!({"q": "1"})), ("mcp__docs__lookup", json!({"q": "2"}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("done")]);
+    let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("look both up")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let (results, sent) = (of(&events, "agent.mcp_tool_result"), server.calls());
+    assert_eq!((results.len(), sent.len()), (2, 2));
+    assert!(processed(results[0]) < sent[1].at, "the first result is recorded before the second call");
+    assert!(processed(results[1]) > sent[1].at, "the second result is recorded when its call ends");
+}
+
+#[tokio::test]
+async fn a_result_already_recorded_is_not_sent_again_when_the_step_reruns() {
+    // MC-25: the second result's write fails, so the step runs again; it
+    // sends only the call with no result.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__lookup", json!({"q": "1"})), ("mcp__docs__lookup", json!({"q": "2"}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("done")]);
+    let second = |w: &StepWrite<'_>| serde_json::to_string(w.events).unwrap().contains(r#"found \"2\""#);
+    let queue: Arc<dyn Steps> = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), second));
+    let (app, _worker) = worker(&rig, model, Tune { guard, queue: Some(queue), ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("look both up")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let sent: Vec<Value> = server.calls().into_iter().map(|g| g.arguments["q"].clone()).collect();
+    assert_eq!(sent, [json!("1"), json!("2"), json!("2")], "the recorded call is not sent again");
+    let (uses, results) = (of(&events, "agent.mcp_tool_use"), of(&events, "agent.mcp_tool_result"));
+    let answered: Vec<&Value> = results.iter().map(|r| &r["mcp_tool_use_id"]).collect();
+    assert_eq!(answered, [&uses[0]["id"], &uses[1]["id"]], "one result for each call");
 }
