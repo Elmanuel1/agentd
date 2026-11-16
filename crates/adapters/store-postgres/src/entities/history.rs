@@ -98,7 +98,8 @@ impl HistoryLog for PgHistoryLog {
         row.insert("tx_id".into(), position.tx_id.into());
         row.insert("op".into(), op.as_str().into());
         row.insert("committed_at".into(), position.committed_at.to_wire().into());
-        let mut conn = self.backend.diesel.write().await.map_err(pool_be::<HistoryError>)?;
+        // A plain checkout: a history row carries its change's writer, never the connection's.
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be::<HistoryError>)?;
         diesel::sql_query(format!(
             "INSERT INTO history.{table} SELECT * FROM jsonb_populate_record(NULL::history.{table}, $1)
              ON CONFLICT DO NOTHING"
@@ -120,7 +121,7 @@ impl HistoryLog for PgHistoryLog {
         const CLEARED: &str = r#"'{"content_sha256": null, "content_size_bytes": null, "path": null}'"#;
         const REDACTED: &str = "r.workspace_id = $1 AND r.store_id = $2 AND r.version_id = $3
                                 AND jsonb_typeof(r.doc->'redacted_at') = 'string'";
-        let mut conn = self.backend.diesel.write().await.map_err(pool_be::<HistoryError>)?;
+        let mut conn = self.backend.diesel.get().await.map_err(pool_be::<HistoryError>)?;
         conn.transaction::<_, diesel::result::Error, _>(|c| {
             async move {
                 diesel::sql_query(format!(

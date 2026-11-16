@@ -1,6 +1,9 @@
 -- Resource history: every tracked table records who wrote each row, and announces each delete, so the
 -- change feed carries every change with its actor and request id (ADR resource-history 0001).
 
+-- A busy table fails the migration fast instead of holding the app behind its locks; rerun it.
+set local lock_timeout = '5s';
+
 -- The writing connection's actor and request id, set by every write checkout; `unattributed` and null
 -- when unset, as the column defaults of the coordination tables give.
 create function history_stamp() returns trigger language plpgsql as $$

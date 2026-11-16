@@ -115,6 +115,17 @@ async fn a_delete_emits_one_message_with_the_row_only_when_it_commits() {
     assert!(rolled_back.is_err());
     assert_eq!(messages(&mut conn, &slot, &vault).await, Vec::<String>::new(), "a rolled-back delete");
 
+    #[derive(diesel::QueryableByName)]
+    struct Live {
+        #[diesel(sql_type = diesel::sql_types::Jsonb)]
+        row: serde_json::Value,
+    }
+    let live: Live = diesel::sql_query("SELECT to_jsonb(v) AS row FROM vaults v WHERE vault_id = $1")
+        .bind::<Text, _>(&vault)
+        .get_result(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(live.row["actor"], "apikey_a");
     write_as(&pg, &deleter, "DELETE FROM vaults WHERE vault_id = $1", &vault).await;
     let seen = messages(&mut conn, &slot, &vault).await;
     diesel::sql_query("SELECT pg_drop_replication_slot($1)")
@@ -125,13 +136,13 @@ async fn a_delete_emits_one_message_with_the_row_only_when_it_commits() {
     assert_eq!(seen.len(), 1, "{seen:?}");
     let content = seen[0].split_once("content:").unwrap().1;
     let message: serde_json::Value = serde_json::from_str(content).unwrap();
-    assert_eq!(message["table"], "vaults");
-    assert_eq!(
-        (&message["actor"], &message["request_id"]),
-        (&deleter.actor.into(), &deleter.request_id.into())
-    );
-    assert_eq!(message["row"]["vault_id"], vault.as_str());
-    assert_eq!(message["row"]["actor"], "apikey_a", "the row as it was, its last writer included");
+    let expected = serde_json::json!({
+        "table": "vaults",
+        "actor": deleter.actor,
+        "request_id": deleter.request_id,
+        "row": live.row,
+    });
+    assert_eq!(message, expected, "the row as it was, its last writer included");
     assert!(seen[0].starts_with("message: transactional: 1 prefix: agentd-history"), "{}", seen[0]);
 }
 

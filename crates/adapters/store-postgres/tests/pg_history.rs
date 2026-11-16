@@ -145,7 +145,6 @@ async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_t
     let (old, new) = (format!("memver_o{s}"), format!("memver_n{s}"));
     let (old_version, old_head) = memory_rows(&store, &memory, &old, Some("aaa"));
     let (new_version, new_head) = memory_rows(&store, &memory, &new, Some("bbb"));
-    log.record("memory_versions", HistoryOp::Insert, &at(1, 1), &old_version).await.unwrap();
     log.record("memory_versions", HistoryOp::Insert, &at(3, 1), &new_version).await.unwrap();
     log.record("memories", HistoryOp::Update, &at(4, 1), &new_head).await.unwrap();
     let versions =
@@ -153,18 +152,18 @@ async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_t
                       AS row FROM history.memory_versions WHERE store_id = $1 ORDER BY lsn";
     let heads = "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', path) AS row
                    FROM history.memories WHERE store_id = $1 ORDER BY lsn";
-    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
-    assert_eq!(
-        rows(&pg, versions, &store).await[0],
-        json!({"v": old, "sha": "aaa", "path": "/a.md"}),
-        "not redacted"
-    );
+    log.scrub_memory_content("wrkspc_h", &store, &new).await.unwrap();
+    let unredacted = json!({"v": new, "sha": "bbb", "path": "/a.md"});
+    assert_eq!(rows(&pg, versions, &store).await, [unredacted], "a version not redacted keeps its content");
 
     let (redacted, _) = memory_rows(&store, &memory, &old, None);
     log.record("memory_versions", HistoryOp::Update, &at(5, 1), &redacted).await.unwrap();
     log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
     // The head that held the old version arrives after the redaction, as another topic may deliver it.
     log.record("memories", HistoryOp::Insert, &at(2, 1), &old_head).await.unwrap();
+    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    // So does the version's own insert, which an unordered stream may hand over last.
+    log.record("memory_versions", HistoryOp::Insert, &at(1, 1), &old_version).await.unwrap();
     log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
     let cleared = json!({"v": old, "sha": null, "path": null});
     assert_eq!(

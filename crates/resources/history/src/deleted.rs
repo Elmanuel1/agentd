@@ -32,19 +32,6 @@ impl DeletedRecorder {
     pub fn new(log: Arc<dyn HistoryLog>, applied: Applied) -> Self {
         Self { log, applied }
     }
-
-    async fn record(&self, change: &Change) -> Result<(), HistoryError> {
-        let unrecordable = |what: &str| HistoryError::Unrecordable(format!("a delete message with {what}"));
-        let position = change.position.as_ref().ok_or_else(|| unrecordable("no log position"))?;
-        let message = change.after.as_ref().ok_or_else(|| unrecordable("no content"))?;
-        let table = message.get("table").and_then(Value::as_str).ok_or_else(|| unrecordable("no table"))?;
-        let mut row =
-            message.get("row").and_then(Value::as_object).cloned().ok_or_else(|| unrecordable("no row"))?;
-        for writer in ["actor", "request_id"] {
-            row.insert(writer.into(), message.get(writer).cloned().unwrap_or(Value::Null));
-        }
-        self.log.record(table, HistoryOp::Delete, position, &Value::Object(row)).await
-    }
 }
 
 #[async_trait]
@@ -57,7 +44,19 @@ impl ChangeHandler for DeletedRecorder {
         if change.op != ChangeOp::Message || change.table != PREFIX {
             return Ok(());
         }
-        let recorded = self.record(change).await;
-        settle(recorded, change, change.position.as_ref(), &self.applied)
+        let unrecordable = |what: &str| HistoryError::Unrecordable(format!("a delete message with {what}"));
+        let recorded = async {
+            let position = change.position.as_ref().ok_or_else(|| unrecordable("no log position"))?;
+            let message = change.after.as_ref().ok_or_else(|| unrecordable("no content"))?;
+            let table =
+                message.get("table").and_then(Value::as_str).ok_or_else(|| unrecordable("no table"))?;
+            let row = message.get("row").and_then(Value::as_object);
+            let mut row = row.cloned().ok_or_else(|| unrecordable("no row"))?;
+            for writer in ["actor", "request_id"] {
+                row.insert(writer.into(), message.get(writer).cloned().unwrap_or(Value::Null));
+            }
+            self.log.record(table, HistoryOp::Delete, position, &Value::Object(row)).await
+        };
+        settle(recorded.await, change, &self.applied)
     }
 }

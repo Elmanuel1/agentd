@@ -8,11 +8,11 @@ reopens them.
 
 | # | Fact | Status | Evidence |
 |---|---|---|---|
-| A1 | Every write goes through `DieselPgPool::write()`, which sets `agentd.actor` and `agentd.request_id` on the connection, session-level, before the write. No write runs on a read checkout. | VERIFIED | `store-postgres/src/checkout.rs` `write`; inventory of the 72 write and 64 read checkouts |
+| A1 | Every write to a tracked table goes through `DieselPgPool::write()`, which sets `agentd.actor` and `agentd.request_id` on the connection, session-level, before the write. The history store writes on a plain checkout: a history row carries its change's writer. | VERIFIED | `store-postgres/src/checkout.rs` `write`; inventory of the 72 write and 64 read checkouts |
 | A2 | The actors are a key id (`apikey_…`, `adminkey_…`, an environment key id), `runtime`, a work token's session (`sesn_…`), a schedule's key, `operator` (the CLI) and `system` (the loop, the webhook sender, the scheduler tick, retention), each with its own request id. | VERIFIED | `shared/src/audit.rs` `Writer`; `api/src/edge/auth.rs` |
-| A3 | None of the 18 tracked tables has `actor` or `request_id`, and no store code writes them; the coordination tables that have them fill them by column default, on insert only. | VERIFIED | migrations V1 to V15 |
+| A3 | No store code writes `actor` or `request_id`: on the tracked tables the stamp trigger sets them on every insert and update; the coordination tables fill them by column default, on insert only. | VERIFIED | migrations V8, V9, V13, V16 |
 | A4 | Memory content lives in blobs. A version's row holds its `content_sha256`, `content_size_bytes` and `path` in `doc`; redaction nulls them and deletes the blob. A head's row holds the same three for its current version. | VERIFIED | `memory/src/service/versions.rs` `redact_version`; `store-postgres/src/entities/memory/versions.rs` `version_doc` |
-| A5 | The change feed hands each handler `table`, `op`, `before` and `after`, and drops logical messages. Topic and stream names were built in each adapter. | VERIFIED | `shared/src/ports/changes.rs` before this change |
+| A5 | The change feed delivers each source (a table's changes, or the logical messages) to one handler in one consumer group, at least once; one function, `Source::topic`, names its Kafka topic and Valkey stream. | VERIFIED | `shared/src/ports/changes.rs`, `changes-kafka`, `signals-valkey` |
 
 ## Postgres 16
 

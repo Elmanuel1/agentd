@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use shared::ports::changes::{Change, ChangeHandler, Position};
+use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::history::{HistoryError, HistoryLog};
 use shared::{BackendError, Timestamp};
 
@@ -40,12 +40,11 @@ pub fn recorders(log: Arc<dyn HistoryLog>, applied: Applied) -> Vec<Arc<dyn Chan
 fn settle(
     recorded: Result<(), HistoryError>,
     change: &Change,
-    position: Option<&Position>,
     applied: &Applied,
 ) -> Result<(), BackendError> {
     match recorded {
         Ok(()) => {
-            if let Some(p) = position {
+            if let Some(p) = &change.position {
                 let late = Timestamp::now().as_datetime() - p.committed_at.as_datetime();
                 applied(late.to_std().unwrap_or_default());
             }
@@ -53,7 +52,7 @@ fn settle(
         }
         Err(HistoryError::Backend(e)) => Err(e),
         Err(HistoryError::Unrecordable(why)) => {
-            let lsn = position.map(|p| p.lsn);
+            let lsn = change.position.map(|p| p.lsn);
             tracing::error!(table = %change.table, ?lsn, %why, "history: a change cannot be recorded; passed over");
             Ok(())
         }

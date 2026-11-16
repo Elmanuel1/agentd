@@ -27,18 +27,6 @@ impl HistoryRecorder {
     pub fn new(log: Arc<dyn HistoryLog>, table: String, applied: Applied) -> Self {
         Self { log, table, applied }
     }
-
-    async fn record(&self, change: &Change, op: HistoryOp) -> Result<(), HistoryError> {
-        let position = change.position.as_ref().ok_or_else(|| missing("no log position"))?;
-        let row = change.after.as_ref().ok_or_else(|| missing("no row after"))?;
-        self.log.record(&self.table, op, position, row).await?;
-        match redact::scrubbed(change) {
-            Some((workspace, store, version)) => {
-                self.log.scrub_memory_content(&workspace, &store, &version).await
-            }
-            None => Ok(()),
-        }
-    }
 }
 
 fn missing(what: &str) -> HistoryError {
@@ -60,7 +48,17 @@ impl ChangeHandler for HistoryRecorder {
             ChangeOp::Update => HistoryOp::Update,
             ChangeOp::Delete | ChangeOp::Message => return Ok(()),
         };
-        let recorded = self.record(change, op).await;
-        settle(recorded, change, change.position.as_ref(), &self.applied)
+        let recorded = async {
+            let position = change.position.as_ref().ok_or_else(|| missing("no log position"))?;
+            let row = change.after.as_ref().ok_or_else(|| missing("no row after"))?;
+            self.log.record(&self.table, op, position, row).await?;
+            match redact::scrubbed(change) {
+                Some((workspace, store, version)) => {
+                    self.log.scrub_memory_content(&workspace, &store, &version).await
+                }
+                None => Ok(()),
+            }
+        };
+        settle(recorded.await, change, &self.applied)
     }
 }

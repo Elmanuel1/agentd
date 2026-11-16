@@ -37,9 +37,4 @@ who decided and when.
 | D16 | The change feed's slot is the one way to lose history. agentd exports the slot's retained and safe WAL, a lost flag, the WAL written and the history apply delay; the alarms belong to the infrastructure, and `docs/history.md` names their thresholds, the WAL sizing rule and the re-baseline runbook. | User, 2026-11-11 ("We just export metrics"); user, 2026-11-16 (plan approved) |
 | D17 | Resource history ships as one agentd PR under 100 files, the spec included, in seven commits. | User, 2026-11-16 ("too much prs. keep below 100 files") |
 
-## Out of scope
-
-- The blob and secret content of a deleted file, skill, memory or credential: the delete removes it in the request
-  (D1); history keeps the record.
-- Moving environments to the feed history; the actor by name (a later PR).
-- The ClickHouse adapter and its setting (D14).
+Out of scope: [requirements.md](requirements.md#out-of-scope).

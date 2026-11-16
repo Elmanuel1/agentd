@@ -19,6 +19,13 @@
 - **History table:** `history.<table>`, a tracked table's history.
 - **Actor, request id:** the writing connection's `agentd.actor` and `agentd.request_id` settings.
 
+**Build order:** spec → the feed's positions and messages (HI-4) → capture, V16 (HI-1 to HI-3) → storage, V17 and the
+port (HI-7, HI-14, HI-15) → the consumer (HI-5 to HI-7, HI-12, HI-13) → redaction (HI-8) → metrics and runbooks
+(HI-9 to HI-11), one PR (D17).
+
+Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
+[ADR 0001](adr/0001-history-from-the-change-feed.md).
+
 ## Capture
 
 | ID | Requirement |
@@ -53,3 +60,21 @@
 | HI-10 | An operator shall be able to roll back any recorded row with one documented statement, recorded as a change by `operator`. |
 | HI-11 | The docs shall give the WAL sizing rule, the alarm thresholds and the re-baseline runbook after a lost slot. |
 | HI-12 | No response body, status, header or route shall change. |
+
+## Rollout
+
+- agentd is not deployed (runtime-parity D45): the PR merges on green CI and a local run against Postgres 16, Kafka
+  and Debezium Server.
+- A deployment runs V16 and V17 with Flyway (V16 sets a 5 s `lock_timeout`; rerun it when a busy table refuses the
+  locks), makes the Kafka topics `agentd.public.<table>` for the 18 tracked tables and `agentd.message`, adds the
+  tables to the publication, then restarts Debezium Server with the longer `table.include.list`.
+- A database that already has rows runs the baseline of `docs/history.md` once, so every live row has a history row.
+- `max_slot_wal_keep_size` is sized as `docs/history.md` says before the tracked tables join the feed.
+
+## Out of scope
+
+- The blob and secret content of a deleted file, skill, memory or credential: the delete removes it in the request
+  (D1); history keeps the record.
+- Moving environments to the feed history (D5); the actor by name.
+- The ClickHouse adapter and its setting (D14).
+- An API route for history (D9).
