@@ -14,7 +14,7 @@ pub use postgres::FireSources;
 pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
-use crate::telemetry::Metrics;
+use crate::telemetry::{self, Metrics};
 use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
 use secrets_aws::AwsSecretStore;
 use sessions::signals::Signals;
@@ -148,8 +148,10 @@ impl Backends {
                 let sender =
                     WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
                         .map_err(BootError::Signals)?;
+                let meter = opentelemetry::global::meter("agentd");
+                drop(telemetry::feed::watch(&meter, pg.backend.diesel.clone(), &streams.changes_slot));
                 let log = Arc::new(PgHistoryLog::load(pg.backend.clone()).await?);
-                let mut handlers = history::recorders(log, Arc::new(|_| {}));
+                let mut handlers = history::recorders(log, telemetry::feed::apply_delay(&meter));
                 handlers.push(Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone()))));
                 handlers.push(Arc::new(sender));
                 drop(feed.spawn(handlers));

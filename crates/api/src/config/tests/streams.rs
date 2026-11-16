@@ -10,6 +10,7 @@ fn valkey_is_required_and_events_are_kept_unless_configured() {
         valkey_cluster: false,
         kafka_brokers: None,
         changes_prefix: "agentd".into(),
+        changes_slot: "agentd_changes".into(),
         retention: None,
     };
     assert_eq!(c.streams, base);
@@ -26,6 +27,7 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
         ("AGENTD_KAFKA_BROKERS", "kafka-1:9092,kafka-2:9092"),
         ("AGENTD_PG_READ_URL", "postgres://reader:r3ad-pass@replica:5432/agentd"),
         ("AGENTD_EVENT_RETENTION_DAYS", "30"),
+        ("AGENTD_CHANGES_SLOT", "agentd_feed"),
     ])
     .unwrap();
     let day = std::time::Duration::from_secs(24 * 60 * 60);
@@ -36,6 +38,7 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
             valkey_cluster: true,
             kafka_brokers: Some("kafka-1:9092,kafka-2:9092".into()),
             changes_prefix: "agentd".into(),
+            changes_slot: "agentd_feed".into(),
             retention: Some(day * 30)
         }
     );

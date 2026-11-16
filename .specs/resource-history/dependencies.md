@@ -30,7 +30,9 @@ reopens them.
 | C1 | A change event's `source` carries `lsn`, `txId` and `ts_ms` (the commit time). | VERIFIED | Debezium docs, PostgreSQL connector, "Change event values" |
 | C2 | A logical message arrives as `op: "m"` on the topic `<topic.prefix>.message`, its `message.prefix` and its `message.content` base64-encoded in JSON; `message.prefix.include.list` keeps only the prefixes it names. | VERIFIED | Debezium docs, PostgreSQL connector, "Logical decoding message events" |
 | C3 | `jsonb` columns arrive as JSON text and `bytea` columns as base64. | VERIFIED | Debezium docs, data type mappings; `schedules/outbox.rs` reads `change` as text |
-| C4 | `publication.autocreate.mode=filtered` creates the publication for `table.include.list`. | VERIFIED | Debezium docs, `publication.autocreate.mode` |
+| C4 | `publication.autocreate.mode=filtered` creates the publication for `table.include.list`, and adds the tables a longer list names to an existing publication at start. | VERIFIED | Debezium docs, `publication.autocreate.mode`; measured: the publication went from 2 to 20 tables on restart |
+| C5 | With `REPLICA IDENTITY FULL`, an update that leaves a TOASTed column unchanged arrives with that column whole in `after`, not as `__debezium_unavailable_value`. | VERIFIED | measured: a 12.8 KB out-of-line `doc`, `crates/api/tests/history.rs` |
+| C6 | A transactional message that rolls back never reaches the feed; a committed one arrives on `agentd.message` with `source.lsn`, `txId` and `ts_ms`. | VERIFIED | measured against Debezium Server 3.3.1 on Kafka |
 
 ## Load
 

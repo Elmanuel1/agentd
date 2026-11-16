@@ -21,10 +21,12 @@ pub mod entities;
 mod load;
 mod pool;
 pub mod schema;
+mod slot;
 
 pub use checkout::{DieselPgPool, PooledConnection};
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
+pub use slot::{read_slot, Slot};
 
 pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;

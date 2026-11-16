@@ -267,3 +267,100 @@ async fn one_actor_s_changes_and_one_request_s_read_across_tables_by_index() {
         assert_eq!(scans, 18, "{}", plan.join("\n"));
     }
 }
+
+/// The SQL blocks of `docs/history.md`, as written.
+fn runbook() -> Vec<String> {
+    let doc =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../docs/history.md")).unwrap();
+    doc.split("```sql\n").skip(1).map(|b| b.split("```").next().unwrap().to_owned()).collect()
+}
+
+fn block(blocks: &[String], marker: &str) -> String {
+    blocks.iter().find(|b| b.contains(marker)).unwrap_or_else(|| panic!("no block with {marker}")).clone()
+}
+
+#[derive(diesel::QueryableByName)]
+struct Live {
+    #[diesel(sql_type = Text)]
+    display_name: String,
+    #[diesel(sql_type = Text)]
+    actor: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
+    request_id: Option<String>,
+}
+
+async fn live(pg: &PgBackend, vault: &str) -> Option<(String, String, Option<String>)> {
+    let mut conn = pg.diesel.get().await.unwrap();
+    let rows: Vec<Live> =
+        diesel::sql_query("SELECT display_name, actor, request_id FROM vaults WHERE vault_id = $1")
+            .bind::<Text, _>(vault)
+            .load(&mut *conn)
+            .await
+            .unwrap();
+    rows.into_iter().next().map(|r| (r.display_name, r.actor, r.request_id))
+}
+
+/// Run a runbook block on its own connection, as an operator's psql session would.
+async fn run(pg: &PgBackend, sql: &str) {
+    use diesel_async::SimpleAsyncConnection;
+    let mut conn = pg.diesel.get().await.unwrap();
+    conn.batch_execute(sql).await.unwrap();
+    conn.batch_execute("RESET agentd.actor; RESET agentd.request_id").await.unwrap();
+}
+
+#[tokio::test]
+async fn the_runbook_s_rollbacks_and_baseline_run_as_documented() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let blocks = runbook();
+    let id = format!("vlt_r{}", stamp());
+    let fill = |sql: String, lsn: &str| {
+        sql.replace("<workspace_id>", "wrkspc_h")
+            .replace("<vault_id>", &id)
+            .replace("<lsn>", lsn)
+            .replace("<ticket>", "req_ticket")
+    };
+    run(
+        &pg,
+        &format!(
+            "INSERT INTO vaults (workspace_id, vault_id, display_name, created_at, doc)
+                       VALUES ('wrkspc_h', '{id}', 'two', now(), '{{}}')"
+        ),
+    )
+    .await;
+    log.record("vaults", HistoryOp::Insert, &at(100, 1), &vault(&id, "one", "apikey_a")).await.unwrap();
+
+    run(&pg, &fill(block(&blocks, "update vaults v"), "0/64")).await;
+    assert_eq!(live(&pg, &id).await, Some(("one".into(), "operator".into(), Some("req_ticket".into()))));
+
+    run(&pg, &format!("DELETE FROM vaults WHERE vault_id = '{id}'")).await;
+    assert_eq!(live(&pg, &id).await, None);
+    run(&pg, &fill(block(&blocks, "insert into vaults"), "0/64")).await;
+    assert_eq!(live(&pg, &id).await, Some(("one".into(), "operator".into(), Some("req_ticket".into()))));
+
+    run(&pg, &block(&blocks, "do $$")).await;
+    run(&pg, &block(&blocks, "do $$")).await;
+    let baseline = rows(
+        &pg,
+        "SELECT jsonb_build_object('name', display_name, 'actor', actor) AS row FROM history.vaults
+          WHERE vault_id = $1 AND op = 'baseline'",
+        &id,
+    )
+    .await;
+    assert!(
+        !baseline.is_empty() && baseline.iter().all(|r| r == &json!({"name": "one", "actor": "operator"}))
+    );
+    for sql in
+        [block(&blocks, "where actor = '<actor>'"), block(&blocks, "where request_id = '<request_id>'")]
+    {
+        let sql = sql
+            .replace("<actor>", "operator")
+            .replace("<from>", "2026-01-01")
+            .replace("<to>", "2100-01-01")
+            .replace("<request_id>", "req_ticket");
+        run(&pg, &sql).await;
+    }
+    run(&pg, &fill(block(&blocks, "order by lsn;"), "0/64")).await;
+}

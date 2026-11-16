@@ -1,8 +1,8 @@
 # Operations
 
 How to run agentd and what to watch. Every setting is in `configuration.md`; every metric, span and log line in
-`observability.md`. agentd exports metrics over OTLP and chooses no monitoring backend: the alarms below are for
-whatever backend the deployment runs.
+`observability.md`; resource history's runbooks in `history.md`. agentd exports metrics over OTLP and chooses no
+monitoring backend: the alarms below are for whatever backend the deployment runs.
 
 ## Roles
 
@@ -10,7 +10,7 @@ One binary serves three roles, chosen with `AGENTD_ROLE`:
 
 | Role | Runs | Scale on |
 |---|---|---|
-| `api` | the HTTP API, event streams, event retention, the change feed's handlers (schedules, webhooks) | request rate and open streams |
+| `api` | the HTTP API, event streams, event retention, the change feed's handlers (schedules, webhooks, history) | request rate and open streams |
 | `loop` | loop workers only; every route answers 404 | `agentd.loop.steps_due` |
 | `all` | both, for a single replica or a small deployment | either |
 
@@ -44,6 +44,8 @@ A `self_hosted` environment's tools run on the customer's worker (`ant beta:work
 | `agentd.loop.mcp_calls` with outcome `unreachable` | above 10% for 15 minutes | MCP servers fail: usually one tenant's server; check the `session.error` events and the `is_error` `agent.mcp_tool_result` events for its name |
 | `http.server.request.duration` 5xx ratio | above 1% for 5 minutes | the API fails: read the `request failed` log lines and their spans |
 | `db.client.connection.pending_requests` | above 0 for 5 minutes | the pool is saturated: raise `AGENTD_DB_POOL_SIZE` or add replicas within the database's connection limit |
-| Slot lag, Debezium health, feed backlog | as `configuration.md`'s change feed section says | the change feed stalls: schedules and webhooks wait until it moves again |
+| Slot, Debezium health, feed backlog | as `configuration.md`'s change feed section says | the change feed stalls: schedules, webhooks and history wait until it moves again |
+| `agentd.feed.slot.lost` | 1 | the slot is lost and history has a gap: re-baseline as `history.md` says ("After a lost slot") |
+| `agentd.history.apply_delay` p99 | over 5 minutes | history lags its commits: check the feed backlog and the `history:` log lines |
 | `webhook_deliveries` rows with `dropped_at` set | any for a configured endpoint | an endpoint refused three attempts: check the endpoint and its secret |
 | `agentd.retention.last_success` | older than 15 minutes while retention is set | retention stopped: read its `warn` lines |
