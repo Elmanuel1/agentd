@@ -18,6 +18,7 @@ use crate::model::ModelClient;
 
 mod compact;
 mod grade;
+mod keep;
 mod mcp;
 mod reply;
 mod request;

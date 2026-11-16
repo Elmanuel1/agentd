@@ -30,7 +30,7 @@ impl Loop {
     /// retry after a pause.
     pub(super) async fn step(&self, claim: Claim) {
         crate::metrics::claimed(claim.waited_ms);
-        let Err(e) = self.run(&claim).await else { return };
+        let Err(e) = self.kept(&claim, self.run(&claim)).await else { return };
         tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
         if let Err(e) = self.stores.steps.defer(&claim, 5).await {
             tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");

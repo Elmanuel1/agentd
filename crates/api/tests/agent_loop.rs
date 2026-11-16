@@ -194,6 +194,8 @@ struct Tune {
     hooks: Option<Arc<webhooks::Webhooks>>,
     /// How long its MCP requests may take, when not the loop's.
     mcp_timeout: Option<Duration>,
+    /// Its claims' lease.
+    lease: Duration,
 }
 
 impl Default for Tune {
@@ -206,6 +208,7 @@ impl Default for Tune {
             compaction: engine::turn::compact::Compaction::default(),
             hooks: None,
             mcp_timeout: None,
+            lease: Duration::from_secs(60),
         }
     }
 }
@@ -252,7 +255,7 @@ impl SessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout } = tune;
+    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -276,12 +279,7 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
-    let settings = Settings {
-        owner: format!("test-{}", common::stamp()),
-        lease: Duration::from_secs(60),
-        per_workspace: 1000,
-        steps,
-    };
+    let settings = Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, steps };
     (app, Worker { task: Loop::new(stores, models, signals, settings).spawn(), _turn: turn })
 }
 
