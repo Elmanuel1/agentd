@@ -891,3 +891,47 @@ async fn a_result_already_recorded_is_not_sent_again_when_the_step_reruns() {
         "one result for each call"
     );
 }
+
+#[tokio::test]
+async fn a_refresh_another_worker_holds_after_a_call_ran_keeps_its_result_and_defers_the_rest() {
+    // MC-20, MC-25: the token expires during the first call, which times out
+    // and drops its connection; the second call's reconnect meets a refresh
+    // in flight. The first result stays recorded, the second call is not
+    // sent and the step waits a second, and the second call runs once the
+    // refresh can be made.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__hang", json!({"q": "1"})), ("mcp__docs__lookup", json!({"q": "2"}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("done")]);
+    let timeout = Some(std::time::Duration::from_secs(3));
+    let (app, _worker) = worker(&rig, model, Tune { guard, mcp_timeout: timeout, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
+    let vault = vault["id"].as_str().unwrap().to_owned();
+    let soon = (chrono::Utc::now() + chrono::Duration::milliseconds(2500)).to_rfc3339();
+    let auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "tok-oauth",
+        "expires_at": soon, "refresh": {"client_id": "c", "token_endpoint": url.replace("/mcp", "/token"),
+        "token_endpoint_auth": {"type": "none"}, "refresh_token": "r"}});
+    let path = format!("/v1/vaults/{vault}/credentials");
+    let (st, cred) =
+        rig.call("POST", &path, Auth::Key(KEY), Some(json!({"display_name": "c", "auth": auth}))).await;
+    assert_eq!(st, StatusCode::OK, "{cred}");
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
+    send(&app, &s, message("go")).await;
+    let first = events_until(&app, &s, "agent.mcp_tool_result", 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let during = events_until(&app, &s, "agent.mcp_tool_use", 2).await;
+    let (uses, results) = (of(&during, "agent.mcp_tool_use"), of(&during, "agent.mcp_tool_result"));
+    assert_eq!(results, of(&first, "agent.mcp_tool_result"), "the first call's result is kept, and no other");
+    assert_eq!(results[0]["mcp_tool_use_id"], uses[0]["id"]);
+    assert_eq!(server.calls().len(), 1, "the second call waits for the refresh");
+    assert_eq!(server.tokens.load(Ordering::SeqCst), 0, "no refresh while another worker's is in flight");
+    let step = super::step_of(&s).await.expect("the step stays queued");
+    assert!(step.due_in <= 1, "the step waits a second");
+    age_row(cred["id"].as_str().unwrap(), 120).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let answered: Vec<&Value> =
+        of(&events, "agent.mcp_tool_result").iter().map(|r| &r["mcp_tool_use_id"]).collect();
+    assert_eq!(answered, [&uses[0]["id"], &uses[1]["id"]], "one result for each call");
+    assert_eq!(server.tokens.load(Ordering::SeqCst), 1, "one refresh");
+}
