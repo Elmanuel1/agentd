@@ -73,7 +73,7 @@ agentd (one stack, each PR on your go-ahead):
 
 1. The spec (this folder).
 2. Make room: three large files are split before later PRs change them, with no behaviour change.
-3. Migrations: every new table and index in one production-safe PR.
+3. Migrations: the tables and indexes PRs 4 to 6 use, in one production-safe PR; PR 7's own migrations ship in it.
 4. The work API for Anthropic's worker: work items in Postgres, live's work secret (with signed placeholders for
    `cloud` environment-variable credentials), environment keys and our runtime key, work tokens that reach only their
    own session, and the session's files for workers.
@@ -81,7 +81,7 @@ agentd (one stack, each PR on your go-ahead):
    refused under overload, the event list from a replica, an optional retention period. The log stays on
    Postgres; DynamoDB for large workspaces is a later step, behind the same port, when its signal passes its threshold.
 6. The loop: the engine brought back, steps from a Postgres queue with leases, the `api` and `loop` roles, model
-   limits per workspace and across the account, and sessions run on the loop behind a setting.
+   limits per workspace and across the account, and every session on the loop.
 7. The rest, in one PR: compaction (clear old tool results, then summarise into checkpoints); MCP servers called
    from the loop with cached connections, vault credentials read per step, one OAuth refresh at a time, deployments
    paused when the environment blocks an MCP host, and vaults as Anthropic documents them; thinking, and a grader
@@ -140,9 +140,9 @@ agentd (one stack, each PR on your go-ahead):
 - The rest of the plan as one PR, the removals in it (2026-11-11); agentd is not deployed, so a PR merges on green CI
   and a local replay (2026-11-12).
 - Schedules and webhooks go through outboxes read from Postgres's WAL by Debezium into Kafka, or Valkey Streams
-  without Kafka; an action's own effects happen in its request (2026-11-14, 2026-11-15).
+  without Kafka; an action's own effects happen in its request (2026-11-11 to 2026-11-15).
 - agentd's keys come from environment variables, with rotation; Secrets Manager holds only tenant credentials
-  (the parity PR's planning).
+  (2026-11-12).
 - agentd exports metrics only; alarms belong to the infrastructure (2026-11-11). The load test runs by hand
   (2026-11-11).
 - Thinking on; the grader writes what live writes, with no verdict tool; archiving a session terminates it
@@ -160,7 +160,7 @@ Objects; staging documents from S3 adds about $15 to $20. The full breakdown is 
 
 The full detail lives beside this page:
 
-- [requirements.md](requirements.md): every requirement with its ID (W, F, E, S, R, M, L, CP, FO, K, MC, VA, H, EV, J,
+- [requirements.md](requirements.md): every requirement with its ID (W, F, E, S, R, M, L, CP, FO, K, CH, MC, VA, H, EV, J,
   and `agentd-worker`'s EG, CF, FL), the per-PR files, SQL statements and tests, the step queue's statements,
   rollout, deployment and cost, SRE sizing, scale-up triggers and SLOs, the plan's audit.
 - [decisions.md](decisions.md): each decision with its source.

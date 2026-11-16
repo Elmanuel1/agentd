@@ -42,7 +42,7 @@ run in the container project (see Out of scope).
   of the value (D28).
 
 **Build order:** work API (W, EV) → event log (F, E) → steps and the loop (S, L, M) → compaction (CP) → files for
-workers (FO) → MCP (MC) → vaults (VA) → scheduler (K) → webhooks (H) → conformance (J) → removals (RM) → docs (DOC).
+workers (FO) → MCP (MC) → vaults (VA) → scheduler (K) → change feed (CH) → webhooks (H) → conformance (J) → removals (RM) → docs (DOC).
 
 Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
 [ADR 0001](adr/0001-agent-loop-in-agentd.md).
@@ -123,7 +123,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | L-3 | When a `self_hosted` session's `user.tool_result` arrives, the loop shall write `session.status_running` and `session.thread_status_running` and continue. |
 | L-4 | While a `cloud` session waits on built-in calls, the loop shall keep it `running` and record each `user.tool_result` as `agent.tool_result`. |
 | L-5 | The loop shall run the outcome grader on a thread of its own between `span.outcome_evaluation_start` and `_end`, its built-in calls answered by a worker without idling the session, and take one more primary turn after the evaluation. |
-| L-22 | The grader shall grade in its reply's text, with no tool of agentd's own and no event live does not write (D62, B33). |
+| L-22 | The loop shall take the grader's grade from its reply's text, with no tool of agentd's own and no event live does not write (D62, B33). |
 | L-23 | The loop shall compact a grader's thread as it compacts any thread (CP-1 to CP-12), with the grader's task right after the compaction block (D60). |
 | L-6 | When the first `user.interrupt` arrives with an unanswered built-in call, the loop shall post `agent.tool_result` `is_error: true` "Tool execution was interrupted before completion. Please retry." and idle `end_turn`. |
 | L-7 | When a second `user.interrupt` arrives, the loop shall force-stop the session's work. |
@@ -167,14 +167,15 @@ Decisions D12 and D50 to D53.
 
 | ID | Requirement |
 |---|---|
-| K-1 | When a deployment write changes its schedule (a create, pause, unpause or archive, or the pause after a fire's MCP host check fails, MC-19), the API shall write the change to `schedule_outbox` in that write's transaction, removing the row again in the same transaction, so that the change lives on in the WAL only. |
+| K-1 | When a deployment write changes its schedule (a create, pause, unpause or archive, or a fire's run error that pauses or archives the deployment, MC-19 among them), the API shall write the change to `schedule_outbox` in that write's transaction, removing the row again in the same transaction, so that the change lives on in the WAL only. |
 | K-3 | The change feed shall hand each schedule change to the scheduler sink in commit order, one replica at a time. |
 | K-4 | If the scheduler sink refuses a schedule change, then the change feed shall hold that stream until the change applies. |
 | K-5 | If a schedule change does not decode, then the change feed shall log it at `ERROR` and pass over it. |
-| K-2 | The built-in scheduler shall keep one `schedules` row per target in Postgres, and each replica shall claim the due rows every 10 s with `FOR UPDATE SKIP LOCKED`, moving each to its next time in that transaction and firing it after the commit. |
+| K-2 | The scheduler shall keep one `schedules` row per target in Postgres as its built-in sink. |
+| K-9 | The scheduler shall claim the due `schedules` rows every 10 s on each replica with `FOR UPDATE SKIP LOCKED`, moving each to its next time in that transaction and firing it after the commit. |
 | K-6 | If a fire is more than a minute late, then the scheduler shall skip it and move the schedule to its next time, with no backfill. |
-| K-7 | When a fire arrives, from the built-in scheduler or from the feed's `agentd.fires`, the API shall claim it in `fire_claims` by its target and time before its handler runs, so that a repeated delivery runs no second time. |
-| K-8 | If a claimed fire is not done within 15 minutes, then the API shall let the next delivery of it take it over, up to 3 runs, and then drop it with an `ERROR` log line. |
+| K-7 | When a fire arrives, from the built-in scheduler or from the feed's `agentd.fires`, the scheduler shall claim it in `fire_claims` by its target and time before its handler runs, so that a repeated delivery runs no second time. |
+| K-8 | If a claimed fire is not done within 15 minutes, then the scheduler shall let the next delivery of it take it over, up to 3 runs, and then drop it with an `ERROR` log line. |
 | CH-1 | The change feed shall read the committed inserts of `schedule_outbox` and `webhook_deliveries` from Postgres's WAL with one Debezium Server instance, its offsets in Postgres. |
 | CH-2 | Where `AGENTD_KAFKA_BROKERS` is set, agentd shall read each topic of the feed in the consumer group `agentd.<topic>` and commit a record's offset once its handler succeeds, retrying a failed record in place. |
 | CH-3 | Where `AGENTD_KAFKA_BROKERS` is unset, agentd shall read the feed from Valkey Streams in the consumer group `agentd`, and trim each stream once a minute below the oldest entry a group still needs. |
@@ -356,11 +357,11 @@ deployed (D45), so each PR merges on green CI and a local replay (Rollout). Migr
 |---|---|---|---|---|---|
 | 1 | This spec | spec | P0 | all | |
 | 2 | Make room: store settings, vault credentials and deployment run errors get their own files | cleanup | X1, X2, X3 | none (makes room) | |
-| 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint and archived-session indexes | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm, E4m | E-2, W-2, W-13, S-1, S-2, MC-13, K-1, H-4, CP-9 | |
-| 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W1, W3 to W5, EV1, W7 to W9, L6, FO1 | W-1 to W-23, EV-1 to EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
+| 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint and archived-session indexes | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm, E4m | E-2, W-2, W-13, S-1, S-2, MC-13, K-2, H-4, CP-9 | |
+| 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W3 to W5, EV1, W7 to W9, L6, FO1 | W-2 to W-13, W-15 to W-19, W-21 to W-23, EV-1, EV-3, EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
 | 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, every session on the loop | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
-| 7 | The rest, one PR (D43): compaction; MCP and vaults; thinking and the grader; schedules and webhooks through the change feed; the keys from the environment; the removals; the Java SDK, metrics and docs | code, with migrations V13 to V15 | CP0 to CP3, MC1 to MC3, VA1, K1, H1, W1's key rings, RM1 to RM3, J1, SRE | CP-1 to CP-13, MC-1 to MC-28, VA-1 to VA-11, L-21 to L-23, K-1 to K-8, CH-1 to CH-5, H-1 to H-7, F-6, W-1, W-14, W-20, W-24 to W-26, EV-2, M-5, J-1 | |
+| 7 | The rest, one PR (D43): compaction; MCP and vaults; thinking and the grader; schedules and webhooks through the change feed; the keys from the environment; the removals; the Java SDK, metrics and docs | code, with migrations V13 to V15 | CP0 to CP3, TH1, GR1, W1, MC1 to MC3, VA1, K1, H1, RM1 to RM3, J1, SRE | CP-1 to CP-13, MC-1 to MC-28, VA-1 to VA-11, L-21 to L-23, K-1 to K-9, CH-1 to CH-5, H-1 to H-7, F-6, W-1, W-14, W-20, W-24 to W-26, EV-2, M-5, J-1 | |
 
 7 agentd PRs including the spec. `agentd-worker` (its own repository, D6) builds section 11 in 3 PRs: the image with
 the official `EnvironmentWorker`, the Docker launcher and file staging; the Cloudflare launcher (CF-1 to CF-12 with
@@ -389,7 +390,7 @@ Every production file over 200 lines that a later PR changes is split here first
 
 #### PR 3. Migrations
 
-Every new table and index, production-safe: new tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+Every table and index PRs 4 to 6 use, production-safe; PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`) ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
 
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
@@ -417,13 +418,6 @@ Every new table and index, production-safe: new tables only, unused until their 
 
 #### PR 4. Work API for the official worker
 
-- **W1.** `api/src/config/work.rs` and `api/src/config/keys.rs` read agentd's keys from the environment (D59):
-  `AGENTD_WORK_TOKEN_KEYS`, `AGENTD_PLACEHOLDER_KEYS` and `AGENTD_API_KEY_PEPPERS` as key rings parsed by
-  `shared::hash::KeyRing`, `AGENTD_RUNTIME_KEYS` and the model keys. `shared::hash` signs with the ring's first key
-  and names that key's id in each token. Boot: no statement and no Secrets Manager read; per request none. Tests: the
-  `api` config tests (a ring is required and parsed, a malformed runtime key refuses to start, no key reaches
-  `Debug`); `hash` "a token names its key and verifies while that key is in the ring"; `api-keys` "a key under an
-  older pepper resolves and moves to the current one" (W-24, W-25).
 - **W3.** `work/src/store.rs` (port, about 60 lines); `store-postgres/src/entities/work_items.rs` (about 180).
   Statements: queue 1 INSERT; claim, one transaction, 1 SELECT of the oldest queued item of the queue not handed out
   in 5 s `FOR UPDATE SKIP LOCKED LIMIT 1` and 1 UPDATE of `handed_out_at`; ack 1 `UPDATE … WHERE state = 'queued'
@@ -514,8 +508,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   `delete_events_of` for that page, until a page comes back short. The read crosses from the sessions store to the
   event log's port, which sql-transactions rule 7a's single statement cannot do without tying the log to Postgres:
   the user's port rule (D18) wins. Each DELETE covers at most 500 sessions. `agentd.retention.last_success` is a
-  metric; `docs/operations.md` names its threshold (no run for 15 minutes while a period is set, inside the 1-hour
-  horizon) and the action for a longer outage: restart one replica, whose first run walks from the oldest. Its test: the
+  metric, and `docs/operations.md` names its threshold (no run for 15 minutes while a period is set, inside the
+  1-hour horizon). For an outage longer than the horizon, restarting one replica makes its first run walk from the
+  oldest. Its test: the
   metric advances after a run. Session delete, in
   `sessions/src/service/lifecycle.rs` and `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one
   transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1) and, from PR 6, every step commit, so an append in flight finishes first and a later one finds no session; 1 `DELETE FROM sessions WHERE
@@ -603,6 +598,16 @@ Every new table and index, production-safe: new tables only, unused until their 
   round; its thread compacts as any thread, the compaction block first and the grader's task after it (L-23, D60),
   and a compaction's call is not a turn the grader ended. Tests: `agent_loop` "an outcome is graded on its own thread
   until satisfied".
+
+#### PR 7: keys from the environment
+
+- **W1.** `api/src/config/work.rs` and `api/src/config/keys.rs` read agentd's keys from the environment (D59):
+  `AGENTD_WORK_TOKEN_KEYS`, `AGENTD_PLACEHOLDER_KEYS` and `AGENTD_API_KEY_PEPPERS` as key rings parsed by
+  `shared::hash::KeyRing`, `AGENTD_RUNTIME_KEYS` and the model keys. `shared::hash` signs with the ring's first key
+  and names that key's id in each token. Boot: no statement and no Secrets Manager read; per request none. Tests: the
+  `api` config tests (a ring is required and parsed, a malformed runtime key refuses to start, no key reaches
+  `Debug`); `hash` "a token names its key and verifies while that key is in the ring"; `api-keys` "a key under an
+  older pepper resolves and moves to the current one" (W-24, W-25).
 
 #### PR 7: MCP and vaults
 
@@ -807,8 +812,8 @@ The removals are in PR 7 (D44).
 - **J1.** `conformance/java` (Gradle, `com.anthropic:anthropic-java` 2.52.0 from the version catalog): the TypeScript
   suite's cases the Java SDK can express (J-1), against agentd with only the base URL changed, run in the `sdk` CI job
   after the TypeScript suite. Tests: the suite itself (`./gradlew test`), green in CI.
-- **SRE.** The loop exports `agentd.loop.*` metrics over OTLP beside the API's, so every SLI below is a metric;
-  `docs/operations.md` names each signal with its threshold and action, backend-neutral, and agentd holds no
+- **SRE.** The loop exports `agentd.loop.*` metrics over OTLP beside the API's, and the SLO table names each SLI's
+  metric; `docs/operations.md` names each signal with its threshold and action, backend-neutral, and agentd holds no
   production alert rule or alarm (D54). `perf/` (k6) is the load test, run by hand, and the `perf-smoke` workflow runs
   it on demand (D55). The docs describe the roles, the settings and a deployment. Tests: the metrics' unit tests; the
   load test's numbers go on the PR.
@@ -838,7 +843,7 @@ The removals are in PR 7 (D44).
 
 ## Out of scope
 
-- The DynamoDB event log (D18), the scale-up step for large workspaces, planned when the `agentd-event-log-hot` signal passes its threshold.
+- The DynamoDB event log (D18), the scale-up step for large workspaces, planned when appends pass 2,500/s or Postgres CPU passes 70% for 1 hour (SRE, scale-up triggers).
   The event log stays behind its port; the switch replaces the adapter behind it and the two Postgres guarantees named
   below. Its requirement for that plan: where a
   workspace is listed for DynamoDB, the API shall keep its new sessions' events in DynamoDB behind the same port,
@@ -889,15 +894,16 @@ Durable Objects under $5. AWS data transfer for staging documents from S3 to Clo
 
 ### SLOs
 
-agentd exports each SLI as a metric; the alert rules and their backend belong to the infrastructure (D54).
+The alert rules and their backend belong to the infrastructure (D54). Tool-call dispatch and event delivery have no
+metric of agentd's yet.
 
-| Component | SLI | SLO |
-|---|---|---|
-| API | non-5xx / all requests | 99.9% |
-| Step start | steps claimed within 1 s of their wake / all steps | 99% |
-| Tool-call dispatch | `agent.tool_use` on the worker's stream within the threshold / all built-in calls | 90% < 250 ms, 99% < 1 s |
-| Event delivery | events on every open stream within 1 s of append | 99% |
-| Turn success | turns ending `end_turn`, `requires_action` or `budget_reached` / all turns | 99% |
+| Component | SLI | Metric | SLO |
+|---|---|---|---|
+| API | non-5xx / all requests | `http.server.request.duration` by status | 99.9% |
+| Step start | steps claimed within 1 s of their wake / all steps | `agentd.loop.step_wait` | 99% |
+| Tool-call dispatch | `agent.tool_use` on the worker's stream within the threshold / all built-in calls | none yet | 90% < 250 ms, 99% < 1 s |
+| Event delivery | events on every open stream within 1 s of append | none yet | 99% |
+| Turn success | turns ending `end_turn`, `requires_action` or `budget_reached` / all turns | `agentd.loop.turns` by stop reason | 99% |
 
 ### Sizing at the peak
 
@@ -925,17 +931,18 @@ Each trigger is a signal and a threshold for the deployment's monitoring backend
 
 | Trigger | Metric | Threshold | Action |
 |---|---|---|---|
-| Postgres connections | `AWS/RDS` `DatabaseConnections` over `max_connections` | `agentd-db-connections-high`: above 70% for 15 minutes; also checked at deploy time as loop workers × pool size | add RDS Proxy (transaction pooling) |
-| Secrets Manager reads | `AWS/Usage` `CallCount` for Secrets Manager `GetSecretValue` | `agentd-secrets-reads-high`: above 5,000/s (50% of the limit) for 15 minutes | plan envelope encryption (D30) |
-| Log reads | `events.list` p99 latency | `agentd-log-reads-slow`: above 500 ms for 1 hour | configure the read replica, and move the step to the checkpoint-bounded read (the step queue's Run row) |
-| Event-log load | events appended per second, and `AWS/RDS` `WriteIOPS` and `CPUUtilization` | `agentd-event-log-hot`: appends above 2,500/s (half the sizing peak) or Postgres CPU above 70% for 1 hour | plan the DynamoDB event log (Out of scope) |
-| Sandbox start | time from work item queued to first `user.tool_result` | `agentd-sandbox-start-slow`: p99 above 10 s for 1 hour | a warm buffer on Fargate, or a capacity raise on Cloudflare |
+| Postgres connections | `AWS/RDS` `DatabaseConnections` over `max_connections` | above 70% for 15 minutes; also checked at deploy time as loop workers × pool size | add RDS Proxy (transaction pooling) |
+| Secrets Manager reads | `AWS/Usage` `CallCount` for Secrets Manager `GetSecretValue` | above 5,000/s (50% of the limit) for 15 minutes | plan envelope encryption (D30) |
+| Log reads | `events.list` p99 latency | above 500 ms for 1 hour | configure the read replica, and move the step to the checkpoint-bounded read (the step queue's Run row) |
+| Event-log load | events appended per second, and `AWS/RDS` `WriteIOPS` and `CPUUtilization` | appends above 2,500/s (half the sizing peak) or Postgres CPU above 70% for 1 hour | plan the DynamoDB event log (Out of scope) |
+| Sandbox start | time from work item queued to first `user.tool_result` | p99 above 10 s for 1 hour | a warm buffer on Fargate, or a capacity raise on Cloudflare |
 
 ### Operational signals
 
-`docs/operations.md` names every signal agentd exports with its threshold and action. Among them: when
-`agentd.retention.last_success` shows no run for 15 minutes while a retention period is set, the action is to
-restart one replica, whose first run walks every archived session (E4); when the change feed's slot lag, Debezium's
+`docs/operations.md` names a threshold and an action for each signal it lists. Among them: when
+`agentd.retention.last_success` shows no run for 15 minutes while a retention period is set, read retention's `warn`
+lines, and for an outage longer than its 1-hour horizon restart one replica, whose first run walks every archived
+session (E4); when the change feed's slot lag, Debezium's
 health or the feed's backlog passes its threshold, schedules and webhooks wait until the feed moves again (CH-1).
 
 ### Accepted risks
