@@ -807,20 +807,59 @@ fn processed(e: &Value) -> chrono::DateTime<chrono::Utc> {
 #[tokio::test]
 async fn each_mcp_result_is_recorded_before_the_next_call_goes_out() {
     // MC-25, as live's MC-26 capture shows: each result has its own
-    // `processed_at`, and the second `tools/call` goes out after the first.
+    // `processed_at`, and the second `tools/call` goes out after the first
+    // result is in the log.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let calls = vec![("mcp__docs__lookup", json!({"q": "1"})), ("mcp__docs__lookup", json!({"q": "2"}))];
+    let calls = vec![("mcp__docs__lookup", json!({"q": "1"})), ("mcp__docs__hang", json!({"q": "2"}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("done")]);
-    let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+    let timeout = Some(std::time::Duration::from_millis(1500));
+    let (app, _worker) = worker(&rig, model, Tune { guard, mcp_timeout: timeout, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("look both up")).await;
+    while server.calls().len() < 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let during = events_until(&app, &s, "agent.mcp_tool_use", 2).await;
+    let (uses, results) = (of(&during, "agent.mcp_tool_use"), of(&during, "agent.mcp_tool_result"));
+    assert_eq!(results.len(), 1, "only the first call's result while the second runs");
+    assert_eq!(results[0]["mcp_tool_use_id"], uses[0]["id"]);
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     let (results, sent) = (of(&events, "agent.mcp_tool_result"), server.calls());
     assert_eq!((results.len(), sent.len()), (2, 2));
     assert!(processed(results[0]) < sent[1].at, "the first result is recorded before the second call");
     assert!(processed(results[1]) > sent[1].at, "the second result is recorded when its call ends");
+}
+
+#[tokio::test]
+async fn a_result_write_that_finds_the_claim_gone_stops_the_step() {
+    // S-2: the step's row is taken away during its first call, and the lease
+    // outlasts the call, so the result's write is what finds the claim gone:
+    // it writes nothing and the step sends no second call.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
+    let timeout = Some(std::time::Duration::from_millis(1500));
+    let lease = std::time::Duration::from_secs(10);
+    let (app, _worker) =
+        worker(&rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("try")).await;
+    while server.count("tools/call") == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let pg = db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
+        .bind::<diesel::sql_types::Text, _>(&s);
+    diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(server.count("tools/call"), 1, "the step stopped at the first result's write");
+    let events = events_until(&app, &s, "agent.mcp_tool_use", 2).await;
+    assert!(of(&events, "agent.mcp_tool_result").is_empty(), "the result's write landed nothing");
 }
 
 #[tokio::test]
@@ -841,6 +880,14 @@ async fn a_result_already_recorded_is_not_sent_again_when_the_step_reruns() {
     let sent: Vec<Value> = server.calls().into_iter().map(|g| g.arguments["q"].clone()).collect();
     assert_eq!(sent, [json!("1"), json!("2"), json!("2")], "the recorded call is not sent again");
     let (uses, results) = (of(&events, "agent.mcp_tool_use"), of(&events, "agent.mcp_tool_result"));
-    let answered: Vec<&Value> = results.iter().map(|r| &r["mcp_tool_use_id"]).collect();
-    assert_eq!(answered, [&uses[0]["id"], &uses[1]["id"]], "one result for each call");
+    let recorded: Vec<(&Value, &Value, &Value)> =
+        results.iter().map(|r| (&r["mcp_tool_use_id"], &r["content"][0]["text"], &r["is_error"])).collect();
+    assert_eq!(
+        recorded,
+        [
+            (&uses[0]["id"], &json!("found \"1\""), &json!(false)),
+            (&uses[1]["id"], &json!("found \"2\""), &json!(false))
+        ],
+        "one result for each call"
+    );
 }

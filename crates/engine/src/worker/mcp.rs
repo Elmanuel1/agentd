@@ -45,9 +45,13 @@ impl Loop {
         if !empty && !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
         }
-        let mut called_any = false;
+        let mut finished: Vec<Event> = Vec::new();
         for call in history.unanswered.iter().filter(|u| u.for_loop()) {
             let Ok(id) = EventId::parse(&call.id) else { continue };
+            let done = std::mem::take(&mut finished);
+            if !done.is_empty() && !self.write(claim, &batch(Vec::new(), Vec::new(), done), None).await? {
+                return Ok(());
+            }
             let server = call.mcp.as_deref().unwrap_or_default();
             let prefix = model_name(server, "");
             let tool = call.name.strip_prefix(&prefix).unwrap_or(&call.name);
@@ -61,7 +65,6 @@ impl Loop {
                 }
                 // Another worker refreshes the token: what ran is kept, the
                 // rest runs in a later step.
-                CallOutcome::Deferred if called_any => break,
                 CallOutcome::Deferred => return self.defer_refresh(claim).await,
                 CallOutcome::Failed { content, error } => {
                     crate::metrics::mcp_call("unreachable");
@@ -70,14 +73,10 @@ impl Loop {
             };
             let error = error.map(|error| turn.event(SessionEvent::Error { error }));
             let result = turn.event(AgentEvent::McpToolResult { mcp_tool_use_id: id, content, is_error });
-            let recorded: Vec<Event> = error.into_iter().chain([result]).collect();
-            if !self.write(claim, &batch(Vec::new(), Vec::new(), recorded), None).await? {
-                return Ok(());
-            }
-            called_any = true;
+            finished = error.into_iter().chain([result]).collect();
         }
         session.status = SessionStatus::Running;
-        self.commit(claim, StepEnd::Again, &batch(Vec::new(), Vec::new(), Vec::new()), &session).await?;
+        self.commit(claim, StepEnd::Again, &batch(Vec::new(), Vec::new(), finished), &session).await?;
         Ok(())
     }
 
