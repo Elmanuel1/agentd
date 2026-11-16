@@ -1,0 +1,257 @@
+//! The history store (V17): one history table per tracked table, recorded
+//! once per change, decoded from the feed's encoding, scrubbed on redaction,
+//! and searchable by actor and request id across tables. Gated by
+//! `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+
+use diesel::sql_types::{Jsonb, Text};
+use diesel_async::RunQueryDsl;
+use serde_json::{json, Value};
+use shared::ports::changes::Position;
+use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
+use shared::Timestamp;
+use store_postgres::{PgBackend, PgHistoryLog};
+
+fn enabled() -> bool {
+    std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")
+}
+
+async fn log() -> (PgBackend, PgHistoryLog) {
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    let pg = PgBackend::connect(&url).await.unwrap();
+    (pg.clone(), PgHistoryLog::load(pg).await.unwrap())
+}
+
+fn stamp() -> String {
+    Timestamp::now().as_datetime().timestamp_nanos_opt().unwrap().to_string()
+}
+
+fn at(lsn: u64, seconds: i64) -> Position {
+    let committed = chrono::DateTime::from_timestamp(1_790_000_000 + seconds, 0).unwrap();
+    Position { lsn, tx_id: Some(7), committed_at: Timestamp::from_datetime(committed) }
+}
+
+#[derive(diesel::QueryableByName)]
+struct Row {
+    #[diesel(sql_type = Jsonb)]
+    row: Value,
+}
+
+/// `sql`'s rows as JSON, `$1` bound to `id`.
+async fn rows(pg: &PgBackend, sql: &str, id: &str) -> Vec<Value> {
+    let mut conn = pg.diesel.get().await.unwrap();
+    let rows: Vec<Row> = diesel::sql_query(sql).bind::<Text, _>(id).load(&mut *conn).await.unwrap();
+    rows.into_iter().map(|r| r.row).collect()
+}
+
+fn vault(id: &str, name: &str, actor: &str) -> Value {
+    json!({"workspace_id": "wrkspc_h", "vault_id": id, "display_name": name, "created_at": "2026-11-16T10:00:00Z",
+           "doc": format!("{{\"display_name\":\"{name}\"}}"), "actor": actor, "request_id": format!("req_{id}")})
+}
+
+#[tokio::test]
+async fn a_change_recorded_twice_is_kept_once_and_changes_read_in_lsn_order() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let id = format!("vlt_h{}", stamp());
+    log.record("vaults", HistoryOp::Update, &at(20, 2), &vault(&id, "two", "apikey_b")).await.unwrap();
+    log.record("vaults", HistoryOp::Insert, &at(10, 1), &vault(&id, "one", "apikey_a")).await.unwrap();
+    log.record("vaults", HistoryOp::Insert, &at(10, 1), &vault(&id, "one", "apikey_a")).await.unwrap();
+    let got = rows(
+        &pg,
+        "SELECT jsonb_build_object('op', op, 'doc', doc, 'actor', actor, 'lsn', lsn::text) AS row
+           FROM history.vaults WHERE vault_id = $1 ORDER BY lsn",
+        &id,
+    )
+    .await;
+    assert_eq!(
+        got,
+        vec![
+            json!({"op": "insert", "doc": {"display_name": "one"}, "actor": "apikey_a", "lsn": "0/A"}),
+            json!({"op": "update", "doc": {"display_name": "two"}, "actor": "apikey_b", "lsn": "0/14"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_feed_s_jsonb_text_and_base64_bytea_store_typed_and_a_delete_row_stores_as_postgres_gave_it() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let id = format!("apikey_h{}", stamp());
+    let row = json!({"api_key_id": id, "org_id": "org_h", "workspace_id": "wrkspc_h", "name": "k",
+                     "key_digest": "AAEC", "partial_key_hint": "sk-...h", "created_at": "2026-11-16T10:00:00Z",
+                     "revoked_at": null, "actor": "operator", "request_id": null});
+    log.record("api_keys", HistoryOp::Insert, &at(1, 1), &row).await.unwrap();
+    let mut deleted = row.clone();
+    deleted["key_digest"] = json!("\\x000102");
+    log.record("api_keys", HistoryOp::Delete, &at(2, 2), &deleted).await.unwrap();
+    let got = rows(
+        &pg,
+        "SELECT jsonb_build_object('digest', encode(key_digest, 'hex'), 'op', op) AS row
+           FROM history.api_keys WHERE api_key_id = $1 ORDER BY lsn",
+        &id,
+    )
+    .await;
+    assert_eq!(
+        got,
+        vec![json!({"digest": "000102", "op": "insert"}), json!({"digest": "000102", "op": "delete"})]
+    );
+}
+
+#[tokio::test]
+async fn a_table_with_no_history_or_a_row_that_does_not_decode_is_unrecordable() {
+    if !enabled() {
+        return;
+    }
+    let (_, log) = log().await;
+    let none = log.record("work_items", HistoryOp::Insert, &at(1, 1), &json!({})).await;
+    assert!(matches!(none, Err(HistoryError::Unrecordable(_))), "{none:?}");
+    let bad = log.record("vaults", HistoryOp::Insert, &at(1, 1), &json!({"doc": "{"})).await;
+    assert!(matches!(bad, Err(HistoryError::Unrecordable(_))), "{bad:?}");
+}
+
+#[tokio::test]
+async fn a_scrub_clears_the_version_and_the_heads_that_held_it_and_nothing_else() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let s = stamp();
+    let (store, memory, old, new) =
+        (format!("memstore_h{s}"), format!("mem_h{s}"), format!("memver_o{s}"), format!("memver_n{s}"));
+    let doc = |sha: &str, path: &str| {
+        format!("{{\"content_sha256\":\"{sha}\",\"content_size_bytes\":3,\"path\":\"{path}\"}}")
+    };
+    for (lsn, version, sha) in [(1, &old, "aaa"), (3, &new, "bbb")] {
+        let row = json!({"workspace_id": "wrkspc_h", "store_id": store, "memory_id": memory, "version_id": version,
+                         "seq": lsn, "has_blob": true, "created_at": "2026-11-16T10:00:00Z", "doc": doc(sha, "/a.md")});
+        log.record("memory_versions", HistoryOp::Insert, &at(lsn, 1), &row).await.unwrap();
+        let head = json!({"workspace_id": "wrkspc_h", "store_id": store, "memory_id": memory, "path": "/a.md",
+                          "head_version_id": version, "deleted": false, "created_at": "2026-11-16T10:00:00Z",
+                          "doc": doc(sha, "/a.md")});
+        log.record("memories", HistoryOp::Update, &at(lsn + 1, 1), &head).await.unwrap();
+    }
+    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    let versions = rows(
+        &pg,
+        "SELECT jsonb_build_object('v', version_id, 'sha', doc->'content_sha256', 'path', doc->'path') AS row
+           FROM history.memory_versions WHERE store_id = $1 ORDER BY lsn",
+        &store,
+    )
+    .await;
+    assert_eq!(
+        versions,
+        vec![json!({"v": old, "sha": null, "path": null}), json!({"v": new, "sha": "bbb", "path": "/a.md"})]
+    );
+    let heads = rows(
+        &pg,
+        "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', path, 'size', doc->'content_size_bytes') AS row
+           FROM history.memories WHERE store_id = $1 ORDER BY lsn",
+        &store,
+    )
+    .await;
+    assert_eq!(
+        heads,
+        vec![
+            json!({"sha": null, "path": null, "size": null}),
+            json!({"sha": "bbb", "path": "/a.md", "size": 3})
+        ]
+    );
+}
+
+#[derive(diesel::QueryableByName)]
+struct Name {
+    #[diesel(sql_type = Text)]
+    name: String,
+}
+
+async fn names(pg: &PgBackend, sql: &str) -> Vec<String> {
+    let mut conn = pg.diesel.get().await.unwrap();
+    let rows: Vec<Name> = diesel::sql_query(sql).load(&mut *conn).await.unwrap();
+    rows.into_iter().map(|r| r.name).collect()
+}
+
+#[tokio::test]
+async fn every_tracked_table_has_a_history_table_with_its_columns_and_types() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let tracked = names(
+        &pg,
+        "SELECT c.relname::text AS name FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+          WHERE t.tgname = c.relname || '_history_stamp' ORDER BY c.relname COLLATE \"C\"",
+    )
+    .await;
+    assert_eq!(tracked.len(), 18, "{tracked:?}");
+    assert_eq!(log.tables(), tracked);
+    let columns =
+        "SELECT format('%s.%s %s', c.relname, a.attname, format_type(a.atttypid, a.atttypmod)) AS name
+                     FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+                     JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = '{schema}' AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
+                      AND c.relname = ANY('{tables}') ORDER BY 1";
+    let set = format!("{{{}}}", tracked.join(","));
+    let live = names(&pg, &columns.replace("{schema}", "public").replace("{tables}", &set)).await;
+    let kept = names(&pg, &columns.replace("{schema}", "history").replace("{tables}", &set)).await;
+    let own = [".lsn pg_lsn", ".tx_id bigint", ".op text", ".committed_at timestamp with time zone"];
+    let kept: Vec<String> = kept.into_iter().filter(|c| !own.iter().any(|o| c.ends_with(o))).collect();
+    assert_eq!(kept, live);
+    let in_view = names(
+        &pg,
+        "SELECT table_name::text AS name FROM information_schema.view_table_usage
+          WHERE view_schema = 'history' AND view_name = 'changes' ORDER BY table_name COLLATE \"C\"",
+    )
+    .await;
+    assert_eq!(in_view, tracked);
+}
+
+#[tokio::test]
+async fn one_actor_s_changes_and_one_request_s_read_across_tables_by_index() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let s = stamp();
+    let actor = format!("apikey_s{s}");
+    let mut row = vault(&format!("vlt_s{s}"), "v", &actor);
+    row["request_id"] = json!(format!("req_s{s}"));
+    log.record("vaults", HistoryOp::Insert, &at(5, 20), &row).await.unwrap();
+    let skill = json!({"workspace_id": "wrkspc_h", "skill_id": format!("skill_s{s}"), "display_name": "s",
+                       "created_at": "2026-11-16T10:00:00Z", "doc": "{}", "actor": actor, "request_id": format!("req_s{s}")});
+    log.record("skills", HistoryOp::Insert, &at(6, 10), &skill).await.unwrap();
+    let by_actor = "SELECT jsonb_build_object('t', table_name, 'key', row_key) AS row FROM history.changes
+                     WHERE actor = $1 AND committed_at >= to_timestamp(1790000000) ORDER BY committed_at";
+    let got = rows(&pg, by_actor, &actor).await;
+    let tables: Vec<&Value> = got.iter().map(|r| &r["t"]).collect();
+    assert_eq!(tables, [&json!("skills"), &json!("vaults")]);
+    assert_eq!(got[1]["key"], json!({"workspace_id": "wrkspc_h", "vault_id": format!("vlt_s{s}")}));
+    let by_request = "SELECT jsonb_build_object('t', table_name) AS row FROM history.changes
+                       WHERE request_id = $1 ORDER BY committed_at";
+    assert_eq!(rows(&pg, by_request, &format!("req_s{s}")).await.len(), 2);
+
+    let mut conn = pg.diesel.get().await.unwrap();
+    for (sql, index) in [(by_actor, "_actor_idx"), (by_request, "_request_idx")] {
+        diesel::sql_query("SET enable_seqscan = off").execute(&mut *conn).await.unwrap();
+        #[derive(diesel::QueryableByName)]
+        struct Plan {
+            #[diesel(sql_type = Text, column_name = "QUERY PLAN")]
+            line: String,
+        }
+        let plan: Vec<Plan> = diesel::sql_query(format!("EXPLAIN {sql}"))
+            .bind::<Text, _>(&actor)
+            .load(&mut *conn)
+            .await
+            .unwrap();
+        diesel::sql_query("RESET enable_seqscan").execute(&mut *conn).await.unwrap();
+        let plan: Vec<String> = plan.into_iter().map(|p| p.line).collect();
+        let scans = plan.iter().filter(|l| l.contains("Index") && l.contains(index)).count();
+        assert_eq!(scans, 18, "{}", plan.join("\n"));
+    }
+}

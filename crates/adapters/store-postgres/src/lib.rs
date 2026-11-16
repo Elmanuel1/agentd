@@ -35,6 +35,7 @@ pub use entities::environment_keys::PgEnvironmentKeysStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
 pub use entities::fire_claims::PgFireClaims;
+pub use entities::history::PgHistoryLog;
 pub use entities::loop_steps::PgSteps;
 pub use entities::mcp_connections::PgMcpConnections;
 pub use entities::memory::PgMemoryStore;
@@ -112,6 +113,7 @@ from_backend!(
     memory::store::StoreError,
     organizations::workspaces::StoreError,
     work::store::StoreError,
+    shared::ports::history::HistoryError,
 );
 
 /// Serialize a snake_case enum to its wire string for a filter column
