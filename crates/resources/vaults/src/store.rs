@@ -108,12 +108,13 @@ pub trait VaultCascade: Send + Sync {
         at: Timestamp,
         deliveries: &CascadeDeliveries<'_>,
     ) -> Result<Vault, StoreError>;
-    /// Delete a vault and its credentials, purging their secrets, with `deliveries`.
+    /// Delete a vault and its credentials, purging their secrets, with the
+    /// `deliveries` built from the deleted credentials' ids.
     async fn delete_vault(
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
-        deliveries: &[Delivery],
+        deliveries: &CascadeDeliveries<'_>,
     ) -> Result<Vault, StoreError>;
 }
 

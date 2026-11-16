@@ -19,7 +19,6 @@ use crate::entities::webhook_deliveries::insert_deliveries;
 use crate::schema::{credentials, vaults};
 use crate::{diesel_be, parse_doc, pool_be, to_doc};
 use ::vaults::store::CascadeDeliveries;
-use webhooks::Delivery;
 
 #[derive(QueryableByName)]
 struct Touched {
@@ -109,7 +108,7 @@ impl VaultCascade for PgVaultsStore {
         &self,
         ws: &WorkspaceId,
         id: &VaultId,
-        deliveries: &[Delivery],
+        deliveries: &CascadeDeliveries<'_>,
     ) -> Result<Vault, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let (doc, deleted) = conn
@@ -130,7 +129,7 @@ impl VaultCascade for PgVaultsStore {
                         .filter(vaults::vault_id.eq(id.as_str()))
                         .execute(c)
                         .await?;
-                    insert_deliveries(c, deliveries).await?;
+                    insert_deliveries(c, &deliveries(&deleted)).await?;
                     Ok(Ok((doc, deleted)))
                 }
                 .scope_boxed()

@@ -137,16 +137,9 @@ impl VaultsService {
     /// and their secrets purged (VA-3).
     pub async fn archive_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        // One vault.archived, and one vault_credential.archived for each credential it archives (B29).
-        let cascade = |credentials: &[String]| {
-            let mut deliveries =
-                self.deliveries(&ctx.org, &ctx.workspace, EventKind::VaultArchived, id.as_str());
-            let kind = || EventKind::CredentialArchived { vault_id: id.as_str().to_owned() };
-            deliveries.extend(
-                credentials.iter().flat_map(|c| self.deliveries(&ctx.org, &ctx.workspace, kind(), c)),
-            );
-            deliveries
-        };
+        let cascade = self.cascade(ctx, &id, EventKind::VaultArchived, |vault_id| {
+            EventKind::CredentialArchived { vault_id }
+        });
         self.vaults.archive_vault(&ctx.workspace, &id, Timestamp::now(), &cascade).await.map_err(map_store)
     }
 
@@ -170,9 +163,28 @@ impl VaultsService {
     /// `DELETE /v1/vaults/{id}`.
     pub async fn delete_vault(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vault, ApiError> {
         let id = parse_vault_id(raw_id)?;
-        // One vault.deleted; whether live adds one per credential is B30's probe.
-        let deliveries = self.deliveries(&ctx.org, &ctx.workspace, EventKind::VaultDeleted, id.as_str());
-        self.vaults.delete_vault(&ctx.workspace, &id, &deliveries).await.map_err(map_store)
+        let cascade = self
+            .cascade(ctx, &id, EventKind::VaultDeleted, |vault_id| EventKind::CredentialDeleted { vault_id });
+        self.vaults.delete_vault(&ctx.workspace, &id, &cascade).await.map_err(map_store)
+    }
+
+    /// A cascade's deliveries: the vault's event, and one for each credential it
+    /// took, archived ones included (B29, B30).
+    fn cascade<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        id: &'a VaultId,
+        vault: EventKind,
+        credential: fn(String) -> EventKind,
+    ) -> impl Fn(&[String]) -> Vec<Delivery> + Send + Sync + 'a {
+        move |credentials: &[String]| {
+            let mut deliveries = self.deliveries(&ctx.org, &ctx.workspace, vault.clone(), id.as_str());
+            for c in credentials {
+                let kind = credential(id.as_str().to_owned());
+                deliveries.extend(self.deliveries(&ctx.org, &ctx.workspace, kind, c));
+            }
+            deliveries
+        }
     }
 }
 
