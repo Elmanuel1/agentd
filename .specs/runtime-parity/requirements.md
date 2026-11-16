@@ -145,7 +145,7 @@ Decision D31; evidence C1 to C5.
 | CP-9 | When a compaction step finishes, the loop shall append `agent.thread_context_compacted` as the thread's checkpoint, holding the summary, the last event it covers and the model that wrote it, unique per thread and covered event; the API shall serve the event with live's fields only, and no event is deleted. |
 | CP-10 | If a compaction call returns no summary, then the loop shall continue with CP-2's prompt and run the compaction step again at the thread's next step. |
 | CP-11 | If a compaction request would be larger than the window, then the loop shall leave the oldest model calls after the checkpoint out of that request until it fits, before the call, with no retry. |
-| CP-12 | When a thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. A session's model does not change, so a checkpoint by another model is the only model change a thread sees. |
+| CP-12 | When a thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
 | CP-13 | The loop shall take each model's window from its provider's model list, read once per process: Anthropic's `GET /v1/models/{id}` `max_input_tokens` (C4) and OpenRouter's `GET /api/v1/models` `context_length` (D42). No setting overrides it. |
 
 ## 5. Files for workers
@@ -172,7 +172,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-1 | When a session's agent lists an MCP server (`mcp_servers`, `type: "url"`), the loop shall connect to its `url` from agentd, never from a worker. |
 | MC-2 | The loop shall authenticate to an MCP server with the `mcp_oauth` or `static_bearer` credential whose `mcp_server_url` equals the server's `url`, taken from the first vault in the session's `vault_ids` that holds one. |
 | MC-3 | If no credential in the session's vaults matches a server, then the loop shall connect unauthenticated. |
-| MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. When no vault credential matches the server's URL, the message is live's "no credential is stored for this server URL" text (B27); for a stored credential the server refuses, live's message is not captured (B31). |
+| MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue, with live's message: `MCP server '<name>' initialize failed: no credential is stored for this server URL \u2014 check that the agent's MCP server URL matches the URL in the vault` when no vault credential matches the server's URL (B27), and `MCP server '<name>' initialize failed: server rejected the static bearer token \u2014 verify the credential value` when the server refuses a `static_bearer` credential (B31). |
 | MC-5 | If the loop cannot connect to an MCP server, then the loop shall record `session.error` with `mcp_connection_failed_error` and let the session continue. |
 | MC-14 | When an MCP connection has failed, the loop shall not retry it in the same turn, and shall retry it on the session's next `session.status_idle` to `session.status_running` transition (B18). |
 | MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` once in each step that connects to its server or calls one of its tools, with no cache across steps, so that a rotated, archived or deleted credential applies from the next step (D27, D32). |
@@ -182,7 +182,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-24 | When the model calls an MCP tool whose evaluation is `allow`, the loop shall commit `agent.mcp_tool_use` with that step and keep the session on the step queue, so that the next step calls the tool. |
 | MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool and commit its `agent.mcp_tool_result` in that step with no model call, keeping the session due for the next step, unless MC-26 applies. |
 | MC-27 | If an `mcp_oauth` refresh's `token_endpoint`, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not call it and shall treat the refresh as failed (MC-21, H-5). |
-| MC-26 | If an allowed MCP tool call fails, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's content, `upstream server error (HTTP <code>)` for a server that answered with an error status, record no `session.error` for the call, and keep the server usable for later calls in the turn (B27), so that no allowed call stays unanswered. For a server that could not be reached, or whose token could not be refreshed, the content is `upstream server error (unreachable)`; live's content there is not captured (B31). |
+| MC-26 | If an allowed MCP tool call fails, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's content, record no `session.error` for the call, and keep the server usable for later calls in the turn, so that no allowed call stays unanswered: `upstream server error (HTTP <code>)` for a server that answers with an error status other than 401 (B27); `upstream server error (HTTP 502)` for a call its server does not answer within 125 s or that cannot reach its server (B27, B31); and `MCP server '<name>' authentication failed: server rejected the static bearer token \u2014 verify the credential value. The tool is unavailable until the server is re-authorized.` for a `static_bearer` credential the server refuses with 401 after it connected (B31). |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -190,7 +190,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-11 | If an MCP server's URL, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not connect and shall record `mcp_connection_failed_error`. |
 | MC-12 | When an MCP tool call's permission evaluation is `ask`, the loop shall write `agent.mcp_tool_use` and idle the session `requires_action`, call the server only after a `user.tool_confirmation` that allows it, and record an `is_error` `agent.mcp_tool_result` on a deny. |
 | MC-13 | The loop shall keep each MCP server's `Mcp-Session-Id` and tool list per agentd session and server in Postgres (`mcp_connections`), and send `initialize` and `tools/list` only when it reconnects (MC-15). |
-| MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, or when the credential's `updated_at` differs from the one the connection was made with. At a turn's start it shall keep a live connection and connect again only the servers whose connection failed (MC-14), as live does (B27). |
+| MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, or when the credential's `updated_at` differs from the one the connection was made with. At a turn's start it shall keep each open connection and connect again only the servers whose connection failed (MC-14, B27). |
 | MC-16 | When a server sends `notifications/tools/list_changed` in a response, or the loop reconnects, the loop shall list the server's tools again and store the new list. |
 | MC-17 | The loop shall never use one session's `mcp_connections` row for another session or workspace. |
 | MC-22 | When a session is deleted, the API shall delete its `mcp_connections` rows in the commit that deletes the session row. |
@@ -221,7 +221,7 @@ Decision D29; evidence B15 to B17, B23.
 | H-1 | When a session's status changes to running, idle or terminated, the API shall send each enabled endpoint configured for its organization live's body (`whe_<32 hex>`, six-digit `created_at`, `data: {type, id, organization_id, workspace_id}`). |
 | H-2 | The API shall sign deliveries with Standard Webhooks and send `user-agent: Claude-Platform`. |
 | H-3 | If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
-| H-4 | The API shall keep each delivery in Postgres from the commit of the change it reports, and the change feed shall hand each new delivery row to a sender, including a sender started after the row was written. A delivery's two retries (H-3) run on a task in memory, so a restart between attempts leaves the row pending with neither mark (an accepted risk under SRE). |
+| H-4 | The API shall keep each delivery in Postgres from the commit of the change it reports, and the change feed shall hand each new delivery row to a sender, including a sender started after the row was written. |
 
 ## 10. Environment-variable credentials and conformance
 
@@ -233,7 +233,7 @@ Decisions D25, D28 and D36.
 | EV-2 | The API shall sign each placeholder with one key held in Secrets Manager (`<prefix>/system/egress_key`), created on first boot, over the session, workspace, vault and credential ids. |
 | EV-3 | The API shall never put a credential's value in the work secret, an event, a log or a response. |
 | EV-4 | The API shall tag each `environment_variable` credential's secret `credential_type=environment_variable` when it creates the secret, and `agentd vault-secrets tag` shall tag the existing ones, so that the swap's AWS policy reaches those secrets only. |
-| J-1 | The `sdk` CI job shall run the official Java SDK (`com.anthropic:anthropic-java` 2.52.0) against agentd with only the base URL changed, covering the TypeScript suite's cases the Java SDK can express. The Java SDK has no Admin API service, so its workspace and organization cases check only the admin key's refusal; the memory version, upload and stream cases are not in the Java suite. |
+| J-1 | The `sdk` CI job shall run the official Java SDK (`com.anthropic:anthropic-java` 2.52.0) against agentd with only the base URL changed, covering the TypeScript suite's cases the Java SDK can express (Out of scope names the rest). |
 
 ## 11. `agentd-worker`'s side
 
@@ -550,8 +550,7 @@ Every new table and index, production-safe: new tables only, unused until their 
 
 #### PR 7. Compaction
 
-- **CP0.** `shared/src/limits/models.rs` (69 lines) holds each model's window beside its id; `engine/src/model/
-  windows.rs` (new) reads each model's window from its provider's list once per process: Anthropic's `GET
+- **CP0.** `engine/src/model/windows.rs` (new) reads each model's window from its provider's list once per process: Anthropic's `GET
   /v1/models/{id}` `max_input_tokens`, OpenRouter's `GET /api/v1/models` `context_length` (D42). Tests: a scripted
   models endpoint per provider gives the window once; a model its provider does not list refuses to start a step
   with a clear log line.
@@ -561,7 +560,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   window): past it, results older than the last 3 are placeholders naming their event ids, inputs and error results
   stay; below it, nothing changes; a 50,000-token result reaches the prompt cut at the limit and the stored event is
   whole.
-- **CP2.** `engine/src/turn/compact/step.rs` and `summary.rs`: the step chooses compaction when CP-4's threshold is
+- **CP2.** `engine/src/worker/compact.rs` and `turn/compact/summary.rs`: the step chooses compaction when CP-4's threshold is
   passed and CP-5 holds; the summary call reuses the turn's system prompt and tools (so the prompt cache hits) with
   `compact-2026-09-04`; the checkpoint event's stored `checkpoint` object holds the block, `through_seq` and the
   model, and the API's typed event drops it on read. Statements: the step's commit (step queue table) appends the
@@ -574,8 +573,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   leaves the cleared prompt and compacts at the next step; every call after compaction sends the
   `compact-2026-09-04` beta header with the block (CP-7). A recall check against a real model runs only with the
   user's OK (D22).
-- **CP3.** `engine/src/turn/compact/handoff.rs` (the handoff prompt), `oversize.rs`, and the model-change check in
-  `step.rs`. Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
+- **CP3.** `engine/src/turn/compact/summary.rs` (the handoff prompt) and `engine/src/worker/compact.rs` (the trim
+  before the call and the model-change check). Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
   summary; a compaction request over the window leaves out its oldest calls before the call; a checkpoint written by
   another model compacts again before the next turn.
 
@@ -598,11 +597,11 @@ Every new table and index, production-safe: new tables only, unused until their 
   no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool
   and commits its result with no model call, then the step after calls the model (MC-25); a server redirecting to
   `127.0.0.1` is refused (MC-11);
-  a call whose server answers an error status gets an `is_error` `agent.mcp_tool_result` with live's
-  `upstream server error (HTTP <code>)` content and no `session.error`, and the turn goes on with the server still
-  usable (MC-26, B27); a
+  a call whose server answers an error status, a 401 after connecting, or no answer within 125 s gets an `is_error`
+  `agent.mcp_tool_result` with MC-26's content for that case and no `session.error`, and the turn goes on with the
+  server still usable (MC-26, B27, B31); a static bearer refused at `initialize` records MC-4's message; a
   deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a second
-  turn keeps a live connection and sends no `initialize` (MC-15, B27); a 404
+  turn keeps an open connection and sends no `initialize` (MC-15, B27); a 404
   to it or a changed credential `updated_at` reconnects; a `list_changed`
   notification refreshes the stored list; one session never reads another's row; deleting a session deletes its rows in that commit; an `always_ask` tool idles
   `requires_action`, runs after an allow and records an `is_error` result after a deny; a `limited` environment
@@ -778,7 +777,7 @@ Merges after the loop's setting reaches every workspace (Rollout).
 |---|---|
 | Enqueue, in the commit that appends the waking event (after its session append lock) | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
 | Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Run, no transaction open | 1 `SELECT seq, doc` of the session's events (the whole log), noting the ids of the client events it read; the model call. The checkpoint-bounded read (1 `SELECT DISTINCT ON (doc->>'session_thread_id')` of each thread's latest checkpoint on CPm's index, then 1 keyset SELECT of the events after the oldest) is the scale-up step for this read, taken when the log-reads trigger fires (SRE) |
+| Run, no transaction open | 1 `SELECT seq, doc` of the session's events (the whole log), noting the ids of the client events it read; the model call. The checkpoint-bounded read (1 `SELECT DISTINCT ON (doc->>'session_thread_id')` of each thread's latest checkpoint on CPm's index, then 1 keyset SELECT of the events after the oldest) is the scale-up step for this read, taken when the load test or the log-reads trigger shows the log read growing (SRE) |
 | Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; when the step leaves an allowed `agent.mcp_tool_use` unanswered (MC-24), or ran MCP calls with no model call (MC-25), both from PR 8, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed` and no DELETE; otherwise 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing, the same UPDATE; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today; when the step changes the session's status or a refresh failed, 1 multi-row `INSERT INTO webhook_deliveries` (H1) |
 | Defer at the account-wide model budget (M-4), a credential claimed by another worker (MC-20), or a lost refresh claim whose stored token is still expired (MC-23) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
 | Compaction step (CP2) | the Run and Commit statements; the Commit's multi-row INSERT carries the checkpoint |
@@ -835,6 +834,9 @@ Merges after the loop's setting reaches every workspace (Rollout).
   `sandbox-worker` and the egress crates move there (RM2, RM3). (The relay binary in `sandbox-worker`, also named
   `agentd-worker`, moves with it.)
 - Session webhook registration through an API: live has none (B8).
+- The Java suite's cases the Java SDK 2.52.0 cannot express (J-1): it has no Admin API service, so its workspace and
+  organization cases check only the admin key's refusal, and the memory version, upload and stream cases run only in
+  the Python and TypeScript suites.
 
 ## Deployment
 
@@ -895,7 +897,7 @@ Each trigger is a CloudWatch alarm that opens a ticket, not a page; the scale-up
 |---|---|---|---|
 | Postgres connections | `AWS/RDS` `DatabaseConnections` over `max_connections` | `agentd-db-connections-high`: above 70% for 15 minutes; also checked at deploy time as loop workers × pool size | add RDS Proxy (transaction pooling) |
 | Secrets Manager reads | `AWS/Usage` `CallCount` for Secrets Manager `GetSecretValue` | `agentd-secrets-reads-high`: above 5,000/s (50% of the limit) for 15 minutes | plan envelope encryption (D30) |
-| Log reads | `events.list` p99 latency | `agentd-log-reads-slow`: above 500 ms for 1 hour | configure the read replica |
+| Log reads | `events.list` p99 latency | `agentd-log-reads-slow`: above 500 ms for 1 hour | configure the read replica, and move the step to the checkpoint-bounded read (the step queue's Run row) |
 | Event-log load | events appended per second, and `AWS/RDS` `WriteIOPS` and `CPUUtilization` | `agentd-event-log-hot`: appends above 2,500/s (half the sizing peak) or Postgres CPU above 70% for 1 hour | plan the DynamoDB event log (Out of scope) |
 | Sandbox start | time from work item queued to first `user.tool_result` | `agentd-sandbox-start-slow`: p99 above 10 s for 1 hour | a warm buffer on Fargate, or a capacity raise on Cloudflare |
 
