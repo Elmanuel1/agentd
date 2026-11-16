@@ -52,8 +52,8 @@ pub enum ClaimedWrite {
     Gone,
 }
 
-/// The deliveries a vault's archive sends, from the ids of the credentials it
-/// archives.
+/// The deliveries a vault's archive or delete sends, from the ids of the
+/// credentials it takes.
 pub type CascadeDeliveries<'a> = dyn Fn(&[String]) -> Vec<Delivery> + Send + Sync + 'a;
 
 /// Persistence port for vault rows.
@@ -108,8 +108,7 @@ pub trait VaultCascade: Send + Sync {
         at: Timestamp,
         deliveries: &CascadeDeliveries<'_>,
     ) -> Result<Vault, StoreError>;
-    /// Delete a vault and its credentials, purging their secrets, with the
-    /// `deliveries` built from the deleted credentials' ids.
+    /// Delete a vault and its credentials, purging their secrets.
     async fn delete_vault(
         &self,
         ws: &WorkspaceId,

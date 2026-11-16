@@ -458,7 +458,8 @@ live's webhook events: `session.status_run_started`, `session.status_idled`
 and `session.status_terminated` when a session's status changes (an archive
 terminates the session), the vault and credential lifecycle events
 (`vault.created`, `vault.archived` with one `vault_credential.archived` for each
-credential it archives, `vault.deleted`, `vault_credential.created`,
+credential it archives, `vault.deleted` with one `vault_credential.deleted` for
+each of its credentials, archived ones included, `vault_credential.created`,
 `vault_credential.archived`, `vault_credential.deleted`), and
 `vault_credential.refresh_failed`. Each delivery is a `webhook_deliveries` row
 written in the commit of the change it reports, one per endpoint. The change
