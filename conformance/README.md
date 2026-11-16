@@ -7,6 +7,7 @@ Everything here proves agentd matches the live Anthropic API.
   `AGENTD_PG_TESTS=1`).
 - `python/`: the official Python SDK, `anthropic==2.3.0`, under pytest.
 - `typescript/`: the official TypeScript SDK, `@anthropic-ai/sdk@1.3.0`, under `node:test`.
+- `java/`: the official Java SDK, `com.anthropic:anthropic-java` 2.52.0, under JUnit 5 on Java 21.
 
 The SDK suites run against a running agentd, with only the base URL changed:
 
@@ -16,6 +17,7 @@ export AGENTD_TEST_KEY=$(agentd keys create --org org_sdk --workspace wrkspc_sdk
 export AGENTD_TEST_ADMIN_KEY=$(agentd admin-keys create --org org_sdk --name sdk)
 (cd conformance/python && pip install -r requirements.txt && pytest -q)
 (cd conformance/typescript && npm ci && npm test)
+(cd conformance/java && ./gradlew test)
 ```
 
 The Python runtime cases (`test_runtime.py`) also need the loop on the scripted model and the official
@@ -26,4 +28,4 @@ run agentd with `AGENTD_MODELS=mock/scripted` and `AGENTD_MODEL_BASE_URL=http://
 `AGENTD_TEST_ORG` and `AGENTD_TEST_WORKSPACE`. Cases that need a sandbox (mounted files, session outputs,
 credentials swapped at egress) and the scripted demo (`demo/`) run in `agentd-worker`'s CI.
 
-CI runs both on every pull request, against the binary built from the branch.
+CI runs them on every pull request, against the binary built from the branch.
