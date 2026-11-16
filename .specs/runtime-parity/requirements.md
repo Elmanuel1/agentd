@@ -37,7 +37,7 @@ run in the container project (see Out of scope).
   resulting events. A tool call ends a step.
 - **Step queue:** the Postgres table of sessions with a step to run; a **loop worker** is an agentd replica in the
   `loop` role, which claims and runs steps.
-- **Window:** a model's `max_input_tokens` (C4). **Checkpoint:** the `agent.thread_context_compacted` event that
+- **Window:** a model's context window as its provider's model list gives it (CP-13). **Checkpoint:** the `agent.thread_context_compacted` event that
   holds a thread's summary and the last event it covers.
 - **Placeholder:** the signed stand-in for an `environment_variable` credential that a `cloud` sandbox sees in place
   of the value (D28).
@@ -139,14 +139,14 @@ Decision D31; evidence C1 to C5.
 | CP-3 | The loop shall cap each tool result at `tool_output_token_limit` (`AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`, default 16,000 tokens) when it appends the result to the prompt, marking the cut; the stored event stays whole. |
 | CP-4 | When a thread's estimated prompt passes 80% of the model's window, the loop shall run a compaction step for that thread before its next turn. |
 | CP-5 | The loop shall run a compaction step only between turns, while the thread has no tool call waiting for its result, as the session's one running step (S-2), so that a thread has at most one compaction running. |
-| CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated) and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
+| CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated), and for an Anthropic model only as many as fit the Messages API's 16,384-character `instructions` limit (C1), and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
 | CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and every later call of the thread shall send the returned `compaction` block back unmodified, first in `messages`, with the `compact-2026-09-04` beta header (C1). |
 | CP-8 | Where the thread's model is not an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools and a handoff prompt carrying CP-6's instructions, and put the summary first in the thread's later prompts. |
 | CP-9 | When a compaction step finishes, the loop shall append `agent.thread_context_compacted` as the thread's checkpoint, holding the summary, the last event it covers and the model that wrote it, unique per thread and covered event; the API shall serve the event with live's fields only, and no event is deleted. |
 | CP-10 | If a compaction call returns no summary, then the loop shall continue with CP-2's prompt and run the compaction step again at the thread's next step. |
-| CP-11 | If a compaction request is itself larger than the window, then the loop shall drop the oldest events after the checkpoint from that request until it fits, and retry. |
-| CP-12 | When a thread's model changes to one with a smaller window, or the thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
-| CP-13 | The loop shall take each model's window from the provider's `GET /v1/models/{id}` `max_input_tokens` (C4), read once per process, or from `AGENTD_MODEL_WINDOWS` for a provider that has no such field. |
+| CP-11 | If a compaction request would be larger than the window, then the loop shall leave the oldest model calls after the checkpoint out of that request until it fits, before the call, with no retry. |
+| CP-12 | When a thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. A session's model does not change, so a checkpoint by another model is the only model change a thread sees. |
+| CP-13 | The loop shall take each model's window from its provider's model list, read once per process: Anthropic's `GET /v1/models/{id}` `max_input_tokens` (C4) and OpenRouter's `GET /api/v1/models` `context_length` (D42). No setting overrides it. |
 
 ## 5. Files for workers
 
@@ -172,7 +172,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-1 | When a session's agent lists an MCP server (`mcp_servers`, `type: "url"`), the loop shall connect to its `url` from agentd, never from a worker. |
 | MC-2 | The loop shall authenticate to an MCP server with the `mcp_oauth` or `static_bearer` credential whose `mcp_server_url` equals the server's `url`, taken from the first vault in the session's `vault_ids` that holds one. |
 | MC-3 | If no credential in the session's vaults matches a server, then the loop shall connect unauthenticated. |
-| MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. |
+| MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. When no vault credential matches the server's URL, the message is live's "no credential is stored for this server URL" text (B27); for a stored credential the server refuses, live's message is not captured (B31). |
 | MC-5 | If the loop cannot connect to an MCP server, then the loop shall record `session.error` with `mcp_connection_failed_error` and let the session continue. |
 | MC-14 | When an MCP connection has failed, the loop shall not retry it in the same turn, and shall retry it on the session's next `session.status_idle` to `session.status_running` transition (B18). |
 | MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` once in each step that connects to its server or calls one of its tools, with no cache across steps, so that a rotated, archived or deleted credential applies from the next step (D27, D32). |
@@ -182,7 +182,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-24 | When the model calls an MCP tool whose evaluation is `allow`, the loop shall commit `agent.mcp_tool_use` with that step and keep the session on the step queue, so that the next step calls the tool. |
 | MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool and commit its `agent.mcp_tool_result` in that step with no model call, keeping the session due for the next step, unless MC-26 applies. |
 | MC-27 | If an `mcp_oauth` refresh's `token_endpoint`, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not call it and shall treat the refresh as failed (MC-21, H-5). |
-| MC-26 | If the loop cannot call an allowed MCP tool, because its server's connection failed in this turn or fails now, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's `content` for that call, and, for each later call to that server in the same turn other than the one whose connection attempt MC-5 records, the `mcp_connection_failed_error` `session.error` live records for it (B27), so that no allowed call stays unanswered. |
+| MC-26 | If an allowed MCP tool call fails, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's content, `upstream server error (HTTP <code>)` for a server that answered with an error status, record no `session.error` for the call, and keep the server usable for later calls in the turn (B27), so that no allowed call stays unanswered. For a server that could not be reached, or whose token could not be refreshed, the content is `upstream server error (unreachable)`; live's content there is not captured (B31). |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -190,14 +190,14 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-11 | If an MCP server's URL, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not connect and shall record `mcp_connection_failed_error`. |
 | MC-12 | When an MCP tool call's permission evaluation is `ask`, the loop shall write `agent.mcp_tool_use` and idle the session `requires_action`, call the server only after a `user.tool_confirmation` that allows it, and record an `is_error` `agent.mcp_tool_result` on a deny. |
 | MC-13 | The loop shall keep each MCP server's `Mcp-Session-Id` and tool list per agentd session and server in Postgres (`mcp_connections`), and send `initialize` and `tools/list` only when it reconnects (MC-15). |
-| MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, when the credential's `updated_at` differs from the one the connection was made with, and on the session's idle-to-running transition. |
+| MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, or when the credential's `updated_at` differs from the one the connection was made with. At a turn's start it shall keep a live connection and connect again only the servers whose connection failed (MC-14), as live does (B27). |
 | MC-16 | When a server sends `notifications/tools/list_changed` in a response, or the loop reconnects, the loop shall list the server's tools again and store the new list. |
 | MC-17 | The loop shall never use one session's `mcp_connections` row for another session or workspace. |
 | MC-22 | When a session is deleted, the API shall delete its `mcp_connections` rows in the commit that deletes the session row. |
 | MC-18 | When a deployment fires, the API shall check each MCP server host of the deployment's agent against the environment's networking as MC-10 does, before it creates the session. |
 | MC-19 | If a deployment fire's MCP host check fails, then the API shall create no session, record the run with `mcp_egress_blocked_error`, and pause the deployment with `paused_reason` `{"type": "error", "error": {"type": "mcp_egress_blocked_error", ...}}` (B22). |
 | H-5 | If an `mcp_oauth` refresh fails, then the API shall send the `vault_credential.refresh_failed` webhook to the organization's configured endpoints. |
-| H-6 | When a vault or a credential is created, archived or deleted, the API shall send live's lifecycle webhook to the organization's configured endpoints (`vault.created`, `vault.archived`, `vault.deleted`, `vault_credential.created`, `vault_credential.archived`, `vault_credential.deleted`), with live's data, including `vault_id` on credential events, and one `vault_credential.archived` for each credential a vault's archive archives (B29). |
+| H-6 | When a vault or a credential is created, archived or deleted, the API shall send live's lifecycle webhook to the organization's configured endpoints (`vault.created`, `vault.archived`, `vault.deleted`, `vault_credential.created`, `vault_credential.archived`, `vault_credential.deleted`), with live's data, including `vault_id` on credential events, one `vault_credential.archived` for each credential a vault's archive archives (B29), and one `vault_credential.deleted` for each credential a vault's delete deletes, archived ones included (B30). |
 
 ## 8. Vaults
 
@@ -221,7 +221,7 @@ Decision D29; evidence B15 to B17, B23.
 | H-1 | When a session's status changes to running, idle or terminated, the API shall send each enabled endpoint configured for its organization live's body (`whe_<32 hex>`, six-digit `created_at`, `data: {type, id, organization_id, workspace_id}`). |
 | H-2 | The API shall sign deliveries with Standard Webhooks and send `user-agent: Claude-Platform`. |
 | H-3 | If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
-| H-4 | The API shall keep pending deliveries in Postgres, so that they survive a restart. |
+| H-4 | The API shall keep each delivery in Postgres from the commit of the change it reports, and the change feed shall hand each new delivery row to a sender, including a sender started after the row was written. A delivery's two retries (H-3) run on a task in memory, so a restart between attempts leaves the row pending with neither mark (an accepted risk under SRE). |
 
 ## 10. Environment-variable credentials and conformance
 
@@ -233,7 +233,7 @@ Decisions D25, D28 and D36.
 | EV-2 | The API shall sign each placeholder with one key held in Secrets Manager (`<prefix>/system/egress_key`), created on first boot, over the session, workspace, vault and credential ids. |
 | EV-3 | The API shall never put a credential's value in the work secret, an event, a log or a response. |
 | EV-4 | The API shall tag each `environment_variable` credential's secret `credential_type=environment_variable` when it creates the secret, and `agentd vault-secrets tag` shall tag the existing ones, so that the swap's AWS policy reaches those secrets only. |
-| J-1 | The `sdk` CI job shall run the official Java SDK (`com.anthropic:anthropic-java` 2.52.0) against agentd with only the base URL changed, covering the cases of the Python and TypeScript suites. |
+| J-1 | The `sdk` CI job shall run the official Java SDK (`com.anthropic:anthropic-java` 2.52.0) against agentd with only the base URL changed, covering the TypeScript suite's cases the Java SDK can express. The Java SDK has no Admin API service, so its workspace and organization cases check only the admin key's refusal; the memory version, upload and stream cases are not in the Java suite. |
 
 ## 11. `agentd-worker`'s side
 
@@ -551,10 +551,10 @@ Every new table and index, production-safe: new tables only, unused until their 
 #### PR 7. Compaction
 
 - **CP0.** `shared/src/limits/models.rs` (69 lines) holds each model's window beside its id; `engine/src/model/
-  windows.rs` (new) reads `GET /v1/models/{id}` once per process per model, and `AGENTD_MODEL_WINDOWS`
-  (`model=tokens,...`) for other providers. Tests: a scripted models endpoint answering `max_input_tokens: 200000`
-  sets that window; a provider with no endpoint takes the setting; a model with neither refuses to start a step with
-  a clear log line.
+  windows.rs` (new) reads each model's window from its provider's list once per process: Anthropic's `GET
+  /v1/models/{id}` `max_input_tokens`, OpenRouter's `GET /api/v1/models` `context_length` (D42). Tests: a scripted
+  models endpoint per provider gives the window once; a model its provider does not list refuses to start a step
+  with a clear log line.
 - **CP1.** `engine/src/turn/compact/` (new, each file under 200 lines): `estimate.rs` (CP-1 from the last
   `span.model_request_end` usage and the bytes since), `clear.rs` (CP-2 placeholders `[tool result cleared: event
   <id>]`), `cap.rs` (CP-3). Prompt building only; no statement. Tests (thresholds set to 15% of a scripted model's
@@ -565,9 +565,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   passed and CP-5 holds; the summary call reuses the turn's system prompt and tools (so the prompt cache hits) with
   `compact-2026-09-04`; the checkpoint event's stored `checkpoint` object holds the block, `through_seq` and the
   model, and the API's typed event drops it on read. Statements: the step's commit (step queue table) appends the
-  checkpoint in its multi-row INSERT; the step queue's Run read (`SELECT DISTINCT ON (doc->>'session_thread_id') …`, CPm's index) finds each
-  thread's latest checkpoint; 1 keyset SELECT
-  of the events after it. Tests (a scripted model with a 20,000-token
+  checkpoint in its multi-row INSERT; the step queue's Run read reads the session's whole log, and the step builds
+  each thread's prompt from its latest checkpoint and the events after it. Tests (a scripted model with a 20,000-token
   window, so 80% is reached in a few turns): a long scripted conversation compacts once, writes one `agent.thread_context_compacted` with live's
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
@@ -577,8 +576,8 @@ Every new table and index, production-safe: new tables only, unused until their 
   user's OK (D22).
 - **CP3.** `engine/src/turn/compact/handoff.rs` (the handoff prompt), `oversize.rs`, and the model-change check in
   `step.rs`. Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
-  summary; a compaction request over the window drops its oldest events and succeeds; switching to a model with a
-  smaller window, or reading a checkpoint written by another model, compacts again before the next turn.
+  summary; a compaction request over the window leaves out its oldest calls before the call; a checkpoint written by
+  another model compacts again before the next turn.
 
 #### PR 8. MCP and vaults
 
@@ -599,19 +598,18 @@ Every new table and index, production-safe: new tables only, unused until their 
   no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool
   and commits its result with no model call, then the step after calls the model (MC-25); a server redirecting to
   `127.0.0.1` is refused (MC-11);
-  a server that drops after the choosing step gets one `is_error` `agent.mcp_tool_result` (MC-26) and one
-  `mcp_connection_failed_error` `session.error` (MC-5), and that step's `loop_steps` row is deleted, not kept due;
-  with two allowed calls to one server in a step and the first failing, the second gets an `is_error` result with no
-  new connection attempt (MC-14, MC-26), and the step records as many `session.error` events as B27's capture shows;
-  the `is_error` content matches B27's capture; a
-  deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a 404
-  to it, a changed credential `updated_at` or an idle-to-running transition reconnects; a `list_changed`
+  a call whose server answers an error status gets an `is_error` `agent.mcp_tool_result` with live's
+  `upstream server error (HTTP <code>)` content and no `session.error`, and the turn goes on with the server still
+  usable (MC-26, B27); a
+  deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a second
+  turn keeps a live connection and sends no `initialize` (MC-15, B27); a 404
+  to it or a changed credential `updated_at` reconnects; a `list_changed`
   notification refreshes the stored list; one session never reads another's row; deleting a session deletes its rows in that commit; an `always_ask` tool idles
   `requires_action`, runs after an allow and records an `is_error` result after a deny; a `limited` environment
   without `allow_mcp_servers` and with the host not listed records `mcp_connection_failed_error` without connecting;
   a URL resolving to `127.0.0.1` or `169.254.169.254` is refused; an unreachable server records
-  `mcp_connection_failed_error`, the session continues, the same turn does not retry, and the next idle-to-running
-  transition does.
+  `mcp_connection_failed_error`, the session continues, the same turn does not retry, and the next turn's start
+  does.
 - **MC2.** `crates/engine/src/mcp/credentials.rs`; `vaults/src/refresh.rs` (new), the loop's entry into the vaults
   service: `VaultService::refresh_mcp_oauth(&WorkspaceId, &VaultId, &CredentialId)`, which takes the session's
   workspace from the step, not an API `AuthContext`; `VaultCredentialStore::replace_credential(ws, vault, cred, guard, secret)` takes
@@ -732,10 +730,11 @@ Every new table and index, production-safe: new tables only, unused until their 
   exactly-once guard. Tests: two schedulers on one database fire each occurrence once; a schedule registered on one
   fires on the other.
 - **H1.** `crates/resources/webhooks`: endpoints read from configuration (D20); one multi-row INSERT of deliveries
-  per status change in its commit; a task per replica claims due rows 100 at a time `FOR UPDATE SKIP LOCKED`, signs,
-  POSTs with a 10 s timeout, and marks them in one UPDATE per batch. Tests: signature verified with the SDK's
-  `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a due delivery
-  survives a restart; a failed OAuth refresh sends `vault_credential.refresh_failed`; archiving a vault with two
+  per status change in its commit; the change feed hands each new `webhook_deliveries` row to the sender, which signs,
+  POSTs with a 10 s timeout, runs the row's two retries on a task of its own, and marks the row with 1 `UPDATE
+  webhook_deliveries SET delivered_at` or `dropped_at`, `attempt` (H-4). Tests: signature verified with the SDK's
+  `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a pending delivery is
+  sent by a sender started after it was written; a failed OAuth refresh sends `vault_credential.refresh_failed`; archiving a vault with two
   credentials sends one `vault.archived` and two `vault_credential.archived` deliveries, each with live's data; each
   other lifecycle event sends one (H-6). The other vault and credential writes take their delivery INSERT into one
   transaction with the write. One function writes every delivery row: `insert_deliveries(conn, rows)` in
@@ -747,8 +746,9 @@ Every new table and index, production-safe: new tables only, unused until their 
   create, 1 `INSERT INTO vaults` and 1 delivery INSERT; credential create, VA1's statements with 1 delivery INSERT added to its
   transaction; credential delete, 1 SELECT of the row as today, whose doc is the answer, then the secret delete
   first, as the vault's archive and delete purge first and as `delete_credential` already tolerates a missing
-  secret, then 1 `DELETE FROM credentials WHERE …` and 1 delivery INSERT; vault delete, VA1's statements with 1 multi-row delivery INSERT added to its transaction, with one `vault_credential.deleted` per credential when
-  B30's capture shows live sends them. Tests: each write's delivery lands in its commit and none lands when the write
+  secret, then 1 `DELETE FROM credentials WHERE …` and 1 delivery INSERT; vault delete, VA1's statements with 1
+  multi-row delivery INSERT added to its transaction: `vault.deleted` and one `vault_credential.deleted` per
+  credential, archived ones included, as live sends them (B30). Tests: each write's delivery lands in its commit and none lands when the write
   fails.
 
 #### PR 10. Removals
@@ -778,7 +778,7 @@ Merges after the loop's setting reaches every workspace (Rollout).
 |---|---|
 | Enqueue, in the commit that appends the waking event (after its session append lock) | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
 | Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Run, no transaction open | 1 `SELECT DISTINCT ON (doc->>'session_thread_id') seq, doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND doc->>'type' = 'agent.thread_context_compacted' ORDER BY doc->>'session_thread_id', (doc->'checkpoint'->>'through_seq')::bigint DESC` for every thread's latest checkpoint (CPm's index); 1 keyset SELECT of the session's events after the oldest of those checkpoints, or from `seq` 0 when a thread the step builds has none, noting the ids of the client events it read; the model call |
+| Run, no transaction open | 1 `SELECT seq, doc` of the session's events (the whole log), noting the ids of the client events it read; the model call. The checkpoint-bounded read (1 `SELECT DISTINCT ON (doc->>'session_thread_id')` of each thread's latest checkpoint on CPm's index, then 1 keyset SELECT of the events after the oldest) is the scale-up step for this read, taken when the log-reads trigger fires (SRE) |
 | Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; when the step leaves an allowed `agent.mcp_tool_use` unanswered (MC-24), or ran MCP calls with no model call (MC-25), both from PR 8, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed` and no DELETE; otherwise 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing, the same UPDATE; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today; when the step changes the session's status or a refresh failed, 1 multi-row `INSERT INTO webhook_deliveries` (H1) |
 | Defer at the account-wide model budget (M-4), a credential claimed by another worker (MC-20), or a lost refresh claim whose stored token is still expired (MC-23) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
 | Compaction step (CP2) | the Run and Commit statements; the Commit's multi-row INSERT carries the checkpoint |
@@ -874,9 +874,9 @@ Durable Objects under $5. AWS data transfer for staging documents from S3 to Clo
 |---|---|---|
 | Steps | 10^4 sessions / 20 s per step (N1, N2) | 500 steps/s |
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
-| Step statements | about 11 per step (the checkpoint read included), plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
+| Step statements | about 10 per step, plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
-| Log reads | 500 steps/s × the log size a step reads: from the oldest checkpoint of the session's threads, or the whole log while a thread has none, so compaction bounds it at about 80% of a window per thread | measured in the load test; `events.list` moves to the read replica when it grows |
+| Log reads | 500 steps/s × the session's whole log, which each step reads; compaction bounds the prompt, not the read | measured in the load test; the step moves to the checkpoint-bounded read (Run row) and `events.list` to the read replica when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13), and the account-wide budget (M-4) | bounded by M-1 and M-4 |
 | Compaction calls | one per thread each time it reaches the summary threshold; a step that compacts makes no turn call | at most the model call rate, measured in the load test |
 | MCP per step | an MCP tool call adds two steps, the tool step and the model step after it (MC-24, MC-25); 1 `mcp_connections` SELECT and 1 credential SELECT per step; `initialize` and `tools/list` only on a reconnect (MC-15); 1 `GetSecretValue` per server the step connects to or calls (MC-6) | at most 500 secret reads/s when every step calls one server, about 1.3×10^9 a month, about $6.5k a month at $0.05 per 10,000 calls (Q1); a step that calls no MCP tool reads none |
@@ -911,7 +911,10 @@ session (E4).
 |---|---|---|
 | A revoked `environment_variable` credential keeps working in a running `cloud` session for up to 5 minutes (CF-6) | 5 minutes, per session object | live documents a shorter re-resolution, or a customer needs immediate revocation |
 | The Cloudflare launcher's AWS read key is a static key (G8) | `GetSecretValue` on tagged secrets only, from Cloudflare's IP ranges, rotated every 90 days | Cloudflare documents a Worker identity AWS accepts |
-| An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) can have its secret overwritten by the refresh (MC2) (D41) | 10 s per refresh, logged as `refresh_overwrote_update`; when the API's update carried a token from a new authorization, that token is lost, the next refresh on the old grant may fail with `vault_credential.refresh_failed`, and the user updates the credential again | a customer reports a lost update, or the log shows it more than rarely |
+| An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) and the refresh's secret write can overwrite each other (MC2) (D41) | 10 s per refresh, logged as `refresh_overwrote_update`; when the API's update carried a token from a new authorization, that token is lost, the next refresh on the old grant may fail with `vault_credential.refresh_failed`, and the user updates the credential again | a customer reports a lost update, or the log shows it more than rarely |
+| A credential update that loses every claim answers `409` with its secret already written, since the secret is stored before the row's claimed write (D41) | at most 3 reads per update; the stored secret is the update's own, under the row another writer left | a customer reports a `409` update whose new token is in use |
+| `mcp_oauth_validate` refreshes without the 30 s hold (MC-7), so a validate that reads the row right after a loop refresh claimed it can send a second token request with the same refresh token | one validate call; the losing refresh records `vault_credential.refresh_failed`. The hold would answer every validate made within 30 s of a create or update `unknown` | a token endpoint that revokes on refresh-token reuse, or a customer report |
+| A webhook delivery's retries run on a task in memory, so a restart between attempts leaves the row pending with neither `delivered_at` nor `dropped_at` (H-4) | the deliveries in retry on the restarted replica, each at most two retries 31 s apart | a customer reports a missed delivery |
 | A crash between a session delete's commit and its event delete leaves that session's events (E4) (D41) | one session per crash; no API can reach them, since the session answers 404 | the DynamoDB plan, which moves deletes to the store's expiry |
 | A loop worker that dies after an MCP server answered a call and before its step commits the result makes the next step call the tool again (MC-25) | one repeated call per crash; the step that calls a tool commits its result at once, with no model call in between | the MCP spec gains idempotency keys, or a customer reports a repeated side effect |
 | A sandbox whose networking cannot be read never starts, and its session waits on its tool call until a `user.interrupt` (CF-12) | 10 minutes of retries per work item | the networking read fails outside a Cloudflare or agentd outage |
