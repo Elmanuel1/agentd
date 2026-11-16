@@ -12,6 +12,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+mod cascade;
 pub mod credentials;
 pub mod mcp;
 pub mod refresh;
