@@ -736,9 +736,13 @@ async fn gone_during_first_call(rig: &Rig, lease: u64) -> (Arc<Server>, Router, 
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("try")).await;
-    while server.count("tools/call") == 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    let first = async {
+        while server.count("tools/call") == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(10), first).await;
+    assert!(waited.is_ok(), "no tools/call within 10 s; the server got {:?}", server.methods());
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
     let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
@@ -747,8 +751,9 @@ async fn gone_during_first_call(rig: &Rig, lease: u64) -> (Arc<Server>, Router, 
     (server, app, worker_, s)
 }
 
-/// The rig's step queue, failing the first write or commit `fails` picks.
-struct FailOnce(Arc<dyn Steps>, AtomicBool, fn(&StepWrite<'_>) -> bool);
+/// The rig's step queue, failing the first write or commit `fails` picks,
+/// and counting the writes it picks that kept the claim after it.
+struct FailOnce(Arc<dyn Steps>, AtomicBool, fn(&StepWrite<'_>) -> bool, AtomicUsize);
 
 impl FailOnce {
     fn fails(&self, write: &StepWrite<'_>) -> Result<(), StoreError> {
@@ -768,8 +773,13 @@ impl Steps for FailOnce {
     }
 
     async fn write(&self, claim: &Claim, lease: i64, write: StepWrite<'_>) -> Result<bool, StoreError> {
+        let picked = (self.2)(&write);
         self.fails(&write)?;
-        self.0.write(claim, lease, write).await
+        let landed = self.0.write(claim, lease, write).await;
+        if picked && matches!(landed, Ok(true)) {
+            self.3.fetch_add(1, Ordering::SeqCst);
+        }
+        landed
     }
 
     async fn commit(&self, claim: &Claim, end: StepEnd, write: StepWrite<'_>) -> Result<bool, StoreError> {
@@ -795,7 +805,9 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
     let renewal = |w: &StepWrite<'_>| w.events.is_empty() && w.read.is_empty();
-    let queue: Arc<dyn Steps> = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), renewal));
+    let steps = rig.stores.steps.clone();
+    let fail = Arc::new(FailOnce(steps, AtomicBool::new(false), renewal, AtomicUsize::new(0)));
+    let queue: Arc<dyn Steps> = fail.clone();
     let tune = Tune {
         guard,
         mcp_timeout: Some(std::time::Duration::from_millis(1500)),
@@ -810,6 +822,8 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     assert_eq!(of(&events, "agent.mcp_tool_result").len(), 2, "one result for each call");
     assert_eq!(server.count("tools/call"), 2, "no claim sent a call again");
+    assert!(fail.1.load(Ordering::SeqCst), "the first renewal failed");
+    assert!(fail.3.load(Ordering::SeqCst) > 0, "a later renewal kept the claim");
 }
 
 /// When an event of the session's log was processed.
@@ -867,7 +881,8 @@ async fn a_result_already_recorded_is_not_sent_again_when_the_step_reruns() {
     let calls = vec![("mcp__docs__lookup", json!({"q": "1"})), ("mcp__docs__lookup", json!({"q": "2"}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("done")]);
     let second = |w: &StepWrite<'_>| serde_json::to_string(w.events).unwrap().contains(r#"found \"2\""#);
-    let queue: Arc<dyn Steps> = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), second));
+    let queue: Arc<dyn Steps> =
+        Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), second, AtomicUsize::new(0)));
     let (app, _worker) = worker(&rig, model, Tune { guard, queue: Some(queue), ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
