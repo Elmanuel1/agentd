@@ -390,14 +390,16 @@ Every production file over 200 lines that a later PR changes is split here first
 
 #### PR 3. Migrations
 
-Every table and index of the plan ships here, production-safe, except PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`), which ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+Every table and index of the plan ships here, production-safe, except V12's two `work_items` indexes (W2m) and PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`), which ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
 
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
   stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
   `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
   `request_id` default from the connection settings, as every table since history PR #41. Also the index
-  `(environment_id) where queue = 'runtime'` for W9.
+  `(environment_id) where queue = 'runtime'` for W9. The runtime key's reads by session and newest first use
+  `(queue, session_id)` and `(queue, created_at desc)`, built `CONCURRENTLY` in V12, a migration PR of their own
+  after PR 4.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
 - **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
