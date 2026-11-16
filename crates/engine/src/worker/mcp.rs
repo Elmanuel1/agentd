@@ -1,8 +1,8 @@
 //! A step that calls the MCP tools the model chose, with no model call: it
-//! commits each result and stays due, so the next step calls the model with
-//! them (MC-25).
+//! records each result as its call finishes, as live does (MC-26's capture),
+//! and stays due, so the next step calls the model with them (MC-25).
 
-use sessions::events::{AgentEvent, EventId, SessionEvent};
+use sessions::events::{AgentEvent, Event, EventId, SessionEvent};
 use sessions::steps::{Claim, StepEnd};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
@@ -14,10 +14,10 @@ use crate::mcp::CallOutcome;
 use crate::turn::policy::model_name;
 
 impl Loop {
-    /// Call each allowed MCP call the step's thread has unanswered and commit
-    /// its result. A session idle when the step starts (a confirmation
-    /// allowed the call) runs again, and its servers connect again as at any
-    /// turn's start.
+    /// Call each allowed MCP call the step's thread has unanswered and write
+    /// its result before the next call goes out. A session idle when the
+    /// step starts (a confirmation allowed the call) runs again, and its
+    /// servers connect again as at any turn's start.
     pub(super) async fn call_mcp(
         &self,
         claim: &Claim,
@@ -40,35 +40,43 @@ impl Loop {
         if servers.deferred() {
             return self.defer_refresh(claim).await;
         }
-        let mut called_any = false;
+        let opening = batch(taken, running, events);
+        let empty = opening.read.is_empty() && opening.events.is_empty();
+        if !empty && !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
+            return Ok(());
+        }
+        let mut finished: Vec<Event> = Vec::new();
         for call in history.unanswered.iter().filter(|u| u.for_loop()) {
             let Ok(id) = EventId::parse(&call.id) else { continue };
+            let done = std::mem::take(&mut finished);
+            if !done.is_empty() && !self.write(claim, &batch(Vec::new(), Vec::new(), done), None).await? {
+                return Ok(());
+            }
             let server = call.mcp.as_deref().unwrap_or_default();
             let prefix = model_name(server, "");
             let tool = call.name.strip_prefix(&prefix).unwrap_or(&call.name);
-            let (content, is_error) = match servers.call(server, tool, &call.input).await? {
+            let (content, is_error, error) = match servers.call(server, tool, &call.input).await? {
                 CallOutcome::Called(called) => {
                     crate::metrics::mcp_call(match called.is_error {
                         true => "tool_error",
                         false => "ok",
                     });
-                    (called.content, called.is_error)
+                    (called.content, called.is_error, None)
                 }
                 // Another worker refreshes the token: what ran is kept, the
                 // rest runs in a later step.
-                CallOutcome::Deferred if called_any => break,
                 CallOutcome::Deferred => return self.defer_refresh(claim).await,
                 CallOutcome::Failed { content, error } => {
                     crate::metrics::mcp_call("unreachable");
-                    events.extend(error.map(|error| turn.event(SessionEvent::Error { error })));
-                    (content, true)
+                    (content, true, error)
                 }
             };
-            events.push(turn.event(AgentEvent::McpToolResult { mcp_tool_use_id: id, content, is_error }));
-            called_any = true;
+            let error = error.map(|error| turn.event(SessionEvent::Error { error }));
+            let result = turn.event(AgentEvent::McpToolResult { mcp_tool_use_id: id, content, is_error });
+            finished = error.into_iter().chain([result]).collect();
         }
         session.status = SessionStatus::Running;
-        self.commit(claim, StepEnd::Again, &batch(taken, running, events), &session).await?;
+        self.commit(claim, StepEnd::Again, &batch(Vec::new(), Vec::new(), finished), &session).await?;
         Ok(())
     }
 

@@ -1,6 +1,6 @@
-//! A step's two writes, each in one transaction under the session's append
-//! lock: the opening before its model call, and the commit that ends it.
-//! Every replica's streams are told after each.
+//! A step's writes, each in one transaction under the session's append lock:
+//! the opening before its model call or each MCP result, and the commit that
+//! ends it. Every replica's streams are told after each.
 
 use sessions::signals::Signal;
 use sessions::steps::{Claim, SessionChange, StatusDeliveries, StepEnd, StepWrite};

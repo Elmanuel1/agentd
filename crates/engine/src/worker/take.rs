@@ -123,14 +123,16 @@ pub(super) fn take(
         (1, false) => Interrupt::First,
         _ => Interrupt::Second,
     };
-    let confirmed: Vec<&EventId> = queued
+    // An MCP call's allow holds once taken: a step that recorded some of its
+    // results and runs again still calls the rest.
+    let confirmed: Vec<&EventId> = log
         .iter()
         .filter_map(|e| match &e.payload {
             EventPayload::User(UserEvent::ToolConfirmation {
                 tool_use_id,
                 result: ConfirmationResult::Allow,
                 ..
-            }) => Some(tool_use_id),
+            }) if e.processed_at.is_none() || is_mcp(log, tool_use_id) => Some(tool_use_id),
             _ => None,
         })
         .collect();
