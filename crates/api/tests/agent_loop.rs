@@ -196,6 +196,8 @@ struct Tune {
     mcp_timeout: Option<Duration>,
     /// Its claims' lease.
     lease: Duration,
+    /// The step queue it claims from, when not the rig's.
+    queue: Option<Arc<dyn sessions::steps::Steps>>,
 }
 
 impl Default for Tune {
@@ -209,6 +211,7 @@ impl Default for Tune {
             hooks: None,
             mcp_timeout: None,
             lease: Duration::from_secs(60),
+            queue: None,
         }
     }
 }
@@ -255,7 +258,7 @@ impl SessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease } = tune;
+    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -269,7 +272,7 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
     let mut mcp = api::agent_loop::mcp(&rig.stores, guard, &hooks);
     mcp.timeout = mcp_timeout.unwrap_or(mcp.timeout);
     let stores = LoopStores {
-        steps: rig.stores.steps.clone(),
+        steps: queue.unwrap_or_else(|| rig.stores.steps.clone()),
         sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
