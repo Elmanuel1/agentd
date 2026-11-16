@@ -101,12 +101,13 @@ async fn every_change_reaches_history_with_its_writer() {
     let a = agent["id"].as_str().unwrap().to_owned();
     let (_, _, agent_archived) = call(&rig, "POST", &format!("/v1/agents/{a}/archive"), None).await;
 
-    // An update that leaves a TOASTed doc unchanged still records the whole doc.
+    // An update that leaves a TOASTed doc unchanged still records the whole doc; the writer is the
+    // agent loop's, `system`, whose updates are kept like any other.
     let session = format!("sesn_history{}", common::stamp());
     // Random, so it does not compress below the 2 KB at which Postgres moves it out of line.
     let blob: String = (0..400).map(|_| uuid::Uuid::new_v4().simple().to_string()).collect();
     let toast = json!({"blob": blob});
-    with_writer(Writer::fresh("runtime"), async {
+    with_writer(Writer::fresh("system"), async {
         let mut conn = rig.pg.diesel.write().await.unwrap();
         diesel::sql_query(
             "INSERT INTO sessions (workspace_id, session_id, status, created_at, doc)
@@ -174,7 +175,7 @@ async fn every_change_reaches_history_with_its_writer() {
     assert_eq!(ops.last(), Some(&writer("update", &agent_archived)));
 
     let rows = eventually(&rig, "sessions", "session_id", &session, 2).await;
-    assert_eq!(summary(&rows).iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["runtime", "runtime"]);
+    assert_eq!(summary(&rows).iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["system", "system"]);
     assert_eq!(rows[1]["doc"], toast, "the unchanged doc arrives whole");
 
     let versions = eventually(&rig, "memory_versions", "store_id", &sid, 3).await;
