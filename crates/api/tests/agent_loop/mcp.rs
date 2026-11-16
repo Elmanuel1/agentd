@@ -736,13 +736,7 @@ async fn gone_during_first_call(rig: &Rig, lease: u64) -> (Arc<Server>, Router, 
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("try")).await;
-    let first = async {
-        while server.count("tools/call") == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    };
-    let waited = tokio::time::timeout(std::time::Duration::from_secs(10), first).await;
-    assert!(waited.is_ok(), "no tools/call within 10 s; the server got {:?}", server.methods());
+    calls_reach(&server, 1).await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
     let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
@@ -826,6 +820,17 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     assert!(fail.3.load(Ordering::SeqCst) > 0, "a later renewal kept the claim");
 }
 
+/// Wait up to 10 s for the server to get `n` calls.
+async fn calls_reach(server: &Server, n: usize) {
+    let reached = async {
+        while server.calls().len() < n {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(10), reached).await;
+    assert!(waited.is_ok(), "no {n} tools/call within 10 s; the server got {:?}", server.methods());
+}
+
 /// When an event of the session's log was processed.
 fn processed(e: &Value) -> chrono::DateTime<chrono::Utc> {
     e["processed_at"].as_str().and_then(|t| t.parse().ok()).unwrap()
@@ -845,9 +850,7 @@ async fn each_mcp_result_is_recorded_before_the_next_call_goes_out() {
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("look both up")).await;
-    while server.calls().len() < 2 {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    calls_reach(&server, 2).await;
     let during = events_until(&app, &s, "agent.mcp_tool_use", 2).await;
     let (uses, results) = (of(&during, "agent.mcp_tool_use"), of(&during, "agent.mcp_tool_result"));
     assert_eq!(results.len(), 1, "only the first call's result while the second runs");
@@ -945,4 +948,41 @@ async fn a_refresh_another_worker_holds_after_a_call_ran_keeps_its_result_and_de
         "one result for each call"
     );
     assert_eq!(server.tokens.load(Ordering::SeqCst), 1, "one refresh");
+}
+
+#[tokio::test]
+async fn an_allowed_mcp_call_still_runs_when_its_step_reruns() {
+    // MC-12, MC-25: the client allows two asked calls; the second result's
+    // write fails, and the step that runs again still calls the second,
+    // whose confirmation the first write took.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__lookup", json!({"q": "1"})), ("mcp__docs__lookup", json!({"q": "2"}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("done")]);
+    let second = |w: &StepWrite<'_>| serde_json::to_string(w.events).unwrap().contains(r#"found \"2\""#);
+    let fail = FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), second, AtomicUsize::new(0));
+    let queue: Arc<dyn Steps> = Arc::new(fail);
+    let (app, _worker) = worker(&rig, model, Tune { guard, queue: Some(queue), ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, None, json!([])).await;
+    send(&app, &s, message("look both up")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let uses = of(&events, "agent.mcp_tool_use");
+    let allow =
+        |u: &Value| json!({"type": "user.tool_confirmation", "tool_use_id": u["id"], "result": "allow"});
+    send(&app, &s, json!({"events": [allow(uses[0]), allow(uses[1])]})).await;
+    let events = events_until(&app, &s, "session.status_idle", 2).await;
+    let sent: Vec<Value> = server.calls().into_iter().map(|g| g.arguments["q"].clone()).collect();
+    assert_eq!(sent, [json!("1"), json!("2"), json!("2")], "the rerun calls the second, allowed call");
+    let results = of(&events, "agent.mcp_tool_result");
+    let recorded: Vec<(&Value, &Value, &Value)> =
+        results.iter().map(|r| (&r["mcp_tool_use_id"], &r["content"][0]["text"], &r["is_error"])).collect();
+    assert_eq!(
+        recorded,
+        [
+            (&uses[0]["id"], &json!("found \"1\""), &json!(false)),
+            (&uses[1]["id"], &json!("found \"2\""), &json!(false))
+        ],
+        "one result for each call"
+    );
 }
