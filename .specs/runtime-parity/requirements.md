@@ -97,7 +97,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | S-1 | When a client event, `user.tool_result` or `user.custom_tool_result` is appended, the API shall put the session on the step queue in the same commit. |
-| S-2 | The loop shall claim a due step with `FOR UPDATE SKIP LOCKED` under a lease of 12 min, longer than the step's 10 min model deadline, so that two loop workers never run one session's step at once. |
+| S-2 | The loop shall claim a due step with `FOR UPDATE SKIP LOCKED` under a lease of 12 min, longer than the step's 10 min model deadline, which the step renews every third of its length while it runs and stops when its claim is gone, so that two loop workers never run one session's step at once. |
 | S-3 | The loop shall read the session's log, build the prompt and call the model with no transaction open, then in one commit release its claim, stamp the client events it read processed, and append its events. |
 | S-4 | If a loop worker's commit finds its claim gone (a takeover), then the loop shall roll the commit back. |
 | S-5 | When a claim's lease runs out before its commit, the loop shall let another loop worker take the step over and run it again from the log. |

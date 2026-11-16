@@ -26,6 +26,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
 | `AGENTD_KAFKA_BROKERS` | unset | Kafka's brokers (`host:port,…`), from whose topics agentd reads the change feed; unset, it reads it from Valkey Streams on `AGENTD_VALKEY_URL` |
 | `AGENTD_VALKEY_CLUSTER` | `false` | `true` when `AGENTD_VALKEY_URL` is a cluster's configuration endpoint (cluster mode enabled): agentd then follows the cluster's slots and subscribes over RESP3 |
+| `AGENTD_CHANGES_PREFIX` | `agentd` | Debezium's `topic.prefix`: agentd reads the change feed's tables from `<prefix>.public.<table>` and an external scheduler's fires from `<prefix>.fires` |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
@@ -57,8 +58,12 @@ the reply leads to:
   commit before the call;
 - its events, in one commit after it.
 
-Nothing is held in a replica between steps. A step cut off by a crash runs
-again from the log once its lease runs out. A `user.interrupt` sent during a
+While a step runs, its worker renews the lease every third of its length, so
+slow MCP or model work never outlasts it; a step whose claim is gone (another
+worker took it, or the session was deleted) stops where it is and sends
+nothing more. Nothing is held in a replica between steps. A step cut off by a
+crash renews nothing, so it runs again from the log once its lease runs out. A
+`user.interrupt` sent during a
 call cancels it. Built-in tool calls are parked for the session's worker,
 which takes the session's work item:
 - a `self_hosted` session idles `requires_action` until its worker posts
@@ -95,6 +100,7 @@ step's 10 minute deadline.
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |
 | `AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM` | unset (no limit) | Requests and input tokens per provider and minute, shared by every replica in Valkey (`AGENTD_VALKEY_URL`); a step over it waits for the next minute. Without Valkey there is no limit |
+| `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
 | `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
@@ -133,7 +139,17 @@ cannot be reached gets `mcp_connection_failed_error` (a refused credential,
 `mcp_authentication_failed_error`) before the turn's model call; the turn goes
 on without its tools, and the next turn tries again. The credential is the
 first of the session's vaults' `mcp_oauth` or `static_bearer` credentials
-keyed by the server's URL; with none the connection is unauthenticated. An
+keyed by the server's URL; with none the connection is unauthenticated. A
+request the server answers 401 to a credential is sent once more with no
+`Authorization` header. Each request waits up to 125 s for its answer
+(`mcp_oauth_validate`'s probe, 30 s). A call that fails gets an `is_error`
+`agent.mcp_tool_result` and no `session.error`, and the server stays usable for
+the turn's next call: `upstream server error (HTTP <code>)` for an error
+status, `upstream server error (HTTP 502)` for a call left unanswered or
+unreached, and `MCP server '<name>' authentication failed: …` when the server
+refuses a `static_bearer` credential. A step's calls run one after another
+under one lease, so about five unanswered calls in one step outlast it and
+another worker sends them again. An
 expired `mcp_oauth` token is refreshed by one worker, claimed on the
 credential's row; a worker that finds the row updated less than 30 s ago runs
 the step again a second later. An allowed call is committed with its step and
