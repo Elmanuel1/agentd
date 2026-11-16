@@ -57,12 +57,7 @@ impl ChangeHandler for DeletedRecorder {
             }
             let row = Value::Object(row);
             self.log.record(table, HistoryOp::Delete, position, &row).await?;
-            match redact::scrubbed(table, &row) {
-                Some((workspace, store, version)) => {
-                    self.log.scrub_memory_content(&workspace, &store, &version).await
-                }
-                None => Ok(()),
-            }
+            redact::scrub(self.log.as_ref(), table, &row).await
         };
         settle(recorded.await, change, &self.applied)
     }

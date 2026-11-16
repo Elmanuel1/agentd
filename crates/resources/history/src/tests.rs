@@ -15,7 +15,7 @@ use super::*;
 #[derive(Default)]
 struct Kept {
     recorded: Mutex<Vec<(String, HistoryOp, u64, Value)>>,
-    scrubbed: Mutex<Vec<String>>,
+    scrubbed: Mutex<Vec<(String, String, String)>>,
     failing: Mutex<bool>,
 }
 
@@ -42,8 +42,13 @@ impl HistoryLog for Kept {
         Ok(())
     }
 
-    async fn scrub_memory_content(&self, _: &str, _: &str, version: &str) -> Result<(), HistoryError> {
-        self.scrubbed.lock().push(version.to_owned());
+    async fn scrub_memory_content(
+        &self,
+        workspace: &str,
+        store: &str,
+        version: &str,
+    ) -> Result<(), HistoryError> {
+        self.scrubbed.lock().push((workspace.to_owned(), store.to_owned(), version.to_owned()));
         Ok(())
     }
 }
@@ -94,6 +99,7 @@ async fn an_insert_and_an_update_are_recorded_and_a_delete_event_is_not() {
     vaults.handle(&change("vaults", ChangeOp::Delete, 30, None)).await.unwrap();
     let ops: Vec<(HistoryOp, u64)> = kept.recorded.lock().iter().map(|r| (r.1, r.2)).collect();
     assert_eq!(ops, [(HistoryOp::Insert, 10), (HistoryOp::Update, 20)]);
+    assert!(kept.scrubbed.lock().is_empty(), "only memory rows are scrubbed");
     assert_eq!(*applied.lock(), 2);
 }
 
@@ -135,9 +141,12 @@ async fn a_memory_version_s_update_is_scrubbed_once_it_is_recorded() {
     let Fixture { kept, handlers, .. } = fixture();
     let versions = handler(&handlers, &Source::Table("memory_versions".into()));
     let row = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "version_id": "memver_1"});
-    versions.handle(&change("memory_versions", ChangeOp::Update, 60, Some(row))).await.unwrap();
-    assert_eq!(kept.recorded.lock().len(), 1);
-    assert_eq!(*kept.scrubbed.lock(), ["memver_1"]);
+    versions.handle(&change("memory_versions", ChangeOp::Update, 60, Some(row.clone()))).await.unwrap();
+    assert_eq!(*kept.recorded.lock(), [("memory_versions".to_owned(), HistoryOp::Update, 60, row)]);
+    assert_eq!(
+        *kept.scrubbed.lock(),
+        [("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned())]
+    );
 }
 
 #[tokio::test]
@@ -147,8 +156,14 @@ async fn a_memory_head_s_delete_is_scrubbed_once_it_is_recorded() {
     let content = json!({"table": "memories", "actor": "apikey_a", "request_id": "req_a", "row": head});
     let messages = handler(&handlers, &Source::Messages);
     messages.handle(&change("agentd-history", ChangeOp::Message, 70, Some(content))).await.unwrap();
-    assert_eq!(kept.recorded.lock().len(), 1);
-    assert_eq!(*kept.scrubbed.lock(), ["memver_1"]);
+    let mut recorded = head;
+    recorded["actor"] = json!("apikey_a");
+    recorded["request_id"] = json!("req_a");
+    assert_eq!(*kept.recorded.lock(), [("memories".to_owned(), HistoryOp::Delete, 70, recorded)]);
+    assert_eq!(
+        *kept.scrubbed.lock(),
+        [("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned())]
+    );
 }
 
 /// The tables V17 makes in the schema `history`.

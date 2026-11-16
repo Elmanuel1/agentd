@@ -52,12 +52,7 @@ impl ChangeHandler for HistoryRecorder {
             let position = change.position.as_ref().ok_or_else(|| missing("no log position"))?;
             let row = change.after.as_ref().ok_or_else(|| missing("no row after"))?;
             self.log.record(&self.table, op, position, row).await?;
-            match redact::scrubbed(&self.table, row) {
-                Some((workspace, store, version)) => {
-                    self.log.scrub_memory_content(&workspace, &store, &version).await
-                }
-                None => Ok(()),
-            }
+            redact::scrub(self.log.as_ref(), &self.table, row).await
         };
         settle(recorded.await, change, &self.applied)
     }

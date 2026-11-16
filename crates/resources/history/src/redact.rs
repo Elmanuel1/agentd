@@ -7,33 +7,21 @@
 //! version's redaction.
 
 use serde_json::Value;
+use shared::ports::history::{HistoryError, HistoryLog};
 
-/// The memory version `(workspace, store, version)` whose content a recorded
-/// `row` of `table` may hold: a version's own row, or the version a memory's
-/// head names.
-pub(crate) fn scrubbed(table: &str, row: &Value) -> Option<(String, String, String)> {
-    let field = |k: &str| row.get(k).and_then(Value::as_str).map(str::to_owned);
+/// Scrub the memory version whose content a recorded `row` of `table` may
+/// hold: a version's own row, or the version a memory's head names.
+pub(crate) async fn scrub(log: &dyn HistoryLog, table: &str, row: &Value) -> Result<(), HistoryError> {
+    let field = |k: &str| row.get(k).and_then(Value::as_str);
     let version = match table {
-        "memory_versions" => field("version_id")?,
-        "memories" => field("head_version_id")?,
-        _ => return None,
+        "memory_versions" => field("version_id"),
+        "memories" => field("head_version_id"),
+        _ => None,
     };
-    Some((field("workspace_id")?, field("store_id")?, version))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn a_version_row_and_a_head_row_name_the_version_to_scrub() {
-        let ids = Some(("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned()));
-        let row = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "version_id": "memver_1"});
-        assert_eq!(scrubbed("memory_versions", &row), ids);
-        let head =
-            json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "head_version_id": "memver_1"});
-        assert_eq!(scrubbed("memories", &head), ids);
-        assert_eq!(scrubbed("vaults", &head), None);
+    match (field("workspace_id"), field("store_id"), version) {
+        (Some(workspace), Some(store), Some(version)) => {
+            log.scrub_memory_content(workspace, store, version).await
+        }
+        _ => Ok(()),
     }
 }
