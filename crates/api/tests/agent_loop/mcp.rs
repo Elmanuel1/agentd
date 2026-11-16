@@ -674,3 +674,25 @@ async fn a_list_changed_notification_lists_the_tools_again_and_stores_them() {
     let asked = model.asked.lock();
     assert!(asked[1].tools.iter().any(|t| t.name == "mcp__docs__extra"), "the stored list is the new one");
 }
+
+#[tokio::test]
+async fn a_step_whose_calls_outlast_its_lease_keeps_it_and_sends_each_call_once() {
+    // S-2: two unanswered calls take longer than the lease; the step renews
+    // it, so no claim runs the step again and repeats its calls.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
+    let timeout = Some(std::time::Duration::from_millis(1500));
+    let lease = std::time::Duration::from_secs(2);
+    let (app, _worker) =
+        worker(&rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("try")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let (calls, results) = (of(&events, "agent.mcp_tool_use"), of(&events, "agent.mcp_tool_result"));
+    let answered: Vec<&Value> = results.iter().map(|r| &r["mcp_tool_use_id"]).collect();
+    assert_eq!(answered, [&calls[0]["id"], &calls[1]["id"]], "one result for each call");
+    assert_eq!(server.count("tools/call"), 2, "no claim sent a call again");
+}
