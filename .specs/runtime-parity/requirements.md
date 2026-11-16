@@ -390,7 +390,7 @@ Every production file over 200 lines that a later PR changes is split here first
 
 #### PR 3. Migrations
 
-Every table and index of the plan, production-safe, except PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`) ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+Every table and index of the plan ships here, production-safe, except PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`), which ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
 
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
