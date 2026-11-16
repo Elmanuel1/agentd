@@ -348,7 +348,8 @@ under SRE.
 ## Plan of PRs
 
 One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, the
-work API, the event log and the loop each in a PR, then one PR for the rest (D43): compaction, MCP and vaults,
+work API, a migration PR for the runtime key's two `work_items` indexes (V12), the event log and the loop each in a
+PR, then one PR for the rest (D43): compaction, MCP and vaults,
 schedules and webhooks, the removals, conformance and docs, with its own splits and migrations. agentd is not
 deployed (D45), so each PR merges on green CI and a local replay (Rollout). Migration numbers are taken at merge time.
 "Reuses" names work already written on local branches.
@@ -359,11 +360,12 @@ deployed (D45), so each PR merges on green CI and a local replay (Rollout). Migr
 | 2 | Make room: store settings, vault credentials and deployment run errors get their own files | cleanup | X1, X2, X3 | none (makes room) | |
 | 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint and archived-session indexes | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm, E4m | E-2, W-2, W-13, S-1, S-2, MC-13, K-2, H-4, CP-9 | |
 | 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W3 to W5, EV1, W7 to W9, L6, FO1 | W-2 to W-13, W-15 to W-19, W-21 to W-23, EV-1, EV-3, EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
+| 4a | Migration: the runtime key's `work_items` indexes `(queue, session_id)` and `(queue, created_at desc)` (V12) | migration | W2m's V12 indexes | W-16, W-17 (the runtime key's reads of its queue) | |
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
 | 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, every session on the loop | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
 | 7 | The rest, one PR (D43): compaction; MCP and vaults; thinking and the grader; schedules and webhooks through the change feed; the keys from the environment; the removals; the Java SDK, metrics and docs | code, with migrations V13 to V15 | CP0 to CP3, TH1, GR1, W1, MC1 to MC3, VA1, K1, H1, RM1 to RM3, J1, SRE | CP-1 to CP-13, MC-1 to MC-28, VA-1 to VA-11, L-21 to L-23, K-1 to K-9, CH-1 to CH-5, H-1 to H-7, F-6, W-1, W-14, W-20, W-24 to W-26, EV-2, M-5, J-1 | |
 
-7 agentd PRs including the spec. `agentd-worker` (its own repository, D6) builds section 11 in 3 PRs: the image with
+8 agentd PRs including the spec. `agentd-worker` (its own repository, D6) builds section 11 in 3 PRs: the image with
 the official `EnvironmentWorker`, the Docker launcher and file staging; the Cloudflare launcher (CF-1 to CF-12 with
 EG-1, EG-3 to EG-5, EG-7, EG-8, EG-10); the optional Fargate and EC2 launchers with the AWS egress proxy and the fleet
 (EG-2, EG-6, EG-9, FL-1 to FL-3).
@@ -390,7 +392,7 @@ Every production file over 200 lines that a later PR changes is split here first
 
 #### PR 3. Migrations
 
-Every table and index of the plan ships here, production-safe, except V12's two `work_items` indexes (W2m) and PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`), which ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+Every table and index of the plan ships here, production-safe, except V12's two `work_items` indexes (W2m), which ship in PR 4a, and PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`), which ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
 
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
@@ -398,8 +400,7 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
   `request_id` default from the connection settings, as every table since history PR #41. Also the index
   `(environment_id) where queue = 'runtime'` for W9. The runtime key's reads by session and newest first use
-  `(queue, session_id)` and `(queue, created_at desc)`, built `CONCURRENTLY` in V12, a migration PR of their own
-  after PR 4.
+  `(queue, session_id)` and `(queue, created_at desc)`, built `CONCURRENTLY` in V12, in PR 4a.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
 - **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,

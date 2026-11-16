@@ -74,10 +74,11 @@ agentd (one stack, each PR on your go-ahead):
 1. The spec (this folder).
 2. Make room: three large files are split before later PRs change them, with no behaviour change.
 3. Migrations: every table and index of the plan in one production-safe PR, except two `work_items` indexes (V12),
-   in a migration PR of their own, and PR 7's own (V13 to V15), which ship in PR 7.
+   which ship in PR 4a, and PR 7's own (V13 to V15), which ship in PR 7.
 4. The work API for Anthropic's worker: work items in Postgres, live's work secret (with signed placeholders for
    `cloud` environment-variable credentials), environment keys and our runtime key, work tokens that reach only their
    own session, and the session's files for workers.
+4a. A migration: the two `work_items` indexes the runtime key's reads use (V12).
 5. The event log and streams: events in order on every replica through Valkey signals, a fallback timer, new streams
    refused under overload, the event list from a replica, an optional retention period. The log stays on
    Postgres; DynamoDB for large workspaces is a later step, behind the same port, when its signal passes its threshold.
