@@ -326,21 +326,24 @@ async fn a_server_agentd_may_not_reach_records_a_connection_error_and_the_turn_g
 
 #[tokio::test]
 async fn a_server_that_refuses_authentication_records_an_authentication_error() {
-    // MC-4: live's words with no vault credential for the URL (B27), and for
-    // a static bearer the server refused, which live sends again with no
-    // Authorization header (MC-4 capture).
+    // MC-4: live's words with no vault credential for the URL (B27) and for a
+    // static bearer the server refused (MC-4 capture); an `mcp_oauth` refusal
+    // is uncaptured and keeps agentd's words. A refused bearer is sent once
+    // more with no Authorization header, as live does.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
     server.refuse.store(true, Ordering::SeqCst);
-    let model = Scripted::new(vec![Say::Text("without"), Say::Text("with")]);
+    let model = Scripted::new(vec![Say::Text("none"), Say::Text("bearer"), Say::Text("oauth")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
-    let vault = bearer_vault(&rig, &url, "tok-refused").await;
+    let (bearer, oauth) = (bearer_vault(&rig, &url, "tok-refused").await, oauth_vault(&rig, &url).await);
     let unstored =
         "no credential is stored for this server URL \u{2014} check that the agent's MCP server URL \
         matches the URL in the vault";
     let rejected = "server rejected the static bearer token \u{2014} verify the credential value";
-    for (vaults, why) in [(json!([]), unstored), (json!([vault]), rejected)] {
+    let cases =
+        [(json!([]), unstored), (json!([bearer]), rejected), (json!([oauth]), "authentication required")];
+    for (vaults, why) in cases {
         let s = mcp_session(&app, &env, &url, Some("always_allow"), vaults).await;
         send(&app, &s, message("go")).await;
         let events = events_until(&app, &s, "session.status_idle", 1).await;
@@ -350,48 +353,70 @@ async fn a_server_that_refuses_authentication_records_an_authentication_error() 
         assert_eq!(errors, [&refused], "{why}");
         assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
     }
-    assert_eq!(server.methods(), ["initialize"; 3], "nothing after a refused initialize");
+    assert_eq!(server.methods(), ["initialize"; 5], "nothing after a refused initialize");
     let bearers: Vec<Option<String>> = server.got.lock().iter().map(|g| g.bearer.clone()).collect();
-    assert_eq!(bearers, [None, Some("Bearer tok-refused".into()), None], "one retry, only after a bearer");
+    let (refused, oauth) = (Some("Bearer tok-refused".into()), Some("Bearer tok-oauth".into()));
+    assert_eq!(bearers, [None, refused, None, oauth, None], "one retry, only after a bearer");
 }
 
-/// A vault holding a static bearer `token` for `url`; its id.
-async fn bearer_vault(rig: &Rig, url: &str, token: &str) -> String {
+/// A vault holding a credential with `auth`; its id.
+async fn vault_with(rig: &Rig, auth: Value) -> String {
     let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
     let vault = vault["id"].as_str().unwrap().to_owned();
-    let cred = json!({"display_name": "docs", "auth": {"type": "static_bearer", "mcp_server_url": url, "token": token}});
     let path = format!("/v1/vaults/{vault}/credentials");
-    let (st, _) = rig.call("POST", &path, Auth::Key(KEY), Some(cred)).await;
-    assert_eq!(st, StatusCode::OK);
+    let (st, cred) =
+        rig.call("POST", &path, Auth::Key(KEY), Some(json!({"display_name": "docs", "auth": auth}))).await;
+    assert_eq!(st, StatusCode::OK, "{cred}");
     vault
+}
+
+/// A vault holding a static bearer `token` for `url`.
+async fn bearer_vault(rig: &Rig, url: &str, token: &str) -> String {
+    vault_with(rig, json!({"type": "static_bearer", "mcp_server_url": url, "token": token})).await
+}
+
+/// A vault holding an unexpired `mcp_oauth` token `tok-oauth` for `url`.
+async fn oauth_vault(rig: &Rig, url: &str) -> String {
+    let auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "tok-oauth",
+        "expires_at": "2099-01-01T00:00:00Z"});
+    vault_with(rig, auth).await
 }
 
 #[tokio::test]
 async fn a_call_whose_bearer_is_refused_gets_an_authentication_result_and_no_session_error() {
-    // MC-26: live's words for a 401 to a call after the server connected,
-    // sent again with no Authorization header (MC-26 capture).
+    // MC-26: live's words for a 401 to a call after a static bearer connected
+    // (MC-26 capture); an `mcp_oauth` one is uncaptured and keeps agentd's
+    // words. Either is sent once more with no Authorization header.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
-    let model = Scripted::new(vec![Say::Calls(vec![("mcp__docs__locked", json!({}))]), Say::Text("sorry")]);
+    let locked = || Say::Calls(vec![("mcp__docs__locked", json!({}))]);
+    let model = Scripted::new(vec![locked(), Say::Text("sorry"), locked(), Say::Text("sorry")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
-    let vault = bearer_vault(&rig, &url, "tok-late").await;
-    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
-    send(&app, &s, message("try")).await;
-    let events = events_until(&app, &s, "session.status_idle", 1).await;
-    let (call, result) = (of(&events, "agent.mcp_tool_use")[0], of(&events, "agent.mcp_tool_result")[0]);
-    let text = "MCP server 'docs' authentication failed: server rejected the static bearer token \u{2014} \
+    let rejected =
+        "MCP server 'docs' authentication failed: server rejected the static bearer token \u{2014} \
         verify the credential value. The tool is unavailable until the server is re-authorized.";
-    let mut want = json!({"type": "agent.mcp_tool_result", "mcp_tool_use_id": call["id"],
-        "content": [{"type": "text", "text": text}], "is_error": true});
-    want["id"] = result["id"].clone();
-    want["processed_at"] = result["processed_at"].clone();
-    assert_eq!(result, &want, "live's result (MC-26 capture)");
-    assert!(of(&events, "session.error").is_empty(), "a refused call records no session.error");
-    let calls: Vec<Option<String>> =
-        server.got.lock().iter().filter(|g| g.method == "tools/call").map(|g| g.bearer.clone()).collect();
-    assert_eq!(calls, [Some("Bearer tok-late".into()), None], "sent again with no Authorization header");
-    assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    let cases = [
+        (bearer_vault(&rig, &url, "tok-late").await, rejected, "Bearer tok-late"),
+        (oauth_vault(&rig, &url).await, "upstream server error (HTTP 401)", "Bearer tok-oauth"),
+    ];
+    for (vault, text, sent) in cases {
+        server.got.lock().clear();
+        let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
+        send(&app, &s, message("try")).await;
+        let events = events_until(&app, &s, "session.status_idle", 1).await;
+        let (call, result) = (of(&events, "agent.mcp_tool_use")[0], of(&events, "agent.mcp_tool_result")[0]);
+        let mut want = json!({"type": "agent.mcp_tool_result", "mcp_tool_use_id": call["id"],
+            "content": [{"type": "text", "text": text}], "is_error": true});
+        want["id"] = result["id"].clone();
+        want["processed_at"] = result["processed_at"].clone();
+        assert_eq!(result, &want, "{sent}");
+        assert!(of(&events, "session.error").is_empty(), "a refused call records no session.error");
+        let calls: Vec<Option<String>> =
+            server.got.lock().iter().filter(|g| g.method == "tools/call").map(|g| g.bearer.clone()).collect();
+        assert_eq!(calls, [Some(sent.to_owned()), None], "sent again with no Authorization header");
+        assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    }
 }
 
 #[tokio::test]
