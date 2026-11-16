@@ -930,8 +930,16 @@ async fn a_refresh_another_worker_holds_after_a_call_ran_keeps_its_result_and_de
     assert!(step.due_in <= 1, "the step waits a second");
     age_row(cred["id"].as_str().unwrap(), 120).await;
     let events = events_until(&app, &s, "session.status_idle", 1).await;
-    let answered: Vec<&Value> =
-        of(&events, "agent.mcp_tool_result").iter().map(|r| &r["mcp_tool_use_id"]).collect();
-    assert_eq!(answered, [&uses[0]["id"], &uses[1]["id"]], "one result for each call");
+    let results = of(&events, "agent.mcp_tool_result");
+    let recorded: Vec<(&Value, &Value, &Value)> =
+        results.iter().map(|r| (&r["mcp_tool_use_id"], &r["content"][0]["text"], &r["is_error"])).collect();
+    assert_eq!(
+        recorded,
+        [
+            (&uses[0]["id"], &json!("upstream server error (HTTP 502)"), &json!(true)),
+            (&uses[1]["id"], &json!("found \"2\""), &json!(false))
+        ],
+        "one result for each call"
+    );
     assert_eq!(server.tokens.load(Ordering::SeqCst), 1, "one refresh");
 }
