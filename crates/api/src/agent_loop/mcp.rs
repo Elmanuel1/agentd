@@ -20,8 +20,11 @@ use work::WorkReads;
 
 use crate::backends::Stores;
 
-/// How long one MCP request may take.
-const MCP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long one of the loop's MCP requests may take: live answers a call its
+/// server never answers after about 125 s (MC-26).
+const MCP_TIMEOUT: Duration = Duration::from_secs(125);
+/// How long `mcp_oauth_validate`'s `initialize` probe may take.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Environments read by workspace: a workspace's organization never changes,
 /// so each is looked up once per process.
@@ -70,7 +73,7 @@ pub fn mcp(stores: &Stores, guard: Guard, webhooks: &Arc<webhooks::Webhooks>) ->
         vaults: Arc::new(
             VaultsService::new(stores.vaults.clone(), stores.vault_credentials.clone())
                 .with_mcp(McpReach {
-                    probe: Arc::new(Probe::new(guard.clone(), MCP_TIMEOUT)),
+                    probe: Arc::new(Probe::new(guard.clone(), PROBE_TIMEOUT)),
                     guard: guard.clone(),
                 })
                 .with_webhooks(webhooks.clone()),
