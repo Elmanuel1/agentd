@@ -143,8 +143,8 @@ Decision D31; evidence C1 to C5.
 | CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and every later call of the thread shall send the returned `compaction` block back unmodified, first in `messages`, with the `compact-2026-09-04` beta header (C1). |
 | CP-8 | Where the thread's model is not an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools and a handoff prompt carrying CP-6's instructions, and put the summary first in the thread's later prompts. |
 | CP-9 | When a compaction step finishes, the loop shall append `agent.thread_context_compacted` as the thread's checkpoint, holding the summary, the last event it covers and the model that wrote it, unique per thread and covered event; the API shall serve the event with live's fields only, and no event is deleted. |
-| CP-10 | If a compaction call fails or returns no summary, then the loop shall run the thread's next turn with CP-2's prompt, and run the compaction step again at the first step after that turn's model call while CP-4's threshold is still passed. |
-| CP-11 | If a compaction request would be larger than the window, then the loop shall leave the oldest model calls after the checkpoint out of that request until it fits, before the call, with no retry, and when no model call is left to leave out, send the request as it is and treat a failed call as CP-10's call with no summary. |
+| CP-10 | If a compaction call fails or returns no summary, then the loop shall make the thread's next model call with CP-2's prompt, and run the compaction step again before the model call after it while CP-4's threshold is still passed. |
+| CP-11 | If a compaction request would be larger than the window, then the loop shall leave the oldest model calls after the checkpoint out of that request, before the call and with no retry, until it fits or only its latest model call is left. |
 | CP-12 | When a thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
 | CP-13 | The loop shall take each model's window from its provider's model list, read once per process: Anthropic's `GET /v1/models/{id}` `max_input_tokens` (C4) and OpenRouter's `GET /api/v1/models` `context_length` (D42), with no setting that overrides it. |
 
@@ -571,7 +571,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
   the first checkpoint; a step with a tool call waiting does not compact; a summary call that returns no block
-  leaves the cleared prompt, the next step runs the turn, and the step after that turn's call compacts again; every call after compaction sends the
+  leaves the cleared prompt, the next model call takes the turn, and compaction runs again before the model call after it; every call after compaction sends the
   `compact-2026-09-04` beta header with the block (CP-7). A recall check against a real model runs only with the
   user's OK (D22).
 - **CP3.** `engine/src/turn/compact/summary.rs` (the handoff prompt) and `engine/src/worker/compact.rs` (the trim
