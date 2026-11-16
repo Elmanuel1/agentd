@@ -135,7 +135,17 @@ cannot be reached gets `mcp_connection_failed_error` (a refused credential,
 `mcp_authentication_failed_error`) before the turn's model call; the turn goes
 on without its tools, and the next turn tries again. The credential is the
 first of the session's vaults' `mcp_oauth` or `static_bearer` credentials
-keyed by the server's URL; with none the connection is unauthenticated. An
+keyed by the server's URL; with none the connection is unauthenticated. A
+request the server answers 401 to a credential is sent once more with no
+`Authorization` header. Each request waits up to 125 s for its answer
+(`mcp_oauth_validate`'s probe, 30 s). A call that fails gets an `is_error`
+`agent.mcp_tool_result` and no `session.error`, and the server stays usable for
+the turn's next call: `upstream server error (HTTP <code>)` for an error
+status, `upstream server error (HTTP 502)` for a call left unanswered or
+unreached, and `MCP server '<name>' authentication failed: …` when the server
+refuses a `static_bearer` credential. A step's calls run one after another
+under one lease, so about five unanswered calls in one step outlast it and
+another worker sends them again. An
 expired `mcp_oauth` token is refreshed by one worker, claimed on the
 credential's row; a worker that finds the row updated less than 30 s ago runs
 the step again a second later. An allowed call is committed with its step and
