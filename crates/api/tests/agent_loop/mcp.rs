@@ -12,6 +12,8 @@ use axum::routing::post;
 use axum::{Json, Router};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
+use sessions::steps::{Claim, StepCounts, StepEnd, StepWrite, Steps};
+use sessions::store::StoreError;
 use shared::net::Guard;
 
 use super::common::{request, send_to, Auth, Rig, KEY};
@@ -673,4 +675,122 @@ async fn a_list_changed_notification_lists_the_tools_again_and_stores_them() {
     assert_eq!(server.count("tools/list"), 2, "listed again after the notification");
     let asked = model.asked.lock();
     assert!(asked[1].tools.iter().any(|t| t.name == "mcp__docs__extra"), "the stored list is the new one");
+}
+
+#[tokio::test]
+async fn a_step_whose_calls_outlast_its_lease_keeps_it_and_sends_each_call_once() {
+    // S-2: two unanswered calls take longer than the lease; the step renews
+    // it, so no claim runs the step again and repeats its calls.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
+    let timeout = Some(std::time::Duration::from_millis(1500));
+    let lease = std::time::Duration::from_secs(2);
+    let (app, _worker) =
+        worker(&rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("try")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let (calls, results) = (of(&events, "agent.mcp_tool_use"), of(&events, "agent.mcp_tool_result"));
+    let answered: Vec<&Value> = results.iter().map(|r| &r["mcp_tool_use_id"]).collect();
+    assert_eq!(answered, [&calls[0]["id"], &calls[1]["id"]], "one result for each call");
+    assert_eq!(server.count("tools/call"), 2, "no claim sent a call again");
+}
+
+#[tokio::test]
+async fn a_step_whose_claim_is_gone_stops_before_its_next_call() {
+    // S-2: the step's row is taken away during its first call; the next
+    // renewal finds the claim gone and the step sends nothing more.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
+    let timeout = Some(std::time::Duration::from_millis(1500));
+    let lease = std::time::Duration::from_secs(2);
+    let (app, _worker) =
+        worker(&rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("try")).await;
+    let first = async {
+        while server.count("tools/call") == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(10), first).await;
+    assert!(waited.is_ok(), "no tools/call within 10 s; the server got {:?}", server.methods());
+    let pg = db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
+        .bind::<diesel::sql_types::Text, _>(&s);
+    diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert_eq!(server.count("tools/call"), 1, "the step stopped before its second call");
+}
+
+/// The rig's step queue, failing the first renewal (a write with nothing in
+/// it) and counting the renewals that kept the claim after it.
+struct FailOnce(Arc<dyn Steps>, AtomicBool, AtomicUsize);
+
+#[async_trait::async_trait]
+impl Steps for FailOnce {
+    async fn claim(&self, owner: &str, lease: i64, per_workspace: i64) -> Result<Option<Claim>, StoreError> {
+        self.0.claim(owner, lease, per_workspace).await
+    }
+
+    async fn write(&self, claim: &Claim, lease: i64, write: StepWrite<'_>) -> Result<bool, StoreError> {
+        let renewal = write.events.is_empty() && write.read.is_empty();
+        if renewal && !self.1.swap(true, Ordering::SeqCst) {
+            return Err(StoreError::Backend(shared::BackendError::new(std::io::Error::other(
+                "database down",
+            ))));
+        }
+        let landed = self.0.write(claim, lease, write).await;
+        if renewal && matches!(landed, Ok(true)) {
+            self.2.fetch_add(1, Ordering::SeqCst);
+        }
+        landed
+    }
+
+    async fn commit(&self, claim: &Claim, end: StepEnd, write: StepWrite<'_>) -> Result<bool, StoreError> {
+        self.0.commit(claim, end, write).await
+    }
+
+    async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError> {
+        self.0.defer(claim, seconds).await
+    }
+
+    async fn counts(&self) -> Result<StepCounts, StoreError> {
+        self.0.counts().await
+    }
+}
+
+#[tokio::test]
+async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
+    // S-2: the first renewal fails; the next keeps the lease, so each call
+    // is sent once and the step commits.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
+    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
+    let fail = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), AtomicUsize::new(0)));
+    let queue: Arc<dyn Steps> = fail.clone();
+    let tune = Tune {
+        guard,
+        mcp_timeout: Some(std::time::Duration::from_millis(1500)),
+        lease: std::time::Duration::from_secs(3),
+        queue: Some(queue),
+        ..Tune::default()
+    };
+    let (app, _worker) = worker(&rig, model, tune).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("try")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    assert_eq!(of(&events, "agent.mcp_tool_result").len(), 2, "one result for each call");
+    assert_eq!(server.count("tools/call"), 2, "no claim sent a call again");
+    assert!(fail.1.load(Ordering::SeqCst), "the first renewal failed");
+    assert!(fail.2.load(Ordering::SeqCst) > 0, "a later renewal kept the claim");
 }
