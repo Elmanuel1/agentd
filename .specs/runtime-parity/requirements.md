@@ -390,7 +390,7 @@ Every production file over 200 lines that a later PR changes is split here first
 
 #### PR 3. Migrations
 
-Every table and index PRs 4 to 6 use, production-safe; PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`) ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+Every table and index of the plan, production-safe, except PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`) ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
 
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
@@ -764,7 +764,7 @@ Every table and index PRs 4 to 6 use, production-safe; PR 7's own migrations (V1
   now() FROM schedules WHERE next_fire_at <= now() AND NOT paused ORDER BY next_fire_at LIMIT 100 FOR UPDATE SKIP
   LOCKED`; 1 `UPDATE schedules SET next_fire_at = v.next FROM unnest($targets, $nexts) AS v(target, next) WHERE
   schedules.target = v.target`; 1 `DELETE FROM schedules WHERE target = ANY($done)` for a schedule with no next time;
-  then the on-time fires, after the commit (K-2, K-6). The fire inbox, `entities/fire_claims.rs`, per fire: 1 `INSERT
+  then the on-time fires, after the commit (K-2, K-9, K-6). The fire inbox, `entities/fire_claims.rs`, per fire: 1 `INSERT
   INTO fire_claims … ON CONFLICT (workspace_id, target, scheduled_at) DO UPDATE SET claimed_at = now(), attempts =
   attempts + 1 WHERE NOT done AND attempts < 3 AND claimed_at < now() - 15 min`; when it wins no row, 1 SELECT of the
   row on that path; after the run, 1 `UPDATE fire_claims SET done = true` (K-7, K-8). The change feed:
@@ -941,9 +941,10 @@ Each trigger is a signal and a threshold for the deployment's monitoring backend
 
 `docs/operations.md` names a threshold and an action for each signal it lists. Among them: when
 `agentd.retention.last_success` shows no run for 15 minutes while a retention period is set, read retention's `warn`
-lines, and for an outage longer than its 1-hour horizon restart one replica, whose first run walks every archived
-session (E4); when the change feed's slot lag, Debezium's
+lines; when the change feed's slot lag, Debezium's
 health or the feed's backlog passes its threshold, schedules and webhooks wait until the feed moves again (CH-1).
+For a retention outage longer than its 1-hour horizon, restarting one replica makes its first run walk every archived
+session (E4).
 
 ### Accepted risks
 
@@ -1006,7 +1007,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 |---|---|
 | `~/.claude/CLAUDE.md` | PASS: separate spec, migration and code PRs; `gh stack`; no footer; no em dashes; never push `main` or merge. |
 | `rules/planning-phase.md`, `plan-audit` | PASS: inventory, second pass, plan, this audit, questions to the user one at a time. |
-| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves (`mcp_connections` and the checkpoint index follow D32 and D31); access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`; PR 2 splits the vault and deployment files before PRs 4 and 8 change them; new code lands in new files); `mcp_oauth_validate` is live's endpoint, not a derived field. |
+| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves (`mcp_connections` and the checkpoint index follow D32 and D31); access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`; PR 2 splits the vault and deployment files before PRs 4 and 7 change them; new code lands in new files); `mcp_oauth_validate` is live's endpoint, not a derived field. |
 | `rules/diagnose-before-patch.md` | PASS: the engine is restored, not rewritten; container code leaves agentd instead of growing beside it. |
 | `rules/comment-policy.md` | PASS: no comments planned beyond the SQL claim notes. |
 | `rules/auto-rerun-ci.md` | Not applicable: applies during the build. |

@@ -73,7 +73,8 @@ agentd (one stack, each PR on your go-ahead):
 
 1. The spec (this folder).
 2. Make room: three large files are split before later PRs change them, with no behaviour change.
-3. Migrations: the tables and indexes PRs 4 to 6 use, in one production-safe PR; PR 7's own migrations ship in it.
+3. Migrations: every table and index of the plan in one production-safe PR, except PR 7's own (V13 to V15), which
+   ship in PR 7.
 4. The work API for Anthropic's worker: work items in Postgres, live's work secret (with signed placeholders for
    `cloud` environment-variable credentials), environment keys and our runtime key, work tokens that reach only their
    own session, and the session's files for workers.
@@ -142,7 +143,7 @@ agentd (one stack, each PR on your go-ahead):
 - Schedules and webhooks go through outboxes read from Postgres's WAL by Debezium into Kafka, or Valkey Streams
   without Kafka; an action's own effects happen in its request (2026-11-11 to 2026-11-15).
 - agentd's keys come from environment variables, with rotation; Secrets Manager holds only tenant credentials
-  (2026-11-12).
+  (by 2026-11-12).
 - agentd exports metrics only; alarms belong to the infrastructure (2026-11-11). The load test runs by hand
   (2026-11-11).
 - Thinking on; the grader writes what live writes, with no verdict tool; archiving a session terminates it
