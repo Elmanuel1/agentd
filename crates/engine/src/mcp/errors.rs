@@ -11,6 +11,8 @@ use super::client::Failure;
 pub const CONNECTION_FAILED: &str = "mcp_connection_failed_error";
 /// The `session.error` type of a server that refused agentd's credential.
 const AUTHENTICATION_FAILED: &str = "mcp_authentication_failed_error";
+/// Why a server that refused a static bearer token failed.
+const REJECTED: &str = "server rejected the static bearer token \u{2014} verify the credential value";
 
 /// The `session.error` body for `server` failing at `stage`; the next turn
 /// tries the server again, so it is always `retrying` (MC-14).
@@ -22,6 +24,7 @@ pub(super) fn session_error(server: &str, stage: &str, failure: &Failure) -> Val
         }
         Failure::Forbidden => "access forbidden".into(),
         Failure::Unauthorized => "authentication required".into(),
+        Failure::Rejected => REJECTED.into(),
         Failure::Unauthenticated => {
             "no credential is stored for this server URL \u{2014} check that the agent's MCP \
             server URL matches the URL in the vault"
@@ -33,7 +36,9 @@ pub(super) fn session_error(server: &str, stage: &str, failure: &Failure) -> Val
         Failure::Status(code) => format!("unexpected HTTP status {code}"),
     };
     let kind = match failure {
-        Failure::Unauthorized | Failure::Unauthenticated | Failure::Refresh => AUTHENTICATION_FAILED,
+        Failure::Unauthorized | Failure::Rejected | Failure::Unauthenticated | Failure::Refresh => {
+            AUTHENTICATION_FAILED
+        }
         _ => CONNECTION_FAILED,
     };
     json!({
@@ -44,14 +49,18 @@ pub(super) fn session_error(server: &str, stage: &str, failure: &Failure) -> Val
     })
 }
 
-/// The result of a call the server did not answer, in live's words (B27).
-pub(super) fn unanswered(failure: &Failure) -> Vec<ContentBlock> {
+/// The result of a call `server` did not answer, in live's words (B27).
+pub(super) fn unanswered(server: &str, failure: &Failure) -> Vec<ContentBlock> {
     let why = match failure {
+        Failure::Rejected => format!(
+            "MCP server '{server}' authentication failed: {REJECTED}. The tool is unavailable until \
+            the server is re-authorized."
+        ),
         Failure::Status(code) => format!("upstream server error (HTTP {code})"),
         Failure::Unauthorized | Failure::Unauthenticated => "upstream server error (HTTP 401)".into(),
         Failure::Forbidden => "upstream server error (HTTP 403)".into(),
         Failure::Gone => "upstream server error (HTTP 404)".into(),
-        _ => "upstream server error (unreachable)".into(),
+        _ => "upstream server error (HTTP 502)".into(),
     };
     vec![ContentBlock::text(why)]
 }

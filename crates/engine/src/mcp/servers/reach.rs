@@ -11,7 +11,19 @@ use vaults::types::CredentialAuthWire;
 use super::super::client::{Failure, Rpc};
 use super::super::errors::session_error;
 use super::super::server;
-use super::Servers;
+use super::{Server, Servers};
+
+impl Server {
+    /// `f` as live words it: a 401 with no credential stored, or to a static
+    /// bearer token (MC-4).
+    pub(super) fn refused(&self, f: Failure) -> Failure {
+        match (f, self.credential.as_ref().map(|c| &c.auth)) {
+            (Failure::Unauthorized, None) => Failure::Unauthenticated,
+            (Failure::Unauthorized, Some(CredentialAuthWire::StaticBearer { .. })) => Failure::Rejected,
+            (f, _) => f,
+        }
+    }
+}
 
 impl Servers {
     /// Server `i`'s bearer: none with no credential or a secret gone, the
@@ -114,10 +126,7 @@ impl Servers {
                 Ok(Ok(()))
             }
             Err(f) => {
-                let f = match (f, &s.credential) {
-                    (Failure::Unauthorized, None) => Failure::Unauthenticated,
-                    (f, _) => f,
-                };
+                let f = s.refused(f);
                 let error = session_error(&s.name, "initialize", &f);
                 s.failed = Some(f);
                 s.rpc = None;

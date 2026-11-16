@@ -142,7 +142,8 @@ impl Servers {
 
     /// Call `tool` of `server` with `input`. A stored session the server
     /// ended (404) reconnects once and calls again; any other failure is the
-    /// call's, and the server stays usable for the next call (B27).
+    /// call's, records no `session.error`, and the server stays usable for
+    /// the next call (B27, MC-26).
     pub async fn call(
         &mut self,
         server: &str,
@@ -150,11 +151,14 @@ impl Servers {
         input: &Value,
     ) -> Result<CallOutcome, BackendError> {
         let Some(i) = self.list.iter().position(|s| s.name == server) else {
-            return Ok(CallOutcome::Failed { content: unanswered(&Failure::Unreachable), error: None });
+            return Ok(CallOutcome::Failed {
+                content: unanswered(server, &Failure::Unreachable),
+                error: None,
+            });
         };
         for attempt in 0..2 {
             if let Some(f) = self.list.get(i).and_then(|s| s.failed.clone()) {
-                return Ok(CallOutcome::Failed { content: unanswered(&f), error: None });
+                return Ok(CallOutcome::Failed { content: unanswered(server, &f), error: None });
             }
             if let Some(outcome) = self.open(i, server).await? {
                 return Ok(outcome);
@@ -171,11 +175,14 @@ impl Servers {
                 Err(Failure::Gone) if attempt == 0 => (s.rpc, s.stored) = (None, None),
                 Err(f) => {
                     s.rpc = None;
-                    return Ok(CallOutcome::Failed { content: unanswered(&f), error: None });
+                    return Ok(CallOutcome::Failed {
+                        content: unanswered(server, &s.refused(f)),
+                        error: None,
+                    });
                 }
             }
         }
-        Ok(CallOutcome::Failed { content: unanswered(&Failure::Gone), error: None })
+        Ok(CallOutcome::Failed { content: unanswered(server, &Failure::Gone), error: None })
     }
 
     /// Have server `i` open for a call: the stored session resumed, or a new
@@ -195,6 +202,6 @@ impl Servers {
         let failure = self.list.get(i).and_then(|s| s.failed.clone()).unwrap_or(Failure::Unreachable);
         Ok(reached
             .err()
-            .map(|error| CallOutcome::Failed { content: unanswered(&failure), error: Some(error) }))
+            .map(|error| CallOutcome::Failed { content: unanswered(server, &failure), error: Some(error) }))
     }
 }

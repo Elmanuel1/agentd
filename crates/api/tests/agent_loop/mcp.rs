@@ -29,7 +29,8 @@ struct Got {
 }
 
 /// A scripted MCP server: `lookup` answers, `flaky` fails with a 502,
-/// `forget` makes it end every session it gave, and `refuse` answers 401.
+/// `locked` answers 401, `hang` never answers, `forget` makes it end every
+/// session it gave, and `refuse` answers 401 to everything.
 #[derive(Default)]
 struct Server {
     got: Mutex<Vec<Got>>,
@@ -89,8 +90,17 @@ async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<
         "tools/list" => json!({"tools": [
             {"name": "lookup", "description": "Look a word up.", "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}}},
             {"name": "flaky", "description": "Fails.", "inputSchema": {"type": "object"}},
-            {"name": "grow", "description": "Adds a tool.", "inputSchema": {"type": "object"}}]}),
+            {"name": "grow", "description": "Adds a tool.", "inputSchema": {"type": "object"}},
+            {"name": "locked", "description": "Refuses.", "inputSchema": {"type": "object"}},
+            {"name": "hang", "description": "Never answers.", "inputSchema": {"type": "object"}}]}),
         "tools/call" if body["params"]["name"] == "flaky" => return StatusCode::BAD_GATEWAY.into_response(),
+        "tools/call" if body["params"]["name"] == "locked" => {
+            return StatusCode::UNAUTHORIZED.into_response()
+        }
+        "tools/call" if body["params"]["name"] == "hang" => {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            return StatusCode::OK.into_response();
+        }
         "tools/call" => {
             json!({"content": [{"type": "text", "text": format!("found {}", body["params"]["arguments"]["q"])}]})
         }
@@ -316,23 +326,24 @@ async fn a_server_agentd_may_not_reach_records_a_connection_error_and_the_turn_g
 
 #[tokio::test]
 async fn a_server_that_refuses_authentication_records_an_authentication_error() {
-    // MC-4: live's words with no vault credential for the URL (B27); with one,
-    // the server refused it.
+    // MC-4: live's words with no vault credential for the URL (B27) and for a
+    // static bearer the server refused (MC-4 capture); an `mcp_oauth` refusal
+    // is uncaptured and keeps agentd's words. A refused bearer is sent once
+    // more with no Authorization header, as live does.
     let Some(rig) = Rig::new().await else { return };
     let (server, url, guard) = serve().await;
     server.refuse.store(true, Ordering::SeqCst);
-    let model = Scripted::new(vec![Say::Text("without"), Say::Text("with")]);
+    let model = Scripted::new(vec![Say::Text("none"), Say::Text("bearer"), Say::Text("oauth")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
-    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
-    let cred = json!({"display_name": "docs", "auth": {"type": "static_bearer", "mcp_server_url": url, "token": "tok-refused"}});
-    let path = format!("/v1/vaults/{}/credentials", vault["id"].as_str().unwrap());
-    let (st, _) = rig.call("POST", &path, Auth::Key(KEY), Some(cred)).await;
-    assert_eq!(st, StatusCode::OK);
+    let (bearer, oauth) = (bearer_vault(&rig, &url, "tok-refused").await, oauth_vault(&rig, &url).await);
     let unstored =
         "no credential is stored for this server URL \u{2014} check that the agent's MCP server URL \
         matches the URL in the vault";
-    for (vaults, why) in [(json!([]), unstored), (json!([vault["id"]]), "authentication required")] {
+    let rejected = "server rejected the static bearer token \u{2014} verify the credential value";
+    let cases =
+        [(json!([]), unstored), (json!([bearer]), rejected), (json!([oauth]), "authentication required")];
+    for (vaults, why) in cases {
         let s = mcp_session(&app, &env, &url, Some("always_allow"), vaults).await;
         send(&app, &s, message("go")).await;
         let events = events_until(&app, &s, "session.status_idle", 1).await;
@@ -342,7 +353,95 @@ async fn a_server_that_refuses_authentication_records_an_authentication_error() 
         assert_eq!(errors, [&refused], "{why}");
         assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
     }
-    assert_eq!(server.methods(), ["initialize", "initialize"], "nothing after a refused initialize");
+    assert_eq!(server.methods(), ["initialize"; 5], "nothing after a refused initialize");
+    let bearers: Vec<Option<String>> = server.got.lock().iter().map(|g| g.bearer.clone()).collect();
+    let (refused, oauth) = (Some("Bearer tok-refused".into()), Some("Bearer tok-oauth".into()));
+    assert_eq!(bearers, [None, refused, None, oauth, None], "one retry, only after a bearer");
+}
+
+/// A vault holding a credential with `auth`; its id.
+async fn vault_with(rig: &Rig, auth: Value) -> String {
+    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
+    let vault = vault["id"].as_str().unwrap().to_owned();
+    let path = format!("/v1/vaults/{vault}/credentials");
+    let (st, cred) =
+        rig.call("POST", &path, Auth::Key(KEY), Some(json!({"display_name": "docs", "auth": auth}))).await;
+    assert_eq!(st, StatusCode::OK, "{cred}");
+    vault
+}
+
+/// A vault holding a static bearer `token` for `url`.
+async fn bearer_vault(rig: &Rig, url: &str, token: &str) -> String {
+    vault_with(rig, json!({"type": "static_bearer", "mcp_server_url": url, "token": token})).await
+}
+
+/// A vault holding an unexpired `mcp_oauth` token `tok-oauth` for `url`.
+async fn oauth_vault(rig: &Rig, url: &str) -> String {
+    let auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "tok-oauth",
+        "expires_at": "2099-01-01T00:00:00Z"});
+    vault_with(rig, auth).await
+}
+
+#[tokio::test]
+async fn a_call_whose_bearer_is_refused_gets_an_authentication_result_and_no_session_error() {
+    // MC-26: live's words for a 401 to a call after a static bearer connected
+    // (MC-26 capture); an `mcp_oauth` one is uncaptured and keeps agentd's
+    // words. Either is sent once more with no Authorization header.
+    let Some(rig) = Rig::new().await else { return };
+    let (server, url, guard) = serve().await;
+    let locked = || Say::Calls(vec![("mcp__docs__locked", json!({}))]);
+    let model = Scripted::new(vec![locked(), Say::Text("sorry"), locked(), Say::Text("sorry")]);
+    let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let rejected =
+        "MCP server 'docs' authentication failed: server rejected the static bearer token \u{2014} \
+        verify the credential value. The tool is unavailable until the server is re-authorized.";
+    let cases = [
+        (bearer_vault(&rig, &url, "tok-late").await, rejected, "Bearer tok-late"),
+        (oauth_vault(&rig, &url).await, "upstream server error (HTTP 401)", "Bearer tok-oauth"),
+    ];
+    for (vault, text, sent) in cases {
+        server.got.lock().clear();
+        let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
+        send(&app, &s, message("try")).await;
+        let events = events_until(&app, &s, "session.status_idle", 1).await;
+        let (call, result) = (of(&events, "agent.mcp_tool_use")[0], of(&events, "agent.mcp_tool_result")[0]);
+        let mut want = json!({"type": "agent.mcp_tool_result", "mcp_tool_use_id": call["id"],
+            "content": [{"type": "text", "text": text}], "is_error": true});
+        want["id"] = result["id"].clone();
+        want["processed_at"] = result["processed_at"].clone();
+        assert_eq!(result, &want, "{sent}");
+        assert!(of(&events, "session.error").is_empty(), "a refused call records no session.error");
+        let calls: Vec<Option<String>> =
+            server.got.lock().iter().filter(|g| g.method == "tools/call").map(|g| g.bearer.clone()).collect();
+        assert_eq!(calls, [Some(sent.to_owned()), None], "sent again with no Authorization header");
+        assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
+    }
+}
+
+#[tokio::test]
+async fn a_call_the_server_never_answers_gets_live_s_502_result_and_no_session_error() {
+    // MC-26: live gives up on an unanswered call after about 125 s; the test
+    // waits 1 s.
+    let Some(rig) = Rig::new().await else { return };
+    let built = api::agent_loop::mcp(&rig.stores, Guard::default(), &Arc::default());
+    assert_eq!(built.timeout, std::time::Duration::from_secs(125), "live's wait (MC-26 capture)");
+    let (_server, url, guard) = serve().await;
+    let model = Scripted::new(vec![Say::Calls(vec![("mcp__docs__hang", json!({}))]), Say::Text("sorry")]);
+    let tune = Tune { guard, mcp_timeout: Some(std::time::Duration::from_secs(1)), ..Tune::default() };
+    let (app, _worker) = worker(&rig, model, tune).await;
+    let env = rig.environment("cloud").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
+    send(&app, &s, message("try")).await;
+    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let (call, result) = (of(&events, "agent.mcp_tool_use")[0], of(&events, "agent.mcp_tool_result")[0]);
+    let mut want = json!({"type": "agent.mcp_tool_result", "mcp_tool_use_id": call["id"],
+        "content": [{"type": "text", "text": "upstream server error (HTTP 502)"}], "is_error": true});
+    want["id"] = result["id"].clone();
+    want["processed_at"] = result["processed_at"].clone();
+    assert_eq!(result, &want, "live's result (MC-26 capture)");
+    assert!(of(&events, "session.error").is_empty(), "an unanswered call records no session.error");
+    assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
 }
 
 #[tokio::test]
@@ -377,12 +476,8 @@ async fn a_vault_credential_authenticates_and_never_reaches_the_log() {
         Scripted::new(vec![Say::Calls(vec![("mcp__docs__lookup", json!({"q": "k"}))]), Say::Text("done")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
-    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
-    let cred = json!({"display_name": "docs", "auth": {"type": "static_bearer", "mcp_server_url": url, "token": "tok-secret-9"}});
-    let path = format!("/v1/vaults/{}/credentials", vault["id"].as_str().unwrap());
-    let (st, _) = rig.call("POST", &path, Auth::Key(KEY), Some(cred)).await;
-    assert_eq!(st, StatusCode::OK);
-    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault["id"]])).await;
+    let vault = bearer_vault(&rig, &url, "tok-secret-9").await;
+    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
     send(&app, &s, message("go")).await;
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     assert!(server.got.lock().iter().all(|g| g.bearer.as_deref() == Some("Bearer tok-secret-9")));
