@@ -177,6 +177,7 @@ async fn a_pending_delivery_is_sent_by_a_sender_started_after_it_was_written() {
     let change = Change {
         table: "webhook_deliveries".into(),
         op: ChangeOp::Insert,
+        position: None,
         before: None,
         after: Some(rows[0].row.clone()),
     };

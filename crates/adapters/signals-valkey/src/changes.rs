@@ -1,12 +1,10 @@
-//! The change feed over Valkey Streams: Debezium Server writes each table's
-//! committed changes to the stream `<prefix>.public.<table>` (its Redis
-//! sink, `extended` format), an external scheduler writes its fires to
-//! `<prefix>.fires`, and the replicas read them in the consumer group
-//! `agentd`. An entry is acknowledged once its handler succeeds; an
-//! entry left pending by a replica that stopped is claimed by another after
-//! [`RECLAIM_MS`], and each stream is trimmed of what every group has
-//! acknowledged ([`crate::trim`]). An ordered handler's stream is read by one replica at a
-//! time, which holds a lease in Valkey, in entry order, stopping at a failure.
+//! The change feed over Valkey Streams: Debezium Server writes each table's committed changes to the
+//! stream `<prefix>.public.<table>` and the logical messages to `<prefix>.message` (its Redis sink,
+//! `extended` format), an external scheduler writes its fires to `<prefix>.fires`, and the replicas read
+//! them in the consumer group `agentd`. An entry is acknowledged once its handler succeeds; an entry left
+//! pending by a replica that stopped is claimed by another after [`RECLAIM_MS`], and each stream is
+//! trimmed of what every group has acknowledged ([`crate::trim`]). An ordered handler's stream is read
+//! by one replica at a time, which holds a lease in Valkey, in entry order, stopping at a failure.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,7 +72,7 @@ impl ValkeyChanges {
         handlers
             .into_iter()
             .map(|h| {
-                let stream = format!("{}.public.{}", self.prefix, h.table());
+                let stream = h.source().topic(&self.prefix);
                 tokio::spawn(self.clone().run(stream, Arc::new(Changes(h))))
             })
             .collect()

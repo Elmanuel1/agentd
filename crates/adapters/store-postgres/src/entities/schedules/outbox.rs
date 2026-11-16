@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel::QueryableByName;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use shared::ports::changes::{Change, ChangeHandler, ChangeOp};
+use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
 use shared::ports::{ScheduleChange, SchedulerPort};
 use shared::BackendError;
 
@@ -61,8 +61,8 @@ impl ScheduleOutbox {
 
 #[async_trait]
 impl ChangeHandler for ScheduleOutbox {
-    fn table(&self) -> &'static str {
-        "schedule_outbox"
+    fn source(&self) -> Source {
+        Source::Table("schedule_outbox".into())
     }
 
     fn ordered(&self) -> bool {

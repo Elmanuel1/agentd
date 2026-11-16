@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use changes_kafka::KafkaChanges;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use shared::ports::changes::{Change, ChangeHandler};
+use shared::ports::changes::{Change, ChangeHandler, Source};
 use shared::BackendError;
 
 fn brokers() -> Option<String> {
@@ -26,8 +26,8 @@ struct Seen {
 
 #[async_trait]
 impl ChangeHandler for Seen {
-    fn table(&self) -> &'static str {
-        self.table
+    fn source(&self) -> Source {
+        Source::Table(self.table.into())
     }
 
     fn ordered(&self) -> bool {
@@ -68,5 +68,48 @@ async fn a_failed_record_is_retried_before_the_ones_behind_it() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(*seen.seen.lock().unwrap(), vec![1, 2, 2, 3]);
+    tasks.iter().for_each(tokio::task::JoinHandle::abort);
+}
+
+/// Records the content of each message it is handed.
+struct Messages(Mutex<Vec<serde_json::Value>>);
+
+#[async_trait]
+impl ChangeHandler for Messages {
+    fn source(&self) -> Source {
+        Source::Messages
+    }
+
+    async fn handle(&self, change: &Change) -> Result<(), BackendError> {
+        self.0.lock().unwrap().push(change.after.clone().unwrap());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_message_handler_reads_the_message_topic() {
+    let Some(brokers) = brokers() else { return };
+    let prefix = format!("agentdtest{}", uuid::Uuid::new_v4().simple());
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
+    // `{"table":"vaults"}`, base64 as Debezium sends a message's bytes.
+    let content = "eyJ0YWJsZSI6InZhdWx0cyJ9";
+    let value = serde_json::json!({
+        "op": "m",
+        "source": {"lsn": 7, "txId": 9, "ts_ms": 1},
+        "message": {"prefix": "agentd-history", "content": content},
+    })
+    .to_string();
+    let topic = Source::Messages.topic(&prefix);
+    let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
+    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    let seen = Arc::new(Messages(Mutex::new(vec![])));
+    let tasks = KafkaChanges::new(&brokers, &prefix).spawn(vec![seen.clone()]);
+    for _ in 0..120 {
+        if !seen.0.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(*seen.0.lock().unwrap(), vec![serde_json::json!({"table": "vaults"})]);
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
 }

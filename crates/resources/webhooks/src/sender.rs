@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use shared::ports::changes::{Change, ChangeHandler, ChangeOp};
+use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
 use shared::{BackendError, Timestamp};
 
 use super::endpoints::Webhooks;
@@ -85,8 +85,8 @@ impl WebhookSender {
 
 #[async_trait]
 impl ChangeHandler for WebhookSender {
-    fn table(&self) -> &'static str {
-        "webhook_deliveries"
+    fn source(&self) -> Source {
+        Source::Table("webhook_deliveries".into())
     }
 
     /// A new row is sent; its own marks (updates) are not changes to send.
