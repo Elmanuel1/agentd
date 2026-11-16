@@ -12,7 +12,8 @@
 | Optional feature | Where `<feature>`, the `<system>` shall `<response>`. |
 
 **Systems:** *agentd* (the one binary, in either role), *the API* (agentd in its `api` role: requests, streams,
-the work queue), *the loop* (agentd in its `loop` role: steps), *the scheduler* (agentd's schedule claims). Section
+the work queue), *the loop* (agentd in its `loop` role: steps), *the scheduler* (agentd's built-in schedule sink and
+its fire inbox), *the change feed* (Debezium Server reading Postgres's WAL, and agentd's consumers of it). Section
 11 records `agentd-worker`'s side of the contract, built in its own repository: *the launcher* (starts a sandbox per
 work item), *the swap* (attaches `environment_variable` credentials at egress: the Cloudflare launcher's Durable
 Object, or the optional AWS egress proxy) and *the fleet* (the Fargate launcher's tasks). Workers are not agentd: they
@@ -31,19 +32,17 @@ run in the container project (see Out of scope).
   (`ant beta:worker poll --on-work`).
 - **Runtime queue:** the work queue of `cloud` sessions, polled with our runtime environment key; its id in URLs is
   `runtime`.
-- **Hosted queue:** the queue `hosted`, where a harness-path session's item sits for the harness in its own
-  sandbox; no poll hands one out.
 - **Step:** one pass of a session's loop: read the session's event log, build the prompt, call the model, append the
   resulting events. A tool call ends a step.
 - **Step queue:** the Postgres table of sessions with a step to run; a **loop worker** is an agentd replica in the
   `loop` role, which claims and runs steps.
-- **Window:** a model's `max_input_tokens` (C4). **Checkpoint:** the `agent.thread_context_compacted` event that
+- **Window:** a model's context window as its provider's model list gives it (CP-13). **Checkpoint:** the `agent.thread_context_compacted` event that
   holds a thread's summary and the last event it covers.
 - **Placeholder:** the signed stand-in for an `environment_variable` credential that a `cloud` sandbox sees in place
   of the value (D28).
 
 **Build order:** work API (W, EV) → event log (F, E) → steps and the loop (S, L, M) → compaction (CP) → files for
-workers (FO) → MCP (MC) → vaults (VA) → scheduler (K) → webhooks (H) → conformance (J) → removals (RM) → docs (DOC).
+workers (FO) → MCP (MC) → vaults (VA) → scheduler (K) → change feed (CH) → webhooks (H) → conformance (J) → removals (RM) → docs (DOC).
 
 Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
 [ADR 0001](adr/0001-agent-loop-in-agentd.md).
@@ -52,8 +51,8 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 | ID | Requirement |
 |---|---|
-| W-1 | The API shall sign work tokens with one key held in Secrets Manager (`<prefix>/system/work_token_key`), created on first boot. |
-| W-20 | Where `AGENTD_WORK_TOKEN_KEY` is set, the API shall sign work tokens with it instead. |
+| W-1 | The API shall sign work tokens with the first key of the `AGENTD_WORK_TOKEN_KEYS` key ring and verify them with any key in it (D59). |
+| W-20 | The API shall put the signing key's id in each work token, so that a token verifies while its key id is in the ring. |
 | W-2 | The API shall keep work items, leases and hand-outs in Postgres. |
 | W-3 | When a session's work is queued, the API shall use the session id as the work item id, one item per session, reused for every run. |
 | W-4 | The API shall serve the work object with `actor: null` and set `started_at` when the item is queued. |
@@ -67,7 +66,10 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | W-11 | When a session is archived, deleted or terminated, the API shall move its item to `stopping`, or `stopped` when no worker holds it, and keep the item. |
 | W-12 | The API shall issue the work secret with live's nine keys in live's order and types (`version`, `session_ingress_token`, `api_base_url`, `sources`, `auth`, `sessions_token`, `claude_code_args`, `environment_variables`, `use_code_sessions`), with `session_ingress_token` `""` and `claude_code_args` `{}`, the two values only live's Claude Code reads. |
 | W-13 | When `agentd environment-keys create` runs, the API shall store only the key's peppered digest in `environment_keys`, bound to one organization, workspace and environment, and print the `sk-ant-oat01-` key once. |
-| W-14 | When the API boots with no runtime key in Secrets Manager, the API shall mint one, bound to the runtime queue. |
+| W-14 | The API shall accept each key in `AGENTD_RUNTIME_KEYS` as agentd's runtime key, bound to the runtime queue, holding only the keys' digests, in memory (D59). |
+| W-24 | When an API key arrives, the API shall look its digest up under every pepper of `AGENTD_API_KEY_PEPPERS` in one query. |
+| W-25 | When a key is found under a pepper other than the first, the API shall store its digest under the first. |
+| W-26 | When `agentd admin-keys create` runs, the API shall store only the key's peppered digest in `admin_keys`, bound to one organization, and print the key once. |
 | W-15 | If an environment key arrives as `x-api-key`, then the API shall answer 401 `authentication_error` "invalid x-api-key". |
 | W-16 | If an environment key calls a route other than W-22's (runtime key only), its queue's `work` list, `poll`, `stats`, `ack`, `heartbeat`, `stop`, or the `GET`, events, stream and `POST …/events` of a session it reaches (a self-hosted key's environment's sessions; the runtime key's sessions on the runtime queue), then the API shall answer 403 `permission_error` with live's scope message. |
 | W-17 | If an environment key reads a session it does not reach (W-16), then the API shall answer 404. |
@@ -83,6 +85,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | F-1 | When an event is appended or stamped processed on any replica, the API shall send it to every open stream of its session on every replica, in log order. |
 | F-2 | When a session is deleted, the API shall end its streams on every replica with `session.deleted`. |
 | F-3 | When a session is archived, the API shall end its streams on every replica. |
+| F-6 | When a session is archived, the API shall terminate it in the archive's commit: status `terminated`, `session.status_terminated` appended, and its webhook deliveries written (D61). |
 | F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s. |
 | F-5 | While Postgres is overloaded (a connection waits more than 1 s for the pool, or the database's connections pass 90% of `max_connections`), the API shall refuse a new event stream with 529 `overloaded_error` "Overloaded" and keep the streams already open. |
 | E-2 | Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
@@ -102,24 +105,26 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | S-7 | The loop shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
 | S-8 | A loop worker shall run at most `AGENTD_STEPS_PER_WORKER` steps at once (default 256), from one database pool of `AGENTD_PG_POOL_SIZE` connections (default 16), holding a connection only while it claims, reads or commits. |
 | R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api`, `loop`, or `all`. |
-| R-2 | agentd shall export the number of due, unclaimed steps (`agentd_loop_steps_due`) and of leased steps (`agentd_loop_steps_leased`) as metrics, which the loop workers' autoscaler follows. |
+| R-2 | agentd shall export the number of due, unclaimed steps (`agentd.loop.steps_due`) and of leased steps (`agentd.loop.steps_leased`) as metrics, which the loop workers' autoscaler follows. |
 | M-1 | The loop shall run at most `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` model calls at once per workspace. |
 | M-2 | When the model provider answers 408, 409, 429 or 5xx, the loop's model client shall retry with backoff and jitter, waiting at least the `retry-after` header when present, up to `AGENTD_MODEL_ATTEMPTS` inside the step's deadline. |
 | M-3 | Where the provider supports prompt caching, the loop shall mark the system prompt and the tool list cacheable. |
 | M-4 | The loop shall hold an account-wide budget per model provider of requests and input tokens per minute (`AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM`) in Valkey; when a step would pass it, the loop shall defer the step to the next minute without calling the model. |
+| M-5 | The loop shall take its model providers' keys from `AGENTD_ANTHROPIC_API_KEY` and `AGENTD_OPENROUTER_API_KEY` (D59). |
 | L-1 | The loop shall build each model call's prompt from the session's event log. |
 | L-13 | The loop shall apply each tool's permission policy, writing `agent.tool_use` with its evaluation. |
 | L-14 | When the model calls a custom tool, the loop shall write `agent.custom_tool_use` and wait for the caller's `user.custom_tool_result`. |
 | L-15 | When the agent delegates, the loop shall run the delegate on a thread of its own and record its thread events. |
 | L-16 | The loop shall add each model call's usage to the session and record `session.usage`. |
 | L-18 | If the session's budget is spent, then the loop shall stop the turn with `budget_reached`. |
-| L-19 | When the next turn of an idle session created on the harness path starts in a workspace listed for L7, the API shall stop the session's sandbox, before the commit that appends the turn's event, and then queue the step, so that the loop serves the turn from the event log and no session depends on the harness. |
-| L-20 | If L-19's sandbox stop fails with anything but `RuntimeError::Unknown`, then the API shall append no event, queue no step, and answer 529 `overloaded_error` for `RuntimeError::Unavailable` and 500 `api_error` otherwise. |
 | L-17 | The loop shall record `agent.thinking`, `span.model_request_start` and `span.model_request_end` for each model call. |
+| L-21 | Where the model is an Anthropic model, the loop shall ask for thinking, adaptive or with a budget on the models that take one, and send each signed thinking block back unmodified in the thread's later calls (D47). |
 | L-2 | When the model asks for a built-in tool on a `self_hosted` session, the loop shall write `agent.tool_use` and idle the thread and the session `requires_action` (`event_ids`), in the order `session.thread_status_idle`, `session.usage`, `session.status_idle`. |
 | L-3 | When a `self_hosted` session's `user.tool_result` arrives, the loop shall write `session.status_running` and `session.thread_status_running` and continue. |
 | L-4 | While a `cloud` session waits on built-in calls, the loop shall keep it `running` and record each `user.tool_result` as `agent.tool_result`. |
 | L-5 | The loop shall run the outcome grader on a thread of its own between `span.outcome_evaluation_start` and `_end`, its built-in calls answered by a worker without idling the session, and take one more primary turn after the evaluation. |
+| L-22 | The loop shall take the grader's grade from its reply's text, with no tool of agentd's own and no event live does not write (D62, B33). |
+| L-23 | The loop shall compact a grader's thread as it compacts any thread (CP-1 to CP-12), with the grader's task right after the compaction block (D60). |
 | L-6 | When the first `user.interrupt` arrives with an unanswered built-in call, the loop shall post `agent.tool_result` `is_error: true` "Tool execution was interrupted before completion. Please retry." and idle `end_turn`. |
 | L-7 | When a second `user.interrupt` arrives, the loop shall force-stop the session's work. |
 | L-8 | When a step needs a worker, the loop shall queue the session's work only when its item is `stopped` or not yet queued: `self_hosted` work on its environment's queue, `cloud` work on the runtime queue. |
@@ -139,14 +144,14 @@ Decision D31; evidence C1 to C5.
 | CP-3 | The loop shall cap each tool result at `tool_output_token_limit` (`AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`, default 16,000 tokens) when it appends the result to the prompt, marking the cut; the stored event stays whole. |
 | CP-4 | When a thread's estimated prompt passes 80% of the model's window, the loop shall run a compaction step for that thread before its next turn. |
 | CP-5 | The loop shall run a compaction step only between turns, while the thread has no tool call waiting for its result, as the session's one running step (S-2), so that a thread has at most one compaction running. |
-| CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated) and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
+| CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated), and for an Anthropic model only as many as fit the Messages API's 16,384-character `instructions` limit (C1), and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
 | CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and every later call of the thread shall send the returned `compaction` block back unmodified, first in `messages`, with the `compact-2026-09-04` beta header (C1). |
 | CP-8 | Where the thread's model is not an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools and a handoff prompt carrying CP-6's instructions, and put the summary first in the thread's later prompts. |
 | CP-9 | When a compaction step finishes, the loop shall append `agent.thread_context_compacted` as the thread's checkpoint, holding the summary, the last event it covers and the model that wrote it, unique per thread and covered event; the API shall serve the event with live's fields only, and no event is deleted. |
-| CP-10 | If a compaction call returns no summary, then the loop shall continue with CP-2's prompt and run the compaction step again at the thread's next step. |
-| CP-11 | If a compaction request is itself larger than the window, then the loop shall drop the oldest events after the checkpoint from that request until it fits, and retry. |
-| CP-12 | When a thread's model changes to one with a smaller window, or the thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
-| CP-13 | The loop shall take each model's window from the provider's `GET /v1/models/{id}` `max_input_tokens` (C4), read once per process, or from `AGENTD_MODEL_WINDOWS` for a provider that has no such field. |
+| CP-10 | If a compaction call fails or returns no summary, then the loop shall make the thread's next model call with CP-2's prompt, and run the compaction step again before the model call after it while CP-4's threshold is still passed. |
+| CP-11 | If a compaction request would be larger than the window, then the loop shall leave the oldest model calls after the checkpoint out of that request, before the call and with no retry, until it fits or only its latest model call is left. |
+| CP-12 | When a thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
+| CP-13 | The loop shall take each model's window from its provider's model list, read once per process: Anthropic's `GET /v1/models/{id}` `max_input_tokens` (C4) and OpenRouter's `GET /api/v1/models` `context_length` (D42), with no setting that overrides it. |
 
 ## 5. Files for workers
 
@@ -156,12 +161,26 @@ Decision D31; evidence C1 to C5.
 | FO-2 | When a session's work token uploads a file with `scope_id` set to its session, the API shall keep it as that session's downloadable output, listed by `files.list(scope_id=...)`. |
 | FO-3 | If a session's work token deletes a file other than its session's outputs, then the API shall answer 404. |
 
-## 6. Scheduled work
+## 6. Scheduled work and the change feed
+
+Decisions D12 and D50 to D53.
 
 | ID | Requirement |
 |---|---|
-| K-1 | The scheduler shall keep deployment schedules in Postgres, so that a schedule registered on one replica fires on any. |
-| K-2 | When a schedule is due, the scheduler shall claim it and set its next fire in one transaction, keeping the fire contract: one attempt, no backfill, exactly once per target and time. |
+| K-1 | When a deployment write changes its schedule (a create, pause, unpause or archive, or a fire's run error that pauses or archives the deployment, MC-19 among them), the API shall write the change to `schedule_outbox` in that write's transaction, removing the row again in the same transaction, so that the change lives on in the WAL only. |
+| K-3 | The change feed shall hand each schedule change to the scheduler sink in commit order, one replica at a time. |
+| K-4 | If the scheduler sink refuses a schedule change, then the change feed shall hold that stream until the change applies. |
+| K-5 | If a schedule change does not decode, then the change feed shall log it at `ERROR` and pass over it. |
+| K-2 | The scheduler shall keep one `schedules` row per target in Postgres as its built-in sink. |
+| K-9 | The scheduler shall claim the due `schedules` rows every 10 s on each replica with `FOR UPDATE SKIP LOCKED`, moving each to its next time in that transaction and firing it after the commit. |
+| K-6 | If a fire is more than a minute late, then the scheduler shall skip it and move the schedule to its next time, with no backfill. |
+| K-7 | When a fire arrives, from the built-in scheduler or from the feed's `agentd.fires`, the scheduler shall claim it in `fire_claims` by its target and time before its handler runs, so that a repeated delivery runs no second time. |
+| K-8 | If a claimed fire is not done within 15 minutes, then the scheduler shall let the next delivery of it take it over, up to 3 runs, and then drop it with an `ERROR` log line. |
+| CH-1 | The change feed shall read the committed inserts of `schedule_outbox` and `webhook_deliveries` from Postgres's WAL with one Debezium Server instance, its offsets in Postgres. |
+| CH-2 | Where `AGENTD_KAFKA_BROKERS` is set, agentd shall read each topic of the feed in the consumer group `agentd.<topic>` and commit a record's offset once its handler succeeds, retrying a failed record in place. |
+| CH-3 | Where `AGENTD_KAFKA_BROKERS` is unset, agentd shall read the feed from Valkey Streams in the consumer group `agentd`, and trim each stream once a minute below the oldest entry a group still needs. |
+| CH-4 | agentd shall handle each change of the feed idempotently, since the feed delivers at least once. |
+| CH-5 | agentd shall do an action's own effects in its request, and take only after-effects (schedule changes, webhook deliveries) from the change feed (D53). |
 
 ## 7. MCP servers
 
@@ -172,7 +191,8 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-1 | When a session's agent lists an MCP server (`mcp_servers`, `type: "url"`), the loop shall connect to its `url` from agentd, never from a worker. |
 | MC-2 | The loop shall authenticate to an MCP server with the `mcp_oauth` or `static_bearer` credential whose `mcp_server_url` equals the server's `url`, taken from the first vault in the session's `vault_ids` that holds one. |
 | MC-3 | If no credential in the session's vaults matches a server, then the loop shall connect unauthenticated. |
-| MC-4 | If an MCP server refuses the loop's authentication, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue. |
+| MC-28 | If an MCP server answers 401 to an `initialize` or a `tools/call` that carried a credential, then the loop shall send that request once more with no `Authorization` header, as live does (B31). |
+| MC-4 | If an MCP server refuses the loop's authentication at `initialize`, after MC-28's resend where it applies, then the loop shall record `session.error` with `mcp_authentication_failed_error` (`mcp_server_name`, `message`, `retry_status`) and let the session continue, with live's message: `MCP server '<name>' initialize failed: no credential is stored for this server URL \u2014 check that the agent's MCP server URL matches the URL in the vault` when no vault credential matches the server's URL (B27), and `MCP server '<name>' initialize failed: server rejected the static bearer token \u2014 verify the credential value` when the server refuses a `static_bearer` credential (B31; a refused `mcp_oauth` credential is open, B32). |
 | MC-5 | If the loop cannot connect to an MCP server, then the loop shall record `session.error` with `mcp_connection_failed_error` and let the session continue. |
 | MC-14 | When an MCP connection has failed, the loop shall not retry it in the same turn, and shall retry it on the session's next `session.status_idle` to `session.status_running` transition (B18). |
 | MC-6 | The loop shall read a credential's secret from Secrets Manager through agentd's `SecretStore` once in each step that connects to its server or calls one of its tools, with no cache across steps, so that a rotated, archived or deleted credential applies from the next step (D27, D32). |
@@ -182,7 +202,7 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-24 | When the model calls an MCP tool whose evaluation is `allow`, the loop shall commit `agent.mcp_tool_use` with that step and keep the session on the step queue, so that the next step calls the tool. |
 | MC-25 | When a step starts with an unanswered `agent.mcp_tool_use` that is allowed, by its evaluation or by a `user.tool_confirmation`, the loop shall call that tool and commit its `agent.mcp_tool_result` in that step with no model call, keeping the session due for the next step, unless MC-26 applies. |
 | MC-27 | If an `mcp_oauth` refresh's `token_endpoint`, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not call it and shall treat the refresh as failed (MC-21, H-5). |
-| MC-26 | If the loop cannot call an allowed MCP tool, because its server's connection failed in this turn or fails now, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's `content` for that call, and, for each later call to that server in the same turn other than the one whose connection attempt MC-5 records, the `mcp_connection_failed_error` `session.error` live records for it (B27), so that no allowed call stays unanswered. |
+| MC-26 | If an allowed MCP tool call fails, then the loop shall record `agent.mcp_tool_result` with `is_error` true and live's content, record no `session.error` for the call, and keep the server usable for later calls in the turn, so that no allowed call stays unanswered: `upstream server error (HTTP <code>)` for a server that answers with an error status other than 401 (B27); `upstream server error (HTTP 502)` for a call its server does not answer within 125 s (B31); and `MCP server '<name>' authentication failed: server rejected the static bearer token \u2014 verify the credential value. The tool is unavailable until the server is re-authorized.` for a `static_bearer` credential the server refuses with 401 after it connected, again after MC-28's resend (B31; a call that cannot reach its server, or whose `mcp_oauth` token cannot be refreshed, is open, B32). |
 | MC-21 | If a refresh fails, then the loop shall record `session.error` with `mcp_authentication_failed_error` and let the session continue (B17). |
 | MC-8 | When the model calls an MCP tool, the loop shall record `agent.mcp_tool_use` (`name`, `input`, `mcp_server_name`, the permission evaluation from the agent's `mcp_toolset` configuration) and `agent.mcp_tool_result` (`mcp_tool_use_id`, `content`, `is_error`). |
 | MC-9 | The loop shall never write a credential's secret into an event, a log line, an output or a work item. |
@@ -190,14 +210,14 @@ Decisions D26, D27 and D32; evidence B9 to B14, B17, B18, B22.
 | MC-11 | If an MCP server's URL, or a redirect it answers with, resolves to a loopback, private or link-local address, then the loop shall not connect and shall record `mcp_connection_failed_error`. |
 | MC-12 | When an MCP tool call's permission evaluation is `ask`, the loop shall write `agent.mcp_tool_use` and idle the session `requires_action`, call the server only after a `user.tool_confirmation` that allows it, and record an `is_error` `agent.mcp_tool_result` on a deny. |
 | MC-13 | The loop shall keep each MCP server's `Mcp-Session-Id` and tool list per agentd session and server in Postgres (`mcp_connections`), and send `initialize` and `tools/list` only when it reconnects (MC-15). |
-| MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, when the credential's `updated_at` differs from the one the connection was made with, and on the session's idle-to-running transition. |
+| MC-15 | The loop shall reconnect to an MCP server when no connection is stored, when the server answers 404 to the stored `Mcp-Session-Id`, or when the credential's `updated_at` differs from the one the connection was made with. At a turn's start it shall keep each open connection and connect again only the servers whose connection failed (MC-14, B27). |
 | MC-16 | When a server sends `notifications/tools/list_changed` in a response, or the loop reconnects, the loop shall list the server's tools again and store the new list. |
 | MC-17 | The loop shall never use one session's `mcp_connections` row for another session or workspace. |
 | MC-22 | When a session is deleted, the API shall delete its `mcp_connections` rows in the commit that deletes the session row. |
 | MC-18 | When a deployment fires, the API shall check each MCP server host of the deployment's agent against the environment's networking as MC-10 does, before it creates the session. |
 | MC-19 | If a deployment fire's MCP host check fails, then the API shall create no session, record the run with `mcp_egress_blocked_error`, and pause the deployment with `paused_reason` `{"type": "error", "error": {"type": "mcp_egress_blocked_error", ...}}` (B22). |
 | H-5 | If an `mcp_oauth` refresh fails, then the API shall send the `vault_credential.refresh_failed` webhook to the organization's configured endpoints. |
-| H-6 | When a vault or a credential is created, archived or deleted, the API shall send live's lifecycle webhook to the organization's configured endpoints (`vault.created`, `vault.archived`, `vault.deleted`, `vault_credential.created`, `vault_credential.archived`, `vault_credential.deleted`), with live's data, including `vault_id` on credential events, and one `vault_credential.archived` for each credential a vault's archive archives (B29). |
+| H-6 | When a vault or a credential is created, archived or deleted, the API shall send live's lifecycle webhook to the organization's configured endpoints (`vault.created`, `vault.archived`, `vault.deleted`, `vault_credential.created`, `vault_credential.archived`, `vault_credential.deleted`), with live's data, including `vault_id` on credential events, one `vault_credential.archived` for each credential a vault's archive archives (B29), and one `vault_credential.deleted` for each credential a vault's delete deletes, archived ones included (B30). |
 
 ## 8. Vaults
 
@@ -213,6 +233,9 @@ Decision D29; evidence B15 to B17, B23.
 | VA-6 | When `mcp_oauth_validate` is called for an `mcp_oauth` credential, the API shall send `initialize` to its `mcp_server_url` with its access token and answer `vault_credential_validation` with `valid` on success, `invalid` when the server answers 401 or 403, and `unknown` otherwise, with `validated_at` (B23). |
 | VA-7 | When a credential is created in a vault, the API shall lock the vault's row for share in the transaction that inserts the credential, and refuse the create when the vault is archived or gone (D40). |
 | VA-8 | When a vault is archived or deleted, the API shall lock its row for update before it changes the vault's credentials, so that no credential is created in a vault being archived or deleted (D40). |
+| VA-9 | If a credential create names an MCP server URL that an unarchived MCP credential in the vault already holds, of either type, then the API shall answer 409 `invalid_request_error` "A credential already exists for this MCP server URL." (D56). |
+| VA-10 | If a credential create names a `secret_name` that an unarchived `environment_variable` credential in the vault already holds, then the API shall answer 409 `invalid_request_error` "A credential already exists for this environment variable." (D56). |
+| VA-11 | The API shall serve each credential with `"type": "vault_credential"`, give new credentials `vcrd_` ids, and accept a stored `cred_` id (D58). |
 
 ## 9. Webhooks
 
@@ -221,7 +244,8 @@ Decision D29; evidence B15 to B17, B23.
 | H-1 | When a session's status changes to running, idle or terminated, the API shall send each enabled endpoint configured for its organization live's body (`whe_<32 hex>`, six-digit `created_at`, `data: {type, id, organization_id, workspace_id}`). |
 | H-2 | The API shall sign deliveries with Standard Webhooks and send `user-agent: Claude-Platform`. |
 | H-3 | If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
-| H-4 | The API shall keep pending deliveries in Postgres, so that they survive a restart. |
+| H-4 | The API shall keep each delivery in Postgres from the commit of the change it reports, and the change feed shall hand each new delivery row to a sender, including a sender started after the row was written. |
+| H-7 | The API shall read each organization's webhook endpoints, their signing secrets included, from `AGENTD_WEBHOOK_ENDPOINTS` (D49). |
 
 ## 10. Environment-variable credentials and conformance
 
@@ -230,10 +254,10 @@ Decisions D25, D28 and D36.
 | ID | Requirement |
 |---|---|
 | EV-1 | When the API hands out a `cloud` session's work item, it shall set the work secret's `environment_variables` to one entry per unarchived `environment_variable` credential in the session's vaults, keyed by `secret_name` (the first vault in `vault_ids` wins, B10), whose value is the credential's placeholder; for a `self_hosted` session it shall set `environment_variables` to an empty object. |
-| EV-2 | The API shall sign each placeholder with one key held in Secrets Manager (`<prefix>/system/egress_key`), created on first boot, over the session, workspace, vault and credential ids. |
+| EV-2 | The API shall sign each placeholder with the first key of `AGENTD_PLACEHOLDER_KEYS`, carrying that key's id, over the session, workspace, vault and credential ids (D59). |
 | EV-3 | The API shall never put a credential's value in the work secret, an event, a log or a response. |
 | EV-4 | The API shall tag each `environment_variable` credential's secret `credential_type=environment_variable` when it creates the secret, and `agentd vault-secrets tag` shall tag the existing ones, so that the swap's AWS policy reaches those secrets only. |
-| J-1 | The `sdk` CI job shall run the official Java SDK (`com.anthropic:anthropic-java` 2.52.0) against agentd with only the base URL changed, covering the cases of the Python and TypeScript suites. |
+| J-1 | The `sdk` CI job shall run the official Java SDK (`com.anthropic:anthropic-java` 2.52.0) against agentd with only the base URL changed, covering the TypeScript suite's cases the Java SDK can express (Out of scope names the rest). |
 
 ## 11. `agentd-worker`'s side
 
@@ -258,7 +282,7 @@ The optional AWS egress proxy (Fargate and EC2 launchers):
 |---|---|
 | EG-2 | The proxy shall take the calling session from `Proxy-Authorization: Basic <session id>:<sessions_token>`, checked with `GET /v1/sessions/{id}` and that token, cached at most 60 s per token digest. |
 | EG-6 | The proxy shall read a value from Secrets Manager for each request and keep no copy between requests, so that a rotated value applies on the next request. |
-| EG-9 | The proxy shall run as its own service with an IAM role allowed only `secretsmanager:GetSecretValue` on secrets tagged `credential_type=environment_variable` and on `<prefix>/system/egress_key`, and `kms:Decrypt` through Secrets Manager only; the sandbox task role holds no secret permission. |
+| EG-9 | The proxy shall run as its own service with an IAM role allowed only `secretsmanager:GetSecretValue` on secrets tagged `credential_type=environment_variable` and `kms:Decrypt` through Secrets Manager only, and take the placeholder key ring (`AGENTD_PLACEHOLDER_KEYS`, D59) from its environment; the sandbox task role holds no secret permission. |
 
 The Cloudflare launcher (our `cloud`, D38):
 
@@ -270,17 +294,17 @@ The Cloudflare launcher (our `cloud`, D38):
 | CF-9 | The launcher shall keep the environment key outside the container: the container receives only the item's `ANTHROPIC_WORK_ID`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_SESSION_ID` and `ANTHROPIC_WORK_SECRET` (whose `sessions_token` `handle_item()` uses, A1) and the placeholders. |
 | CF-11 | The launcher shall read an environment's networking with the runtime key (W-14, W-22), which the launcher Worker holds as a Worker secret, cache it for `networking_cache_seconds` (default 60), and apply the cached value when a container starts; a running container keeps the networking it started with (B26). |
 | CF-12 | If the launcher cannot read an environment's networking, then the session's Durable Object shall start no container, retry the read on a storage alarm with backoff for up to 10 minutes, and then stop the work item with `work.stop`, using the runtime key (W-14) the launcher Worker holds as a Worker secret (CF-11), so that no sandbox ever starts unrestricted; the session then waits on its tool call until a `user.interrupt` ends it (L-6). |
-| CF-10 | If the Durable Object cannot read the egress key, then it shall refuse every request that carries a placeholder (fail closed) and pass the others under CF-2's networking. |
+| CF-10 | If the launcher Worker holds no placeholder key ring (`AGENTD_PLACEHOLDER_KEYS`, a Worker secret, D59), then the session's Durable Object shall refuse every request that carries a placeholder (fail closed) and pass the others under CF-2's networking. |
 | CF-3 | The session's Durable Object shall stage the session's mounted files into the container from `GET /v1/files/{id}/content` with the work token (FO-1) before the worker starts, and upload outputs with `files.upload` scoped to the session (FO-2) when the session finishes a turn and at exit, through `@cloudflare/sandbox`'s `Files`. |
 | CF-4 | The Durable Object shall back `/workspace` up to R2 with `@cloudflare/sandbox`'s `DirectoryBackup` when the session finishes a turn and at exit, and restore it on the next start; where that is unavailable, it shall save a tar of `/workspace` to `agentd-worker`'s bucket through a presigned URL instead. |
 | CF-5 | The Durable Object's outbound handler (`interceptHttps = true`, the container trusting Cloudflare's ephemeral CA at start) shall apply EG-3 to EG-5 to every HTTP request on port 80 and HTTPS request on port 443 of the container, treating a placeholder for any session but its own as invalid; traffic on other ports or protocols is not intercepted, so under `limited` networking the network refuses it and under `unrestricted` a placeholder in it reaches its host unchanged (G5, G10). |
-| CF-6 | The Durable Object shall keep each value and the egress key in its memory for at most 5 minutes, never in Durable Object storage, and drop them on eviction and at session end, so that a rotated, archived or deleted credential applies within 5 minutes. |
-| CF-7 | The handler shall read Secrets Manager with `aws4fetch` and one AWS access key held as a Worker secret, never inside the container, belonging to an IAM user allowed only `secretsmanager:GetSecretValue` on secrets tagged `credential_type=environment_variable` and on `<prefix>/system/egress_key`, `kms:Decrypt` through Secrets Manager only, and only from Cloudflare's published IP ranges (`aws:SourceIp`); the key is rotated every 90 days. |
+| CF-6 | The Durable Object shall keep each value in its memory for at most 5 minutes, never in Durable Object storage, and drop them on eviction and at session end, so that a rotated, archived or deleted credential applies within 5 minutes. |
+| CF-7 | The handler shall read Secrets Manager with `aws4fetch` and one AWS access key held as a Worker secret, never inside the container, belonging to an IAM user allowed only `secretsmanager:GetSecretValue` on secrets tagged `credential_type=environment_variable`, `kms:Decrypt` through Secrets Manager only, and only from Cloudflare's published IP ranges (`aws:SourceIp`); the key is rotated every 90 days. |
 
 Tests in `agentd-worker`'s plan include: a session with built-in calls runs to `end_turn` against agentd while
 agentd records heartbeats for its work item from one client only (CF-8); `env` run by the agent shows no
 `sk-ant-oat01-` value (CF-9); with the networking read failing, no container starts and the item reads `stopped`
-(CF-12, a read that recovers within 10 minutes starts the container); with the egress key unreadable, a request carrying a placeholder is refused and one without passes (CF-10); with one credential
+(CF-12, a read that recovers within 10 minutes starts the container); with no placeholder key ring, a request carrying a placeholder is refused and one without passes (CF-10); with one credential
 unreadable, only the requests carrying its placeholder are refused (EG-7); in the Fargate fleet, `env` run by the agent shows no `sk-ant-oat01-` value (FL-1); on an idle fleet at `warm_buffer` 0, one queued item starts one task (FL-2).
 
 The Fargate launcher's fleet (D33):
@@ -305,6 +329,10 @@ The Fargate launcher's fleet (D33):
 | A per-session sandbox Durable Object with an outbound egress hook and R2 backups | Cloudflare's `claude-managed-agents` template (G9) | Followed and credited (D38); it differs where the template departs from live (CF-8 to CF-10). |
 | Single-use workers scaled on queue depth | ECS target tracking on backlog per task, with task scale-in protection (Q3) | Followed for the Fargate launcher and the loop workers (D33). |
 | Envelope encryption for per-tenant secrets at scale | AWS KMS data keys (Q2) | The scale-up path behind `SecretStore`, with its trigger (D30). |
+| A transactional outbox read from the WAL | Debezium's outbox pattern; Standard Webhooks, Svix and Stripe for deliveries | Followed for schedule changes and webhook deliveries (D50 to D52). Retries depart from Svix's exponential backoff: two retries about 31 s apart, because live does that (H-3). |
+| Durable timers with a misfire policy, and an idempotent fire inbox | Quartz JDBC JobStore; Kubernetes CronJob `startingDeadlineSeconds` | Followed: `schedules` rows are the timer, a fire more than a minute late is skipped, and `fire_claims` runs each fire once (D50). |
+| Configuration and keys from the environment | Twelve-Factor III | Followed for agentd's keys and the webhook endpoints (D49, D59). |
+| The app exports metrics; alarms belong to the infrastructure | OpenTelemetry vendor-neutral export | Followed (D54). |
 
 Departures from live: one.
 - A session's work token reads its session's mounted files and saves its outputs through the existing files
@@ -319,29 +347,25 @@ under SRE.
 
 ## Plan of PRs
 
-One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, then
-one PR per feature. Each PR deploys alone. Sessions on the loop (L7) sit behind a setting until Rollout turns them on, and
-compaction (PR 7) runs only for those sessions and merges while L7 lists only the internal workspace (Rollout). Three PRs change what clients see on merge, each verified on stage first (Rollout): PR 4's refusal of
-other events while a session waits on a tool (W-19) and its environment-key answers (W-15 to W-18, W-22, W-23), PR
-5's overload refusal of new streams (F-5), and PR 8's vault and deployment checks (VA-2, VA-4, VA-5, MC-18, MC-19). The rest change no client-visible behaviour: PR 9's scheduler fires as today from any replica, and E-4 deletes, as
-today, the session row and then its events through the port. Migration
-numbers are taken at merge time. "Reuses" names work already written on local branches.
+One stack with `gh stack`: one spec PR, one cleanup PR (the 200-line rule), one production-safe migration PR, the
+work API, a migration PR for the runtime key's two `work_items` indexes (V12), the event log and the loop each in a
+PR, then one PR for the rest (D43): compaction, MCP and vaults,
+schedules and webhooks, the removals, conformance and docs, with its own splits and migrations. agentd is not
+deployed (D45), so each PR merges on green CI and a local replay (Rollout). Migration numbers are taken at merge time.
+"Reuses" names work already written on local branches.
 
 | # | PR | Kind | Parts | Requirements | Reuses |
 |---|---|---|---|---|---|
 | 1 | This spec | spec | P0 | all | |
 | 2 | Make room: store settings, vault credentials and deployment run errors get their own files | cleanup | X1, X2, X3 | none (makes room) | |
-| 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint and archived-session indexes | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm, E4m | E-2, W-2, W-13, S-1, S-2, MC-13, K-1, H-4, CP-9 | |
-| 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W1, W3 to W5, EV1, W7 to W9, L6, FO1 | W-1 to W-23, EV-1 to EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
+| 3 | Migrations: `work_items`, `environment_keys`, `loop_steps`, `mcp_connections`, `schedules`, `webhook_deliveries`, the checkpoint and archived-session indexes | migration | W2m, W6m, Sm, MCm, Km, Hm, CPm, E4m | E-2, W-2, W-13, S-1, S-2, MC-13, K-2, H-4, CP-9 | |
+| 4 | Work API for the official worker: work items in Postgres, live's work secret with `cloud` placeholders, environment keys and the runtime key, work-token scopes, files for workers | code | W3 to W5, EV1, W7 to W9, L6, FO1 | W-2 to W-13, W-15 to W-19, W-21 to W-23, EV-1, EV-3, EV-4, L-9 to L-12, FO-1 to FO-3 | branches `environment-keys`, `harness-memory-stores`; PR #44's token scoping tests and files session paths |
+| 4a | Migration: the runtime key's `work_items` indexes `(queue, session_id)` and `(queue, created_at desc)` (V12) | migration | W2m's V12 indexes | W-16, W-17 (the runtime key's reads of its queue) | |
 | 5 | Event log and streams: ordered stamping, Valkey fan-out, the jittered fallback, overload refusal, the read replica, retention | code | F1, F2, F3, E4 | F-1 to F-5, E-2 to E-4 | `update_processed_at` (PR #44) |
-| 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, sessions on the loop behind a setting | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-20 | branch `self-hosted-work` |
-| 7 | Compaction: model windows, both tiers, checkpoints | code | CP0 to CP3 | CP-1 to CP-13 | |
-| 8 | MCP and vaults: the client with cached connections, networking checks, permission prompts, vault credentials read per step, the claimed OAuth refresh, deployment-fire checks, vault parity | code | MC1, MC2, MC3, VA1 | MC-1 to MC-27, VA-1 to VA-8 | |
-| 9 | Scheduler for many replicas, and webhooks | code | K1, H1 | K-1, K-2, H-1 to H-6 | |
-| 10 | Removals: the harness and its routes, agentd's sandbox launch, the egress crates | code | RM1, RM2, RM3 | ADR consequences, D25 | |
-| 11 | Conformance, SLOs and docs: the Java SDK suite, SLO alerts, scale-up alarms, the load test, docs and runbook | code | J1, SRE | J-1 | |
+| 6 | The loop: the engine restored, the step queue with claims and leases, the two roles, model limits and retries, the account-wide limiter, every session on the loop | code | L1 to L5, S1, S2, M1, L7 | S-1 to S-8, R-1, R-2, M-1 to M-4, L-1 to L-8, L-13 to L-18 | branch `self-hosted-work` |
+| 7 | The rest, one PR (D43): compaction; MCP and vaults; thinking and the grader; schedules and webhooks through the change feed; the keys from the environment; the removals; the Java SDK, metrics and docs | code, with migrations V13 to V15 | CP0 to CP3, TH1, GR1, W1, MC1 to MC3, VA1, K1, H1, RM1 to RM3, J1, SRE | CP-1 to CP-13, MC-1 to MC-28, VA-1 to VA-11, L-21 to L-23, K-1 to K-9, CH-1 to CH-5, H-1 to H-7, F-6, W-1, W-14, W-20, W-24 to W-26, EV-2, M-5, J-1 | |
 
-11 agentd PRs including the spec. `agentd-worker` (its own repository, D6) builds section 11 in 3 PRs: the image with
+8 agentd PRs including the spec. `agentd-worker` (its own repository, D6) builds section 11 in 3 PRs: the image with
 the official `EnvironmentWorker`, the Docker launcher and file staging; the Cloudflare launcher (CF-1 to CF-12 with
 EG-1, EG-3 to EG-5, EG-7, EG-8, EG-10); the optional Fargate and EC2 launchers with the AWS egress proxy and the fleet
 (EG-2, EG-6, EG-9, FL-1 to FL-3).
@@ -368,14 +392,15 @@ Every production file over 200 lines that a later PR changes is split here first
 
 #### PR 3. Migrations
 
-Every new table and index, production-safe: new tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
+Every table and index of the plan ships here, production-safe, except V12's two `work_items` indexes (W2m), which ship in PR 4a, and PR 7's own migrations (V13 `schedule_outbox`, V14 `fire_claims` with the drop of `deployment_claims`, V15 `admin_keys`), which ship in PR 7 (D43). New tables only, unused until their PR's code ships; indexes on existing tables are built `CONCURRENTLY` in their own migration files.
 
 - **W2m.** `create table work_items (workspace_id, session_id, org_id, environment_id, queue, state, metadata,
   created_at, acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at,
   stop_requested_at, stopped_at, actor, request_id, primary key (workspace_id, session_id))`; indexes
   `(queue, created_at) where state = 'queued'` and `(workspace_id, environment_id, created_at desc)`. `actor` and
   `request_id` default from the connection settings, as every table since history PR #41. Also the index
-  `(environment_id) where queue = 'runtime'` for W9.
+  `(environment_id) where queue = 'runtime'` for W9. The runtime key's reads by session and newest first use
+  `(queue, session_id)` and `(queue, created_at desc)`, built `CONCURRENTLY` in V12, in PR 4a.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
 - **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
@@ -396,11 +421,6 @@ Every new table and index, production-safe: new tables only, unused until their 
 
 #### PR 4. Work API for the official worker
 
-- **W1.** `secrets-aws/src/system_secret.rs` (new, about 55 lines) holds the read-or-create body that `pepper.rs`
-  has today; `work_token_key()` and `api_key_pepper()` call it. Boot: 1 `GetSecretValue`, 1 `CreateSecret` the first
-  time; per request none. Tests (LocalStack): the second read returns the first's bytes; a token minted under one
-  boot verifies under the next; with `AGENTD_WORK_TOKEN_KEY` set, tokens are signed with it and Secrets Manager is
-  not read (W-20).
 - **W3.** `work/src/store.rs` (port, about 60 lines); `store-postgres/src/entities/work_items.rs` (about 180).
   Statements: queue 1 INSERT; claim, one transaction, 1 SELECT of the oldest queued item of the queue not handed out
   in 5 s `FOR UPDATE SKIP LOCKED LIMIT 1` and 1 UPDATE of `handed_out_at`; ack 1 `UPDATE … WHERE state = 'queued'
@@ -418,20 +438,20 @@ Every new table and index, production-safe: new tables only, unused until their 
   order and types.
 - **EV1.** `work/src/secret.rs` (new) builds `environment_variables` for `cloud` sessions and an empty object for
   `self_hosted` ones; `work/src/placeholder.rs` (new) signs placeholders with `Signer` keyed by
-  `<prefix>/system/egress_key`, read or created through W1's `system_secret.rs`; `secrets-aws/src/name.rs` adds the
+  W1's `AGENTD_PLACEHOLDER_KEYS` ring; `secrets-aws/src/name.rs` adds the
   `credential_type` tag, which `entities/vault_credentials.rs` passes for `environment_variable` credentials;
   `api/src/cli/vault_secrets.rs` (new) is `agentd vault-secrets tag`. Statements per `cloud` hand-out: 1 SELECT of the session by primary key (its `vault_ids`); 1 `SELECT *
   FROM credentials WHERE workspace_id = $1 AND vault_id = ANY($vault_ids) AND doc->'auth'->>'type' =
-  'environment_variable' AND doc->>'archived_at' IS NULL`; no secret read; none for `self_hosted`. The key is read
-  once per process. The tag command: 1 SELECT of `environment_variable` credentials, then 1 `TagResource` each.
+  'environment_variable' AND doc->>'archived_at' IS NULL`; no secret read; none for `self_hosted`. The ring is read
+  once, at boot. The tag command: 1 SELECT of `environment_variable` credentials, then 1 `TagResource` each.
   Tests: the decoded secret maps each name to a placeholder that verifies for that session and fails for another;
   the first vault in `vault_ids` wins a shared name; an archived credential is left out; a `self_hosted` session's
   secret has `"environment_variables": {}`; a new `environment_variable` secret carries the tag and an MCP one does
   not (LocalStack); no credential value appears in the secret, the events or the captured logs.
 - **W7.** `api-keys/src/environment.rs`, `store-postgres/src/entities/environment_keys.rs`,
   `api/src/cli/environment_keys.rs`, `api/src/edge/reach.rs` (what each scoped credential reaches),
-  `edge/auth.rs` (resolution only), `work/src/routes.rs` (poll). Per request 1 SELECT by digest, as for workspace
-  keys. Tests (`api/tests/edge.rs`, `api/tests/environment_keys.rs`): one per W-13 to W-18 with live's bodies.
+  `edge/auth.rs` (resolution only), `work/src/routes.rs` (poll). Per request 1 SELECT by digest over every pepper's
+  candidate (`key_digest = ANY($candidates)`), as for workspace keys; a runtime key is matched in memory (W-14). Tests (`api/tests/edge.rs`, `api/tests/environment_keys.rs`): one per W-13 to W-18 with live's bodies.
 - **W8.** `sessions/src/service/waiting.rs`: 1 `SELECT session_events … types = ['session.status_idle'] ORDER BY …
   DESC LIMIT 1` per `POST …/events` to an idle session. Tests: refused with live's text; the four answers accepted.
 - **W9.** `api/src/edge/reach.rs` (W7) allows the runtime key on `GET /v1/environments/{id}`; the environments route
@@ -490,16 +510,17 @@ Every new table and index, production-safe: new tables only, unused until their 
   $after_id) AND doc->>'archived_at' < $to ORDER BY doc->>'archived_at', session_id LIMIT 500`, then 1
   `delete_events_of` for that page, until a page comes back short. The read crosses from the sessions store to the
   event log's port, which sql-transactions rule 7a's single statement cannot do without tying the log to Postgres:
-  the user's port rule (D18) wins. Each DELETE covers at most 500 sessions. `agentd_retention_last_success` is a
-  metric; PR 11 builds its alarm (`agentd-retention-stale`, 45 minutes without a run, inside the 1-hour horizon) and
-  the runbook action for a longer outage: restart one replica, whose first run walks from the oldest. Its test: the
+  the user's port rule (D18) wins. Each DELETE covers at most 500 sessions. `agentd.retention.last_success` is a
+  metric, and `docs/operations.md` names its threshold (no run for 15 minutes while a period is set, inside the
+  1-hour horizon). For an outage longer than the horizon, restarting one replica makes its first run walk from the
+  oldest. Its test: the
   metric advances after a run. Session delete, in
   `sessions/src/service/lifecycle.rs` and `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one
   transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1) and, from PR 6, every step commit, so an append in flight finishes first and a later one finds no session; 1 `DELETE FROM sessions WHERE
   workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status FROM
   sessions WHERE …` on the failure path to answer 404 or today's `cannot delete a running session` error; from PR 6, 1 `DELETE
   FROM loop_steps WHERE workspace_id = $1 AND session_id = $2`, so a queued step is gone and a running one finds its
-  claim gone at commit and rolls back (S-4); from PR 4, W3's stop (W-11: 1 UPDATE); from PR 8, MC1's `mcp_connections` delete
+  claim gone at commit and rolls back (S-4); from PR 4, W3's stop (W-11: 1 UPDATE); from PR 7, MC1's `mcp_connections` delete
   (MC-22: 1 `DELETE FROM mcp_connections WHERE workspace_id = $1 AND session_id = $2`). `SessionsStore::delete` calls
   those two methods with its transaction, so each has one version, taking the caller's connection. Today's pre-read of the session goes.
   After the commit, 1 `delete_events_of` with the one session (E-4), outside the transaction because the log sits
@@ -535,52 +556,63 @@ Every new table and index, production-safe: new tables only, unused until their 
   estimated input tokens (CP-1) on a key that expires after 120 s; over the budget, the step is deferred with the
   statement in the step queue table and no model call. Tests: with a budget of 2 requests a minute, a third step is
   deferred to the next minute and runs then; Valkey down fails the step's claim back to the queue, not open.
-- **L7.** `sessions/src/service/sandbox.rs`: a session launches nothing; its work is queued at create on its
-  environment or the runtime queue. The setting lists each workspace with the time it joined the loop
-  (`AGENTD_LOOP_WORKSPACES=wrkspc_…@2026-12-01T00:00:00Z`), so a session created before that time is on the harness
-  path, with no new column. Its next turn (L-19) first stops its sandbox with the runtime's stop, which answers its error, unlike today's
-  logging `stop_sandbox`: the stop runs before the commit that appends the turn's event, and the step is enqueued
-  only after a confirmed stop or `RuntimeError::Unknown` (no such container); any other error appends nothing and
-  answers 529 for `RuntimeError::Unavailable`, as `launch` does today, and 500 otherwise (L-20). Its event log is its whole state
-  (D8), so the loop reads it as any other. Tests: the live poll-path cases replayed with `ant` pollers and the
-  scripted model; a session started on the harness, left idle, then woken after its workspace is listed, gets one
-  answer, from the loop, with its history, and its container is stopped; a stop failing with `Unavailable` answers 529 and one
-  failing with another error answers 500 `api_error`, each appending no event and queueing no step, and a retry gets
-  one answer (L-20).
+- **L7.** `sessions/src/service/work.rs`: a session launches nothing; its work item is queued at create, before
+  the session row is written, on its environment's queue or the runtime queue, and the loop serves every session.
+  Its event log is its whole state (D8). Tests: the live poll-path cases replayed with `ant` pollers and the scripted
+  model.
 
-#### PR 7. Compaction
+#### PR 7: compaction, thinking and the grader
 
-- **CP0.** `shared/src/limits/models.rs` (69 lines) holds each model's window beside its id; `engine/src/model/
-  windows.rs` (new) reads `GET /v1/models/{id}` once per process per model, and `AGENTD_MODEL_WINDOWS`
-  (`model=tokens,...`) for other providers. Tests: a scripted models endpoint answering `max_input_tokens: 200000`
-  sets that window; a provider with no endpoint takes the setting; a model with neither refuses to start a step with
-  a clear log line.
+- **CP0.** `engine/src/model/windows.rs` (new) reads each model's window from its provider's list once per process: Anthropic's `GET
+  /v1/models/{id}` `max_input_tokens`, OpenRouter's `GET /api/v1/models` `context_length` (D42). Tests: a scripted
+  models endpoint per provider gives the window once; a model its provider does not list refuses to start a step
+  with a clear log line.
 - **CP1.** `engine/src/turn/compact/` (new, each file under 200 lines): `estimate.rs` (CP-1 from the last
   `span.model_request_end` usage and the bytes since), `clear.rs` (CP-2 placeholders `[tool result cleared: event
   <id>]`), `cap.rs` (CP-3). Prompt building only; no statement. Tests (thresholds set to 15% of a scripted model's
   window): past it, results older than the last 3 are placeholders naming their event ids, inputs and error results
   stay; below it, nothing changes; a 50,000-token result reaches the prompt cut at the limit and the stored event is
   whole.
-- **CP2.** `engine/src/turn/compact/step.rs` and `summary.rs`: the step chooses compaction when CP-4's threshold is
+- **CP2.** `engine/src/worker/compact.rs` and `turn/compact/summary.rs`: the step chooses compaction when CP-4's threshold is
   passed and CP-5 holds; the summary call reuses the turn's system prompt and tools (so the prompt cache hits) with
   `compact-2026-09-04`; the checkpoint event's stored `checkpoint` object holds the block, `through_seq` and the
   model, and the API's typed event drops it on read. Statements: the step's commit (step queue table) appends the
-  checkpoint in its multi-row INSERT; the step queue's Run read (`SELECT DISTINCT ON (doc->>'session_thread_id') …`, CPm's index) finds each
-  thread's latest checkpoint; 1 keyset SELECT
-  of the events after it. Tests (a scripted model with a 20,000-token
+  checkpoint in its multi-row INSERT; the step queue's Run read reads the session's whole log, and the step builds
+  each thread's prompt from its latest checkpoint and the events after it. Tests (a scripted model with a 20,000-token
   window, so 80% is reached in a few turns): a long scripted conversation compacts once, writes one `agent.thread_context_compacted` with live's
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
   the first checkpoint; a step with a tool call waiting does not compact; a summary call that returns no block
-  leaves the cleared prompt and compacts at the next step; every call after compaction sends the
+  leaves the cleared prompt, the next model call takes the turn, and compaction runs again before the model call after it; every call after compaction sends the
   `compact-2026-09-04` beta header with the block (CP-7). A recall check against a real model runs only with the
   user's OK (D22).
-- **CP3.** `engine/src/turn/compact/handoff.rs` (the handoff prompt), `oversize.rs`, and the model-change check in
-  `step.rs`. Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
-  summary; a compaction request over the window drops its oldest events and succeeds; switching to a model with a
-  smaller window, or reading a checkpoint written by another model, compacts again before the next turn.
+- **CP3.** `engine/src/turn/compact/summary.rs` (the handoff prompt) and `engine/src/worker/compact.rs` (the trim
+  before the call and the model-change check). Tests: an OpenAI-scripted thread compacts with the handoff prompt and starts its next prompt with the
+  summary; a compaction request over the window leaves out its oldest calls before the call; a checkpoint written by
+  another model compacts again before the next turn.
 
-#### PR 8. MCP and vaults
+- **TH1.** `engine/src/model/anthropic.rs` asks for thinking (L-21, D47): adaptive, or a budget on the models that
+  take one; the worker keeps each reply's signed thinking beside its `agent.thinking`, and the history sends it back
+  first in its message. No statement of its own. Tests: anthropic "thinking is adaptive except on the models that take
+  a budget"; worker "a reply's signed thinking is kept beside its agent thinking"; history "a call's kept thinking goes
+  back first in its message".
+- **GR1.** `engine/src/worker/grade.rs`, `worker/reply.rs` and `worker/stall.rs`: the grader grades in its reply's
+  text (L-22, D62), a reply with no grade gets a nudge, and a grader that keeps ending its turn without one fails its
+  round; its thread compacts as any thread, the compaction block first and the grader's task after it (L-23, D60),
+  and a compaction's call is not a turn the grader ended. Tests: `agent_loop` "an outcome is graded on its own thread
+  until satisfied".
+
+#### PR 7: keys from the environment
+
+- **W1.** `api/src/config/work.rs` and `api/src/config/keys.rs` read agentd's keys from the environment (D59):
+  `AGENTD_WORK_TOKEN_KEYS`, `AGENTD_PLACEHOLDER_KEYS` and `AGENTD_API_KEY_PEPPERS` as key rings parsed by
+  `shared::hash::KeyRing`, `AGENTD_RUNTIME_KEYS` and the model keys. `shared::hash` signs with the ring's first key
+  and names that key's id in each token. Boot: no statement and no Secrets Manager read; per request none. Tests: the
+  `api` config tests (a ring is required and parsed, a malformed runtime key refuses to start, no key reaches
+  `Debug`); `hash` "a token names its key and verifies while that key is in the ring"; `api-keys` "a key under an
+  older pepper resolves and moves to the current one" (W-24, W-25).
+
+#### PR 7: MCP and vaults
 
 - **MC1.** `crates/engine/src/mcp/` (the MCP client over streamable HTTP) and
   `store-postgres/src/entities/mcp_connections.rs`. The step commit gains the MCP branch: the step queue port's
@@ -599,19 +631,20 @@ Every new table and index, production-safe: new tables only, unused until their 
   no work item is queued for an MCP call; a step commits `agent.mcp_tool_use`, leaves its `loop_steps` row due at once, and the next step calls the tool
   and commits its result with no model call, then the step after calls the model (MC-25); a server redirecting to
   `127.0.0.1` is refused (MC-11);
-  a server that drops after the choosing step gets one `is_error` `agent.mcp_tool_result` (MC-26) and one
-  `mcp_connection_failed_error` `session.error` (MC-5), and that step's `loop_steps` row is deleted, not kept due;
-  with two allowed calls to one server in a step and the first failing, the second gets an `is_error` result with no
-  new connection attempt (MC-14, MC-26), and the step records as many `session.error` events as B27's capture shows;
-  the `is_error` content matches B27's capture; a
-  deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a 404
-  to it, a changed credential `updated_at` or an idle-to-running transition reconnects; a `list_changed`
+  a call whose server answers an error status, a 401 after connecting, or no answer within 125 s gets an `is_error`
+  `agent.mcp_tool_result` with MC-26's content for that case and no `session.error`, and the turn goes on with the
+  server still usable (MC-26, B27, B31); a 401 to an `initialize` or a `tools/call` that carried a credential is
+  sent once more with no `Authorization` header before MC-4's error or MC-26's content is recorded (MC-28, B31); a
+  static bearer refused at `initialize` records MC-4's message; a
+  deferred MCP call (MC-20) makes exactly one model call in all; a second step sends no `initialize` and reuses the stored session id; a second
+  turn keeps an open connection and sends no `initialize` (MC-15, B27); a 404
+  to it or a changed credential `updated_at` reconnects; a `list_changed`
   notification refreshes the stored list; one session never reads another's row; deleting a session deletes its rows in that commit; an `always_ask` tool idles
   `requires_action`, runs after an allow and records an `is_error` result after a deny; a `limited` environment
   without `allow_mcp_servers` and with the host not listed records `mcp_connection_failed_error` without connecting;
   a URL resolving to `127.0.0.1` or `169.254.169.254` is refused; an unreachable server records
-  `mcp_connection_failed_error`, the session continues, the same turn does not retry, and the next idle-to-running
-  transition does.
+  `mcp_connection_failed_error`, the session continues, the same turn does not retry, and the next turn's start
+  does.
 - **MC2.** `crates/engine/src/mcp/credentials.rs`; `vaults/src/refresh.rs` (new), the loop's entry into the vaults
   service: `VaultService::refresh_mcp_oauth(&WorkspaceId, &VaultId, &CredentialId)`, which takes the session's
   workspace from the step, not an API `AuthContext`; `VaultCredentialStore::replace_credential(ws, vault, cred, guard, secret)` takes
@@ -649,7 +682,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   Secrets Manager under the API's row, the loop logs `refresh_overwrote_update` with the credential id, and the
   user's next update applies (an accepted risk under SRE, D41). A claim that matches no row (MC-23) re-reads with
   `get_credential` (1 SELECT by primary key, 1 `GetSecretValue`) and uses the token when unexpired; otherwise the
-  step ends with its row due again in 1 s. A failed refresh records `mcp_authentication_failed_error`; H1 (PR 9)
+  step ends with its row due again in 1 s. A failed refresh records `mcp_authentication_failed_error`; H1
   adds the `vault_credential.refresh_failed` delivery. Tests: an expired token is refreshed, stored, its new expiry
   shown by `credentials.retrieve`, and used on the next call; two workers refreshing at once make one request to the
   token endpoint and the loser uses the stored token; a loser that finds the stored token still expired ends its step,
@@ -688,7 +721,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   doc->>'archived_at' IS NULL ORDER BY credential_id FOR NO KEY UPDATE`, compared with the pre-read; 1 `UPDATE vaults SET doc =
   jsonb_set(jsonb_set(doc, '{archived_at}', $now), '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2`; 1 `UPDATE credentials SET has_secret = false, doc = jsonb_set(jsonb_set(doc,
   '{archived_at}', $now), '{updated_at}', $now) WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS
-  NULL`; and, from PR 9, 1 multi-row `INSERT INTO webhook_deliveries` built from the locked SELECT's ids
+  NULL`; and H1's 1 multi-row `INSERT INTO webhook_deliveries` built from the locked SELECT's ids
   (H-6). When the locked credentials SELECT shows an id the pre-read missed (a credential whose create committed
   before the lock), or an `updated_at` that differs from the pre-read's (an update or a refresh that committed between the purge and
   the lock, and may have written a secret), the transaction rolls back and the archive starts again from the
@@ -708,7 +741,7 @@ Every new table and index, production-safe: new tables only, unused until their 
   which waits for an archive or delete in progress and refuses a vault archived or deleted since the service's read
   with today's 409 "cannot add credentials to an archived vault" or 404, then 1 `INSERT INTO credentials`; this
   locked read closes the race and decides nothing the service's read has not already answered; the secret is taken
-  back out when the transaction rolls back, as today. A credential's own archive adds, from PR 9, its delivery INSERT
+  back out when the transaction rolls back, as today. A credential's own archive adds H1's delivery INSERT
   to its commit. Tests: each of VA-1 to VA-5, VA-3 with a running session that keeps running and gets no credential
   from the archived vault at its next step; a secret delete that fails leaves the vault unarchived, and the retried
   archive finishes; a credential create racing an archive or a delete, in a looped test, is either refused or
@@ -723,19 +756,34 @@ Every new table and index, production-safe: new tables only, unused until their 
   refresh's failure-path SELECT and its bump leaves the bump matching no row, and the refresh takes its secret out
   and answers `Archived`; `mcp_oauth_validate` answers `valid` against a scripted server that accepts the token, `invalid` on 401, `unknown` when unreachable.
 
-#### PR 9. Scheduler and webhooks
+#### PR 7: schedules, the change feed and webhooks
 
-- **K1.** `crates/adapters/scheduler-postgres` replaces `scheduler-local` in `backends.rs`. Tick, per replica every
-  10 s, one transaction: 1 `SELECT … WHERE next_fire_at <= now() AND NOT paused FOR UPDATE SKIP LOCKED LIMIT 100`;
-  1 `UPDATE schedules SET next_fire_at = v.next FROM unnest($targets, $nexts) AS v(target, next) WHERE
-  schedules.target = v.target` (no backfill); then the fires, outside it; `claim_fire` stays the
-  exactly-once guard. Tests: two schedulers on one database fire each occurrence once; a schedule registered on one
-  fires on the other.
-- **H1.** `crates/resources/webhooks`: endpoints read from configuration (D20); one multi-row INSERT of deliveries
-  per status change in its commit; a task per replica claims due rows 100 at a time `FOR UPDATE SKIP LOCKED`, signs,
-  POSTs with a 10 s timeout, and marks them in one UPDATE per batch. Tests: signature verified with the SDK's
-  `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a due delivery
-  survives a restart; a failed OAuth refresh sends `vault_credential.refresh_failed`; archiving a vault with two
+- **K1.** The outbox, `store-postgres/src/entities/schedules/outbox.rs`: in the deployment write's transaction, 1
+  `INSERT INTO schedule_outbox (target, change) … RETURNING seq` and 1 `DELETE FROM schedule_outbox WHERE seq = $1`
+  (K-1). Its handler, `ScheduleOutbox`, applies each change the feed hands it to the scheduler sink. The built-in
+  sink, `entities/schedules.rs`: an upsert is 1 `INSERT INTO schedules … ON CONFLICT (target) DO UPDATE`, a pause or
+  unpause 1 `UPDATE schedules SET paused = $2 WHERE target = $1`, a removal 1 `DELETE FROM schedules WHERE target =
+  $1`. The tick, `schedules/tick.rs`, per replica every 10 s, one transaction: 1 `SELECT target, spec, next_fire_at,
+  now() FROM schedules WHERE next_fire_at <= now() AND NOT paused ORDER BY next_fire_at LIMIT 100 FOR UPDATE SKIP
+  LOCKED`; 1 `UPDATE schedules SET next_fire_at = v.next FROM unnest($targets, $nexts) AS v(target, next) WHERE
+  schedules.target = v.target`; 1 `DELETE FROM schedules WHERE target = ANY($done)` for a schedule with no next time;
+  then the on-time fires, after the commit (K-2, K-9, K-6). The fire inbox, `entities/fire_claims.rs`, per fire: 1 `INSERT
+  INTO fire_claims … ON CONFLICT (workspace_id, target, scheduled_at) DO UPDATE SET claimed_at = now(), attempts =
+  attempts + 1 WHERE NOT done AND attempts < 3 AND claimed_at < now() - 15 min`; when it wins no row, 1 SELECT of the
+  row on that path; after the run, 1 `UPDATE fire_claims SET done = true` (K-7, K-8). The change feed:
+  `changes-kafka` (rdkafka, CH-2) and `signals-valkey/src/changes.rs` with its trim (CH-3), and
+  `signals-valkey/src/fires.rs` for the fires an external scheduler delivers. Tests: `pg_schedules` "a due
+  schedule fires once across two schedulers and moves to its next time", "a fire more than a minute late is skipped
+  and a paused one waits", "the outbox's changes reach the sink in order…", "an outbox change that never decodes is
+  passed over"; `pg_fires` "one of many concurrent claims runs the fire and the rest wait", "a claim whose owner
+  stopped is taken over until its attempts run out"; `change_feed` "a deployment write leaves the outbox empty", "a
+  deployment's schedule changes reach the scheduler through the WAL".
+- **H1.** `crates/resources/webhooks`: endpoints read from `AGENTD_WEBHOOK_ENDPOINTS` (H-7, D49); one multi-row INSERT
+  of deliveries per status change, a session's archive among them (F-6), in its commit; the change feed hands each new `webhook_deliveries` row to the sender, which signs,
+  POSTs with a 10 s timeout, runs the row's two retries on a task of its own, and marks the row with 1 `UPDATE
+  webhook_deliveries SET delivered_at` or `dropped_at`, `attempt` (H-4). Tests: signature verified with the SDK's
+  `client.beta.webhooks.unwrap()`; a 401 receiver sees three attempts with one `webhook-id`; a pending delivery is
+  sent by a sender started after it was written; a failed OAuth refresh sends `vault_credential.refresh_failed`; archiving a vault with two
   credentials sends one `vault.archived` and two `vault_credential.archived` deliveries, each with live's data; each
   other lifecycle event sends one (H-6). The other vault and credential writes take their delivery INSERT into one
   transaction with the write. One function writes every delivery row: `insert_deliveries(conn, rows)` in
@@ -747,30 +795,31 @@ Every new table and index, production-safe: new tables only, unused until their 
   create, 1 `INSERT INTO vaults` and 1 delivery INSERT; credential create, VA1's statements with 1 delivery INSERT added to its
   transaction; credential delete, 1 SELECT of the row as today, whose doc is the answer, then the secret delete
   first, as the vault's archive and delete purge first and as `delete_credential` already tolerates a missing
-  secret, then 1 `DELETE FROM credentials WHERE …` and 1 delivery INSERT; vault delete, VA1's statements with 1 multi-row delivery INSERT added to its transaction, with one `vault_credential.deleted` per credential when
-  B30's capture shows live sends them. Tests: each write's delivery lands in its commit and none lands when the write
+  secret, then 1 `DELETE FROM credentials WHERE …` and 1 delivery INSERT; vault delete, VA1's statements with 1
+  multi-row delivery INSERT added to its transaction: `vault.deleted` and one `vault_credential.deleted` per
+  credential, archived ones included, as live sends them (B30). Tests: each write's delivery lands in its commit and none lands when the write
   fails.
 
-#### PR 10. Removals
+#### PR 7: removals
 
-Merges after the loop's setting reaches every workspace (Rollout).
+The removals are in PR 7 (D44).
 
 - **RM1.** Removes `harness/`, `api/src/harness.rs`, `HarnessContract` writes used only by the harness, the harness
-  CI job. CI's `sdk` and `demo` jobs run agentd's loop with the scripted model and the container project's worker.
-- **RM2, RM3.** Remove the crates and wiring named in the table once L7 is on everywhere; they move to the container
+  CI job. CI's `sdk` job runs agentd's loop with the scripted model, and built-in tools on the official worker
+  (`ant beta:worker poll`) on the runner against a `self_hosted` environment (D46).
+- **RM2, RM3.** Remove the crates and wiring named in the removal sites table (Audit); they belong to the container
   project (Out of scope).
 
-#### PR 11. Conformance, SLOs and docs
+#### PR 7: conformance, metrics and docs
 
-- **J1.** `conformance/java` (Gradle, `com.anthropic:anthropic-java` 2.52.0 from the version catalog): the Python
-  suite's cases against agentd with only the base URL changed, run in the `sdk` CI job after the TypeScript suite.
-  Tests: the suite itself, green in CI.
-- **SRE.** `docker/observability/slos.yaml` gains the alert rules for the five SLOs, and `docker/observability/alarms/`
-  the five scale-up alarms (SRE, scale-up triggers) and `agentd-retention-stale` (E4) with their metrics and
-  thresholds; `perf/` gains the load test
-  runs; the docs and the runbook (DOC1) describe the roles, the settings, the launch deployment and each alarm's
-  action. Tests: the alert rules load in the local observability stack; the load test's steady run passes in CI's
-  `perf-smoke` job.
+- **J1.** `conformance/java` (Gradle, `com.anthropic:anthropic-java` 2.52.0 from the version catalog): the TypeScript
+  suite's cases the Java SDK can express (J-1), against agentd with only the base URL changed, run in the `sdk` CI job
+  after the TypeScript suite. Tests: the suite itself (`./gradlew test`), green in CI.
+- **SRE.** The loop exports `agentd.loop.*` metrics over OTLP beside the API's, and the SLO table names each SLI's
+  metric; `docs/operations.md` names each signal with its threshold and action, backend-neutral, and agentd holds no
+  production alert rule or alarm (D54). `perf/` (k6) is the load test, run by hand, and the `perf-smoke` workflow runs
+  it on demand (D55). The docs describe the roles, the settings and a deployment. Tests: the metrics' unit tests; the
+  load test's numbers go on the PR.
 
 ### The step queue: statements per operation (S1, S2)
 
@@ -778,43 +827,26 @@ Merges after the loop's setting reaches every workspace (Rollout).
 |---|---|
 | Enqueue, in the commit that appends the waking event (after its session append lock) | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
 | Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Run, no transaction open | 1 `SELECT DISTINCT ON (doc->>'session_thread_id') seq, doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND doc->>'type' = 'agent.thread_context_compacted' ORDER BY doc->>'session_thread_id', (doc->'checkpoint'->>'through_seq')::bigint DESC` for every thread's latest checkpoint (CPm's index); 1 keyset SELECT of the session's events after the oldest of those checkpoints, or from `seq` 0 when a thread the step builds has none, noting the ids of the client events it read; the model call |
-| Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; when the step leaves an allowed `agent.mcp_tool_use` unanswered (MC-24), or ran MCP calls with no model call (MC-25), both from PR 8, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed` and no DELETE; otherwise 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing, the same UPDATE; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today; when the step changes the session's status or a refresh failed, 1 multi-row `INSERT INTO webhook_deliveries` (H1) |
+| Run, no transaction open | 1 `SELECT seq, doc` of the session's events (the whole log), noting the ids of the client events it read; the model call. The checkpoint-bounded read (1 `SELECT DISTINCT ON (doc->>'session_thread_id')` of each thread's latest checkpoint on CPm's index, then 1 keyset SELECT of the events after the oldest) is the scale-up step for this read, taken when the load test or the log-reads trigger shows the log read growing (SRE) |
+| Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; when the step leaves an allowed `agent.mcp_tool_use` unanswered (MC-24), or ran MCP calls with no model call (MC-25), both MC1's, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed` and no DELETE; otherwise 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing, the same UPDATE; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today; when the step changes the session's status or a refresh failed, 1 multi-row `INSERT INTO webhook_deliveries` (H1) |
 | Defer at the account-wide model budget (M-4), a credential claimed by another worker (MC-20), or a lost refresh claim whose stored token is still expired (MC-23) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
 | Compaction step (CP2) | the Run and Commit statements; the Commit's multi-row INSERT carries the checkpoint |
 | Takeover | the Claim statements: a lease that has run out is claimable |
 
 ## Rollout
 
-- The work API (PR 4) ships without a flag. Its work routes change only agentd's own harness work, since no client
-  polls work on `main`; what clients see changes in two places, each verified on stage with a probe matching live's
-  captured answer before prod: a session idle with `requires_action` refuses other events with live's 400 (W-19),
-  and environment keys get live's answers (401 for W-15 and W-18, 403 for W-16 and W-23, 404 for W-17, the
-  environment for W-22).
-- PR 5's overload refusal (F-5) is verified on stage with the gate forced: a new stream gets 529 `overloaded_error`
-  and open streams keep streaming; prod follows after a day with no page.
-- PR 8's checks are verified on stage with a probe of each refused case (VA-2, VA-4, VA-5) and a deployment whose
-  MCP host the environment blocks (MC-18, MC-19), each matching live's captured answer, and with the Python,
-  TypeScript suites green (the Java suite joins with PR 11); prod follows after a day with no page.
-- Sessions on the loop (L7, in PR 6) sit behind a setting listing workspaces; a session's path is fixed at create, except that an idle harness-path session moves to the loop at its next turn
-  once its workspace is listed (L-19). Stages: one internal
-  workspace, then 10%, 50%, 100% of workspaces, each for at least 24 h including the daily peak, judged on the SLIs
-  below, with an absolute stop when a page fires.
-- A workspace is listed for L7 only once `agentd-worker` polls the runtime queue in that deployment environment;
-  until then its `cloud` sessions would wait on a queue nobody polls.
-- The removals (PR 10) merge after L7 reaches 100%, `agentd-worker` serves `cloud` work on stage and prod, and no
-  session is running on the harness path: idle ones move to the loop at their next turn (L-19), and the merge waits
-  until a count of running harness-path sessions reads zero on stage and prod.
-- Compaction (PR 7) runs only for sessions on the loop, and PR 7 merges while L7 lists only the internal
-  workspace, so compaction reaches other workspaces only through L7's later stages.
-- The Cloudflare launcher serves stage's runtime queue first; prod's runtime queue moves to it after a week on stage
-  with no page, and after Cloudflare has raised the account's vCPU capacity (G1) above the expected peak.
-- Per deployment environment, the settings (`AGENTD_ROLE`, model limits, the L7 workspace list) live in its
-  configuration.
+- agentd is not deployed: it has no stage and no prod (D45). A PR merges on green CI and a local replay with
+  `driver.py` against agentd built from its branch (role `all`, the official worker polling); the load test runs by
+  hand once for a PR that changes the loop, with its numbers on the PR (D55).
+- Every session runs on the loop from its create; no session depends on a harness (D44).
+- Per deployment environment, the settings (`AGENTD_ROLE`, model limits, the keys, `AGENTD_WEBHOOK_ENDPOINTS`, the
+  change feed's brokers) live in its configuration.
+- `agentd-worker`'s Cloudflare launcher serves a runtime queue only after Cloudflare has raised the account's vCPU
+  capacity (G1) above the expected peak.
 
 ## Out of scope
 
-- The DynamoDB event log (D18), the scale-up step for large workspaces, planned when `agentd-event-log-hot` fires.
+- The DynamoDB event log (D18), the scale-up step for large workspaces, planned when appends pass 2,500/s or Postgres CPU passes 70% for 1 hour (SRE, scale-up triggers).
   The event log stays behind its port; the switch replaces the adapter behind it and the two Postgres guarantees named
   below. Its requirement for that plan: where a
   workspace is listed for DynamoDB, the API shall keep its new sessions' events in DynamoDB behind the same port,
@@ -831,10 +863,13 @@ Merges after the loop's setting reaches every workspace (Rollout).
   public files endpoints with the work token (FO-1, FO-2); `/workspace` snapshots; the swap (the Cloudflare Durable
   Object's handler, or the optional AWS egress proxy) with networking enforced by default and secret injection on in
   our `cloud` deployment and off by default elsewhere (D25); our runtime poller and its `--on-work` command. It
-  speaks only the public API, so it runs against live as well. Its plan is a separate document. `sandbox-docker`,
-  `sandbox-worker` and the egress crates move there (RM2, RM3). (The relay binary in `sandbox-worker`, also named
-  `agentd-worker`, moves with it.)
+  speaks only the public API, so it runs against live as well. Its plan is a separate document. agentd holds no
+  `sandbox-docker`, `sandbox-worker` (with its relay binary) or egress crate; they belong to the container project
+  (RM2, RM3).
 - Session webhook registration through an API: live has none (B8).
+- The Java suite's cases the Java SDK 2.52.0 cannot express (J-1): it has no Admin API service, so its workspace and
+  organization cases check only the admin key's refusal, and the memory version, upload and stream cases run only in
+  the Python and TypeScript suites.
 
 ## Deployment
 
@@ -842,9 +877,11 @@ The launch deployment (D34) and the scale-up path, each switch a setting:
 
 | Part | Launch | Scale-up, and its switch |
 |---|---|---|
-| agentd | one container, `AGENTD_ROLE=all`, on tosspaper's existing host or ECS, behind its load balancer and NAT | separate `api` and `loop` services (`AGENTD_ROLE`), loop workers autoscaled on `agentd_loop_steps_due` |
+| agentd | one container, `AGENTD_ROLE=all`, on tosspaper's existing host or ECS, behind its load balancer and NAT | separate `api` and `loop` services (`AGENTD_ROLE`), loop workers autoscaled on `agentd.loop.steps_due` |
 | Postgres | its own `agentd` schema in tosspaper's Postgres, a pool of 16 per replica | its own RDS instance (`AGENTD_PG_URL`), then RDS Proxy in front (the same setting), then a read replica (`AGENTD_PG_READ_URL`) |
-| Pub/sub | tosspaper's Valkey | its own Valkey (`AGENTD_VALKEY_URL`) |
+| Pub/sub | tosspaper's Valkey | its own Valkey (`AGENTD_VALKEY_URL`), or a Valkey cluster (`AGENTD_VALKEY_CLUSTER=true`) |
+| Change feed | Debezium Server, one instance, reading Postgres's WAL (`wal_level=logical`) into self-hosted Kafka (`AGENTD_KAFKA_BROKERS`), so Valkey needs no durability (D52) | unchanged; with `AGENTD_KAFKA_BROKERS` unset the feed is Valkey Streams |
+| agentd's keys | environment variables, filled however the deployment chooses (D59) | unchanged |
 | Objects, logs, metrics | tosspaper's S3 bucket, logs and metrics | unchanged |
 | Event log | Postgres, behind the event-log port | DynamoDB for large workspaces behind the same port, a later plan (Out of scope) |
 | Credentials | Secrets Manager (D30) | envelope encryption, a later plan |
@@ -858,15 +895,18 @@ Durable Objects under $5. AWS data transfer for staging documents from S3 to Clo
 
 ## SRE
 
-### SLOs (targets in `docker/observability/slos.yaml`)
+### SLOs
 
-| Component | SLI | SLO |
-|---|---|---|
-| API | non-5xx / all requests | 99.9% |
-| Step start | steps claimed within 1 s of their wake / all steps | 99% |
-| Tool-call dispatch | `agent.tool_use` on the worker's stream within the threshold / all built-in calls | 90% < 250 ms, 99% < 1 s |
-| Event delivery | events on every open stream within 1 s of append | 99% |
-| Turn success | turns ending `end_turn`, `requires_action` or `budget_reached` / all turns | 99% |
+The alert rules and their backend belong to the infrastructure (D54). Tool-call dispatch and event delivery have no
+metric of agentd's yet.
+
+| Component | SLI | Metric | SLO |
+|---|---|---|---|
+| API | non-5xx / all requests | `http.server.request.duration` by status | 99.9% |
+| Step start | steps claimed within 1 s of their wake / all steps | `agentd.loop.step_wait` | 99% |
+| Tool-call dispatch | `agent.tool_use` on the worker's stream within the threshold / all built-in calls | none yet | 90% < 250 ms, 99% < 1 s |
+| Event delivery | events on every open stream within 1 s of append | none yet | 99% |
+| Turn success | turns ending `end_turn`, `requires_action` or `budget_reached` / all turns | `agentd.loop.turns` by stop reason | 99% |
 
 ### Sizing at the peak
 
@@ -874,35 +914,39 @@ Durable Objects under $5. AWS data transfer for staging documents from S3 to Clo
 |---|---|---|
 | Steps | 10^4 sessions / 20 s per step (N1, N2) | 500 steps/s |
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
-| Step statements | about 11 per step (the checkpoint read included), plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
+| Step statements | about 10 per step, plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
-| Log reads | 500 steps/s × the log size a step reads: from the oldest checkpoint of the session's threads, or the whole log while a thread has none, so compaction bounds it at about 80% of a window per thread | measured in the load test; `events.list` moves to the read replica when it grows |
+| Log reads | 500 steps/s × the session's whole log, which each step reads; compaction bounds the prompt, not the read | measured in the load test; the step moves to the checkpoint-bounded read (Run row) and `events.list` to the read replica when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13), and the account-wide budget (M-4) | bounded by M-1 and M-4 |
 | Compaction calls | one per thread each time it reaches the summary threshold; a step that compacts makes no turn call | at most the model call rate, measured in the load test |
 | MCP per step | an MCP tool call adds two steps, the tool step and the model step after it (MC-24, MC-25); 1 `mcp_connections` SELECT and 1 credential SELECT per step; `initialize` and `tools/list` only on a reconnect (MC-15); 1 `GetSecretValue` per server the step connects to or calls (MC-6) | at most 500 secret reads/s when every step calls one server, about 1.3×10^9 a month, about $6.5k a month at $0.05 per 10,000 calls (Q1); a step that calls no MCP tool reads none |
 | Swap reads (Cloudflare) | each credential read at most once per 5 minutes per session object (CF-6) | 10^4 sessions × c credentials / 300 s = 33c reads/s |
 | Secrets Manager in all | MCP plus swap reads against the fixed 10,000/s regional `GetSecretValue` limit (Q1) | under 600/s with one credential each; the envelope trigger fires at 5,000/s |
-| Loop workers | steps in flight = 500/s × model latency; each worker runs up to 256 steps at once (S-8) | about 60 workers at a 30 s latency; the autoscaler follows `agentd_loop_steps_due` |
+| Loop workers | steps in flight = 500/s × model latency; each worker runs up to 256 steps at once (S-8) | about 60 workers at a 30 s latency; the autoscaler follows `agentd.loop.steps_due` |
 | Database connections | loop workers and API replicas × a pool of 16 | about 1,000 at 60 workers: past a single instance's comfortable `max_connections`, so RDS Proxy is on before this peak (trigger below) |
 | `cloud` sandboxes on Cloudflare | 10^4 sessions × 1/4 to 1/2 vCPU against the 1,500 vCPU default (G1) | 2,500 to 5,000 vCPU: a capacity raise is agreed with Cloudflare before production volume |
 | Fargate fleet (AWS-only operators) | one task per active session | the Fargate vCPU and ENI quotas (Q4) are raised with AWS before production volume |
 
 ### Scale-up triggers
 
-Each trigger is a CloudWatch alarm that opens a ticket, not a page; the scale-up is a setting change (Deployment).
+Each trigger is a signal and a threshold for the deployment's monitoring backend to open a ticket on, not a page
+(D54); the scale-up is a setting change (Deployment).
 
-| Trigger | Metric | Alarm | Action |
+| Trigger | Metric | Threshold | Action |
 |---|---|---|---|
-| Postgres connections | `AWS/RDS` `DatabaseConnections` over `max_connections` | `agentd-db-connections-high`: above 70% for 15 minutes; also checked at deploy time as loop workers × pool size | add RDS Proxy (transaction pooling) |
-| Secrets Manager reads | `AWS/Usage` `CallCount` for Secrets Manager `GetSecretValue` | `agentd-secrets-reads-high`: above 5,000/s (50% of the limit) for 15 minutes | plan envelope encryption (D30) |
-| Log reads | `events.list` p99 latency | `agentd-log-reads-slow`: above 500 ms for 1 hour | configure the read replica |
-| Event-log load | events appended per second, and `AWS/RDS` `WriteIOPS` and `CPUUtilization` | `agentd-event-log-hot`: appends above 2,500/s (half the sizing peak) or Postgres CPU above 70% for 1 hour | plan the DynamoDB event log (Out of scope) |
-| Sandbox start | time from work item queued to first `user.tool_result` | `agentd-sandbox-start-slow`: p99 above 10 s for 1 hour | a warm buffer on Fargate, or a capacity raise on Cloudflare |
+| Postgres connections | `AWS/RDS` `DatabaseConnections` over `max_connections` | above 70% for 15 minutes; also checked at deploy time as loop workers × pool size | add RDS Proxy (transaction pooling) |
+| Secrets Manager reads | `AWS/Usage` `CallCount` for Secrets Manager `GetSecretValue` | above 5,000/s (50% of the limit) for 15 minutes | plan envelope encryption (D30) |
+| Log reads | `events.list` p99 latency | above 500 ms for 1 hour | configure the read replica, and move the step to the checkpoint-bounded read (the step queue's Run row) |
+| Event-log load | events appended per second, and `AWS/RDS` `WriteIOPS` and `CPUUtilization` | appends above 2,500/s (half the sizing peak) or Postgres CPU above 70% for 1 hour | plan the DynamoDB event log (Out of scope) |
+| Sandbox start | time from work item queued to first `user.tool_result` | p99 above 10 s for 1 hour | a warm buffer on Fargate, or a capacity raise on Cloudflare |
 
-### Operational alarm
+### Operational signals
 
-`agentd-retention-stale` fires when `agentd_retention_last_success` shows no run for 45 minutes while a retention
-period is set; it opens a ticket, and the action is to restart one replica, whose first run walks every archived
+`docs/operations.md` names a threshold and an action for each signal it lists. Among them: when
+`agentd.retention.last_success` shows no run for 15 minutes while a retention period is set, read retention's `warn`
+lines; when the change feed's slot lag, Debezium's
+health or the feed's backlog passes its threshold, schedules and webhooks wait until the feed moves again (CH-1).
+For a retention outage longer than its 1-hour horizon, restarting one replica makes its first run walk every archived
 session (E4).
 
 ### Accepted risks
@@ -911,7 +955,10 @@ session (E4).
 |---|---|---|
 | A revoked `environment_variable` credential keeps working in a running `cloud` session for up to 5 minutes (CF-6) | 5 minutes, per session object | live documents a shorter re-resolution, or a customer needs immediate revocation |
 | The Cloudflare launcher's AWS read key is a static key (G8) | `GetSecretValue` on tagged secrets only, from Cloudflare's IP ranges, rotated every 90 days | Cloudflare documents a Worker identity AWS accepts |
-| An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) can have its secret overwritten by the refresh (MC2) (D41) | 10 s per refresh, logged as `refresh_overwrote_update`; when the API's update carried a token from a new authorization, that token is lost, the next refresh on the old grant may fail with `vault_credential.refresh_failed`, and the user updates the credential again | a customer reports a lost update, or the log shows it more than rarely |
+| An API update of an `mcp_oauth` credential made during a refresh's token call (at most 10 s) and the refresh's secret write can overwrite each other (MC2) (D41) | 10 s per refresh, logged as `refresh_overwrote_update`; when the API's update carried a token from a new authorization, that token is lost, the next refresh on the old grant may fail with `vault_credential.refresh_failed`, and the user updates the credential again | a customer reports a lost update, or the log shows it more than rarely |
+| A credential update that loses every claim answers `409` with its secret already written, since the secret is stored before the row's claimed write (D41) | at most 3 reads per update; the stored secret is the update's own, under the row another writer left | a customer reports a `409` update whose new token is in use |
+| `mcp_oauth_validate` refreshes without the 30 s hold (MC-7), so a validate that reads the row right after a loop refresh claimed it can send a second token request with the same refresh token | one validate call; the losing refresh records `vault_credential.refresh_failed`. The hold would answer every validate made within 30 s of a create or update `unknown` | a token endpoint that revokes on refresh-token reuse, or a customer report |
+| A webhook delivery's retries run on a task in memory, so a restart between attempts leaves the row pending with neither `delivered_at` nor `dropped_at` (H-4) | the deliveries in retry on the restarted replica, each at most two retries 31 s apart | a customer reports a missed delivery |
 | A crash between a session delete's commit and its event delete leaves that session's events (E4) (D41) | one session per crash; no API can reach them, since the session answers 404 | the DynamoDB plan, which moves deletes to the store's expiry |
 | A loop worker that dies after an MCP server answered a call and before its step commits the result makes the next step call the tool again (MC-25) | one repeated call per crash; the step that calls a tool commits its result at once, with no model call in between | the MCP spec gains idempotency keys, or a customer reports a repeated side effect |
 | A sandbox whose networking cannot be read never starts, and its session waits on its tool call until a `user.interrupt` (CF-12) | 10 minutes of retries per work item | the networking read fails outside a Cloudflare or agentd outage |
@@ -923,7 +970,8 @@ session (E4).
 `perf/` (k6) drives N sessions against the scripted model with 2 to 8 loop workers, and records step-start latency,
 claim contention, Postgres statements per second, connections, the log size per step, compaction calls and model
 latency. Runs: a steady run; a loop worker killed mid-step; a workspace at its model limit; the account-wide budget
-full; long sessions that cross both compaction thresholds. Results go on the loop and compaction PRs (6, 7).
+full; long sessions that cross both compaction thresholds. It runs by hand (D55), and its results go on the PR that
+changes the loop.
 
 ## Audit of this plan
 
@@ -946,7 +994,7 @@ Removal sites for RM2 and RM3 (first pass: launch, runtime and egress identifier
 second pass: workspace members and dependencies, 13 hits; the second pass added `docker/sandbox/Dockerfile`
 building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and `sandbox-docker`):
 
-| Site | Today | Plan |
+| Site | What it held | Plan |
 |---|---|---|
 | `api/src/sandbox_work.rs` (12 hits) | issues work and egress settings for each sandbox | RM2 removes it; L7 queues work instead |
 | `api/src/egress.rs`, `api/src/egress/admin.rs` (17) | registers sessions with the egress service | RM3 |
@@ -962,7 +1010,7 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 |---|---|
 | `~/.claude/CLAUDE.md` | PASS: separate spec, migration and code PRs; `gh stack`; no footer; no em dashes; never push `main` or merge. |
 | `rules/planning-phase.md`, `plan-audit` | PASS: inventory, second pass, plan, this audit, questions to the user one at a time. |
-| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves (`mcp_connections` and the checkpoint index follow D32 and D31); access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`; PR 2 splits the vault and deployment files before PRs 4 and 8 change them; new code lands in new files); `mcp_oauth_validate` is live's endpoint, not a derived field. |
+| `rules/planning-questions.md` | PASS: every new table is a migration PR the user approves (`mcp_connections` and the checkpoint index follow D32 and D31); access checks read one row; no file over 200 lines grows (W7 splits `edge/auth.rs` into `reach.rs`; PR 2 splits the vault and deployment files before PRs 4 and 7 change them; new code lands in new files); `mcp_oauth_validate` is live's endpoint, not a derived field. |
 | `rules/diagnose-before-patch.md` | PASS: the engine is restored, not rewritten; container code leaves agentd instead of growing beside it. |
 | `rules/comment-policy.md` | PASS: no comments planned beyond the SQL claim notes. |
 | `rules/auto-rerun-ci.md` | Not applicable: applies during the build. |
@@ -979,4 +1027,4 @@ building `sandbox-worker` and the api crate's dependencies on `egress-proxy` and
 | `tech-writing-style`, `no-em-dashes` | PASS: terms defined above; no em dashes; the design stated as fact. |
 | `pr-body` | PASS: each PR's body carries these IDs. |
 | `tosspaper-testing` | Not applicable as written (tosspaper's stage); each agentd PR records its local and CI verification. |
-| SRE skills | PASS: SLOs, sizing, scale-up triggers with metrics and alarms, accepted risks, load test plan, rollout stages, the 2026-11-06 review's findings answered (signals over Valkey, no held lease, one retry layer, a lapsed `stopping` item served as `stopped` on read, autoscaling on queue depth). |
+| SRE skills | PASS: SLOs, sizing, scale-up triggers with their signals and thresholds, accepted risks, load test plan, the merge gate (D45), the 2026-11-06 review's findings answered (signals over Valkey, no held lease, one retry layer, a lapsed `stopping` item served as `stopped` on read, autoscaling on queue depth). |

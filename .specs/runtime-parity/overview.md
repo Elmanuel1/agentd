@@ -6,8 +6,9 @@ agentd serves Anthropic's Managed Agents API and runs the agent loop on the serv
 model, records every event, and queues a work item when a tool has to run. A separate container project, `agentd-worker`, runs
 Anthropic's own worker, unchanged, which picks up work items and runs the tools. Our `cloud` environments reuse that
 container project: we run it ourselves and point it at agentd, exactly as a customer runs it for a `self_hosted`
-environment, with each session's sandbox on Cloudflare Containers. At launch agentd is one container on tosspaper's
-existing host and Postgres; bigger setups are settings, each switched on when a named alarm says it is needed.
+environment, with each session's sandbox on Cloudflare Containers. agentd is not deployed yet; its launch shape is one
+container on tosspaper's existing host and Postgres, and bigger setups are settings, each switched on when a named
+signal passes its threshold.
 
 ## How a turn flows
 
@@ -38,8 +39,6 @@ sequenceDiagram
 
 - **Live**: Anthropic's hosted Managed Agents API, the behaviour agentd copies.
 - **Sandbox**: the container a session's tools run in.
-- **Harness**: agentd's current Python loop that runs inside each sandbox and writes the agent's events through
-  agentd-only `/harness/*` routes; this plan removes it.
 - **Outcome grading**: a second model pass that checks the agent's work against a rubric the caller gave.
 - **MCP server**: an outside tool server the agent can call; agentd connects to it with the credential stored in
   the session's vaults.
@@ -74,23 +73,23 @@ agentd (one stack, each PR on your go-ahead):
 
 1. The spec (this folder).
 2. Make room: three large files are split before later PRs change them, with no behaviour change.
-3. Migrations: every new table and index in one production-safe PR.
+3. Migrations: every table and index of the plan in one production-safe PR, except two `work_items` indexes (V12),
+   which ship in PR 4a, and PR 7's own (V13 to V15), which ship in PR 7.
 4. The work API for Anthropic's worker: work items in Postgres, live's work secret (with signed placeholders for
    `cloud` environment-variable credentials), environment keys and our runtime key, work tokens that reach only their
    own session, and the session's files for workers.
+4a. A migration: the two `work_items` indexes the runtime key's reads use (V12).
 5. The event log and streams: events in order on every replica through Valkey signals, a fallback timer, new streams
    refused under overload, the event list from a replica, an optional retention period. The log stays on
-   Postgres; DynamoDB for large workspaces is a later step, behind the same port, when its alarm fires.
+   Postgres; DynamoDB for large workspaces is a later step, behind the same port, when its signal passes its threshold.
 6. The loop: the engine brought back, steps from a Postgres queue with leases, the `api` and `loop` roles, model
-   limits per workspace and across the account, and sessions run on the loop behind a setting.
-7. Compaction: clear old tool results, then summarise into checkpoints.
-8. MCP and vaults: MCP servers called from the loop with cached connections, vault credentials read per step, one
-   OAuth refresh at a time, deployments paused when the environment blocks an MCP host, and vaults as Anthropic
-   documents them.
-9. Scheduled deployments on any replica, and session, vault and credential webhooks.
-10. Removals: the Python harness and its routes, agentd's sandbox launch, the egress crates (they move to
-    `agentd-worker`).
-11. The Java SDK in CI beside Python and TypeScript, SLO alerts, scale-up alarms, the load test, docs and runbook.
+   limits per workspace and across the account, and every session on the loop.
+7. The rest, in one PR: compaction (clear old tool results, then summarise into checkpoints); MCP servers called
+   from the loop with cached connections, vault credentials read per step, one OAuth refresh at a time, deployments
+   paused when the environment blocks an MCP host, and vaults as Anthropic documents them; thinking, and a grader
+   that grades in its reply; schedules and webhooks through outboxes that a change feed reads from Postgres's WAL;
+   agentd's keys from environment variables; the removals of the Python harness, agentd's sandbox launch and the
+   egress crates; the Java SDK in CI beside Python and TypeScript, exported metrics, the load test and docs.
 
 `agentd-worker` (its own repository, `Elmanuel1/agentd-worker`, created on your go-ahead):
 
@@ -130,8 +129,8 @@ agentd (one stack, each PR on your go-ahead):
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
   a departure from live (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
-- A lean launch: one agentd container on tosspaper's host and Postgres, no RDS Proxy until the connections alarm
-  fires (2026-11-08).
+- A lean launch: one agentd container on tosspaper's host and Postgres, no RDS Proxy until the connections signal
+  passes its threshold (2026-11-08).
 - Environment keys in their own table (2026-11-08).
 - No endpoint Anthropic does not have (2026-11-06).
 - Custom tools are answered by the API caller (2026-11-04).
@@ -139,7 +138,17 @@ agentd (one stack, each PR on your go-ahead):
   port (2026-11-08).
 - Model limits: 32 model calls at once per workspace, 5 attempts, prompt caching (2026-11-08), and an account-wide
   limit (2026-11-08).
-- Webhook endpoints configured per organization (2026-11-08).
+- Webhook endpoints configured per organization (2026-11-08), from an environment variable (2026-11-11).
+- The rest of the plan as one PR, the removals in it (2026-11-11); agentd is not deployed, so a PR merges on green CI
+  and a local replay (2026-11-12).
+- Schedules and webhooks go through outboxes read from Postgres's WAL by Debezium into Kafka, or Valkey Streams
+  without Kafka; an action's own effects happen in its request (2026-11-11 to 2026-11-15).
+- agentd's keys come from environment variables, with rotation; Secrets Manager holds only tenant credentials
+  (by 2026-11-12).
+- agentd exports metrics only; alarms belong to the infrastructure (2026-11-11). The load test runs by hand
+  (2026-11-11).
+- Thinking on; the grader writes what live writes, with no verdict tool; archiving a session terminates it
+  (2026-11-11, 2026-11-12).
 - The Java SDK joins the conformance suites; tunnels and user profiles get their own plans (2026-11-08).
 
 ## What it costs at launch
@@ -153,7 +162,7 @@ Objects; staging documents from S3 adds about $15 to $20. The full breakdown is 
 
 The full detail lives beside this page:
 
-- [requirements.md](requirements.md): every requirement with its ID (W, F, E, S, R, M, L, CP, FO, K, MC, VA, H, EV, J,
+- [requirements.md](requirements.md): every requirement with its ID (W, F, E, S, R, M, L, CP, FO, K, CH, MC, VA, H, EV, J,
   and `agentd-worker`'s EG, CF, FL), the per-PR files, SQL statements and tests, the step queue's statements,
   rollout, deployment and cost, SRE sizing, scale-up triggers and SLOs, the plan's audit.
 - [decisions.md](decisions.md): each decision with its source.
