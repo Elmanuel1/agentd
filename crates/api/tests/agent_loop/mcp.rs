@@ -524,10 +524,16 @@ async fn a_session_the_server_ended_reconnects_and_the_call_goes_through() {
 /// A vault holding an expired `mcp_oauth` token for `url`, refreshed at
 /// `endpoint`, its row last updated `age` seconds ago.
 async fn expired(rig: &Rig, url: &str, endpoint: &str, age: i64) -> (String, String) {
+    expiring(rig, url, endpoint, "2020-01-01T00:00:00Z", age).await
+}
+
+/// A vault holding an `mcp_oauth` token for `url` that expires at `at`,
+/// refreshed at `endpoint`, its row last updated `age` seconds ago.
+async fn expiring(rig: &Rig, url: &str, endpoint: &str, at: &str, age: i64) -> (String, String) {
     let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
     let vault = vault["id"].as_str().unwrap().to_owned();
     let auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "stale-token-3",
-        "expires_at": "2020-01-01T00:00:00Z", "refresh": {"client_id": "c", "token_endpoint": endpoint,
+        "expires_at": at, "refresh": {"client_id": "c", "token_endpoint": endpoint,
         "token_endpoint_auth": {"type": "none"}, "refresh_token": "r"}});
     let path = format!("/v1/vaults/{vault}/credentials");
     let (st, cred) =
@@ -712,13 +718,21 @@ async fn a_step_whose_claim_is_gone_stops_before_its_next_call() {
     // S-2: the step's row is taken away during its first call; the next
     // renewal finds the claim gone and the step sends nothing more.
     let Some(rig) = Rig::new().await else { return };
+    let (server, _app, _worker, _s) = gone_during_first_call(&rig, 2).await;
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    assert_eq!(server.count("tools/call"), 1, "the step stopped before its second call");
+}
+
+/// A session whose step, under a `lease` of that many seconds, makes two
+/// 1.5 s calls and loses its row during the first.
+async fn gone_during_first_call(rig: &Rig, lease: u64) -> (Arc<Server>, Router, super::Worker, String) {
     let (server, url, guard) = serve().await;
     let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
     let timeout = Some(std::time::Duration::from_millis(1500));
-    let lease = std::time::Duration::from_secs(2);
-    let (app, _worker) =
-        worker(&rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
+    let lease = std::time::Duration::from_secs(lease);
+    let (app, worker_) =
+        worker(rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("try")).await;
@@ -730,8 +744,7 @@ async fn a_step_whose_claim_is_gone_stops_before_its_next_call() {
     let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
         .bind::<diesel::sql_types::Text, _>(&s);
     diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-    assert_eq!(server.count("tools/call"), 1, "the step stopped before its second call");
+    (server, app, worker_, s)
 }
 
 /// The rig's step queue, failing the first write or commit `fails` picks.
@@ -835,27 +848,10 @@ async fn each_mcp_result_is_recorded_before_the_next_call_goes_out() {
 #[tokio::test]
 async fn a_result_write_that_finds_the_claim_gone_stops_the_step() {
     // S-2: the step's row is taken away during its first call, and the lease
-    // outlasts the call, so the result's write is what finds the claim gone:
-    // it writes nothing and the step sends no second call.
+    // renews long after the call, so the result's write is what finds the
+    // claim gone: it writes nothing and the step sends no second call.
     let Some(rig) = Rig::new().await else { return };
-    let (server, url, guard) = serve().await;
-    let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
-    let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
-    let timeout = Some(std::time::Duration::from_millis(1500));
-    let lease = std::time::Duration::from_secs(10);
-    let (app, _worker) =
-        worker(&rig, model, Tune { guard, mcp_timeout: timeout, lease, ..Tune::default() }).await;
-    let env = rig.environment("cloud").await;
-    let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
-    send(&app, &s, message("try")).await;
-    while server.count("tools/call") == 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    let pg = db().await;
-    let mut conn = pg.diesel.get().await.unwrap();
-    let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
-        .bind::<diesel::sql_types::Text, _>(&s);
-    diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+    let (server, app, _worker, s) = gone_during_first_call(&rig, 30).await;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     assert_eq!(server.count("tools/call"), 1, "the step stopped at the first result's write");
     let events = events_until(&app, &s, "agent.mcp_tool_use", 2).await;
@@ -906,16 +902,8 @@ async fn a_refresh_another_worker_holds_after_a_call_ran_keeps_its_result_and_de
     let timeout = Some(std::time::Duration::from_secs(3));
     let (app, _worker) = worker(&rig, model, Tune { guard, mcp_timeout: timeout, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
-    let (_, vault) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;
-    let vault = vault["id"].as_str().unwrap().to_owned();
     let soon = (chrono::Utc::now() + chrono::Duration::milliseconds(2500)).to_rfc3339();
-    let auth = json!({"type": "mcp_oauth", "mcp_server_url": url, "access_token": "tok-oauth",
-        "expires_at": soon, "refresh": {"client_id": "c", "token_endpoint": url.replace("/mcp", "/token"),
-        "token_endpoint_auth": {"type": "none"}, "refresh_token": "r"}});
-    let path = format!("/v1/vaults/{vault}/credentials");
-    let (st, cred) =
-        rig.call("POST", &path, Auth::Key(KEY), Some(json!({"display_name": "c", "auth": auth}))).await;
-    assert_eq!(st, StatusCode::OK, "{cred}");
+    let (vault, cred) = expiring(&rig, &url, &url.replace("/mcp", "/token"), &soon, 0).await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([vault])).await;
     send(&app, &s, message("go")).await;
     let first = events_until(&app, &s, "agent.mcp_tool_result", 1).await;
@@ -928,7 +916,7 @@ async fn a_refresh_another_worker_holds_after_a_call_ran_keeps_its_result_and_de
     assert_eq!(server.tokens.load(Ordering::SeqCst), 0, "no refresh while another worker's is in flight");
     let step = super::step_of(&s).await.expect("the step stays queued");
     assert!(step.due_in <= 1, "the step waits a second");
-    age_row(cred["id"].as_str().unwrap(), 120).await;
+    age_row(&cred, 120).await;
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     let results = of(&events, "agent.mcp_tool_result");
     let recorded: Vec<(&Value, &Value, &Value)> =
