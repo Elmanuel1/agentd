@@ -192,6 +192,8 @@ struct Tune {
     compaction: engine::turn::compact::Compaction,
     /// The webhooks its commits and vault writes send.
     hooks: Option<Arc<webhooks::Webhooks>>,
+    /// How long its MCP requests may take, when not the loop's.
+    mcp_timeout: Option<Duration>,
 }
 
 impl Default for Tune {
@@ -203,6 +205,7 @@ impl Default for Tune {
             guard: shared::net::Guard::default(),
             compaction: engine::turn::compact::Compaction::default(),
             hooks: None,
+            mcp_timeout: None,
         }
     }
 }
@@ -249,7 +252,7 @@ impl SessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction, hooks } = tune;
+    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -260,13 +263,15 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
     let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
     let app = rig.replica(&rig.stores, Streaming { signals: signals.clone(), ..Streaming::default() });
     let hooks = hooks.unwrap_or_default();
+    let mut mcp = api::agent_loop::mcp(&rig.stores, guard, &hooks);
+    mcp.timeout = mcp_timeout.unwrap_or(mcp.timeout);
     let stores = LoopStores {
         steps: rig.stores.steps.clone(),
         sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
-        mcp: api::agent_loop::mcp(&rig.stores, guard, &hooks),
+        mcp,
         webhooks: hooks,
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };

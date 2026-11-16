@@ -21,6 +21,8 @@ pub enum Failure {
     Unreachable,
     /// The server answered 401 to the credential the loop sent.
     Unauthorized,
+    /// The server answered 401 to a static bearer token.
+    Rejected,
     /// The server answered 401, and the session's vaults hold no credential
     /// for its URL.
     Unauthenticated,
@@ -87,11 +89,11 @@ impl Rpc {
         Ok(Self { client, url, bearer, session, next: 1 })
     }
 
-    fn headers(&self) -> HeaderMap {
+    fn headers(&self, bearer: bool) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(ACCEPT, reqwest::header::HeaderValue::from_static("application/json, text/event-stream"));
         h.insert(CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
-        if let Some(Ok(v)) = self.bearer.as_ref().map(|b| format!("Bearer {b}").parse()) {
+        if let Some(Ok(v)) = self.bearer.as_ref().filter(|_| bearer).map(|b| format!("Bearer {b}").parse()) {
             h.insert(AUTHORIZATION, v);
         }
         if let Some(Ok(v)) = self.session.as_ref().map(|s| s.parse()) {
@@ -101,9 +103,18 @@ impl Rpc {
         h
     }
 
+    async fn send(&self, body: &Value, bearer: bool) -> Result<reqwest::Response, Failure> {
+        let sent = self.client.post(self.url.clone()).headers(self.headers(bearer)).json(body).send().await;
+        sent.map_err(|_| Failure::Unreachable)
+    }
+
     async fn post(&mut self, body: &Value) -> Result<(HeaderMap, String), Failure> {
-        let sent = self.client.post(self.url.clone()).headers(self.headers()).json(body).send().await;
-        let reply = sent.map_err(|_| Failure::Unreachable)?;
+        let mut reply = self.send(body, true).await?;
+        // Live sends a request its bearer was refused for once more with no
+        // Authorization header (MC-4 and MC-26 capture).
+        if reply.status() == StatusCode::UNAUTHORIZED && self.bearer.is_some() {
+            reply = self.send(body, false).await?;
+        }
         match reply.status() {
             s if s.is_success() => {}
             StatusCode::UNAUTHORIZED => return Err(Failure::Unauthorized),
