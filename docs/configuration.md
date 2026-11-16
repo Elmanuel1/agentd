@@ -58,8 +58,12 @@ the reply leads to:
   commit before the call;
 - its events, in one commit after it.
 
-Nothing is held in a replica between steps. A step cut off by a crash runs
-again from the log once its lease runs out. A `user.interrupt` sent during a
+While a step runs, its worker renews the lease every third of its length, so
+slow MCP or model work never outlasts it; a step whose claim is gone (another
+worker took it, or the session was deleted) stops where it is and sends
+nothing more. Nothing is held in a replica between steps. A step cut off by a
+crash renews nothing, so it runs again from the log once its lease runs out. A
+`user.interrupt` sent during a
 call cancels it. Built-in tool calls are parked for the session's worker,
 which takes the session's work item:
 - a `self_hosted` session idles `requires_action` until its worker posts

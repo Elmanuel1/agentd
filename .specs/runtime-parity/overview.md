@@ -50,8 +50,8 @@ sequenceDiagram
   A tool call ends a step; the tool's result starts the next one, an allowed MCP call the loop makes itself runs
   in the next step, and an `ask` call after its confirmation.
 - **Work item**: a queue entry that tells a worker "this session needs you"; its id is the session id.
-- **Lease**: a claim with an expiry. A loop worker holds a step's lease while it runs that step; if it dies, the lease
-  runs out and another worker takes the step.
+- **Lease**: a claim with an expiry. A loop worker holds a step's lease while it runs that step, renewing it every third
+  of its length; if it dies, the lease runs out and another worker takes the step.
 - **`EnvironmentWorker`**: Anthropic's worker, part of the official Python SDK. It takes a work item, runs the
   session's tools, and posts each result back.
 - **Sidecar**: on the Fargate launcher, a helper container in the same task as the worker, sharing its disk, that
