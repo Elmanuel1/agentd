@@ -14,6 +14,7 @@ use super::super::session_events::{insert, lock, stamp};
 use super::super::work_items::stop::requeue;
 use super::rows::Doc;
 use super::{HELD, KEY};
+use crate::entities::webhook_deliveries::status_changed;
 use crate::{diesel_be, enum_str, pool_be, to_doc, PgBackend};
 
 /// The step's events and session changes, after the held step was checked.
@@ -25,7 +26,16 @@ async fn land(
     let (ws, id) = (&claim.workspace, &claim.session);
     stamp(c, ws, id, write.read, write.at).await?;
     let ids: Vec<&str> = write.events.iter().map(|e| e.id.as_str()).collect();
-    let docs = write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
+    let mut docs =
+        write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
+    for (doc, event) in docs.iter_mut().zip(write.events) {
+        let kept = write.engine.iter().find(|(e, _)| *e == event.id).map(|(_, kept)| kept.clone());
+        let (Some(kept), Some(doc)) = (kept, doc.as_object_mut()) else { continue };
+        // A checkpoint's covered seq at the path V11's unique index reads.
+        let seq = kept.get("checkpoint").and_then(|c| c.get("through_seq")).cloned();
+        doc.extend(seq.map(|seq| ("checkpoint".to_owned(), serde_json::json!({ "through_seq": seq }))));
+        doc.insert("engine".into(), kept);
+    }
     if insert(c, ws, id, &ids, docs).await? != ids.len() {
         return Err(diesel::result::Error::RollbackTransaction);
     }
@@ -40,6 +50,7 @@ async fn land(
     };
     let mut session: Session =
         serde_json::from_value(row.doc).map_err(|e| diesel::result::Error::DeserializationError(e.into()))?;
+    let before = session.status;
     if !(write.session)(&mut session) {
         return Ok(());
     }
@@ -52,8 +63,11 @@ async fn land(
         .bind::<Text, _>(enum_str(&session.status))
         .bind::<Jsonb, _>(doc)
         .execute(c)
-        .await
-        .map(drop)
+        .await?;
+    match (session.status == before, write.deliveries) {
+        (false, Some(deliveries)) => status_changed(c, ws, id, |org| deliveries(org, session.status)).await,
+        _ => Ok(()),
+    }
 }
 
 fn serde_be(e: StoreError) -> diesel::result::Error {
@@ -76,8 +90,15 @@ fn held(
 /// The transaction's result: `Ok(false)` when the claim no longer holds the
 /// step, which rolls the transaction back.
 fn lost(e: diesel::result::Error) -> Result<bool, StoreError> {
+    use diesel::result::{DatabaseErrorKind, Error};
     match e {
-        diesel::result::Error::RollbackTransaction => Ok(false),
+        Error::RollbackTransaction => Ok(false),
+        // A second checkpoint of one covered event (V11): another step wrote it.
+        Error::DatabaseError(DatabaseErrorKind::UniqueViolation, info)
+            if info.constraint_name() == Some("session_events_checkpoint") =>
+        {
+            Ok(false)
+        }
         e => Err(diesel_be(e)),
     }
 }

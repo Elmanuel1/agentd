@@ -1,7 +1,7 @@
 # Observability
 
 agentd emits traces, metrics and logs at every boundary it crosses: each request it serves, each SQL statement
-and pooled connection, each blob, secret and sandbox operation, and each scheduled fire. Each signal names its
+and pooled connection, each blob and secret operation, and each scheduled fire. Each signal names its
 boundary, its operation and its outcome, so a failure points at the boundary that failed. The code lives in
 `crates/api/src/telemetry`.
 
@@ -15,15 +15,16 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 | Inbound HTTP, every route and unknown paths | `telemetry::http::observe`, a layer on every route | `GET /v1/agents/{id}` with method, route, status code and request id; W3C `traceparent` is honoured | `http.server.request.duration` (s) by method, route template, status code; `http.server.active_requests` | `error` on 5xx, with the cause |
 | Event streams | the same layer, on `text/event-stream` responses | inside the request span | `agentd.sse.active_streams`, held until the client disconnects | |
 | The step queue | `telemetry::steps`, a count every 10 s on every replica | | `agentd.loop.steps_due` and `agentd.loop.steps_leased`, the queue's due and leased steps; every replica reads the same table, so take the maximum, not the sum | `warn` |
+| The loop | `engine::metrics`, in every step | | `agentd.loop.step_wait` (s), a due step's wait for a worker; `agentd.loop.model_call_duration` (s) by provider and outcome, retries included; `agentd.loop.turns` by stop reason; `agentd.loop.events_read` per step and `agentd.loop.events_appended`; `agentd.loop.compactions` and `agentd.loop.mcp_calls` by outcome | `warn` on a failed step |
 | Event retention | `sessions::retention`, every 5 minutes on the replica that holds its lock | | `agentd.retention.last_success` (s), when this replica last completed a run, while `AGENTD_EVENT_RETENTION_DAYS` is set | `warn` |
 | Postgres statements | `telemetry::db`, diesel `Instrumentation` on every pooled connection | `SELECT postgres` and so on, under the request | `db.client.operation.duration` (s) by operation and outcome | `error`; a unique violation is `debug` (it is a 409) |
 | Postgres connections | the pool's setup hook | | a failed `CONNECT` in `db.client.operation.duration`; `db.client.connection.count` (idle, used), `.max`, `.pending_requests` | `error` |
-| Blobs, secrets, sandbox | `telemetry::ports::Observed` around each port | `blobs.put`, `secrets.get`, `sandbox.launch` | `agentd.port.operation.duration` (s) by port, operation and outcome | `warn` |
+| Blobs, secrets | `telemetry::ports::Observed` around each port | `blobs.put`, `secrets.get` | `agentd.port.operation.duration` (s) by port, operation and outcome | `warn` |
 | Scheduled fires | `Observed` around each module's fire handler | `fires.deployment` (the one fire kind today) | the same, port `fires` | `warn` |
 
 Every boundary operation is covered: 49 route registrations plus the unknown-path fallback, every statement
 through the pool, all 3 operations of each of the 3 outbound ports, and every fire kind. Inside a request, time
-between boundaries is the request span's own time. Not covered: the local scheduler's tick loop and the S3
+between boundaries is the request span's own time. Not covered: the scheduler's tick and outbox relay loops and the S3
 SDK's internal retries (both log, but emit no metric).
 
 A 5xx response body says only `Internal server error` (or `Overloaded` for a 529), as the live API does. The
@@ -57,7 +58,7 @@ that the dashboard and alert rules are provisioned.
 | `agentd-5xx-ratio` | more than 1% of requests answer 5xx for 5 minutes | page |
 | `agentd-p95-latency` | p95 above 1 s for 10 minutes | warn |
 | `agentd-sql-failures` | more than 0.05 failed statements or connections per second for 5 minutes | page |
-| `agentd-port-failures` | a blob, secret or sandbox port fails more than 0.05 times per second for 5 minutes | warn |
+| `agentd-port-failures` | a blob or secret port fails more than 0.05 times per second for 5 minutes | warn |
 | `agentd-fire-failures` | any scheduled fire failed in the last 15 minutes | warn |
 | `agentd-pool-saturated` | a request waited for a Postgres connection for 5 minutes | warn |
 | `agentd-absent` | no agentd telemetry for 5 minutes | page |

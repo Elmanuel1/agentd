@@ -18,9 +18,9 @@ use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
-use shared::ports::{FakeRuntime, FakeScheduler};
+
 use shared::Timestamp;
-use store_postgres::PgBackend;
+use store_postgres::{PgBackend, PgFireClaims};
 use tower::ServiceExt;
 
 const KEY: &str = "conformance-key";
@@ -53,25 +53,24 @@ async fn app() -> Option<Router> {
     keys.register(KEY, &format!("org_c{stamp}"), &format!("wrkspc_c{stamp}"), "apikey_01conf");
     let load = Arc::new(store_postgres::PgLoad::new(backend.diesel.clone()));
     let backends = Backends {
+        fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(backend.clone())))),
+        fire_sources: None,
         stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
         admin_keys: Arc::new(StaticAdminKeys::default()),
         environment_keys: Arc::new(test_support::NoEnvironmentKeys),
         system: api::SystemKeys {
-            work_token_key: vec![1; 32],
-            egress_key: vec![2; 32],
+            work_tokens: shared::hash::KeyRing::single(vec![1; 32]),
+            placeholders: shared::hash::KeyRing::single(vec![2; 32]),
             api_base_url: "http://agentd.test".into(),
         },
-        scheduler: Arc::new(FakeScheduler::new()),
-        fires: Arc::new(FireRegistry::new()),
-        runtime: Some(Arc::new(FakeRuntime::new())),
-        sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,
-        on_loop: sessions::steps::LoopWorkspaces::default(),
         role: api::config::Role::All,
+        guard: shared::net::Guard::default(),
+        webhooks: std::sync::Arc::default(),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

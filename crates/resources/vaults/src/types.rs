@@ -21,13 +21,14 @@ impl Resource for VaultResource {
 /// `Id<VaultResource>` alias.
 pub type VaultId = Id<VaultResource>;
 
-/// Marker for `cred_…` ids (prefix unverified against live — flagged for
-/// conformance once a credential is created against the real API).
+/// Marker for `vcrd_…` ids, as live makes them; agentd's earlier `cred_`
+/// ids still parse.
 #[derive(Debug, Clone, Copy)]
 pub struct CredentialResource;
 impl Resource for CredentialResource {
-    const PREFIX: &'static str = "cred";
+    const PREFIX: &'static str = "vcrd";
     const LABEL: &'static str = "credential";
+    const EARLIER_PREFIXES: &'static [&'static str] = &["cred"];
 }
 /// `Id<CredentialResource>` alias.
 pub type CredentialId = Id<CredentialResource>;
@@ -102,179 +103,23 @@ pub struct CreateVaultRequest {
     pub metadata: Metadata,
 }
 
-// ─── Credential auth: input (secrets in) vs wire (secrets never out) ──────
+mod auth;
+mod update;
+mod wire;
+pub use auth::{
+    CredentialAuthInput, CredentialNetworking, InjectionLocation, OauthRefreshInput, TokenEndpointAuthInput,
+};
+pub use update::{ClientSecretUpdate, CredentialAuthUpdate, RefreshUpdate, UpdateCredentialRequest};
+pub use wire::{CredentialAuthWire, OauthRefreshWire, TokenEndpointAuthWire, TokenEndpointMethod};
 
-/// Token-endpoint auth for OAuth refresh.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TokenEndpointAuthInput {
-    /// Public client.
-    None,
-    /// Secret via HTTP Basic.
-    ClientSecretBasic {
-        /// The client secret (write-only).
-        client_secret: SecretString,
-    },
-    /// Secret in the request body.
-    ClientSecretPost {
-        /// The client secret (write-only).
-        client_secret: SecretString,
-    },
-}
-
-/// OAuth refresh block (input).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct OauthRefreshInput {
-    /// Where to POST the refresh_token grant.
-    pub token_endpoint: String,
-    /// OAuth client id.
-    pub client_id: Option<String>,
-    /// Scope.
-    pub scope: Option<String>,
-    /// The refresh token (write-only).
-    pub refresh_token: SecretString,
-    /// Endpoint auth.
-    pub token_endpoint_auth: Option<TokenEndpointAuthInput>,
-}
-
-/// Networking restriction for environment-variable credentials.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CredentialNetworking {
-    /// Substituted on any outbound host.
-    Unrestricted,
-    /// Substituted only for these hosts.
-    Limited {
-        /// Allowed hosts (globs allowed, e.g. `*.twilio.com`).
-        allowed_hosts: Vec<String>,
-    },
-}
-
-/// Where an env-var credential is injected on egress requests. Live default is
-/// both `body` and `header` true.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InjectionLocation {
-    /// Inject into the request body.
-    pub body: bool,
-    /// Inject into request headers.
-    pub header: bool,
-}
-
-impl Default for InjectionLocation {
-    fn default() -> Self {
-        Self { body: true, header: true }
-    }
-}
-
-/// Credential auth — **input** shape (secrets flow in).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CredentialAuthInput {
-    /// OAuth for an MCP server (auto-refreshed at egress).
-    McpOauth {
-        /// Which MCP server URL this credential serves (the unique key).
-        mcp_server_url: String,
-        /// Current access token (write-only).
-        access_token: SecretString,
-        /// Expiry.
-        expires_at: Option<Timestamp>,
-        /// Refresh config.
-        refresh: Option<OauthRefreshInput>,
-    },
-    /// Static bearer token for an MCP server.
-    StaticBearer {
-        /// Which MCP server URL this credential serves (the unique key).
-        mcp_server_url: String,
-        /// The token (write-only).
-        token: SecretString,
-    },
-    /// Env-var secret substituted at egress.
-    EnvironmentVariable {
-        /// The variable name (the unique key).
-        secret_name: String,
-        /// The secret value (write-only).
-        secret_value: SecretString,
-        /// Host restriction. Required by the live API — validated in the service
-        /// so the error is the exact `auth.networking: Field required`.
-        #[serde(default)]
-        networking: Option<CredentialNetworking>,
-        /// Where to inject; defaults to body + header.
-        #[serde(default)]
-        injection_location: Option<InjectionLocation>,
-    },
-}
-
-impl CredentialAuthInput {
-    /// The uniqueness key within a vault (`mcp_server_url` or `secret_name`).
-    pub fn unique_key(&self) -> &str {
-        match self {
-            Self::McpOauth { mcp_server_url, .. } | Self::StaticBearer { mcp_server_url, .. } => {
-                mcp_server_url
-            }
-            Self::EnvironmentVariable { secret_name, .. } => secret_name,
-        }
-    }
-
-    /// The wire projection — provably secret-free (see [`CredentialAuthWire`]).
-    pub fn to_wire(&self) -> CredentialAuthWire {
-        match self {
-            Self::McpOauth { mcp_server_url, expires_at, refresh, .. } => CredentialAuthWire::McpOauth {
-                mcp_server_url: mcp_server_url.clone(),
-                expires_at: *expires_at,
-                has_refresh: refresh.is_some(),
-            },
-            Self::StaticBearer { mcp_server_url, .. } => {
-                CredentialAuthWire::StaticBearer { mcp_server_url: mcp_server_url.clone() }
-            }
-            Self::EnvironmentVariable { secret_name, networking, injection_location, .. } => {
-                CredentialAuthWire::EnvironmentVariable {
-                    secret_name: secret_name.clone(),
-                    // Service validated Some before this projection; default is
-                    // defensive-only.
-                    networking: networking.clone().unwrap_or(CredentialNetworking::Unrestricted),
-                    injection_location: injection_location.clone().unwrap_or_default(),
-                }
-            }
-        }
-    }
-}
-
-/// Credential auth — **wire** shape. Contains no [`SecretString`] by
-/// construction, so serializing it can never leak a secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CredentialAuthWire {
-    /// OAuth (metadata only).
-    McpOauth {
-        /// Server URL key.
-        mcp_server_url: String,
-        /// Expiry.
-        expires_at: Option<Timestamp>,
-        /// Whether auto-refresh is configured.
-        has_refresh: bool,
-    },
-    /// Static bearer (metadata only).
-    StaticBearer {
-        /// Server URL key.
-        mcp_server_url: String,
-    },
-    /// Env-var secret (metadata only).
-    EnvironmentVariable {
-        /// Variable name key.
-        secret_name: String,
-        /// Host restriction (always present on the wire).
-        networking: CredentialNetworking,
-        /// Where the value is injected on egress.
-        injection_location: InjectionLocation,
-    },
-}
-
-/// Constant `"type":"credential"`.
+/// Constant `"type":"vault_credential"`; a doc stored with agentd's earlier
+/// `"credential"` still reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialTag {
-    /// Always `credential`.
-    Credential,
+    /// Always `vault_credential`.
+    #[serde(alias = "credential")]
+    VaultCredential,
 }
 
 /// Wire credential object — secret-free by type.
@@ -288,11 +133,11 @@ pub struct Credential {
     pub created_at: Timestamp,
     /// Display name.
     pub display_name: String,
-    /// `cred_…`.
+    /// `vcrd_…`.
     pub id: CredentialId,
     /// User metadata.
     pub metadata: Metadata,
-    /// Always `"credential"`.
+    /// Always `"vault_credential"`.
     #[serde(rename = "type")]
     pub tag: CredentialTag,
     /// Updated.
@@ -314,17 +159,6 @@ pub struct CreateCredentialRequest {
     pub metadata: Metadata,
 }
 
-/// `POST /v1/vaults/{vid}/credentials/{cid}` body — rotation only: secret
-/// values and display_name can change; keys are immutable.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateCredentialRequest {
-    /// Replace display name.
-    pub display_name: Option<String>,
-    /// Replace auth (must keep the same variant and unique key).
-    pub auth: Option<CredentialAuthInput>,
-}
-
 /// `POST /v1/vaults/{id}` body.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -336,58 +170,4 @@ pub struct UpdateVaultRequest {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn secret_string_debug_is_redacted() {
-        let s = SecretString::new("xoxp-super-secret");
-        assert_eq!(format!("{s:?}"), "SecretString(***)");
-        assert_eq!(s.expose(), "xoxp-super-secret");
-    }
-
-    #[test]
-    fn wire_projection_carries_no_secret_material() {
-        let input: CredentialAuthInput = serde_json::from_str(
-            r#"{"type":"mcp_oauth","mcp_server_url":"https://mcp.slack.com/mcp",
-                "access_token":"xoxp-secret","expires_at":"2026-04-15T00:00:00.000000Z",
-                "refresh":{"token_endpoint":"https://slack.com/api/oauth.v2.access",
-                           "client_id":"123.456","refresh_token":"xoxe-1-secret",
-                           "scope":"channels:read",
-                           "token_endpoint_auth":{"type":"client_secret_post","client_secret":"abc"}}}"#,
-        )
-        .unwrap();
-        let wire = input.to_wire();
-        let v = serde_json::to_value(&wire).unwrap();
-        let raw = v.to_string();
-        // No secret substring can appear in the serialized wire form.
-        assert!(!raw.contains("xoxp-secret"));
-        assert!(!raw.contains("xoxe-1-secret"));
-        assert!(!raw.contains("abc"));
-        assert_eq!(v["type"], "mcp_oauth");
-        assert_eq!(v["mcp_server_url"], "https://mcp.slack.com/mcp");
-        assert_eq!(v["has_refresh"], true);
-    }
-
-    #[test]
-    fn unique_keys_by_variant() {
-        let oauth: CredentialAuthInput = serde_json::from_str(
-            r#"{"type":"mcp_oauth","mcp_server_url":"https://a/mcp","access_token":"t"}"#,
-        )
-        .unwrap();
-        assert_eq!(oauth.unique_key(), "https://a/mcp");
-        let env: CredentialAuthInput = serde_json::from_str(
-            r#"{"type":"environment_variable","secret_name":"TWILIO_API_KEY","secret_value":"sk","networking":{"type":"unrestricted"}}"#,
-        )
-        .unwrap();
-        assert_eq!(env.unique_key(), "TWILIO_API_KEY");
-    }
-
-    #[test]
-    fn env_var_networking_shapes() {
-        let n: CredentialNetworking =
-            serde_json::from_str(r#"{"type":"limited","allowed_hosts":["api.twilio.com","*.twilio.com"]}"#)
-                .unwrap();
-        assert!(matches!(n, CredentialNetworking::Limited { .. }));
-    }
-}
+mod tests;

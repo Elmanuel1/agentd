@@ -1,25 +1,25 @@
-//! `agentd admin-keys create|list|revoke`: organization admin keys, one
-//! Secrets Manager secret each. An admin key reaches only the
-//! `/v1/organizations` routes.
+//! `agentd admin-keys create|list|revoke`: organization admin keys, in
+//! Postgres, digested with the same peppers as workspace keys. An admin key
+//! reaches only the `/v1/organizations` routes.
 
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use secrets_aws::{AdminKeyRecord, AwsAdminKeys, AwsSecretStore};
+use api_keys::{AdminKey, AdminKeysService};
 use shared::ports::secrets::ExposeSecret;
+use store_postgres::PgAdminKeysStore;
 
 use super::{KeysCommand, Kind, USAGE};
 use crate::config::Config;
 
-/// Run `args` (the words after `agentd admin-keys`) against `config`'s Secrets Manager.
+/// Run `args` (the words after `agentd admin-keys`) against `config`'s backends.
 pub async fn admin_keys(config: &Config, args: &[String]) -> ExitCode {
     super::command::run("admin-keys", USAGE, Kind::Admin, args, |c| run(config, c)).await
 }
 
 async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
-    let secrets = AwsSecretStore::connect(&config.secrets).await.map_err(|e| e.to_string())?;
-    let pepper = secrets.api_key_pepper().await.map_err(|e| e.to_string())?;
-    let keys = AwsAdminKeys::new(secrets, Arc::new(pepper));
+    let (pg, peppers) = super::backend(config).await?;
+    let keys = AdminKeysService::new(Arc::new(PgAdminKeysStore::new(pg)), peppers);
     match command {
         KeysCommand::Create { org, name, .. } => {
             let (record, key) = keys.create(&org, &name).await.map_err(|e| e.to_string())?;
@@ -42,7 +42,8 @@ async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
 }
 
 /// `id org status hint created name`, tab separated.
-fn line(r: &AdminKeyRecord) -> String {
-    let status = if r.revoked { "revoked" } else { "active" };
-    [r.id.as_str(), &r.org, status, &r.partial_key_hint, &r.created_at, &r.name].join("\t")
+fn line(r: &AdminKey) -> String {
+    let status = if r.revoked_at.is_some() { "revoked" } else { "active" };
+    let created = r.created_at.to_wire();
+    [r.id.as_str(), r.org.as_str(), status, &r.partial_key_hint, &created, &r.name].join("\t")
 }

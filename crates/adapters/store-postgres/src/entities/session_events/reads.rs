@@ -36,16 +36,33 @@ impl PgSessionEventLog {
 impl SessionEventReads for PgSessionEventLog {
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         self.require_session(ws, id).await?;
+        Ok(self.engine_events(ws, id).await?.into_iter().map(|(e, _)| e).collect())
+    }
+
+    async fn engine_events(
+        &self,
+        ws: &WorkspaceId,
+        id: &SessionId,
+    ) -> Result<Vec<(Event, Option<serde_json::Value>)>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let docs: Vec<serde_json::Value> = session_events::table
+        let rows: Vec<(i64, serde_json::Value)> = session_events::table
             .filter(session_events::workspace_id.eq(ws.as_str()))
             .filter(session_events::session_id.eq(id.as_str()))
             .order(session_events::seq.asc())
-            .select(session_events::doc)
+            .select((session_events::seq, session_events::doc))
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
-        docs.into_iter().map(parse_doc).collect()
+        // Each event's kept object names its `seq`, which a checkpoint records.
+        rows.into_iter()
+            .map(|(seq, doc)| {
+                let mut kept = doc.get("engine").cloned().unwrap_or_else(|| serde_json::json!({}));
+                if let Some(k) = kept.as_object_mut() {
+                    k.insert("seq".into(), serde_json::json!(seq));
+                }
+                Ok((parse_doc(doc)?, Some(kept)))
+            })
+            .collect()
     }
 
     async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
@@ -86,7 +103,8 @@ impl SessionEventReads for PgSessionEventLog {
                AND ($7::timestamptz IS NULL OR {processed} <= $7)
                AND (CASE WHEN $10::text IS NULL THEN
                       doc->>'session_thread_id' IS NULL OR doc->>'type' LIKE 'session.%'
-                      OR doc->>'evaluated_permission' = 'ask' OR doc->>'type' = 'agent.custom_tool_use'
+                      OR (doc->>'type' = 'agent.tool_use' AND jsonb_typeof(doc->'evaluation') = 'object')
+                      OR doc->>'type' = 'agent.custom_tool_use'
                     ELSE doc->>'session_thread_id' = $10 AND doc->>'type' <> 'session.thread_created' END)
              ORDER BY {processed} {order} NULLS LAST, seq {order}
              LIMIT $8 OFFSET $9"

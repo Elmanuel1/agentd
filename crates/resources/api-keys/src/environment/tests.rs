@@ -1,21 +1,36 @@
 use parking_lot::Mutex;
 
+use shared::ports::keys::KeyPepper;
+
 use super::*;
+use crate::store::KeyDigests;
 
 /// Keys held in memory, with their digests.
 #[derive(Default)]
 struct MemoryKeys(Mutex<Vec<(EnvironmentKey, Vec<u8>)>>);
 
 #[async_trait]
+impl KeyDigests<EnvironmentKey> for MemoryKeys {
+    async fn find_active(
+        &self,
+        digests: &[Vec<u8>],
+    ) -> Result<Option<(EnvironmentKey, Vec<u8>)>, crate::StoreError> {
+        let keys = self.0.lock();
+        Ok(keys.iter().find(|(k, d)| digests.contains(d) && k.revoked_at.is_none()).cloned())
+    }
+
+    async fn rehash(&self, id: &str, digest: &[u8]) -> Result<(), crate::StoreError> {
+        let mut keys = self.0.lock();
+        keys.iter_mut().filter(|(k, _)| k.id == id).for_each(|(_, d)| *d = digest.to_vec());
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl EnvironmentKeysStore for MemoryKeys {
     async fn insert(&self, key: &EnvironmentKey, digest: &[u8]) -> Result<(), crate::StoreError> {
         self.0.lock().push((key.clone(), digest.to_vec()));
         Ok(())
-    }
-
-    async fn find_active(&self, digest: &[u8]) -> Result<Option<EnvironmentKey>, crate::StoreError> {
-        let keys = self.0.lock();
-        Ok(keys.iter().find(|(k, d)| d == digest && k.revoked_at.is_none()).map(|(k, _)| k.clone()))
     }
 
     async fn list(&self) -> Result<Vec<EnvironmentKey>, crate::StoreError> {
@@ -30,7 +45,10 @@ impl EnvironmentKeysStore for MemoryKeys {
 }
 
 fn service() -> EnvironmentKeysService {
-    EnvironmentKeysService::new(Arc::new(MemoryKeys::default()), Arc::new(KeyPepper::new(&[7; 32])))
+    EnvironmentKeysService::new(
+        Arc::new(MemoryKeys::default()),
+        Arc::new(PepperRing::single(KeyPepper::new(&[7; 32]))),
+    )
 }
 
 #[tokio::test]
@@ -58,16 +76,18 @@ async fn a_workspace_key_or_a_malformed_id_is_refused() {
     assert!(keys.create("org a", "wrkspc_a", "env_a", "w").await.is_err());
     assert!(keys.create("org_a", "wrkspc_a", "env/a", "w").await.is_err());
     assert!(keys.create("org_a", "wrkspc_a", "env_a", "").await.is_err());
-    for reserved in ["runtime", "hosted"] {
+    for reserved in ["runtime"] {
         assert!(keys.create("org_a", "wrkspc_a", reserved, "w").await.is_err(), "{reserved}");
     }
 }
 
 #[tokio::test]
-async fn the_runtime_key_grants_the_runtime_queue_and_no_other_key_does() {
-    let runtime = material::generate(KeyKind::Environment);
-    let keys = service().with_runtime_key(&runtime);
+async fn each_runtime_key_grants_the_runtime_queue_and_no_other_key_does() {
+    let (runtime, previous) =
+        (material::generate(KeyKind::Environment), material::generate(KeyKind::Environment));
+    let keys = service().with_runtime_keys(&[runtime.clone(), previous.clone()]);
     assert_eq!(keys.resolve(runtime.expose_secret()).await.unwrap(), Some(EnvironmentGrant::Runtime));
+    assert_eq!(keys.resolve(previous.expose_secret()).await.unwrap(), Some(EnvironmentGrant::Runtime));
     let other = material::generate(KeyKind::Environment);
     assert_eq!(keys.resolve(other.expose_secret()).await.unwrap(), None);
     assert_eq!(service().resolve(runtime.expose_secret()).await.unwrap(), None, "no runtime key held");

@@ -1,5 +1,7 @@
 use parking_lot::Mutex;
 
+use shared::ports::keys::KeyPepper;
+
 use super::*;
 
 /// Keys held in memory, with their digests.
@@ -7,15 +9,24 @@ use super::*;
 struct MemoryKeys(Mutex<Vec<(ApiKey, Vec<u8>)>>);
 
 #[async_trait]
+impl KeyDigests<ApiKey> for MemoryKeys {
+    async fn find_active(&self, digests: &[Vec<u8>]) -> Result<Option<(ApiKey, Vec<u8>)>, StoreError> {
+        let keys = self.0.lock();
+        Ok(keys.iter().find(|(k, d)| digests.contains(d) && k.revoked_at.is_none()).cloned())
+    }
+
+    async fn rehash(&self, id: &str, digest: &[u8]) -> Result<(), StoreError> {
+        let mut keys = self.0.lock();
+        keys.iter_mut().filter(|(k, _)| k.id == id).for_each(|(_, d)| *d = digest.to_vec());
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl ApiKeysStore for MemoryKeys {
     async fn insert(&self, key: &ApiKey, digest: &[u8]) -> Result<(), StoreError> {
         self.0.lock().push((key.clone(), digest.to_vec()));
         Ok(())
-    }
-
-    async fn find_active(&self, digest: &[u8]) -> Result<Option<ApiKey>, StoreError> {
-        let keys = self.0.lock();
-        Ok(keys.iter().find(|(k, d)| d == digest && k.revoked_at.is_none()).map(|(k, _)| k.clone()))
     }
 
     async fn list(&self) -> Result<Vec<ApiKey>, StoreError> {
@@ -42,9 +53,13 @@ impl ApiKeysStore for MemoryKeys {
     }
 }
 
+fn ring(pepper: u8) -> Arc<PepperRing> {
+    Arc::new(PepperRing::single(KeyPepper::new(&[pepper; 32])))
+}
+
 fn service(pepper: u8) -> (ApiKeysService, Arc<MemoryKeys>) {
     let store = Arc::new(MemoryKeys::default());
-    (ApiKeysService::new(store.clone(), Arc::new(KeyPepper::new(&[pepper; 32]))), store)
+    (ApiKeysService::new(store.clone(), ring(pepper)), store)
 }
 
 #[tokio::test]
@@ -71,8 +86,31 @@ async fn only_the_digest_is_stored_and_another_pepper_verifies_nothing() {
     let stored = store.0.lock()[0].1.clone();
     assert_eq!(stored.len(), 32);
     assert!(!String::from_utf8_lossy(&stored).contains(&key.expose_secret()[13..]));
-    let other = ApiKeysService::new(store, Arc::new(KeyPepper::new(&[2; 32])));
+    let other = ApiKeysService::new(store, ring(2));
     assert_eq!(other.resolve(key.expose_secret()).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_key_under_an_older_pepper_resolves_and_moves_to_the_current_one() {
+    let old = shared::hash::KeyRing::parse(&format!("p1:{}", "11".repeat(32))).unwrap();
+    let both =
+        shared::hash::KeyRing::parse(&format!("p2:{},p1:{}", "22".repeat(32), "11".repeat(32))).unwrap();
+    let store = Arc::new(MemoryKeys::default());
+    let before = ApiKeysService::new(store.clone(), Arc::new(PepperRing::from_ring(&old)));
+    let (_, key) = before.create("org_a", "wrkspc_a", "ci").await.unwrap();
+    let under_old = store.0.lock()[0].1.clone();
+
+    let rotated = PepperRing::from_ring(&both);
+    let current = rotated.digests(key.expose_secret())[0].clone();
+    let after = ApiKeysService::new(store.clone(), Arc::new(rotated));
+    assert!(after.resolve(key.expose_secret()).await.unwrap().is_some());
+    let stored = store.0.lock()[0].1.clone();
+    assert_eq!(stored, current);
+    assert_ne!(stored, under_old);
+    // The old pepper retired, the key still resolves.
+    let new_only = shared::hash::KeyRing::parse(&format!("p2:{}", "22".repeat(32))).unwrap();
+    let retired = ApiKeysService::new(store, Arc::new(PepperRing::from_ring(&new_only)));
+    assert!(retired.resolve(key.expose_secret()).await.unwrap().is_some());
 }
 
 #[tokio::test]

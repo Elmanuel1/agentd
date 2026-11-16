@@ -5,8 +5,6 @@
 //! `upcoming_runs_at` is computed by [`crate::schedule`], never by the backend,
 //! so the wire is identical across backends.
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -74,8 +72,6 @@ pub struct FireId {
 pub struct ScheduleState {
     /// Whether the schedule is currently paused.
     pub paused: bool,
-    /// Last fire the backend attempted, if any.
-    pub last_fire: Option<DateTime<Utc>>,
 }
 
 /// Errors from the scheduler backend.
@@ -108,79 +104,59 @@ pub trait SchedulerPort: Send + Sync {
     async fn describe(&self, target: &FireTarget) -> Result<ScheduleState, SchedulerError>;
 }
 
-// ─── In-memory fakes (test support, usable by all crates) ─────────────────
-
-/// Deterministic in-memory [`SchedulerPort`] for tests. Records registrations;
-/// tests trigger fires manually.
-#[derive(Debug, Default)]
-pub struct FakeScheduler {
-    inner: std::sync::Mutex<BTreeMap<String, (ScheduleSpec, ScheduleState)>>,
+/// One change to a schedule, as the outbox carries it to the scheduler sink.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ScheduleChange {
+    /// Register or replace the schedule.
+    Upsert {
+        /// The schedule.
+        spec: ScheduleSpec,
+    },
+    /// Stop its fires until unpaused.
+    Pause {
+        /// The schedule's target.
+        target: FireTarget,
+    },
+    /// Fire again from the next occurrence.
+    Unpause {
+        /// The schedule's target.
+        target: FireTarget,
+    },
+    /// Remove it.
+    Delete {
+        /// The schedule's target.
+        target: FireTarget,
+    },
 }
 
-impl FakeScheduler {
-    /// New empty fake.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Test hook: all registered specs.
-    pub fn registered(&self) -> Vec<ScheduleSpec> {
-        self.inner.lock().map(|m| m.values().map(|(s, _)| s.clone()).collect()).unwrap_or_default()
-    }
-}
-
-#[async_trait]
-impl SchedulerPort for FakeScheduler {
-    async fn upsert(&self, spec: ScheduleSpec) -> Result<(), SchedulerError> {
-        // Validate through the shared engine so fakes enforce the same rules.
-        crate::schedule::CronSchedule {
-            kind: crate::schedule::CronKind::Cron,
-            expression: spec.cron.clone(),
-            timezone: spec.timezone.clone(),
+impl ScheduleChange {
+    /// The target the change is about.
+    pub fn target(&self) -> &FireTarget {
+        match self {
+            Self::Upsert { spec } => &spec.target,
+            Self::Pause { target } | Self::Unpause { target } | Self::Delete { target } => target,
         }
-        .compile()
-        .map_err(|e| SchedulerError::InvalidSpec(e.to_string()))?;
-        let mut m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
-        let key = spec.target.key();
-        m.insert(key, (spec, ScheduleState { paused: false, last_fire: None }));
-        Ok(())
     }
 
-    async fn pause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
-        self.with_state(target, |st| st.paused = true).await
-    }
-
-    async fn unpause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
-        self.with_state(target, |st| st.paused = false).await
-    }
-
-    async fn delete(&self, target: &FireTarget) -> Result<(), SchedulerError> {
-        let mut m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
-        m.remove(&target.key()).map(|_| ()).ok_or_else(|| SchedulerError::Unknown(target.key()))
-    }
-
-    async fn describe(&self, target: &FireTarget) -> Result<ScheduleState, SchedulerError> {
-        let m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
-        m.get(&target.key()).map(|(_, st)| st.clone()).ok_or_else(|| SchedulerError::Unknown(target.key()))
-    }
-}
-
-impl FakeScheduler {
-    async fn with_state(
-        &self,
-        target: &FireTarget,
-        f: impl FnOnce(&mut ScheduleState),
-    ) -> Result<(), SchedulerError> {
-        let mut m = self.inner.lock().map_err(|e| SchedulerError::Unavailable(e.to_string()))?;
-        match m.get_mut(&target.key()) {
-            Some((_, st)) => {
-                f(st);
-                Ok(())
-            }
-            None => Err(SchedulerError::Unknown(target.key())),
+    /// Apply it to `sink`. A schedule already gone has nothing left to
+    /// pause, unpause or delete, so that counts as applied.
+    pub async fn apply(&self, sink: &dyn SchedulerPort) -> Result<(), SchedulerError> {
+        let applied = match self {
+            Self::Upsert { spec } => sink.upsert(spec.clone()).await,
+            Self::Pause { target } => sink.pause(target).await,
+            Self::Unpause { target } => sink.unpause(target).await,
+            Self::Delete { target } => sink.delete(target).await,
+        };
+        match applied {
+            Err(SchedulerError::Unknown(_)) => Ok(()),
+            other => other,
         }
     }
 }
+
+mod fake;
+pub use fake::FakeScheduler;
 
 #[cfg(test)]
 mod tests;

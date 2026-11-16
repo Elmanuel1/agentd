@@ -1,0 +1,69 @@
+//! A session's replace, under its row lock and compared with what the
+//! writer read, with its webhook deliveries; an archive's also stops the
+//! work item and terminates the session in the same commit.
+
+use ::sessions::store::{SessionReplace, StoreError};
+use ::sessions::types::Session;
+use async_trait::async_trait;
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel_async::{AsyncConnection, RunQueryDsl};
+use shared::WorkspaceId;
+
+use super::super::webhook_deliveries::insert_deliveries;
+use super::PgSessionsStore;
+use crate::schema::sessions;
+use crate::{diesel_be, enum_str, pool_be, to_doc};
+
+#[async_trait]
+impl SessionReplace for PgSessionsStore {
+    async fn replace(
+        &self,
+        ws: &WorkspaceId,
+        read: &Session,
+        s: Session,
+        deliveries: &[webhooks::Delivery],
+    ) -> Result<(), StoreError> {
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        let doc = to_doc(&s)?;
+        // The row is locked and compared as a Session, not as raw JSON: a doc
+        // written before a field existed re-serializes differently but holds
+        // the same session.
+        let outcome = conn
+            .transaction::<_, diesel::result::Error, _>(|c| {
+                async move {
+                    let stored: Option<serde_json::Value> = sessions::table
+                        .filter(sessions::workspace_id.eq(ws.as_str()))
+                        .filter(sessions::session_id.eq(s.id.as_str()))
+                        .select(sessions::doc)
+                        .for_update()
+                        .first(c)
+                        .await
+                        .optional()?;
+                    let Some(stored) = stored else {
+                        return Ok(Err(StoreError::NotFound));
+                    };
+                    if serde_json::from_value::<Session>(stored).ok().as_ref() != Some(read) {
+                        return Ok(Err(StoreError::Conflict));
+                    }
+                    diesel::update(
+                        sessions::table
+                            .filter(sessions::workspace_id.eq(ws.as_str()))
+                            .filter(sessions::session_id.eq(s.id.as_str())),
+                    )
+                    .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
+                    .execute(c)
+                    .await?;
+                    if read.archived_at.is_none() && s.archived_at.is_some() {
+                        super::terminate::archived(c, ws, read, &s).await?;
+                    }
+                    insert_deliveries(c, deliveries).await?;
+                    Ok(Ok(()))
+                }
+                .scope_boxed()
+            })
+            .await
+            .map_err(diesel_be)?;
+        outcome
+    }
+}

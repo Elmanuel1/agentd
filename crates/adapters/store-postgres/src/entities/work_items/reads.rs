@@ -56,12 +56,11 @@ impl WorkReads for PgWorkStore {
 
     async fn counts(&self, scope: &Scope, reclaim: Duration, now: Timestamp) -> Result<Counts, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // No poll hands out a hosted item, so none is counted.
         let (ws, env, queue) = binds(scope);
         let out: CountsRow = diesel::sql_query(format!(
             "SELECT count(*) FILTER (WHERE handed_out_at IS NULL OR handed_out_at < $4) AS depth, \
              count(*) FILTER (WHERE handed_out_at >= $4) AS pending, min(created_at) AS oldest \
-             FROM work_items WHERE state = 'queued' AND queue <> 'hosted' AND {SCOPE}"
+             FROM work_items WHERE state = 'queued' AND {SCOPE}"
         ))
         .bind::<Nullable<Text>, _>(ws)
         .bind::<Nullable<Text>, _>(env)

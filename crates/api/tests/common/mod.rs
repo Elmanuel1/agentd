@@ -1,6 +1,6 @@
 //! The work API rig: the composed router over live Postgres and LocalStack's
 //! object store, real environment keys with a runtime key, and a work service
-//! on the same stores to queue items as the loop will. Each rig has its own
+//! on the same stores. Each rig has its own
 //! org and workspaces. Gated by `AGENTD_PG_TESTS=1` and `AGENTD_AWS_ENDPOINT`.
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -17,18 +17,17 @@ use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
 use sessions::signals::{LocalSignals, Signals};
-use sessions::steps::LoopWorkspaces;
 use sessions::store::DatabaseLoad;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::material::{self, KeyKind};
-use shared::ports::keys::KeyPepper;
+use shared::ports::keys::{KeyPepper, PepperRing};
 use shared::ports::secrets::{ExposeSecret, SecretString};
-use shared::ports::{FakeRuntime, FakeScheduler};
+
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
-use store_postgres::PgBackend;
+use store_postgres::{PgBackend, PgFireClaims};
 use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
 use tower::ServiceExt;
-use vaults::egress::VaultCredentials;
+use vaults::variables::VaultCredentials;
 use work::{CloudVariables, Placeholders, WorkService, WorkTokens};
 
 pub const KEY: &str = "test-key-work-a";
@@ -62,29 +61,31 @@ impl DatabaseLoad for Unloaded {
 pub struct Streaming {
     pub signals: Arc<dyn Signals>,
     pub load: Arc<dyn DatabaseLoad>,
-    /// The workspaces whose sessions the loop serves.
-    pub on_loop: LoopWorkspaces,
     pub role: Role,
+    /// Where it may connect for a tenant.
+    pub guard: shared::net::Guard,
+    /// The webhook endpoints its writes send to.
+    pub webhooks: Arc<webhooks::Webhooks>,
 }
 
 impl Default for Streaming {
-    /// Signals in this app alone, never overloaded.
+    /// Signals in this app alone, never overloaded, reaching no internal address.
     fn default() -> Self {
         Self {
             signals: Arc::new(LocalSignals::default()),
             load: Arc::new(Unloaded),
-            on_loop: LoopWorkspaces::default(),
             role: Role::All,
+            guard: shared::net::Guard::default(),
+            webhooks: Arc::default(),
         }
     }
 }
 
 fn app(
-    sandboxes: Arc<FakeRuntime>,
     stores: &Stores,
+    pg: &PgBackend,
     keys: Arc<StaticKeySource>,
     env_keys: &EnvironmentKeysService,
-    sandbox: bool,
     streaming: Streaming,
 ) -> Router {
     let backends = Backends {
@@ -93,20 +94,19 @@ fn app(
         admin_keys: Arc::new(StaticAdminKeys::default()),
         environment_keys: Arc::new(env_keys.clone()),
         system: SystemKeys {
-            work_token_key: WORK_KEY.to_vec(),
-            egress_key: EGRESS_KEY.to_vec(),
+            work_tokens: shared::hash::KeyRing::single(WORK_KEY.to_vec()),
+            placeholders: shared::hash::KeyRing::single(EGRESS_KEY.to_vec()),
             api_base_url: "http://agentd.test".into(),
         },
-        scheduler: Arc::new(FakeScheduler::new()),
-        fires: Arc::new(FireRegistry::new()),
-        runtime: Some(sandboxes),
-        sandbox: sandbox.then(api::config::SandboxConfig::default),
+        fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))),
+        fire_sources: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: streaming.signals,
         load: streaming.load,
-        on_loop: streaming.on_loop,
         role: streaming.role,
+        guard: streaming.guard,
+        webhooks: streaming.webhooks,
     };
     build_router(AppState::build(backends).unwrap())
 }
@@ -122,11 +122,9 @@ pub enum Auth<'a> {
 
 pub struct Rig {
     pub app: Router,
-    /// The sandboxes every app of the rig launches.
-    pub sandboxes: Arc<FakeRuntime>,
     pub stores: Stores,
+    pub pg: PgBackend,
     pub keys: Arc<StaticKeySource>,
-    pub sandbox: bool,
     pub env_keys: EnvironmentKeysService,
     pub runtime_key: SecretString,
     pub work: Arc<WorkService>,
@@ -137,17 +135,8 @@ pub struct Rig {
 }
 
 impl Rig {
-    /// Sessions get no sandbox, so no hosted work item: the tests queue items.
+    /// Each session's work item is queued when the session is created.
     pub async fn new() -> Option<Self> {
-        Self::with(false).await
-    }
-
-    /// Each session's sandbox starts on a fake runtime with its hosted work item.
-    pub async fn with_sandbox() -> Option<Self> {
-        Self::with(true).await
-    }
-
-    async fn with(sandbox: bool) -> Option<Self> {
         if !enabled() {
             return None;
         }
@@ -170,54 +159,42 @@ impl Rig {
         keys.register(KEY, &org, &ws, "apikey_01a");
         keys.register(KEY_B, &org, &ws_b, "apikey_01b");
         let secrets = Arc::new(MemorySecretStore::default());
-        let stores = Stores::postgres(backend, blobs, secrets.clone());
+        let stores = Stores::postgres(backend.clone(), blobs, secrets.clone());
         let runtime_key = material::generate(KeyKind::Environment);
-        let env_keys =
-            EnvironmentKeysService::new(stores.environment_keys.clone(), Arc::new(KeyPepper::new(&[9; 32])))
-                .with_runtime_key(&runtime_key);
+        let env_keys = EnvironmentKeysService::new(
+            stores.environment_keys.clone(),
+            Arc::new(PepperRing::single(KeyPepper::new(&[9; 32]))),
+        )
+        .with_runtime_keys(std::slice::from_ref(&runtime_key));
         let keys = Arc::new(keys);
-        let sandboxes = Arc::new(FakeRuntime::new());
-        let app = app(sandboxes.clone(), &stores, keys.clone(), &env_keys, sandbox, Streaming::default());
+        let app = app(&stores, &backend, keys.clone(), &env_keys, Streaming::default());
         let reach = Arc::new(SessionReach {
             sessions: stores.sessions.clone(),
             vaults: VaultCredentials::new(stores.vault_credentials.clone()),
         });
-        let cloud = CloudVariables { source: reach, placeholders: Placeholders::new(EGRESS_KEY.to_vec()) };
+        let cloud = CloudVariables {
+            source: reach,
+            placeholders: Placeholders::new(&shared::hash::KeyRing::single(EGRESS_KEY.to_vec())),
+        };
         let work = Arc::new(
-            WorkService::new(stores.work.clone(), WorkTokens::new(WORK_KEY.to_vec()), "http://agentd.test")
-                .with_cloud_variables(cloud),
+            WorkService::new(
+                stores.work.clone(),
+                WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())),
+                "http://agentd.test",
+            )
+            .with_cloud_variables(cloud),
         );
-        Some(Self {
-            app,
-            sandboxes,
-            stores,
-            keys,
-            env_keys,
-            runtime_key,
-            work,
-            secrets,
-            org,
-            ws,
-            ws_b,
-            sandbox,
-        })
+        Some(Self { app, stores, pg: backend, keys, env_keys, runtime_key, work, secrets, org, ws, ws_b })
     }
 
     /// A fresh app over the same database and keys, as after a restart.
     pub fn restarted(&self) -> Router {
-        app(
-            self.sandboxes.clone(),
-            &self.stores,
-            self.keys.clone(),
-            &self.env_keys,
-            self.sandbox,
-            Streaming::default(),
-        )
+        app(&self.stores, &self.pg, self.keys.clone(), &self.env_keys, Streaming::default())
     }
 
     /// Another replica over `stores`, streaming as `streaming` says.
     pub fn replica(&self, stores: &Stores, streaming: Streaming) -> Router {
-        app(self.sandboxes.clone(), stores, self.keys.clone(), &self.env_keys, self.sandbox, streaming)
+        app(stores, &self.pg, self.keys.clone(), &self.env_keys, streaming)
     }
 
     pub fn ctx(&self) -> AuthContext {
@@ -340,7 +317,7 @@ impl Rig {
 
     /// The work token of `session`, as its work secret carries it.
     pub fn token(&self, session: &str) -> String {
-        WorkTokens::new(WORK_KEY.to_vec()).mint(&work::WorkClaims {
+        WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())).mint(&work::WorkClaims {
             session: session.into(),
             ws: self.ws.clone(),
             org: self.org.clone(),

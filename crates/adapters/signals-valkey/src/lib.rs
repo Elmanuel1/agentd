@@ -6,19 +6,24 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
 mod budget;
+mod changes;
+mod fires;
+mod trim;
+mod valkey;
 
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use redis::aio::{ConnectionManager, ConnectionManagerConfig};
-use redis::{AsyncCommands, Client, RedisError};
+use redis::{AsyncCommands, RedisError};
 use sessions::signals::{Signal, Signals, CAPACITY};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;
 
 pub use budget::ValkeyBudget;
+pub use changes::ValkeyChanges;
+pub use valkey::Valkey;
 
 /// The one channel every session's signals go on.
 const CHANNEL: &str = "agentd:sessions";
@@ -31,7 +36,7 @@ const PUBLISH_WAIT: Duration = Duration::from_millis(200);
 /// [`Signals`] over Valkey.
 #[derive(Clone)]
 pub struct ValkeySignals {
-    publisher: ConnectionManager,
+    publisher: valkey::Shared,
     received: broadcast::Sender<Signal>,
 }
 
@@ -42,14 +47,12 @@ impl std::fmt::Debug for ValkeySignals {
 }
 
 impl ValkeySignals {
-    /// Signal through the Valkey at `url` and start the subscriber. Both
-    /// connect when first used, so a replica starts while Valkey is down.
-    pub fn connect(url: &str) -> Result<Self, RedisError> {
-        let client = Client::open(url)?;
-        let publisher =
-            ConnectionManager::new_lazy_with_config(client.clone(), ConnectionManagerConfig::new())?;
+    /// Signal through `valkey` and start the subscriber. Both connect when
+    /// first used, so a replica starts while Valkey is down.
+    pub fn connect(valkey: &Valkey) -> Result<Self, RedisError> {
+        let publisher = valkey.shared()?;
         let received = broadcast::channel(CAPACITY).0;
-        tokio::spawn(subscribe(client, received.clone()));
+        tokio::spawn(subscribe(valkey.clone(), received.clone()));
         Ok(Self { publisher, received })
     }
 }
@@ -58,8 +61,9 @@ impl ValkeySignals {
 impl Signals for ValkeySignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         let payload = format!("{} {}", signal.workspace.as_str(), signal.session);
-        let mut publisher = self.publisher.clone();
-        let published = tokio::time::timeout(PUBLISH_WAIT, publisher.publish::<_, _, ()>(CHANNEL, payload));
+        let published = tokio::time::timeout(PUBLISH_WAIT, async {
+            self.publisher.get().await?.publish::<_, _, ()>(CHANNEL, payload).await
+        });
         published.await.map_err(BackendError::new)?.map_err(BackendError::new)
     }
 
@@ -70,32 +74,32 @@ impl Signals for ValkeySignals {
 
 /// Hand every signal on [`CHANNEL`] to `received`, connecting again after
 /// [`RECONNECT`] whenever the connection drops.
-async fn subscribe(client: Client, received: broadcast::Sender<Signal>) {
+async fn subscribe(valkey: Valkey, received: broadcast::Sender<Signal>) {
     let mut retry = tokio::time::interval(RECONNECT);
     // After a long subscription, one attempt at once, then one per RECONNECT.
     retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         retry.tick().await;
-        let connected = client.get_async_pubsub().await;
-        let Ok(mut pubsub) =
-            connected.inspect_err(|e| tracing::warn!(error = %e, "signals: could not connect to Valkey"))
-        else {
-            continue;
-        };
-        let subscribed = pubsub.subscribe(CHANNEL).await;
-        let Ok(()) =
+        let subscribed = valkey.subscribe(CHANNEL).await;
+        let Ok(payloads) =
             subscribed.inspect_err(|e| tracing::warn!(error = %e, "signals: could not subscribe on Valkey"))
         else {
             continue;
         };
-        let mut signals = pubsub.into_on_message().filter_map(|m| {
-            futures::future::ready(m.get_payload::<String>().ok().as_deref().and_then(parse))
-        });
+        let mut signals = payloads.filter_map(|p| futures::future::ready(parse(&p)));
         while let Some(signal) = signals.next().await {
             let _ = received.send(signal);
         }
         tracing::warn!("signals: the Valkey subscription ended; connecting again");
     }
+}
+
+/// The test Valkeys: standalone at `AGENTD_VALKEY_URL`, a cluster at
+/// `AGENTD_VALKEY_CLUSTER_URL`; each only when set.
+#[cfg(test)]
+pub(crate) fn test_valkeys() -> Vec<Valkey> {
+    let open = |var: &str, cluster| std::env::var(var).ok().map(|url| Valkey::open(&url, cluster).unwrap());
+    open("AGENTD_VALKEY_URL", false).into_iter().chain(open("AGENTD_VALKEY_CLUSTER_URL", true)).collect()
 }
 
 fn parse(payload: &str) -> Option<Signal> {
@@ -118,17 +122,25 @@ mod tests {
 
     #[tokio::test]
     async fn with_valkey_unreachable_a_replica_starts_and_a_publish_fails_fast() {
-        let signals = ValkeySignals::connect("redis://127.0.0.1:1").unwrap();
-        let signal = Signal { workspace: WorkspaceId::new("wrkspc_1"), session: SessionId::generate() };
-        let started = tokio::time::Instant::now();
-        assert!(signals.publish(&signal).await.is_err());
-        assert!(started.elapsed() < PUBLISH_WAIT * 3, "{:?}", started.elapsed());
+        for cluster in [false, true] {
+            let signals =
+                ValkeySignals::connect(&Valkey::open("redis://127.0.0.1:1", cluster).unwrap()).unwrap();
+            let signal = Signal { workspace: WorkspaceId::new("wrkspc_1"), session: SessionId::generate() };
+            let started = tokio::time::Instant::now();
+            assert!(signals.publish(&signal).await.is_err());
+            assert!(started.elapsed() < PUBLISH_WAIT * 3, "cluster {cluster}: {:?}", started.elapsed());
+        }
     }
 
     #[tokio::test]
     async fn a_signal_published_reaches_every_subscriber() {
-        let Ok(url) = std::env::var("AGENTD_VALKEY_URL") else { return };
-        let (a, b) = (ValkeySignals::connect(&url).unwrap(), ValkeySignals::connect(&url).unwrap());
+        for valkey in test_valkeys() {
+            heard_across(&valkey).await;
+        }
+    }
+
+    async fn heard_across(valkey: &Valkey) {
+        let (a, b) = (ValkeySignals::connect(valkey).unwrap(), ValkeySignals::connect(valkey).unwrap());
         let mut heard = b.subscribe();
         let signal = Signal { workspace: WorkspaceId::new("wrkspc_1"), session: SessionId::generate() };
         // The subscriber connects in the background; publish until it hears.

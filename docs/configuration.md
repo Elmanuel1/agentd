@@ -15,9 +15,6 @@ fakes in test code, never from configuration ([Security](#security)).
 | Record store | `AGENTD_STORE` | `postgres` |
 | Blob store | `AGENTD_BLOBS` | `s3` |
 | Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
-| API keys | `AGENTD_KEYS` | `aws`: workspace and environment keys in Postgres and admin keys in Secrets Manager, digested with a pepper in Secrets Manager (see [API keys](#api-keys)) |
-| Scheduler | `AGENTD_SCHEDULER` | `local`: in-process, single replica |
-| Sandbox runtime | `AGENTD_RUNTIME` | `docker`: each session gets one container, `agentd-<session id>`, from `AGENTD_SANDBOX_IMAGE` (default `agentd-sandbox`, built from `docker/sandbox/Dockerfile`) on the daemon `DOCKER_HOST` names (default the local socket). Archive, delete and terminate remove it. Each sandbox sits on an internal network of its own, `agentd-net-<session id>` on a /28 of 10.213.0.0/16, with no route out: only agentd and the egress service share it, so its only way out is the egress proxy and no other sandbox is reachable. agentd and the egress service join each one when `AGENTD_SANDBOX_JOIN` names their containers; otherwise the `agentd-gateway` container joins it and relays only agentd's API port and the egress proxy's port to the host. The sandbox's first process is the session's harness (`python3 -m agentd_harness`), which runs the agent's tools as `nobody`; the container drops every capability but those the worker needs to switch user and own files, with `no-new-privileges`, 1024 processes, `AGENTD_SANDBOX_MEMORY_MIB` (default 2048) of memory and `AGENTD_SANDBOX_MILLICPUS` (default 2000) of CPU |
 
 ## Settings
 
@@ -26,7 +23,9 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
 | `DATABASE_URL` | required | Postgres connection |
 | `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
-| `AGENTD_VALKEY_URL` | unset (signals stay in the process) | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another; `rediss://` for TLS |
+| `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
+| `AGENTD_KAFKA_BROKERS` | unset | Kafka's brokers (`host:port,…`), from whose topics agentd reads the change feed; unset, it reads it from Valkey Streams on `AGENTD_VALKEY_URL` |
+| `AGENTD_VALKEY_CLUSTER` | `false` | `true` when `AGENTD_VALKEY_URL` is a cluster's configuration endpoint (cluster mode enabled): agentd then follows the cluster's slots and subscribes over RESP3 |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
@@ -37,14 +36,21 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_S3_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
 | `AGENTD_S3_CREATE_BUCKET` | `0` | Create the bucket at boot when it is missing |
 | `AGENTD_S3_LOCATION_CONSTRAINT` | the region on AWS S3 (none in `us-east-1`); none with a custom endpoint | The location constraint a created bucket gets, for an S3-compatible store that names locations its own way |
+| `AGENTD_API_KEY_PEPPERS` | required | `<id>:<hex>,…`: the peppers every API key digest is keyed with (see [Keys from the environment](#keys-from-the-environment)) |
+| `AGENTD_WORK_TOKEN_KEYS` | required | `<id>:<hex>,…`: the first signs work tokens, every one verifies them |
+| `AGENTD_PLACEHOLDER_KEYS` | required | `<id>:<hex>,…`: the same, for the placeholders of `environment_variable` credentials |
+| `AGENTD_RUNTIME_KEYS` | unset (no runtime key) | agentd's runtime keys, `sk-ant-oat01-…`, comma separated, the current one first |
+| `AGENTD_ANTHROPIC_API_KEY` | unset (no Anthropic models) | The loop's key for the Messages API |
+| `AGENTD_OPENROUTER_API_KEY` | unset (no OpenAI-compatible models) | The loop's key for the API at `AGENTD_MODEL_BASE_URL` |
+| `AGENTD_WEBHOOK_ENDPOINTS` | unset (no webhook is sent) | Each organization's webhook endpoints, a JSON array of `{"id", "organization_id", "url", "secret": "whsec_…", "enabled"}` (see [Webhooks](#webhooks)) |
 | `RUST_LOG` | `info` | Log level |
 
 
 ## The loop
 
-The sessions of a workspace listed in `AGENTD_LOOP_WORKSPACES` run on agentd's
-own loop. A client event of such a session puts it on the step queue
-(`loop_steps`) in the same commit. A loop worker claims the step under a lease,
+Every session runs on agentd's own loop. A client event, or a worker's
+`user.tool_result`, puts its session on the step queue (`loop_steps`) in the
+same commit. A loop worker claims the step under a lease,
 builds one model call's prompt from the session's event log, and commits what
 the reply leads to:
 - the call's start, the running status and the client events it takes, in one
@@ -60,139 +66,86 @@ which takes the session's work item:
 - a `cloud` session stays `running`, and its worker's results show as
   `agent.tool_result`.
 
-A coordinator's `send_to_agent` opens a roster thread that runs in later steps.
-An outcome is graded on the grader's own thread. A workspace's sessions created
-before the time it was listed started on the harness path below; each moves to
-the loop at its next idle turn, once its sandbox is stopped.
+A roster thread's or the grader's built-in calls show on the session's stream
+with their `session_thread_id`, so the official worker runs them from it, and
+its results land on the call's thread. A coordinator's `send_to_agent` opens a
+roster thread that runs in later steps. An outcome is graded on the grader's
+own thread.
 
-The loop calls the model itself, with one key per provider:
-`agentd model-key set --provider anthropic|openrouter` stores it in Secrets
-Manager (`PREFIX/operator/models/<provider>`). A model id with a `/` goes to the
-OpenAI-compatible API at `AGENTD_MODEL_BASE_URL`, and any other id to the
-Messages API at `AGENTD_ANTHROPIC_BASE_URL`. The system prompt and the tool
+The loop calls the model itself, with one key per provider from the
+environment: `AGENTD_ANTHROPIC_API_KEY` and `AGENTD_OPENROUTER_API_KEY`. A
+model id with a `/` goes to the
+OpenAI-compatible API at `AGENTD_MODEL_BASE_URL` (default
+`https://openrouter.ai/api/v1`), and any other id to the
+Messages API at `AGENTD_ANTHROPIC_BASE_URL`. A Messages API call asks for
+thinking: adaptive, or a budget of a quarter of the output cap for
+`claude-haiku-4-5`, `claude-sonnet-4-5` and `claude-opus-4-5`. Each call that
+reasons writes `agent.thinking` (no content, as live), and its signed thinking
+blocks are kept beside that event, never served, and sent back unmodified in
+the call that follows. The system prompt and the tool
 list carry prompt-cache marks. A call that fails with 408, 409, 429 or 5xx is
 retried with backoff and jitter, never sooner than `retry-after`, within the
 step's 10 minute deadline.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention, the local scheduler and sandbox launches run in `api` and `all` |
-| `AGENTD_LOOP_WORKSPACES` | unset | `wrkspc_…@<RFC 3339 time>,…`: the workspaces whose sessions the loop serves, each with the time it joined |
+| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role ticks the scheduler |
 | `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |
 | `AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM` | unset (no limit) | Requests and input tokens per provider and minute, shared by every replica in Valkey (`AGENTD_VALKEY_URL`); a step over it waits for the next minute. Without Valkey there is no limit |
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
+| `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
+| `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
+| `AGENTD_COMPACTION_KEEP_RESULTS` | `3` | The newest tool results kept whole when clearing, from 3 to 5 |
+| `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` | `16000` | The most of one tool result a prompt carries; the stored event stays whole |
+
+Each model's context window comes from its provider's model list, read once
+per process: the Messages API's `GET /v1/models/{id}` (`max_input_tokens`) and
+the OpenAI-compatible list's `context_length`. A model its provider does not
+list fails its step as a model error. The loop estimates a thread's prompt from
+its last call's tokens and a token per 4 bytes since. Every tool result is
+capped at `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`. Past the clear threshold, tool
+results older than the newest `AGENTD_COMPACTION_KEEP_RESULTS` become
+`[tool result cleared: event <id>]`; inputs and error results stay. Past 80% of
+the window, and when no tool call is waiting, the step runs a compaction call
+instead of the turn, with the turn's system prompt and tools: on-demand
+compaction (`compact-2026-09-04`) for an Anthropic model, a handoff prompt for
+any other. It summarises from the thread's latest checkpoint, keeps the last
+two calls verbatim and quotes the user's messages newest first. Its
+`agent.thread_context_compacted` event is the thread's checkpoint; the summary
+is kept beside it and never served. Every later call starts with the signed
+block, sent back unmodified, or with the summary. A compaction that returns
+no summary lets the turn run on the cleared prompt.
+
+### MCP servers
+
+The loop connects to an agent's MCP servers itself, over streamable HTTP, and
+never from a worker. Each step reads the session's environment, its stored
+connections (`mcp_connections`) and its vault credentials once, and connects
+only a server that needs it: at the start of each turn, with no stored
+connection, after its credential changed, or when the server answers 404 to the
+stored `Mcp-Session-Id`. A server is reached only at a public address: a URL
+that resolves to a loopback, private or link-local address, or a host the
+environment's `limited` networking does not allow, is not called. A server that
+cannot be reached gets `mcp_connection_failed_error` (a refused credential,
+`mcp_authentication_failed_error`) before the turn's model call; the turn goes
+on without its tools, and the next turn tries again. The credential is the
+first of the session's vaults' `mcp_oauth` or `static_bearer` credentials
+keyed by the server's URL; with none the connection is unauthenticated. An
+expired `mcp_oauth` token is refreshed by one worker, claimed on the
+credential's row; a worker that finds the row updated less than 30 s ago runs
+the step again a second later. An allowed call is committed with its step and
+called by the next one, with no model call in between; an asked one idles the
+session `requires_action`. A deployment's fire whose agent names an MCP host
+its environment blocks creates no session: its run records
+`mcp_egress_blocked_error` and the deployment pauses.
 
 A session's list cost adds each call's provider-reported cost, rounded up to
 the cent so a budget is never passed by rounding. A session whose budget is
 spent, or that ran a model with no list price, stops its turn with
 `budget_reached` before its next call.
-
-## Sandboxes
-
-On the harness path, each session's agent loop, its harness (`harness/`), runs in the session's
-sandbox. It takes the session's work item with the work token agentd starts
-the sandbox with, mounts the session's files and its agents' skills, and runs
-the agent with harness-sim's mini-swe-agent loop. The agent's tools are the
-official SDK's `agent_toolset` (bash, read, write, edit, glob, grep), run as
-`nobody` in a child process that never sees the work token; each call is its
-own `agent.tool_use` and `agent.tool_result`. A coordinator delegates to its
-roster with `send_to_agent`, each delegation a session thread; outcomes are
-graded by an independent grader thread. The harness reads the session through
-the public API and writes its events, the client events it takes and its
-outputs through `/v1/sessions/{id}/harness/*`, which only that session's work
-token reaches. For these sessions agentd keeps the API, the event log and the
-sandbox's lifecycle; the sandbox takes no inbound connection.
-
-A session's `budget` is enforced by the harness. It adds up each model
-request's list cost (OpenRouter's `usage.cost`) across every thread, starting
-from the session's `usage.list_cost`, and reports it to agentd as a
-`session.usage` event. When the session has a `budget.max_list_cost`, the
-harness starts no further model request once the cost reaches it or once a
-model with no list price ran, and the session and its threads go idle with
-`stop_reason` `budget_reached`. A session with no budget never stops for cost,
-whether or not its models have a list price. A budget change a client makes
-while the session runs applies at the next request.
-
-agentd stops a sandbox with SIGTERM and a 10 second grace before it removes
-the container. On SIGTERM the harness uploads, one at a time, the files under
-`/mnt/session/outputs/` that changed since its last turn ended, then exits.
-Saving is best effort: if an upload fails, the harness stops uploading and
-exits, so the files already uploaded are saved and the rest are lost. Files
-not uploaded when the grace runs out are lost too.
-
-The harness calls the model at an OpenAI-compatible API through the egress
-proxy. The key is an operator credential: `agentd model-key set [--host
-<host>]` reads it from stdin and stores it in Secrets Manager
-(`PREFIX/operator/models/openrouter`), bound to the model host; every
-session's registration with the egress service carries it, so the proxy puts
-it into the harness's model requests. The sandbox sees only its placeholder,
-and the agent's tools not even that.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
-| `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the harness calls the model at; its host is reachable under any networking |
-| `AGENTD_SANDBOX_API_URL` | `http://<agentd-gateway or the first AGENTD_SANDBOX_JOIN container>:<AGENTD_ADDR port>` | agentd's API as a sandbox's harness reaches it |
-| `AGENTD_SANDBOX_JOIN` | unset | agentd's container and the egress service's, comma-separated, which join each sandbox's network in place of the gateway |
-| `AGENTD_WORK_TOKEN_KEY` | `<prefix>/system/work_token_key` | Hex key (at least 16 bytes) that signs work tokens and egress proxy passwords in place of the system secret, which is then never read |
-| `AGENTD_API_BASE_URL` | `AGENTD_SANDBOX_API_URL` | agentd's API as a worker reaches it: the work secret's `api_base_url` |
-| `AGENTD_EGRESS_ADMIN_URL` | unset | The egress service's admin interface; unset, sandboxes reach nothing beyond agentd |
-| `AGENTD_EGRESS_ADMIN_TOKEN` | unset | The token that interface takes; set with the URL |
-| `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | The egress proxy's address; its port is the one the gateway relays |
-| `AGENTD_SANDBOX_EGRESS_HOST` | `<agentd-gateway or the second AGENTD_SANDBOX_JOIN container>:<AGENTD_EGRESS_ADDR port>` | The egress proxy as a sandbox reaches it |
-
-### Credentials and egress
-
-Each `environment_variable` credential in the session's vaults is set in the
-sandbox under its own name, with a per-session placeholder
-(`agentd-ph-...`) as its value; the system prompt lists each name, its
-description and its hosts. agentd reads no credential value for this: when
-it starts the sandbox, it registers the session with the egress service (its
-proxy password digest, its environment's hosts, and each credential's name,
-placeholder and vault), and the service answers with the session's CA, which
-the sandbox starts with (`AGENTD_EGRESS_CA`).
-
-Sandbox traffic leaves through the egress proxy, which the sandbox reaches
-through `HTTP_PROXY` and `HTTPS_PROXY` and trusts through the session CA,
-whose key never leaves the service. When a request carries a credential's
-placeholder, the service reads the credential's current (`AWSCURRENT`) value
-from Secrets Manager for that request only; a value changed in Secrets
-Manager applies to the next request, and a read that fails refuses the
-request (fail closed). For a host the credential allows, the value replaces
-the placeholder in the request headers. A placeholder sent to any other
-host, or from a credential that names no host, is refused, as is a host
-outside `limited` networking. The value is held in locked memory, which
-never reaches swap, and zeroed as soon as the request is sent; the response
-is masked against a fingerprint of it (its length, a rolling hash and a
-SHA-256 digest), so a value echoed in the response's headers or body comes
-back as its placeholder. Each substitution is logged with the session,
-credential, host, method and path, never the value.
-
-### Egress service
-
-`agentd-egress` (`docker/egress/Dockerfile`) is the egress proxy as a service
-of its own, apart from agentd and from every sandbox. It runs as a non-root
-user, on a read-only root filesystem, from a distroless image with no shell.
-At startup it turns core dumps off (`RLIMIT_CORE` 0) and, on Linux, makes
-itself non-dumpable (`PR_SET_DUMPABLE` 0), so its memory cannot be dumped or
-read by another process. It serves no metrics or debug endpoint, and logs no
-request header. Its role may only call `secretsmanager:GetSecretValue` on
-credential secrets (`deploy/iam/egress-secrets-policy.json`).
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `AGENTD_EGRESS_ADDR` | `0.0.0.0:8890` | The proxy, for sandboxes |
-| `AGENTD_EGRESS_ADMIN_ADDR` | `127.0.0.1:8891` | The admin interface, for agentd only: bind it to an address on a network only agentd shares |
-| `AGENTD_EGRESS_ADMIN_TOKEN` | required | The bearer token the admin interface takes, at least 32 characters |
-| `AGENTD_EGRESS_INTERNAL_HOSTS` | unset | Hosts sandboxes may reach at internal addresses, comma-separated |
-| `AGENTD_SECRETS_PREFIX`, `AGENTD_SECRETS_REGION`, `AGENTD_SECRETS_ENDPOINT`, `AGENTD_SECRETS_ROLE_ARN` | as for agentd | Where the credentials are |
-
-The service keeps its registrations in memory: after it restarts, a sandbox
-it no longer knows is refused (407) until the session's sandbox is started
-again.
 
 ## S3 credentials
 
@@ -211,10 +164,15 @@ no input names a secret outside the prefix or in another workspace. A write
 creates the secret, or puts a new value when it exists, with one
 `ClientRequestToken`, so a retry never adds a second version. A secret deleted
 inside its recovery window is restored and written again. Archiving a
-credential deletes its secret with the recovery window. Reads are not cached.
+credential deletes its secret with the recovery window. Archiving a vault
+archives its credentials, and deleting one deletes them, in one transaction
+under the vault's row lock; their secrets are deleted right after the commit.
+A create or rotation writes its secret first and takes it back out when the
+vault or credential turns out archived or gone, so no archived credential
+keeps a secret. Reads are not cached.
 An `environment_variable` credential's secret is also tagged
-`credential_type=environment_variable` when it is created, so that the egress
-swap's IAM policy reaches those secrets and no others; `agentd vault-secrets
+`credential_type=environment_variable` when it is created, so that a sandbox
+worker's egress swap (`agentd-worker`) is granted those secrets and no others; `agentd vault-secrets
 tag` tags the ones created before (1 Postgres read, then one `TagResource`
 each; tagging one twice changes nothing).
 
@@ -228,7 +186,7 @@ each; tagging one twice changes nothing).
 | `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | Days a deleted secret stays recoverable, 7 to 30 |
 
 Credentials come from the AWS default chain, as for S3. The least-privilege
-IAM policies for agentd, the key and the sandboxes are in
+IAM policies for agentd, the key and the workers are in
 [`deploy/iam`](../deploy/iam/README.md).
 
 Secret values cross the secret store port as `secrecy::SecretString`, whose
@@ -237,34 +195,41 @@ and the AWS error code, never a value or an AWS message. The AWS SDK's
 `debug` and `trace` events, which can print request and response bodies, are
 dropped from every log whatever `RUST_LOG` says.
 
-## System secrets
+## Keys from the environment
 
-agentd keeps four values once per deployment as `<prefix>/system/<name>`,
-under the same KMS key as the credentials, read at boot and created the first
-time; another replica, or the next boot, reads the same values:
+agentd reads its own keys from environment variables; how the deployment fills
+them (a secrets manager, a task definition) is the deployment's concern. Each
+key ring is `<id>:<hex>,…`, ids of letters and digits, keys of at least 16
+bytes:
 
-| Name | What it is |
+| Variable | What it is |
 |---|---|
-| `api_key_pepper` | 32 random bytes, hex: keys every API key and environment key digest |
-| `work_token_key` | 32 random bytes, hex: signs work tokens, so a token outlives the process that minted it (`AGENTD_WORK_TOKEN_KEY` replaces it) |
-| `egress_key` | 32 random bytes, hex: signs `environment_variable` placeholders, which the egress swap checks |
-| `runtime_key` | agentd's runtime key, an `sk-ant-oat01-` environment key for the runtime queue |
+| `AGENTD_API_KEY_PEPPERS` | The peppers every API key digest is keyed with. The first keys each new digest. A request's key is looked up under every pepper in one query, and a key found under an older one is stored under the first from then on, so a pepper rotates by putting a new one first and dropping the old one once no key is stored under it |
+| `AGENTD_WORK_TOKEN_KEYS` | Signs work tokens, `agentd-wt-<key id>.<claims>.<mac>`. A token verifies while its key id is in the ring |
+| `AGENTD_PLACEHOLDER_KEYS` | Signs placeholders the same way, `agentd-ph-<key id>.<claims>.<mac>` |
+| `AGENTD_RUNTIME_KEYS` | agentd's runtime keys, the current one first. The poller of `cloud` environments polls the runtime queue with the first; every one listed reaches it, so a key rotates by putting the new one first and dropping the old one once no poller uses it. Make one with `printf 'sk-ant-oat01-%sAA' "$(openssl rand 64 \| base64 \| tr '+/' '-_' \| tr -d '=\n')"` |
+| `AGENTD_ANTHROPIC_API_KEY`, `AGENTD_OPENROUTER_API_KEY` | The model providers' keys |
+
+Every replica must have the same rings. Secrets Manager holds only tenant vault
+credentials.
 
 ## Work
 
 Each session has one work item, its id the session's, in the Postgres
 `work_items` table, reused for every run. An item waits on a queue: a
-`self_hosted` environment's own (its environment id), the runtime queue
-(`runtime`) for `cloud` sessions, or the hosted queue of sessions whose own
-sandbox's harness takes the item, which no poll hands out. A worker's poller
+`self_hosted` environment's own (its environment id), or the runtime queue
+(`runtime`) for `cloud` sessions; it is queued when the session is created.
+A worker's poller
 polls `GET /v1/environments/{queue}/work/poll` with its environment key and
 gets the oldest queued item not handed out in the last `reclaim_older_than_ms`
 (default 5000), with its work secret; the item is handed out again if no one
 acknowledges it in that time. A heartbeat with no `desired_ttl_seconds`, or 0,
 grants a 300 s lease; any other integer is granted and echoed as given. An
 item with no heartbeats stays `active`; a `stopping` item whose lease runs out
-is served as `stopped`. Archiving, deleting or terminating a session stops its
-item (`stopping` while a worker holds it) and keeps it.
+is served as `stopped`. Archiving or deleting a session stops its item
+(`stopping` while a worker holds it) and keeps it. `AGENTD_API_BASE_URL`
+(required) is agentd's API as workers reach it, the work secret's
+`api_base_url`.
 
 The work secret is base64url JSON with live's nine keys in live's order:
 `version` (1), `session_ingress_token` (`""`), `api_base_url`, `sources` and
@@ -274,8 +239,8 @@ The work secret is base64url JSON with live's nine keys in live's order:
 unarchived `environment_variable` credential in its vaults (the first vault in
 `vault_ids` wins a name) to a placeholder, never the value; for a
 `self_hosted` session it is `{}`. A placeholder is `agentd-ph-` then
-`<base64url JSON {session, ws, vault, credential}>.<base64url HMAC-SHA256>`,
-keyed with HMAC-SHA256(`egress_key`, `"placeholder"`), so the swap finds the
+`<key id>.<base64url JSON {session, ws, vault, credential}>.<base64url HMAC-SHA256>`,
+signed with the first key of `AGENTD_PLACEHOLDER_KEYS`, so the swap finds the
 credential's secret from it and refuses one copied into another session.
 
 A work token reaches its own item (read, ack, heartbeat, stop), its own
@@ -295,9 +260,8 @@ which one a request needs: `/v1/organizations` routes take admin keys only,
 every other route workspace keys and environment keys, and the work tokens
 described under [Work](#work). Every key is 86 base64url characters from 64
 random bytes after its prefix, then `AA`. Only an HMAC-SHA256 digest of a key is kept,
-keyed with a pepper agentd keeps as `<prefix>/system/api_key_pepper` in
-Secrets Manager (created on first use), so the stored digests alone verify
-nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
+keyed with the current pepper of `AGENTD_API_KEY_PEPPERS`, so the stored
+digests alone verify nothing. With 512 bits of entropy a key cannot be guessed, so a slow password
 hash such as argon2id would only add cost to every request. Nothing is
 cached, so a revoke holds from the next request.
 
@@ -305,9 +269,7 @@ cached, so a revoke holds from the next request.
   workspace. Each is a row in the Postgres `api_keys` table: its digest under
   a unique index, its id, org, workspace, name, partial key hint, and the time
   it was created and revoked. A request computes its key's digest and reads
-  the unrevoked row with that digest. Secrets under
-  `<prefix>/system/api_keys/` are never read: reissue each of those keys with
-  `agentd keys create`, and switch callers to the new keys before deploying.
+  the unrevoked row stored under one of its digests.
 - **Environment keys** (`sk-ant-oat01-…`, `envkey_…`) are a worker's poller's
   Bearer token, as live issues them in its Console: each acts for one org,
   workspace and `self_hosted` environment, and is a row in the Postgres
@@ -317,16 +279,14 @@ cached, so a revoke holds from the next request.
   reads, events and stream of its environment's sessions (any other
   session is a 404); every other route is live's 403 `permission_error`
   ("OAuth token does not meet scope requirement …"). A workspace key on
-  `work/poll` is a 401 `Invalid bearer token`. agentd's own runtime key
-  (`<prefix>/system/runtime_key`) reaches the runtime queue's routes the same
+  `work/poll` is a 401 `Invalid bearer token`. agentd's own runtime keys
+  (`AGENTD_RUNTIME_KEYS`) reach the runtime queue's routes the same
   way, across workspaces, and also `GET /v1/environments/{id}` for an
   environment with a work item on the runtime queue, so a launcher can apply
   its networking; any other environment is the same 403.
 - **Admin keys** (`sk-ant-admin01-…`, `adminkey_…`) act for one org. Each is a
-  Secrets Manager secret, `<prefix>/system/admin_keys/<digest>`, under the
-  same KMS key as the credentials, holding the digest, its id and org; the
-  tags carry what a listing shows. A request reads the one secret its digest
-  names and compares the digest in constant time. A revoke deletes the secret.
+  row in the Postgres `admin_keys` table, its digest under a unique index, with
+  its id, org, name, partial key hint, and the time it was created and revoked.
 
 ```bash
 agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]   # prints the key once, on stdout
@@ -342,12 +302,11 @@ agentd vault-secrets tag                                                      # 
 ```
 
 The commands read the same configuration as the server, so `DATABASE_URL` is
-required for all of them when `AGENTD_STORE` is unset or `postgres`. `agentd
-keys` and `agentd environment-keys` use Postgres (migrated) and Secrets
-Manager for the pepper; `agentd vault-secrets tag` reads the credentials from
-Postgres and tags their secrets in Secrets Manager; `agentd admin-keys` uses
-only Secrets Manager. A key is printed once and never stored;
-lose it and create another. No environment variable holds a key.
+required for all of them when `AGENTD_STORE` is unset or `postgres`, and so
+is `AGENTD_API_KEY_PEPPERS`. `agentd keys`, `agentd admin-keys` and `agentd
+environment-keys` use Postgres (migrated); `agentd vault-secrets tag` reads the
+credentials from Postgres and tags their secrets in Secrets Manager. A key is
+printed once and never stored; lose it and create another.
 
 ## Security
 
@@ -355,16 +314,12 @@ There is no switch that weakens any of these; each is the only behaviour.
 
 - Vault credentials are in Secrets Manager under a customer-managed KMS key.
   There is no plain store.
-- API keys are peppered digests, workspace and environment keys in Postgres
-  and admin keys in Secrets Manager, made by `agentd keys`, `agentd
-  environment-keys` and `agentd admin-keys`. No key is
-  read from the environment and there is no default key.
-- Every session runs in a Docker sandbox; there is no mode without one. Give
-  agentd a Docker API that allows only networks, images and containers (the
-  dev stack uses `tecnativa/docker-socket-proxy`), never the raw socket. The
-  right to create containers is still as strong as root on that daemon's
-  host, so in production that daemon runs on a host or VM of its own, with
-  nothing else on it.
+- API keys are peppered digests in Postgres, made by `agentd keys`, `agentd
+  environment-keys` and `agentd admin-keys`. No API key is read from the
+  environment and there is no default key; only agentd's own runtime keys are.
+- agentd runs no tool and starts no container: a session's tools run on the
+  worker that polls its environment, which holds only the work token of the
+  item it took.
 - An AWS endpoint override is `https://`, or plain `http://` only to the
   machine itself or a single-label container name, as an emulator runs on.
   Such a name must resolve on the private network (a Compose or Kubernetes
@@ -376,11 +331,8 @@ There is no switch that weakens any of these; each is the only behaviour.
   to the internet: API keys travel in request headers.
 - There is no CORS layer, so browsers cannot call agentd across origins, and
   there is no debug or admin endpoint. Every route needs an API key.
-- Credential values reach a sandbox's requests only through the egress
-  service, which reads each one when a request needs it and zeroes it once
-  the request is sent; agentd never reads them for egress. Only agentd can
-  reach the service's admin interface: it takes a token, and listens on a
-  network only the two share.
+- A `cloud` work secret carries a signed placeholder for each
+  `environment_variable` credential, never its value.
 - The dev and observability stacks require their passwords, publish their
   ports on `127.0.0.1` (OTLP ingest aside), and run Grafana without
   anonymous access.
@@ -392,6 +344,133 @@ for its kind. The dreams module is not assembled, so no dream handler is
 registered. The scheduler delivers each tick to the handler of the
 target's kind, which runs it under the tenant that registered the schedule.
 A tick whose kind has no handler fails and is logged as dropped.
+
+Schedules go through an outbox. Each change (a deployment's create, pause,
+unpause or archive) is written to `schedule_outbox` in the transaction of the
+deployment write that causes it, and removed in the same transaction, so the
+table stays empty and the change lives on in the WAL. Debezium Server reads
+the WAL into `agentd.public.schedule_outbox` of the change feed (below), and
+one replica at a time applies the changes in order to the scheduler sink; a change the sink refuses stops the stream until it
+applies, and a change that does not decode is logged at `ERROR` and passed
+over. The built-in sink is the Postgres scheduler: one `schedules` row per
+target, whose due rows every replica claims every 10 s with
+`FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it after
+the commit. A fire more than a minute late is skipped, so after downtime a
+schedule fires again from its next time, with no backfill. Another sink (a
+Temporal worker, say) reads the same topic and delivers its fires to
+`agentd.fires` of the feed: on Kafka one record per fire, its value
+`{"spec": …, "scheduled_at": …}`; on Valkey Streams one entry per fire with
+the fields `spec` (the schedule's spec as JSON) and `scheduled_at` (RFC 3339).
+
+Every fire, from either source, passes the fire inbox, `fire_claims`, before
+its handler runs. A delivery may repeat (a scheduler retry, a stream entry a
+stopped replica left pending), so the first delivery claims the fire by its
+target and time, and the others find it held or done. The owner holds the
+fire for 15 minutes; a fire not done by then is taken over by the next
+delivery, up to 3 runs, after which it is dropped and logged at `ERROR`. A
+deployment fire derives its run and session ids from the deployment and the
+fire time, so a run taken over finds the session and run the first made and
+makes no second one. A stream entry is acknowledged once its fire ran or
+needs no run.
+
+## The change feed
+
+Debezium Server reads the committed changes of the tables in
+`docker/debezium/application.properties` from Postgres's WAL (pgoutput, the
+publication and slot `agentd_changes`) and writes each table's to the topic
+`agentd.public.<table>` of the feed. Its offsets are rows of
+`debezium_offsets` in the same database, which it creates on first start.
+Every minute it writes a logical message to the WAL, so the slot moves on while
+the captured tables are quiet, and a heartbeat record to
+`__debezium-heartbeat.agentd`, which agentd does not read. The same properties
+file runs in every deployment; the environment overrides any key in it
+(`debezium.source.database.hostname` is `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`).
+Compose runs it as the `debezium` service; CI starts it with
+`docker/debezium/start-ci.sh`.
+
+The feed is Kafka when `AGENTD_KAFKA_BROKERS` is set, and Debezium runs with
+its Kafka sink (the default). Each replica reads each topic in the consumer
+group `agentd.<topic>` and commits a record's offset once its handler
+succeeds; a record whose handler fails is retried in place, so nothing behind
+it in its partition overtakes it. An ordered table's topic has one partition,
+which the group gives to one replica at a time. An external scheduler writes
+its fires to the topic `agentd.fires`, each record's value
+`{"spec": …, "scheduled_at": "<RFC 3339>"}`. The topics' retention trims them.
+
+Without Kafka, the feed is Valkey Streams on `AGENTD_VALKEY_URL`, and
+Debezium runs with `DEBEZIUM_SINK_TYPE=redis`. Each replica reads each stream
+in the consumer group `agentd`; an ordered stream is read by one replica at a
+time under a lease in Valkey. Heartbeats go to the stream
+`__debezium-heartbeat.agentd` (the sink stalls on a heartbeat it is told to
+skip). An entry stays in its stream after it is acknowledged, so once a minute
+each replica trims each stream it reads below the oldest entry a group still
+needs (its oldest pending entry, else the last one it was delivered), and the
+heartbeat stream to its last 100 entries. Compose and the CI test job run the
+Kafka feed; the CI SDK job runs the Valkey Streams feed on a one-node Valkey
+cluster.
+
+In production:
+
+- **Postgres** runs with `wal_level=logical` (on RDS and Aurora, the parameter
+  `rds.logical_replication=1`, then a reboot) and `max_slot_wal_keep_size` set
+  to what the disk can spare, so a stalled slot cannot fill it. A slot past
+  that size is invalidated and the changes in it are lost.
+- **Debezium's role** has `REPLICATION` (on RDS, `GRANT rds_replication`),
+  `SELECT` on the captured tables, and `CREATE` on the schema for its offsets
+  table. The publication is made once by the tables' owner,
+  `CREATE PUBLICATION agentd_changes FOR TABLE schedule_outbox, webhook_deliveries`, and Debezium
+  runs with `DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE=disabled`. A table
+  added to the feed joins `table.include.list` and the publication
+  (`ALTER PUBLICATION agentd_changes ADD TABLE …`).
+- **Debezium Server** runs as exactly one instance (`quay.io/debezium/server`,
+  the version compose pins), restarted when it stops; a second instance
+  cannot take the slot. Its connections come from the environment:
+  `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`, `_PORT`, `_DBNAME`, `_USER`,
+  `_PASSWORD` and `_SSLMODE` (`require`); the offsets' JDBC URL, user and
+  password in `DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_URL`, `_USER`
+  and `_PASSWORD`; and the Kafka sink's
+  `DEBEZIUM_SINK_KAFKA_PRODUCER_BOOTSTRAP_SERVERS`. It answers
+  `GET /q/health` on port 8080.
+- **Kafka** has the topics `agentd.public.schedule_outbox`,
+  `agentd.public.webhook_deliveries` and `agentd.fires`
+  made before Debezium starts, each with one partition, replication factor 3
+  and `min.insync.replicas=2`, so a record Debezium has written survives the
+  loss of a broker. Retention is longer than the longest time every replica
+  may be down; a record past it is gone before agentd reads it. agentd reaches
+  the brokers at `AGENTD_KAFKA_BROKERS`.
+- **Valkey** keeps nothing that must outlive it while the feed is on Kafka:
+  the signals are delivered at most once and the budget's counters expire
+  after two minutes. A standalone Valkey serves, or a cluster's configuration
+  endpoint with `AGENTD_VALKEY_CLUSTER=true`; `rediss://` for TLS.
+
+The signals to alarm on, with their thresholds:
+
+| Signal | Read from | Alarm when |
+|---|---|---|
+| Slot lag | `pg_current_wal_lsn() - confirmed_flush_lsn` of `agentd_changes` in `pg_replication_slots` (RDS: `OldestReplicationSlotLag`) | over 1 GB, or growing for 15 minutes |
+| Debezium health | `GET /q/health` | down for 2 minutes |
+| Feed backlog | Kafka: the lag of the group `agentd.agentd.public.<table>`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
+
+## Webhooks
+
+agentd sends each organization's endpoints, from `AGENTD_WEBHOOK_ENDPOINTS`,
+live's webhook events: `session.status_run_started`, `session.status_idled`
+and `session.status_terminated` when a session's status changes (an archive
+terminates the session), the vault and credential lifecycle events
+(`vault.created`, `vault.archived` with one `vault_credential.archived` for each
+credential it archives, `vault.deleted` with one `vault_credential.deleted` for
+each of its credentials, archived ones included, `vault_credential.created`,
+`vault_credential.archived`, `vault_credential.deleted`), and
+`vault_credential.refresh_failed`. Each delivery is a `webhook_deliveries` row
+written in the commit of the change it reports, one per endpoint. The change
+feed hands each new row to the sender, which posts live's body
+(`{"type": "event", "id": "whe_…", "created_at", "data": {…}}`) signed with
+Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature`, keyed
+with the endpoint's `whsec_` secret) and `user-agent: Claude-Platform`. A
+delivery not answered 2xx is sent twice more, 31 s apart, each attempt signed
+anew under the same `webhook-id`, then dropped; the row records
+`delivered_at` or `dropped_at`. Delivery is at least once, so a receiver
+dedupes on `webhook-id`.
 
 ## Telemetry
 

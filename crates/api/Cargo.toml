@@ -16,22 +16,18 @@ environments = { workspace = true }
 api-keys = { workspace = true }
 organizations = { workspace = true }
 vaults = { workspace = true }
+webhooks = { workspace = true }
 memory = { workspace = true }
 files = { workspace = true }
 skills = { workspace = true }
 sessions = { workspace = true }
 signals-valkey = { workspace = true }
+changes-kafka = { workspace = true }
 engine = { workspace = true }
 uuid = { workspace = true }
 deployments = { workspace = true }
 dreams = { workspace = true }
-scheduler-local = { workspace = true }
 work = { workspace = true }
-egress-proxy = { workspace = true }
-hex = { workspace = true }
-sha2 = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rand = { workspace = true }
 store-postgres = { workspace = true }
 diesel = { workspace = true }
 bytes = { workspace = true }
@@ -39,8 +35,6 @@ futures = { workspace = true }
 blobs-s3 = { workspace = true }
 secrets-aws = { workspace = true }
 aws-common = { workspace = true }
-sandbox-docker = { workspace = true }
-bollard = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -60,6 +54,7 @@ tracing-opentelemetry = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+webhooks = { workspace = true }
 test-support = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 http-body-util = { workspace = true }

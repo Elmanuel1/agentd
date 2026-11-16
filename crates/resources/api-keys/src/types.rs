@@ -57,3 +57,52 @@ pub struct EnvironmentKey {
     /// When it was revoked; it resolves to no one from then on.
     pub revoked_at: Option<Timestamp>,
 }
+
+/// Marker for `adminkey_…` ids.
+#[derive(Debug, Clone, Copy)]
+pub struct AdminKeyResource;
+impl Resource for AdminKeyResource {
+    const PREFIX: &'static str = "adminkey";
+    const LABEL: &'static str = "admin key";
+}
+
+/// One organization admin key, as a listing shows it, without its secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminKey {
+    /// `adminkey_…`.
+    pub id: String,
+    /// The organization it administers.
+    pub org: OrgId,
+    /// A label for people.
+    pub name: String,
+    /// Its first 16 and last 4 characters.
+    pub partial_key_hint: String,
+    /// When it was created.
+    pub created_at: Timestamp,
+    /// When it was revoked; it resolves to no one from then on.
+    pub revoked_at: Option<Timestamp>,
+}
+
+/// A stored key's id.
+pub trait Keyed {
+    /// `apikey_…`, `envkey_…` or `adminkey_…`.
+    fn id(&self) -> &str;
+}
+
+impl Keyed for ApiKey {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Keyed for EnvironmentKey {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Keyed for AdminKey {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use shared::hash::Signer;
+use shared::hash::{KeyRing, Signer};
 
 /// Every work token starts with this.
 pub const PREFIX: &str = "agentd-wt-";
@@ -46,9 +46,9 @@ pub struct WorkTokens {
 }
 
 impl WorkTokens {
-    /// Sign with `key`.
-    pub fn new(key: impl Into<Vec<u8>>) -> Self {
-        Self { signer: Signer::new(key).derive("work") }
+    /// Sign with `keys`' first key; verify with any of them.
+    pub fn new(keys: &KeyRing) -> Self {
+        Self { signer: Signer::new(keys.clone()).derive("work") }
     }
 
     /// The token for `claims`.
@@ -95,18 +95,21 @@ mod tests {
 
     #[test]
     fn a_token_verifies_only_under_its_key_and_unchanged() {
-        let tokens = WorkTokens::new(b"k".to_vec());
+        let tokens = WorkTokens::new(&KeyRing::single(b"k".to_vec()));
         let t = tokens.mint(&claims());
         assert_eq!(tokens.verify(&t), Some(claims()));
-        assert_eq!(WorkTokens::new(b"other".to_vec()).verify(&t), None);
-        let tampered = t.replacen("agentd-wt-e", "agentd-wt-f", 1);
+        assert_eq!(WorkTokens::new(&KeyRing::single(b"other".to_vec())).verify(&t), None);
+        // The claims follow the key id: change their first character.
+        let at = "agentd-wt-k1.".len();
+        let swapped = if t.as_bytes()[at] == b'e' { "f" } else { "e" };
+        let tampered = format!("{}{swapped}{}", &t[..at], &t[at + 1..]);
         assert_eq!(tokens.verify(&tampered), None);
         assert_eq!(tokens.verify("sk-ant-123"), None);
     }
 
     #[test]
     fn the_secret_has_live_s_nine_keys_in_live_s_order_and_types() {
-        let tokens = WorkTokens::new(b"k".to_vec());
+        let tokens = WorkTokens::new(&KeyRing::single(b"k".to_vec()));
         let vars = BTreeMap::from([("GITHUB_TOKEN".to_owned(), "agentd-ph-x".to_owned())]);
         let raw = URL_SAFE_NO_PAD.decode(tokens.secret(&claims(), "https://agentd.test", &vars)).unwrap();
         let text = String::from_utf8(raw.clone()).unwrap();

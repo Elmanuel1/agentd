@@ -150,7 +150,7 @@ fn app() -> Router {
             admin_keys: Arc::new(admin_keys),
             environment_keys: Arc::new(Keys),
             work: WorkAccess {
-                tokens: work::WorkTokens::new(WORK_KEY),
+                tokens: work::WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())),
                 items: Arc::new(Items),
                 grants: Arc::new(NoGrants),
             },
@@ -218,7 +218,7 @@ async fn a_request_runs_as_its_key_or_work_session_under_its_request_id() {
     assert_eq!(as_key.body["actor"], "apikey_e");
     assert_eq!(as_key.body["request_id"], as_key.headers["request-id"].to_str().unwrap());
     let claims = work::WorkClaims { session: "sesn_1".into(), ws: "wrkspc_e".into(), org: "org_e".into() };
-    let token = work::WorkTokens::new(WORK_KEY).mint(&claims);
+    let token = work::WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())).mint(&claims);
     let as_work =
         send(get_req("/v1/sessions/sesn_1").header("x-api-key", token).body(Body::empty()).unwrap()).await;
     assert_eq!(as_work.status, StatusCode::OK);
@@ -449,7 +449,7 @@ async fn the_runtime_key_reads_only_an_environment_with_runtime_work() {
 #[tokio::test]
 async fn a_work_token_is_refused_once_its_item_is_stopped() {
     // L-12.
-    let tokens = work::WorkTokens::new(WORK_KEY);
+    let tokens = work::WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec()));
     let mint = |s: &str| {
         tokens.mint(&work::WorkClaims { session: s.into(), ws: "wrkspc_e".into(), org: "org_e".into() })
     };

@@ -8,7 +8,7 @@ use shared::{ApiError, AuthContext, Pagination, WorkspaceId};
 
 use super::{map_store, SessionsService};
 use crate::events::{Event, EventId, EventPayload, SessionEvent, StopReason};
-use crate::store::{EventFilter, Order};
+use crate::store::{EventFilter, Order, Wake};
 use crate::types::{Session, SessionStatus};
 
 impl SessionsService {
@@ -95,11 +95,13 @@ impl SessionsService {
                     )));
                 }
             }
-            Ok(())
+            let thread = |call: &EventId| {
+                found.iter().find(|e| e.id == *call).and_then(|e| e.session_thread_id.clone())
+            };
+            Ok(calls.iter().map(|(call, _)| thread(call)).collect())
         };
-        let wake = self.wake_for(ctx, &session).await?;
         self.events
-            .append_answers(&ctx.workspace, &id, &ids, &events, &check, wake)
+            .append_answers(&ctx.workspace, &id, &ids, &events, &check, Wake::Step)
             .await
             .map_err(map_store)??;
         self.publish(&ctx.workspace, &id).await;

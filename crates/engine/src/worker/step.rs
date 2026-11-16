@@ -5,69 +5,36 @@
 
 use std::collections::HashSet;
 
-use sessions::events::{Event, EventId, SpanEvent, StopReason};
-use sessions::signals::Signal;
-use sessions::steps::{Claim, StepEnd, StepWrite};
+use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
+use sessions::steps::{Claim, StepEnd};
 use sessions::store::StoreError;
-use sessions::types::{Session, SessionStatus};
+use sessions::types::SessionStatus;
 use shared::tenancy::RUNTIME_QUEUE;
 use shared::BackendError;
 
+use super::compact::{Log, Opened};
 use super::reply::{led, Call};
+use super::rubrics;
 use super::settle::settle;
 use super::take::{cut_off, take, Interrupt, Taken};
-use super::team::roster;
-use super::turn::{batch, opening, Batch};
+use super::turn::{batch, opening};
 use super::usage::{charged, over_budget, spent};
 use super::watch::Watch;
 use super::Loop;
-use super::{grade, rubrics};
-use crate::model::{ModelError, ModelProvider, ModelRequest};
-use crate::turn::policy::Toolbox;
-use crate::turn::prompt::system_prompt;
+use crate::model::{ModelError, ModelProvider};
+use crate::turn::compact::checkpoint;
+use crate::turn::history::{Kept, Unanswered};
 
 impl Loop {
     /// Run `claim`'s step; a step that fails goes back on the queue for a
     /// retry after a pause.
     pub(super) async fn step(&self, claim: Claim) {
+        crate::metrics::claimed(claim.waited_ms);
         let Err(e) = self.run(&claim).await else { return };
         tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
         if let Err(e) = self.stores.steps.defer(&claim, 5).await {
             tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
         }
-    }
-
-    async fn write(&self, claim: &Claim, b: &Batch, to: Option<SessionStatus>) -> Result<bool, BackendError> {
-        let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
-        let wrote = self
-            .stores
-            .steps
-            .write(claim, self.settings.lease_seconds(), w)
-            .await
-            .map_err(BackendError::new)?;
-        self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
-        Ok(wrote)
-    }
-
-    async fn commit(
-        &self,
-        claim: &Claim,
-        end: StepEnd,
-        b: &Batch,
-        session: &Session,
-    ) -> Result<bool, BackendError> {
-        let after = session.clone();
-        let change = move |s: &mut Session| {
-            s.status = after.status;
-            s.usage = after.usage.clone();
-            s.outcome_evaluations = after.outcome_evaluations.clone();
-            true
-        };
-        let w = StepWrite { read: &b.read, at: b.at, events: &b.events, session: &change };
-        let done = self.stores.steps.commit(claim, end, w).await.map_err(BackendError::new)?;
-        self.publish(&Signal { workspace: claim.workspace.clone(), session: claim.session.clone() }).await;
-        Ok(done)
     }
 
     async fn run(&self, claim: &Claim) -> Result<(), BackendError> {
@@ -78,20 +45,26 @@ impl Loop {
             Err(StoreError::NotFound) => return Ok(()),
             Err(e) => return Err(BackendError::new(e)),
         };
-        let log = self.stores.log.events(ws, id).await.map_err(BackendError::new)?;
+        let read = self.stores.log.engine_events(ws, id).await.map_err(BackendError::new)?;
+        crate::metrics::read(read.len());
+        let kept: Kept = read.iter().filter_map(|(e, k)| Some((e.id.clone(), k.clone()?))).collect();
+        let log: Vec<Event> = read.into_iter().map(|(e, _)| e).collect();
         let queue = self.stores.work.queue_of(ws, id.as_str()).await.map_err(BackendError::new)?;
         let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
         let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
-        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } =
-            take(&log, &session, cloud, &rubrics);
+        let step = take(&log, &session, cloud, &rubrics, &kept);
+        if step.interrupt == Interrupt::None && step.history.unanswered.iter().any(Unanswered::for_loop) {
+            return self.call_mcp(claim, session, step).await;
+        }
+        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } = step;
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
             self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
         }
         if interrupt != Interrupt::None {
             session.status = SessionStatus::Idle;
-            let mut events = cut_off(&turn, &history);
+            let mut events = cut_off(&turn, &history, &log);
             events.extend(turn.idle(&session, StopReason::EndTurn {}));
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
@@ -112,11 +85,19 @@ impl Loop {
             return Ok(());
         }
         let agent = thread.agent.clone();
-        let model = agent.config.model.id.clone();
-        let provider = ModelProvider::of(&model).name();
+        let model = &agent.config.model.id;
+        let provider = ModelProvider::of(model).name();
         if !self.admitted(claim, provider).await? {
             return Ok(());
         }
+        let mut servers = self.stores.mcp.servers(ws, &session, &agent, &read).await?;
+        let errors = servers.connect(idle).await?;
+        if servers.deferred() {
+            return self.defer_refresh(claim).await;
+        }
+        let errors = errors.into_iter().map(|error| turn.event(SessionEvent::Error { error }));
+        let mut history = history;
+        let fit = self.fit(&thread, &Log { read: &read, kept: &kept, rubrics: &rubrics }, &mut history).await;
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
         let mut running = match idle {
@@ -126,36 +107,24 @@ impl Loop {
         let ongoing =
             thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
         running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
-        let opening = opening(taken, arrived, running, answers.into_iter().chain([start]).collect());
+        let mut opening =
+            opening(taken, arrived, running, answers.into_iter().chain(errors).chain([start]).collect());
+        if matches!(fit, Ok(Some(_))) {
+            opening.engine.push((start_id.clone(), checkpoint::attempt()));
+        }
         if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
             return Ok(());
         }
         session.status = SessionStatus::Running;
-        let roster = roster(&session);
-        let coordinator = thread.primary && !roster.is_empty();
-        let delegates = match coordinator {
-            true => roster.as_slice(),
-            false => &[],
-        };
-        let tools = match &thread.grading {
-            Some(_) => grade::tools(),
-            None => Toolbox::for_agent(&agent, coordinator),
-        };
-        let effort = agent
-            .config
-            .model
-            .effort
-            .as_ref()
-            .and_then(|e| serde_json::to_value(e).ok()?.as_str().map(str::to_owned));
-        let request = ModelRequest {
-            model,
-            agent: agent.config.name.clone(),
-            system: system_prompt(&agent, &[], delegates),
-            messages: history.messages,
-            tools: tools.tools.clone(),
-            max_tokens: self.models.max_tokens,
-            effort,
-        };
+        match fit {
+            Err(e) => return self.unfit(claim, &turn, session, &start_id, &e).await,
+            Ok(Some(c)) => {
+                let opened = Opened { turn: &turn, thread: &thread, start: &start_id };
+                return self.compact(claim, session, opened, c, &servers.tools()).await;
+            }
+            Ok(None) => {}
+        }
+        let (tools, request) = self.request(&session, &thread, history.messages, &servers.tools());
         let mut watch = Watch {
             rx: self.signals.subscribe(),
             log: self.stores.log.clone(),
@@ -205,7 +174,9 @@ impl Loop {
                     session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
                     session.outcome_evaluations.push(eval);
                 }
-                (batch(Vec::new(), Vec::new(), out.events), out.end)
+                let mut done = batch(Vec::new(), Vec::new(), out.events);
+                done.engine = out.engine;
+                (done, out.end)
             }
         };
         self.commit(claim, end, &done, &session).await?;

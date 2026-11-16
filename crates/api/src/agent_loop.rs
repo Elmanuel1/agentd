@@ -1,5 +1,6 @@
 //! The loop workers of a `loop` or `all` replica: the model providers whose
-//! keys are stored, the account-wide budget, and the worker pool.
+//! keys are set (`AGENTD_ANTHROPIC_API_KEY`, `AGENTD_OPENROUTER_API_KEY`), the
+//! account-wide budget, and the worker pool.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,15 +10,18 @@ use engine::model::retry::Retry;
 use engine::model::{ModelRouter, ProviderConfig};
 use engine::worker::{Loop, Models, Settings, Stores as LoopStores};
 use sessions::signals::Signals;
-use shared::ports::secrets::SecretStore;
-use signals_valkey::ValkeyBudget;
+use shared::ports::secrets::{ExposeSecret, SecretString};
+use signals_valkey::{Valkey, ValkeyBudget};
 
 use files::FilesService;
 use work::{WorkService, WorkTokens};
 
 use crate::backends::{BootError, Stores, SystemKeys};
 use crate::config::Config;
-use crate::model_key::{self, ANTHROPIC, OPENROUTER};
+
+mod mcp;
+
+pub use mcp::mcp;
 
 /// A claim's lease outlasts the step's model deadline by this much.
 const LEASE_MARGIN: Duration = Duration::from_secs(120);
@@ -27,33 +31,30 @@ pub async fn spawn(
     config: &Config,
     stores: &Stores,
     signals: Arc<dyn Signals>,
-    secrets: &dyn SecretStore,
     system: &SystemKeys,
 ) -> Result<tokio::task::JoinHandle<()>, BootError> {
     let c = &config.agent_loop;
-    let key = |e: String| BootError::Loop(format!("model key: {e}"));
-    let anthropic = model_key::read(secrets, ANTHROPIC).await.map_err(key)?;
-    let openrouter = model_key::read(secrets, OPENROUTER).await.map_err(key)?;
+    let key = |k: &Option<SecretString>| k.as_ref().map(|k| k.expose_secret().to_owned());
     let providers = ProviderConfig {
-        anthropic: anthropic.map(|k| (k, c.anthropic_base_url.clone())),
-        openai_compat: openrouter.map(|k| (k, config.sandbox.model_base_url.clone())),
+        anthropic: key(&config.keys.anthropic).map(|k| (k, c.anthropic_base_url.clone())),
+        openai_compat: key(&config.keys.openrouter).map(|k| (k, c.model_base_url.clone())),
     };
     let client = ModelRouter::from_config(&providers).map_err(BootError::Loop)?;
-    let budget: Arc<dyn ModelBudget> = match (&config.streams.valkey_url, c.rpm.or(c.itpm)) {
-        (Some(url), Some(_)) => {
-            Arc::new(ValkeyBudget::connect(url, c.rpm, c.itpm).map_err(|e| BootError::Loop(e.to_string()))?)
+    let budget: Arc<dyn ModelBudget> = match c.rpm.or(c.itpm) {
+        Some(_) => {
+            let streams = &config.streams;
+            let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster);
+            let budget = valkey.and_then(|v| ValkeyBudget::connect(&v, c.rpm, c.itpm));
+            Arc::new(budget.map_err(|e| BootError::Loop(e.to_string()))?)
         }
-        (None, Some(_)) => {
-            tracing::warn!("loop: AGENTD_MODEL_RPM or AGENTD_MODEL_ITPM is set without AGENTD_VALKEY_URL; no model budget applies");
-            Arc::new(Unlimited)
-        }
-        _ => Arc::new(Unlimited),
+        None => Arc::new(Unlimited),
     };
     let models = Models {
         client: Arc::new(client),
         retry: Retry { attempts: c.attempts, deadline: c.deadline, ..Retry::default() },
         budget,
         max_tokens: c.max_output_tokens,
+        compaction: c.compaction,
     };
     let loop_stores = LoopStores {
         steps: stores.steps.clone(),
@@ -61,10 +62,12 @@ pub async fn spawn(
         log: stores.session_events.clone(),
         work: Arc::new(WorkService::new(
             stores.work.clone(),
-            WorkTokens::new(system.work_token_key.clone()),
+            WorkTokens::new(&system.work_tokens),
             system.api_base_url.clone(),
         )),
         files: Arc::new(FilesService::new(stores.files.clone())),
+        mcp: mcp(stores, shared::net::Guard::default(), &config.webhooks),
+        webhooks: config.webhooks.clone(),
     };
     let settings = Settings {
         owner: format!("loop-{}", uuid::Uuid::new_v4()),

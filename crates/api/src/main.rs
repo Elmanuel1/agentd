@@ -5,8 +5,8 @@
 //! admin-keys …` and `agentd environment-keys …` manage keys, and `agentd
 //! vault-secrets tag` tags secrets, instead ([`api::cli`]). Records and blobs live
 //! in Postgres and object storage. Every replica's event streams read the log,
-//! signalled through Valkey (`AGENTD_VALKEY_URL`); the local scheduler lives
-//! in the process, so run one replica until a shared scheduler replaces it.
+//! signalled through Valkey (`AGENTD_VALKEY_URL`), and every replica claims
+//! due schedules from Postgres.
 
 use std::process::ExitCode;
 
@@ -36,11 +36,10 @@ async fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "vault-secrets" => {
             return api::cli::vault_secrets::vault_secrets(&config, rest).await
         }
-        Some((cmd, rest)) if cmd == "model-key" => return api::model_key::model_key(&config, rest).await,
         Some(_) => {
             let cli = api::cli::USAGE;
             let (env, vault) = (api::cli::environment_keys::USAGE, api::cli::vault_secrets::USAGE);
-            eprintln!("{cli}\n{env}\n{vault}\n{}", api::model_key::USAGE);
+            eprintln!("{cli}\n{env}\n{vault}");
             return ExitCode::FAILURE;
         }
     }

@@ -451,7 +451,7 @@ async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
         return;
     }
     use sessions::events::{Event, EventPayload, UserEvent};
-    use sessions::store::{SessionEventLog, SessionsStore, StoreError, Wake};
+    use sessions::store::{SessionEventLog, SessionReplace, SessionsStore, StoreError, Wake};
     use sessions::types::Session;
     let store = PgSessionsStore::new(backend().await);
     let log = PgSessionEventLog::new(backend().await);
@@ -462,10 +462,10 @@ async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
 
     let mut first = read.clone();
     first.title = Some("first".into());
-    store.replace(&ws, &read, first.clone()).await.unwrap();
+    store.replace(&ws, &read, first.clone(), &[]).await.unwrap();
     let mut second = read.clone();
     second.title = Some("second".into());
-    assert!(matches!(store.replace(&ws, &read, second).await, Err(StoreError::Conflict)));
+    assert!(matches!(store.replace(&ws, &read, second, &[]).await, Err(StoreError::Conflict)));
     assert_eq!(store.get(&ws, &read.id).await.unwrap().title.as_deref(), Some("first"));
 
     store.delete(&ws, &read.id).await.unwrap();

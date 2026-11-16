@@ -13,11 +13,8 @@ pub mod cli;
 pub mod config;
 pub mod deps;
 pub mod edge;
-pub mod egress;
-pub mod harness;
-pub mod model_key;
-pub mod sandbox_work;
 pub mod session_grants;
+pub mod session_work;
 pub mod state;
 pub mod telemetry;
 

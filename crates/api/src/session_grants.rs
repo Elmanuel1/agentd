@@ -13,7 +13,7 @@ use files::SessionFiles;
 use sessions::types::{MemoryAccess, Session, SessionId, SessionResource};
 use sessions::SessionsStore;
 use shared::{ApiError, AuthContext};
-use vaults::egress::VaultCredentials;
+use vaults::variables::VaultCredentials;
 use work::{SessionVariables, Variable};
 
 use crate::edge::reach::{Grants, SessionGrants};

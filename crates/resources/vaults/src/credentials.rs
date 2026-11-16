@@ -12,11 +12,12 @@ use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Timestamp};
 
+use webhooks::EventKind;
+
 use crate::service::{map_store, parse_pair, parse_vault_id, VaultsService};
 use crate::store::StoredCredential;
 use crate::types::{
-    CreateCredentialRequest, Credential, CredentialAuthInput, CredentialId, CredentialTag,
-    UpdateCredentialRequest,
+    CreateCredentialRequest, Credential, CredentialAuthInput, CredentialAuthWire, CredentialId, CredentialTag,
 };
 
 impl VaultsService {
@@ -30,7 +31,7 @@ impl VaultsService {
         let vault_id = parse_vault_id(raw_vault_id)?;
         let vault = self.vaults.get_vault(&ctx.workspace, &vault_id).await.map_err(map_store)?;
         if vault.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request("cannot add credentials to an archived vault"));
+            return Err(ApiError::invalid_request("Vault is archived."));
         }
         let display_name = required("display_name", req.display_name)?;
         let auth = required("auth", req.auth)?;
@@ -38,14 +39,15 @@ impl VaultsService {
         let existing =
             self.credentials.list_credentials(&ctx.workspace, &vault_id).await.map_err(map_store)?;
         validate_array_max("credentials", existing.len() + 1, values::CREDENTIALS_PER_VAULT_MAX)?;
-        // Unique key among ACTIVE credentials (archived ones freed theirs).
-        let key = auth.unique_key().to_owned();
-        if existing.iter().any(|c| {
-            c.wire.archived_at.is_none() && c.auth.as_ref().map(|a| a.unique_key()) == Some(key.as_str())
-        }) {
-            return Err(ApiError::conflict_invalid_request(format!(
-                "a credential for `{key}` already exists in this vault"
-            )));
+        // One active credential per MCP server URL, across MCP types, and per
+        // environment variable; an archived credential frees its key (Q10).
+        if existing.iter().any(|c| c.wire.archived_at.is_none() && same_key(&c.wire.auth, &auth)) {
+            return Err(ApiError::conflict_invalid_request(match auth {
+                CredentialAuthInput::EnvironmentVariable { .. } => {
+                    "A credential already exists for this environment variable."
+                }
+                _ => "A credential already exists for this MCP server URL.",
+            }));
         }
         let now = Timestamp::now();
         req.metadata.validate(MetadataPolicy::capped())?;
@@ -56,15 +58,18 @@ impl VaultsService {
             display_name,
             id: CredentialId::generate(),
             metadata: req.metadata,
-            tag: CredentialTag::Credential,
+            tag: CredentialTag::VaultCredential,
             updated_at: now,
             vault_id: vault_id.as_str().to_owned(),
         };
+        let kind = EventKind::CredentialCreated { vault_id: vault_id.as_str().to_owned() };
+        let deliveries = self.deliveries(&ctx.org, &ctx.workspace, kind, cred.id.as_str());
         self.credentials
             .insert_credential(
                 &ctx.workspace,
                 &vault_id,
                 StoredCredential { wire: cred.clone(), auth: Some(auth) },
+                &deliveries,
             )
             .await
             .map_err(map_store)?;
@@ -99,58 +104,6 @@ impl VaultsService {
             .collect())
     }
 
-    /// `POST /v1/vaults/{vid}/credentials/{cid}` — rotation. The variant and
-    /// unique key are immutable.
-    pub async fn update_credential(
-        &self,
-        ctx: &AuthContext,
-        raw_vault_id: &str,
-        raw_cred_id: &str,
-        req: UpdateCredentialRequest,
-    ) -> Result<Credential, ApiError> {
-        let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
-        let mut stored =
-            self.credentials.get_credential(&ctx.workspace, &vid, &cid).await.map_err(map_store)?;
-        if stored.wire.archived_at.is_some() {
-            return Err(ApiError::conflict_invalid_request("cannot update an archived credential"));
-        }
-        if let Some(new_auth) = req.auth {
-            validate_auth(&new_auth)?;
-            let old_key = stored.auth.as_ref().map(|a| a.unique_key().to_owned()).unwrap_or_default();
-            if new_auth.unique_key() != old_key {
-                return Err(ApiError::conflict_invalid_request(format!(
-                    "credential keys are immutable: cannot change `{old_key}` to `{}`; archive and create a new credential",
-                    new_auth.unique_key()
-                )));
-            }
-            let same_variant = matches!(
-                (&stored.auth, &new_auth),
-                (Some(CredentialAuthInput::McpOauth { .. }), CredentialAuthInput::McpOauth { .. })
-                    | (
-                        Some(CredentialAuthInput::StaticBearer { .. }),
-                        CredentialAuthInput::StaticBearer { .. }
-                    )
-                    | (
-                        Some(CredentialAuthInput::EnvironmentVariable { .. }),
-                        CredentialAuthInput::EnvironmentVariable { .. }
-                    )
-            );
-            if !same_variant {
-                return Err(ApiError::conflict_invalid_request(
-                    "credential type is immutable; archive and create a new credential",
-                ));
-            }
-            stored.wire.auth = new_auth.to_wire();
-            stored.auth = Some(new_auth);
-        }
-        if let Some(n) = req.display_name {
-            stored.wire.display_name = n;
-        }
-        stored.wire.updated_at = Timestamp::now();
-        self.credentials.replace_credential(&ctx.workspace, &vid, stored.clone()).await.map_err(map_store)?;
-        Ok(stored.wire)
-    }
-
     /// `POST /v1/vaults/{vid}/credentials/{cid}/archive` — purges the secret
     /// and frees the unique key.
     pub async fn archive_credential(
@@ -167,7 +120,17 @@ impl VaultsService {
             stored.wire.updated_at = Timestamp::now();
             stored.auth = None; // secret purged
             self.credentials
-                .replace_credential(&ctx.workspace, &vid, stored.clone())
+                .archive_credential(
+                    &ctx.workspace,
+                    &vid,
+                    stored.clone(),
+                    &self.deliveries(
+                        &ctx.org,
+                        &ctx.workspace,
+                        EventKind::CredentialArchived { vault_id: vid.as_str().to_owned() },
+                        cid.as_str(),
+                    ),
+                )
                 .await
                 .map_err(map_store)?;
         }
@@ -183,19 +146,52 @@ impl VaultsService {
     ) -> Result<Credential, ApiError> {
         let (vid, cid) = parse_pair(raw_vault_id, raw_cred_id)?;
         self.credentials
-            .delete_credential(&ctx.workspace, &vid, &cid)
+            .delete_credential(
+                &ctx.workspace,
+                &vid,
+                &cid,
+                &self.deliveries(
+                    &ctx.org,
+                    &ctx.workspace,
+                    EventKind::CredentialDeleted { vault_id: vid.as_str().to_owned() },
+                    cid.as_str(),
+                ),
+            )
             .await
             .map(|c| c.wire)
             .map_err(map_store)
     }
 }
 
-/// Live: env-var credentials REQUIRE `auth.networking` — a missing one is
-/// `auth.networking: Field required` (an exact nested field-path message serde
-/// can't produce, so it's validated here).
-fn validate_auth(auth: &CredentialAuthInput) -> Result<(), ApiError> {
-    if let CredentialAuthInput::EnvironmentVariable { networking: None, .. } = auth {
-        return Err(ApiError::invalid_request("auth.networking: Field required"));
+/// Live requires an env-var credential's `auth.networking` and a refresh's
+/// `client_id`, naming each by its nested path (`auth.networking: Field
+/// required`), which serde cannot, so they are checked here.
+pub(crate) fn validate_auth(auth: &CredentialAuthInput) -> Result<(), ApiError> {
+    match auth {
+        CredentialAuthInput::EnvironmentVariable { networking: None, .. } => {
+            Err(ApiError::invalid_request("auth.networking: Field required"))
+        }
+        CredentialAuthInput::McpOauth { refresh: Some(r), .. } if r.client_id.is_none() => {
+            Err(ApiError::invalid_request("auth.refresh.client_id: Field required"))
+        }
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// Whether `stored` holds the key `new` would take: the MCP server URL for
+/// either MCP type, the variable name for an environment variable.
+fn same_key(stored: &CredentialAuthWire, new: &CredentialAuthInput) -> bool {
+    match (stored, new) {
+        (
+            CredentialAuthWire::EnvironmentVariable { secret_name, .. },
+            CredentialAuthInput::EnvironmentVariable { .. },
+        ) => secret_name == new.unique_key(),
+        (CredentialAuthWire::EnvironmentVariable { .. }, _)
+        | (_, CredentialAuthInput::EnvironmentVariable { .. }) => false,
+        (
+            CredentialAuthWire::McpOauth { mcp_server_url, .. }
+            | CredentialAuthWire::StaticBearer { mcp_server_url },
+            _,
+        ) => mcp_server_url == new.unique_key(),
+    }
 }

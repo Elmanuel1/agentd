@@ -11,6 +11,9 @@ agents = { workspace = true }
 sessions = { workspace = true }
 work = { workspace = true }
 files = { workspace = true }
+vaults = { workspace = true }
+environments = { workspace = true }
+webhooks = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +24,7 @@ chrono = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+opentelemetry = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }

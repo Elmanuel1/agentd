@@ -1,7 +1,7 @@
 """The scripted demo replay: the extraction agents run on the fixture slice of
 the demo data, with every model call answered by mock-model.json.
 
-Runs when AGENTD_TEST_DEMO=1 says each session's harness calls that script
+Runs when AGENTD_TEST_DEMO=1 says agentd's loop calls that script and a sandbox worker serves the environment
 (served by conformance/mock_model.py).
 """
 

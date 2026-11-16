@@ -24,10 +24,17 @@ pub struct Claim {
     pub attempts: i64,
     /// The wakes the step had when this claim took it.
     pub wakes: i64,
+    /// How long the step waited past its due time before this claim.
+    pub waited_ms: i64,
 }
 
 /// Changes a step makes to its session's row; `false` when nothing changed.
 pub type SessionChange<'a> = dyn Fn(&mut Session) -> bool + Send + Sync + 'a;
+
+/// The webhook deliveries of the session's status becoming the given one,
+/// for the given organization.
+pub type StatusDeliveries<'a> =
+    dyn Fn(&str, crate::types::SessionStatus) -> Vec<webhooks::Delivery> + Send + Sync + 'a;
 
 /// What one write of a held step lands, in one transaction.
 pub struct StepWrite<'a> {
@@ -37,8 +44,13 @@ pub struct StepWrite<'a> {
     pub at: shared::Timestamp,
     /// The events it appends, in order.
     pub events: &'a [Event],
+    /// What the loop keeps beside some of those events, by event id, which
+    /// no API read serves.
+    pub engine: &'a [(EventId, serde_json::Value)],
     /// What it changes on the session's row.
     pub session: &'a SessionChange<'a>,
+    /// The webhook deliveries of a status change, when any endpoint is configured.
+    pub deliveries: Option<&'a StatusDeliveries<'a>>,
 }
 
 impl std::fmt::Debug for StepWrite<'_> {
@@ -89,22 +101,4 @@ pub trait Steps: Send + Sync {
     async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError>;
     /// The queue's rows, counted.
     async fn counts(&self) -> Result<StepCounts, StoreError>;
-}
-
-/// The workspaces whose sessions run on the loop, each with when it joined
-/// (`AGENTD_LOOP_WORKSPACES`). A session created before its workspace joined
-/// was started on the harness path; it moves to the loop at its next turn.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LoopWorkspaces(std::collections::BTreeMap<WorkspaceId, shared::Timestamp>);
-
-impl LoopWorkspaces {
-    /// From each workspace and when it joined.
-    pub fn new(joined: impl IntoIterator<Item = (WorkspaceId, shared::Timestamp)>) -> Self {
-        Self(joined.into_iter().collect())
-    }
-
-    /// When `ws` joined the loop, if it is listed.
-    pub fn joined(&self, ws: &WorkspaceId) -> Option<shared::Timestamp> {
-        self.0.get(ws).copied()
-    }
 }

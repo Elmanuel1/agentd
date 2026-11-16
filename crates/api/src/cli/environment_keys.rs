@@ -1,5 +1,5 @@
 //! `agentd environment-keys create|list|revoke`: a self-hosted environment's
-//! keys, in Postgres, digested with the same pepper as workspace keys. A key
+//! keys, in Postgres, digested with the same peppers as workspace keys. A key
 //! is a Bearer token that reaches its own environment's work and sessions
 //! only; its worker polls with it. Live issues these in the Console.
 
@@ -7,12 +7,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use api_keys::{EnvironmentKey, EnvironmentKeysService};
-use secrets_aws::AwsSecretStore;
 use shared::ports::secrets::ExposeSecret;
-use store_postgres::{PgBackend, PgEnvironmentKeysStore};
+use store_postgres::PgEnvironmentKeysStore;
 
 use super::{KeysCommand, Kind};
-use crate::config::{Config, StoreConfig};
+use crate::config::Config;
 
 /// How to call it.
 pub const USAGE: &str =
@@ -26,11 +25,8 @@ pub async fn environment_keys(config: &Config, args: &[String]) -> ExitCode {
 }
 
 async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
-    let secrets = AwsSecretStore::connect(&config.secrets).await.map_err(|e| e.to_string())?;
-    let pepper = secrets.api_key_pepper().await.map_err(|e| e.to_string())?;
-    let StoreConfig::Postgres { url, .. } = &config.store;
-    let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
-    let keys = EnvironmentKeysService::new(Arc::new(PgEnvironmentKeysStore::new(pg)), Arc::new(pepper));
+    let (pg, peppers) = super::backend(config).await?;
+    let keys = EnvironmentKeysService::new(Arc::new(PgEnvironmentKeysStore::new(pg)), peppers);
     match command {
         KeysCommand::Create { org, workspace, environment, name } => {
             let (workspace, environment) = (workspace.unwrap_or_default(), environment.unwrap_or_default());

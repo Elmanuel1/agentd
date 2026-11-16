@@ -1,0 +1,143 @@
+//! Credential auth: the input shapes, which carry secrets in, and the wire
+//! shape, which carries none out.
+
+use serde::{Deserialize, Serialize};
+use shared::Timestamp;
+
+use super::wire::CredentialAuthWire;
+use super::SecretString;
+
+/// Token-endpoint auth for OAuth refresh.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TokenEndpointAuthInput {
+    /// Public client.
+    None,
+    /// Secret via HTTP Basic.
+    ClientSecretBasic {
+        /// The client secret (write-only).
+        client_secret: SecretString,
+    },
+    /// Secret in the request body.
+    ClientSecretPost {
+        /// The client secret (write-only).
+        client_secret: SecretString,
+    },
+}
+
+/// OAuth refresh block (input).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct OauthRefreshInput {
+    /// Where to POST the refresh_token grant.
+    pub token_endpoint: String,
+    /// OAuth client id.
+    pub client_id: Option<String>,
+    /// Scope.
+    pub scope: Option<String>,
+    /// The refresh token (write-only).
+    pub refresh_token: SecretString,
+    /// Endpoint auth.
+    pub token_endpoint_auth: Option<TokenEndpointAuthInput>,
+}
+
+/// Networking restriction for environment-variable credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CredentialNetworking {
+    /// Substituted on any outbound host.
+    Unrestricted,
+    /// Substituted only for these hosts.
+    Limited {
+        /// Allowed hosts (globs allowed, e.g. `*.twilio.com`).
+        allowed_hosts: Vec<String>,
+    },
+}
+
+/// Where an env-var credential is injected on egress requests. Live default is
+/// both `body` and `header` true.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjectionLocation {
+    /// Inject into the request body.
+    pub body: bool,
+    /// Inject into request headers.
+    pub header: bool,
+}
+
+impl Default for InjectionLocation {
+    fn default() -> Self {
+        Self { body: true, header: true }
+    }
+}
+
+/// Credential auth, the **input** shape: secrets flow in.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CredentialAuthInput {
+    /// OAuth for an MCP server (auto-refreshed at egress).
+    McpOauth {
+        /// Which MCP server URL this credential serves (the unique key).
+        mcp_server_url: String,
+        /// Current access token (write-only).
+        access_token: SecretString,
+        /// Expiry.
+        expires_at: Option<Timestamp>,
+        /// Refresh config.
+        refresh: Option<OauthRefreshInput>,
+    },
+    /// Static bearer token for an MCP server.
+    StaticBearer {
+        /// Which MCP server URL this credential serves (the unique key).
+        mcp_server_url: String,
+        /// The token (write-only).
+        token: SecretString,
+    },
+    /// Env-var secret substituted at egress.
+    EnvironmentVariable {
+        /// The variable name (the unique key).
+        secret_name: String,
+        /// The secret value (write-only).
+        secret_value: SecretString,
+        /// Host restriction. Required by the live API, validated in the service
+        /// so the error is the exact `auth.networking: Field required`.
+        #[serde(default)]
+        networking: Option<CredentialNetworking>,
+        /// Where to inject; defaults to body + header.
+        #[serde(default)]
+        injection_location: Option<InjectionLocation>,
+    },
+}
+
+impl CredentialAuthInput {
+    /// The uniqueness key within a vault (`mcp_server_url` or `secret_name`).
+    pub fn unique_key(&self) -> &str {
+        match self {
+            Self::McpOauth { mcp_server_url, .. } | Self::StaticBearer { mcp_server_url, .. } => {
+                mcp_server_url
+            }
+            Self::EnvironmentVariable { secret_name, .. } => secret_name,
+        }
+    }
+
+    /// The wire projection, provably secret-free (see [`CredentialAuthWire`]).
+    pub fn to_wire(&self) -> CredentialAuthWire {
+        match self {
+            Self::McpOauth { mcp_server_url, expires_at, refresh, .. } => CredentialAuthWire::McpOauth {
+                mcp_server_url: mcp_server_url.clone(),
+                expires_at: *expires_at,
+                refresh: refresh.as_ref().map(OauthRefreshInput::to_wire),
+            },
+            Self::StaticBearer { mcp_server_url, .. } => {
+                CredentialAuthWire::StaticBearer { mcp_server_url: mcp_server_url.clone() }
+            }
+            Self::EnvironmentVariable { secret_name, networking, injection_location, .. } => {
+                CredentialAuthWire::EnvironmentVariable {
+                    secret_name: secret_name.clone(),
+                    // Service validated Some before this projection; default is
+                    // defensive-only.
+                    networking: networking.clone().unwrap_or(CredentialNetworking::Unrestricted),
+                    injection_location: injection_location.clone().unwrap_or_default(),
+                }
+            }
+        }
+    }
+}

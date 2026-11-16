@@ -1,5 +1,5 @@
-//! Deployment business logic: lifecycle, schedule registration, and the
-//! fire path (`/internal/fire` + manual `/run`).
+//! Deployment business logic: lifecycle and schedule changes; the fire path
+//! is in `service/firing.rs`.
 
 use std::sync::Arc;
 
@@ -8,15 +8,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
-use shared::ports::{ScheduleSpec, SchedulerPort, TenantRef};
+use shared::ports::{ScheduleChange, ScheduleSpec, TenantRef};
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
 use crate::fire::target;
-use crate::run_error::{apply_run_error, classify_fire_error, PausedReason};
+use crate::run_error::PausedReason;
 use crate::store::{DeploymentsStore, StoreError};
 use crate::types::{
-    CreateDeploymentRequest, Deployment, DeploymentId, DeploymentRun, DeploymentRunId, DeploymentRunTag,
-    DeploymentStatus, DeploymentTag, TriggerContext, WireSchedule,
+    CreateDeploymentRequest, Deployment, DeploymentId, DeploymentStatus, DeploymentTag, WireSchedule,
 };
 
 /// What deployments need from other entities — resolved via ports so tests
@@ -33,15 +32,21 @@ pub trait DeploymentDeps: Send + Sync {
     ) -> Result<AgentRef, ApiError>;
     /// Verify the environment is usable (→ `environment_archived`).
     async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError>;
-    /// Create a session for a fire; returns the session id.
-    async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError>;
+    /// Create a session for a fire, with its initial events; returns the
+    /// session id. Called again with the same `key`, it returns the session
+    /// the first call made.
+    async fn create_session(
+        &self,
+        ctx: &AuthContext,
+        deployment: &Deployment,
+        key: Option<&str>,
+    ) -> Result<String, sessions::service::FireRefusal>;
 }
 
 /// Deployment service.
 pub struct DeploymentsService {
     store: Arc<dyn DeploymentsStore>,
     deps: Arc<dyn DeploymentDeps>,
-    scheduler: Arc<dyn SchedulerPort>,
 }
 
 impl std::fmt::Debug for DeploymentsService {
@@ -51,13 +56,10 @@ impl std::fmt::Debug for DeploymentsService {
 }
 
 impl DeploymentsService {
-    /// Build with store + deps + scheduler backend.
-    pub fn new(
-        store: Arc<dyn DeploymentsStore>,
-        deps: Arc<dyn DeploymentDeps>,
-        scheduler: Arc<dyn SchedulerPort>,
-    ) -> Self {
-        Self { store, deps, scheduler }
+    /// Build with store and deps; each deployment write carries its
+    /// schedule's change, which the store's outbox relays to the scheduler.
+    pub fn new(store: Arc<dyn DeploymentsStore>, deps: Arc<dyn DeploymentDeps>) -> Self {
+        Self { store, deps }
     }
 
     /// `POST /v1/deployments`.
@@ -108,17 +110,16 @@ impl DeploymentsService {
             updated_at: now,
             vault_ids: req.vault_ids,
         };
-        self.store.insert(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-        // Register the durable timer.
-        self.scheduler
-            .upsert(ScheduleSpec {
-                cron: d.schedule.expression.clone(),
-                timezone: d.schedule.timezone.clone(),
-                target: target(&d.id),
-                tenant: TenantRef::of(ctx),
-            })
+        let spec = ScheduleSpec {
+            cron: d.schedule.expression.clone(),
+            timezone: d.schedule.timezone.clone(),
+            target: target(&d.id),
+            tenant: TenantRef::of(ctx),
+        };
+        self.store
+            .insert(&ctx.workspace, d.clone(), &ScheduleChange::Upsert { spec })
             .await
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+            .map_err(map_store)?;
         Ok(d)
     }
 
@@ -141,8 +142,8 @@ impl DeploymentsService {
         d.status = DeploymentStatus::Paused;
         d.paused_reason = Some(PausedReason::Manual);
         d.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-        self.scheduler.pause(&target(&d.id)).await.map_err(|e| ApiError::internal(e.to_string()))?;
+        let change = ScheduleChange::Pause { target: target(&d.id) };
+        self.store.replace(&ctx.workspace, d.clone(), Some(&change)).await.map_err(map_store)?;
         Ok(d)
     }
 
@@ -156,8 +157,8 @@ impl DeploymentsService {
         d.paused_reason = None;
         d.updated_at = Timestamp::now();
         d.schedule.refresh_upcoming(Utc::now())?;
-        self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-        self.scheduler.unpause(&target(&d.id)).await.map_err(|e| ApiError::internal(e.to_string()))?;
+        let change = ScheduleChange::Unpause { target: target(&d.id) };
+        self.store.replace(&ctx.workspace, d.clone(), Some(&change)).await.map_err(map_store)?;
         Ok(d)
     }
 
@@ -169,106 +170,14 @@ impl DeploymentsService {
             d.status = DeploymentStatus::Archived;
             d.archived_at = Some(Timestamp::now());
             d.updated_at = Timestamp::now();
-            self.store.replace(&ctx.workspace, d.clone()).await.map_err(map_store)?;
-            // Best-effort: the timer may already be gone.
-            let _ = self.scheduler.delete(&target(&d.id)).await;
+            let change = ScheduleChange::Delete { target: target(&d.id) };
+            self.store.replace(&ctx.workspace, d.clone(), Some(&change)).await.map_err(map_store)?;
         }
         Ok(d)
     }
-
-    /// `POST /v1/deployments/{id}/run` — manual fire; allowed while paused.
-    pub async fn run_manual(&self, ctx: &AuthContext, raw_id: &str) -> Result<DeploymentRun, ApiError> {
-        let id = parse_id(raw_id)?;
-        let d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        if d.status == DeploymentStatus::Archived {
-            return Err(ApiError::conflict_invalid_request("cannot run an archived deployment"));
-        }
-        self.fire(ctx, d, TriggerContext::Manual {}).await
-    }
-
-    /// The scheduled fire path: [`crate::fire::DeploymentFire`] and `/internal/fire`.
-    ///
-    /// Contract: business failures are RECORDED (error run) and returned as
-    /// success; the scheduler never retries. Paused/archived scheduled ticks
-    /// are dropped silently (paused suppresses scheduled fires only).
-    pub async fn fire_scheduled(
-        &self,
-        ctx: &AuthContext,
-        raw_id: &str,
-        scheduled_at: Timestamp,
-    ) -> Result<Option<DeploymentRun>, ApiError> {
-        let id = parse_id(raw_id)?;
-        let d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        match d.status {
-            DeploymentStatus::Paused | DeploymentStatus::Archived => Ok(None),
-            DeploymentStatus::Active => {
-                // Exactly-once across replicas: atomically CLAIM the
-                // (deployment, scheduled_at) tick at the store. A read-then-
-                // write dup check would let two replicas both pass and
-                // double-fire; the claim is a single test-and-set (Postgres
-                // UNIQUE index). Only the winner fires.
-                let claimed = self
-                    .store
-                    .claim_fire(&ctx.workspace, &d.id, &scheduled_at.to_wire())
-                    .await
-                    .map_err(map_store)?;
-                if !claimed {
-                    return Ok(None);
-                }
-                let run = self.fire(ctx, d, TriggerContext::Schedule { scheduled_at }).await?;
-                Ok(Some(run))
-            }
-        }
-    }
-
-    /// `GET /v1/deployment_runs?deployment_id=…&has_error=…`.
-    pub async fn runs(
-        &self,
-        ctx: &AuthContext,
-        raw_deployment_id: &str,
-        has_error: Option<bool>,
-    ) -> Result<Vec<DeploymentRun>, ApiError> {
-        let id = parse_id(raw_deployment_id)?;
-        self.store.runs(&ctx.workspace, &id, has_error).await.map_err(map_store)
-    }
-
-    /// One fire: freeze → create session → record run. Business failures
-    /// become error runs; `agent_archived` additionally auto-archives.
-    async fn fire(
-        &self,
-        ctx: &AuthContext,
-        mut d: Deployment,
-        trigger: TriggerContext,
-    ) -> Result<DeploymentRun, ApiError> {
-        let outcome = self.deps.create_session(ctx, &d).await;
-        let (session_id, error) = match outcome {
-            Ok(sid) => (Some(sid), None),
-            Err(e) => (None, Some(classify_fire_error(&e))),
-        };
-        let run = DeploymentRun {
-            agent: d.agent.clone(),
-            created_at: Timestamp::now(),
-            deployment_id: d.id.clone(),
-            error: error.clone(),
-            id: DeploymentRunId::generate(),
-            session_id,
-            trigger_context: trigger.clone(),
-            tag: DeploymentRunTag::DeploymentRun,
-        };
-        self.store.push_run(&ctx.workspace, run.clone()).await.map_err(map_store)?;
-        // Stamp last_run_at + refresh upcoming for scheduled fires.
-        if let TriggerContext::Schedule { scheduled_at } = &trigger {
-            d.schedule.last_run_at = Some(*scheduled_at);
-            let _ = d.schedule.refresh_upcoming(Utc::now());
-        }
-        if error.as_ref().is_some_and(|e| apply_run_error(&mut d, e)) {
-            let _ = self.scheduler.delete(&target(&d.id)).await;
-        }
-        d.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, d).await.map_err(map_store)?;
-        Ok(run)
-    }
 }
+
+mod firing;
 
 fn guard_not_archived(d: &Deployment) -> Result<(), ApiError> {
     if d.status == DeploymentStatus::Archived {
@@ -277,11 +186,11 @@ fn guard_not_archived(d: &Deployment) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn parse_id(raw: &str) -> Result<DeploymentId, ApiError> {
+pub(super) fn parse_id(raw: &str) -> Result<DeploymentId, ApiError> {
     DeploymentId::parse(raw).map_err(|e| ApiError::invalid_request(e.to_string()))
 }
 
-fn map_store(e: StoreError) -> ApiError {
+pub(super) fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("deployment not found"),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),

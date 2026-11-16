@@ -17,7 +17,6 @@ use agents::types::{AgentConfig, AgentId, AgentTag, ExecutionIdentity, ModelSpec
 use agents::{Agent, AgentsService};
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use deployments::store::DeploymentsStore;
-use deployments::types::DeploymentId;
 use files::store::{FilesStore, StoredFile};
 use shared::limits::ModelCatalog;
 use shared::{AuthContext, Metadata, OrgId, Timestamp, WorkspaceId};
@@ -115,33 +114,6 @@ async fn agents_service_over_pg() {
         .unwrap();
     assert_eq!(updated.version, 2);
     assert_eq!(svc.get(&ctx(&ws), a.id.as_str(), None).await.unwrap().version, 2);
-}
-
-#[tokio::test]
-async fn pg_claim_fire_exactly_once_across_concurrent_callers() {
-    if !enabled() {
-        return;
-    }
-    let store = Arc::new(PgDeploymentsStore::new(backend().await));
-    let ws = uniq_ws("claim");
-    let did = DeploymentId::generate();
-    let scheduled = "2026-07-10T00:00:00.000000Z";
-
-    let mut handles = Vec::new();
-    for _ in 0..8 {
-        let s = store.clone();
-        let w = ws.clone();
-        let d = did.clone();
-        handles.push(tokio::spawn(async move { s.claim_fire(&w, &d, scheduled).await.unwrap() }));
-    }
-    let mut wins = 0;
-    for h in handles {
-        if h.await.unwrap() {
-            wins += 1;
-        }
-    }
-    assert_eq!(wins, 1, "exactly one replica claimed via ON CONFLICT DO NOTHING");
-    assert!(store.claim_fire(&ws, &did, "2026-07-17T00:00:00.000000Z").await.unwrap());
 }
 
 #[tokio::test]
@@ -247,11 +219,7 @@ async fn dashboard_queries_are_native_sql() {
     // Deployments with mixed status → count + status filter in SQL.
     let ctx_ws = ctx(&ws);
     let deps = Arc::new(PgDeploymentsStore::new(backend().await));
-    let svc = deployments::DeploymentsService::new(
-        deps.clone(),
-        Arc::new(FakeDeps),
-        Arc::new(shared::ports::FakeScheduler::new()),
-    );
+    let svc = deployments::DeploymentsService::new(deps.clone(), Arc::new(FakeDeps));
     for _ in 0..3 {
         svc.create(&ctx_ws, create_depl()).await.unwrap();
     }
@@ -299,7 +267,12 @@ impl DeploymentDeps for FakeDeps {
     async fn check_environment(&self, _ctx: &AuthContext, _env: &str) -> Result<(), shared::ApiError> {
         Ok(())
     }
-    async fn create_session(&self, _ctx: &AuthContext, _d: &Depl) -> Result<String, shared::ApiError> {
+    async fn create_session(
+        &self,
+        _ctx: &AuthContext,
+        _d: &Depl,
+        _key: Option<&str>,
+    ) -> Result<String, sessions::service::FireRefusal> {
         Ok("sesn_01fake".into())
     }
 }

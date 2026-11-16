@@ -75,6 +75,8 @@ pub(super) struct Batch {
     pub(super) read: Vec<EventId>,
     pub(super) at: Timestamp,
     pub(super) events: Vec<Event>,
+    /// What the loop keeps beside some of the events, by event id.
+    pub(super) engine: Vec<(EventId, serde_json::Value)>,
 }
 
 /// `before`, then the stamp of `read`, then `after`, a microsecond apart.
@@ -88,7 +90,7 @@ pub(super) fn batch(read: Vec<EventId>, before: Vec<Event>, after: Vec<Event>) -
     let timed = |i: usize, e: Event| Event { processed_at: Some(tick(i)), ..e };
     let first = before.into_iter().enumerate().map(|(i, e)| timed(i, e));
     let then = after.into_iter().enumerate().map(|(j, e)| timed(n + 1 + j, e));
-    Batch { read, at: tick(n), events: first.chain(then).collect() }
+    Batch { read, at: tick(n), events: first.chain(then).collect(), engine: Vec::new() }
 }
 
 /// A call's opening write: the client events it takes are stamped after

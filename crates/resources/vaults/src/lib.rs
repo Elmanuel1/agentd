@@ -12,20 +12,25 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+mod cascade;
 pub mod credentials;
-pub mod egress;
+pub mod mcp;
+pub mod refresh;
+mod rotation;
 pub mod routes;
 pub mod sealed;
 pub mod service;
 pub mod store;
 pub mod types;
+pub mod validate;
+pub mod variables;
 
 use std::sync::Arc;
 
 use shared::beta::BetaGate;
 use shared::Module;
 
-pub use service::VaultsService;
+pub use service::{McpReach, VaultsService};
 pub use store::{VaultCredentialStore, VaultStore};
 pub use types::{Credential, SecretString, Vault, VaultId};
 

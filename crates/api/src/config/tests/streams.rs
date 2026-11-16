@@ -3,9 +3,17 @@
 use super::*;
 
 #[test]
-fn streams_signal_in_process_and_keep_events_unless_configured() {
+fn valkey_is_required_and_events_are_kept_unless_configured() {
     let c = config(&[]).unwrap();
-    assert_eq!(c.streams, StreamsConfig { valkey_url: None, retention: None });
+    let base = StreamsConfig {
+        valkey_url: "redis://valkey:6379".into(),
+        valkey_cluster: false,
+        kafka_brokers: None,
+        changes_prefix: "agentd".into(),
+        retention: None,
+    };
+    assert_eq!(c.streams, base);
+    assert_eq!(config(&[("AGENTD_VALKEY_URL", "")]).unwrap_err().var, "AGENTD_VALKEY_URL");
     let StoreConfig::Postgres { read_url, .. } = &c.store;
     assert_eq!(read_url, &None);
 }
@@ -14,6 +22,8 @@ fn streams_signal_in_process_and_keep_events_unless_configured() {
 fn valkey_a_read_replica_and_retention_come_from_config() {
     let c = config(&[
         ("AGENTD_VALKEY_URL", "rediss://:pw@valkey:6379"),
+        ("AGENTD_VALKEY_CLUSTER", "true"),
+        ("AGENTD_KAFKA_BROKERS", "kafka-1:9092,kafka-2:9092"),
         ("AGENTD_PG_READ_URL", "postgres://reader:r3ad-pass@replica:5432/agentd"),
         ("AGENTD_EVENT_RETENTION_DAYS", "30"),
     ])
@@ -21,7 +31,13 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
     let day = std::time::Duration::from_secs(24 * 60 * 60);
     assert_eq!(
         c.streams,
-        StreamsConfig { valkey_url: Some("rediss://:pw@valkey:6379".into()), retention: Some(day * 30) }
+        StreamsConfig {
+            valkey_url: "rediss://:pw@valkey:6379".into(),
+            valkey_cluster: true,
+            kafka_brokers: Some("kafka-1:9092,kafka-2:9092".into()),
+            changes_prefix: "agentd".into(),
+            retention: Some(day * 30)
+        }
     );
     let StoreConfig::Postgres { read_url, .. } = &c.store;
     assert_eq!(read_url.as_deref(), Some("postgres://reader:r3ad-pass@replica:5432/agentd"));
@@ -48,12 +64,8 @@ fn the_role_and_the_loop_s_settings_come_from_config() {
     assert_eq!((c.agent_loop.per_workspace, c.agent_loop.attempts, c.agent_loop.steps), (32, 5, 256));
     let api = config(&[("AGENTD_ROLE", "api")]).unwrap();
     assert!(!api.agent_loop.role.runs_loop(), "an api replica claims no step");
-    let worker =
-        config(&[("AGENTD_ROLE", "loop"), ("AGENTD_LOOP_WORKSPACES", "wrkspc_a@2026-12-01T00:00:00Z")])
-            .unwrap();
+    let worker = config(&[("AGENTD_ROLE", "loop")]).unwrap();
     assert!(!worker.agent_loop.role.serves_api());
-    let joined = worker.agent_loop.workspaces.joined(&shared::WorkspaceId::new("wrkspc_a"));
-    assert_eq!(joined.map(|t| t.to_wire()).as_deref(), Some("2026-12-01T00:00:00.000000Z"));
+    assert_eq!(worker.agent_loop.model_base_url, "https://openrouter.ai/api/v1");
     assert_eq!(config(&[("AGENTD_ROLE", "worker")]).unwrap_err().var, "AGENTD_ROLE");
-    assert_eq!(config(&[("AGENTD_LOOP_WORKSPACES", "wrkspc_a")]).unwrap_err().var, "AGENTD_LOOP_WORKSPACES");
 }

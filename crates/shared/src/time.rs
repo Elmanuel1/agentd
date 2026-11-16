@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, SubsecRound, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// UTC timestamp serialized in the exact live wire format.
@@ -14,9 +14,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Timestamp(DateTime<Utc>);
 
 impl Timestamp {
-    /// Current instant.
+    /// Current instant, to the microsecond the wire and Postgres keep, so a
+    /// value equals its own read-back.
     pub fn now() -> Self {
-        Self(Utc::now())
+        Self(Utc::now().trunc_subsecs(6))
     }
 
     /// Wrap an existing chrono instant.

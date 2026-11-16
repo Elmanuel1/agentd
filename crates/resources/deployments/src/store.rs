@@ -1,6 +1,7 @@
 //! Deployment persistence — deployments + append-only run records.
 
 use async_trait::async_trait;
+use shared::ports::ScheduleChange;
 use shared::{Pagination, WorkspaceId};
 
 use crate::types::{Deployment, DeploymentId, DeploymentRun};
@@ -20,11 +21,24 @@ pub enum StoreError {
 #[async_trait]
 pub trait DeploymentsStore: Send + Sync {
     /// Insert.
-    async fn insert(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError>;
+    /// Insert `d`, with its schedule's registration in the same transaction.
+    async fn insert(
+        &self,
+        ws: &WorkspaceId,
+        d: Deployment,
+        schedule: &ScheduleChange,
+    ) -> Result<(), StoreError>;
     /// Fetch.
     async fn get(&self, ws: &WorkspaceId, id: &DeploymentId) -> Result<Deployment, StoreError>;
     /// Replace.
-    async fn replace(&self, ws: &WorkspaceId, d: Deployment) -> Result<(), StoreError>;
+    /// Replace `d`, with the change to its schedule, when there is one, in
+    /// the same transaction.
+    async fn replace(
+        &self,
+        ws: &WorkspaceId,
+        d: Deployment,
+        schedule: Option<&ScheduleChange>,
+    ) -> Result<(), StoreError>;
     /// List, insertion order.
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Deployment>, StoreError>;
     /// Count (for the ≤1000/org limit; keyed by workspace here, org check in api).
@@ -38,19 +52,4 @@ pub trait DeploymentsStore: Send + Sync {
         deployment: &DeploymentId,
         has_error: Option<bool>,
     ) -> Result<Vec<DeploymentRun>, StoreError>;
-
-    /// Atomically claim one `(deployment, scheduled_at)` fire.
-    ///
-    /// Returns `true` if this call won the claim (the caller should fire),
-    /// `false` if another replica already claimed it (skip). This is the
-    /// exactly-once boundary across replicas — it MUST be atomic. The
-    /// Postgres impl is `INSERT … ON CONFLICT DO NOTHING` on a
-    /// `UNIQUE(deployment_id, scheduled_at)` index (rows-affected = the
-    /// boolean). App code must never do a read-then-write dup check.
-    async fn claim_fire(
-        &self,
-        ws: &WorkspaceId,
-        deployment: &DeploymentId,
-        scheduled_at: &str,
-    ) -> Result<bool, StoreError>;
 }

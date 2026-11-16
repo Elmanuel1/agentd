@@ -1,20 +1,20 @@
-//! A grader that keeps ending its turn without its verdict: after a few
-//! turns its round fails, so a model that never calls the tool cannot run
-//! model calls without end.
+//! A grader that keeps ending its turn without its grade: after a few turns
+//! its round fails, so a model that never grades cannot run model calls
+//! without end.
 
 use serde_json::json;
 use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent};
 use sessions::types::{OutcomeEvaluation, ThreadId};
 
-use super::grade::{verdict, Outcome, VERDICT};
+use super::grade::{verdict, Outcome};
 use super::turn::Turn;
 
 /// Turns a grader may end without its verdict before its round fails.
 const NUDGES: usize = 3;
 
-/// The grader on `thread` ended `NUDGES` model calls with no tool call, so
-/// with no verdict: with text, or with nothing at all. A call's tool calls
-/// come before its `span.model_request_end`.
+/// The grader on `thread` ended `NUDGES` model calls with no tool call and
+/// no grade (a grade ends the round). A call's tool calls come before its
+/// `span.model_request_end`.
 pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
     let (mut ended, mut called) = (0, false);
     for e in log.iter().filter(|e| e.session_thread_id.as_ref() == Some(thread)) {
@@ -23,6 +23,8 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
             EventPayload::Span(SpanEvent::ModelRequestEnd { .. }) => {
                 ended += usize::from(!std::mem::replace(&mut called, false))
             }
+            // A compaction's call is not a turn the grader ended.
+            EventPayload::Agent(AgentEvent::ThreadContextCompacted {}) => ended = ended.saturating_sub(1),
             _ => {}
         }
     }
@@ -31,7 +33,7 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
 
 /// The round's end when the grader stalled: it fails.
 pub(super) fn no_verdict(primary: &Turn, outcome: &Outcome, usage: ModelUsage) -> (Event, OutcomeEvaluation) {
-    let input = json!({"result": "failed", "findings": [{
-        "criterion": "verdict", "finding": format!("The grader ended {NUDGES} turns without calling `{VERDICT}`.")}]});
-    verdict(primary, outcome, &input, usage)
+    let grade = json!({"result": "failed", "criteria": [{"criterion": "grade", "met": false,
+        "finding": format!("The grader ended {NUDGES} turns without a grade.")}]});
+    verdict(primary, outcome, &grade, usage)
 }

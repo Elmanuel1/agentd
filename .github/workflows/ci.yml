@@ -59,10 +59,11 @@ jobs:
     env:
       DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
       AGENTD_PG_TESTS: "1"
-      AGENTD_DOCKER_TESTS: "1"
-      AGENTD_SANDBOX_IMAGE: agentd-sandbox
+      AGENTD_CDC_TESTS: "1"
       AGENTD_AWS_ENDPOINT: http://localhost:4566
       AGENTD_VALKEY_URL: redis://localhost:6379
+      AGENTD_VALKEY_CLUSTER_URL: redis://127.0.0.1:7001
+      AGENTD_KAFKA_BROKERS: localhost:9092
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
@@ -79,8 +80,15 @@ jobs:
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
-      - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
+      - name: Start Kafka
+        run: docker/kafka/start.sh
+      - name: Start the change feed (logical WAL, Debezium Server into Kafka)
+        run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" kafka localhost:9092
+      - name: Start a one-node Valkey cluster, for the cluster-mode tests
+        run: docker/valkey/start-cluster.sh 7001
       - run: cargo test --workspace --locked --no-fail-fast
+      - if: failure()
+        run: docker logs debezium 2>&1 | tail -200
 
   sdk:
     # The official SDKs, with only the base URL changed, against the built binary.
@@ -104,16 +112,11 @@ jobs:
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
           --health-interval 2s --health-timeout 5s --health-retries 60
-      valkey:
-        image: valkey/valkey:8.0-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
       AGENTD_AWS_ENDPOINT: http://localhost:4566
-      AGENTD_VALKEY_URL: redis://localhost:6379
+      AGENTD_VALKEY_URL: redis://127.0.0.1:7001
+      AGENTD_VALKEY_CLUSTER: "1"
       AGENTD_S3_CREATE_BUCKET: "1"
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -124,21 +127,16 @@ jobs:
       RUST_LOG: trace
       AGENTD_ADDR: 0.0.0.0:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
-      # Each session gets its container on the runner's Docker daemon.
-      AGENTD_RUNTIME: docker
-      AGENTD_SANDBOX_IMAGE: agentd-sandbox
-      AGENTD_TEST_DOCKER: "1"
-      # The egress service, its proxy reached by sandboxes through the gateway
-      # and its admin interface by agentd on loopback.
-      AGENTD_EGRESS_ADDR: 0.0.0.0:8890
-      AGENTD_EGRESS_ADMIN_ADDR: 127.0.0.1:8891
-      AGENTD_EGRESS_ADMIN_URL: http://127.0.0.1:8891
-      # The egress test's echo server and the scripted model run on the runner,
-      # at internal addresses the proxy otherwise refuses.
-      AGENTD_EGRESS_INTERNAL_HOSTS: echo.agentd.test,mock-model.agentd.test
-      # Each session's harness calls the scripted model, through the proxy.
-      AGENTD_MODEL_BASE_URL: http://mock-model.agentd.test:18766/v1
-      AGENTD_TEST_HARNESS: "1"
+      AGENTD_API_BASE_URL: http://127.0.0.1:8080
+      # The loop calls the scripted model as an OpenAI-compatible provider.
+      AGENTD_MODELS: mock/scripted
+      AGENTD_MODEL_BASE_URL: http://127.0.0.1:18766/v1
+      # Tools run on the official worker (`ant beta:worker poll`) on the runner.
+      AGENTD_TEST_WORKER: "1"
+      AGENTD_TEST_ORG: org_sdk
+      AGENTD_TEST_WORKSPACE: wrkspc_sdk
+      AGENTD_BIN: ${{ github.workspace }}/target/debug/agentd
+      ANT_VERSION: "1.39.0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -158,25 +156,31 @@ jobs:
             flyway/flyway:11 \
             -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
             -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
-      - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
-      - run: echo "127.0.0.1 echo.agentd.test mock-model.agentd.test" | sudo tee -a /etc/hosts
-      - name: Start the scripted model
-        run: nohup python3 conformance/mock_model.py --port 18766 conformance/fixtures/mock-model.json > model.log 2>&1 &
-      - run: cargo build --locked -p api -p egress
-      - name: Start agentd-egress
+      - name: Start a one-node Valkey cluster, as production runs
+        run: docker/valkey/start-cluster.sh 7001
+      - name: Start the change feed (logical WAL, Debezium Server into the cluster's streams)
+        run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" redis localhost:7001 true
+      - name: Install the ant CLI, whose worker runs the tools
         run: |
-          token=$(openssl rand -hex 32)
-          echo "::add-mask::$token"
-          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
-          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
-          cat egress.log; exit 1
+          curl -sfL "https://github.com/anthropics/anthropic-cli/releases/download/v${ANT_VERSION}/ant_${ANT_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin ant
+          ant --version
+      - name: Start the scripted model
+        run: nohup python3 conformance/mock_model.py --port 18766 --model mock/scripted conformance/fixtures/mock-model.json > model.log 2>&1 &
+      - run: cargo build --locked -p api
       - name: Create the secrets KMS key on LocalStack
         run: |
           key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
           echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
-      - name: Store the model key, an operator credential, with the CLI
-        run: echo "mock-model-key-$(openssl rand -hex 8)" | ./target/debug/agentd model-key set --host mock-model.agentd.test
+      - name: Give agentd its keys through the environment
+        run: |
+          for var in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS; do
+            ring="k1:$(openssl rand -hex 32)"
+            echo "::add-mask::$ring"
+            echo "$var=$ring" >> "$GITHUB_ENV"
+          done
+          model="mock-model-key-$(openssl rand -hex 8)"
+          echo "::add-mask::$model"
+          echo "AGENTD_OPENROUTER_API_KEY=$model" >> "$GITHUB_ENV"
       - name: Create the SDK API key with the CLI
         run: |
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)
@@ -202,6 +206,13 @@ jobs:
         run: |
           npm ci
           npm test
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Java SDK (com.anthropic:anthropic-java 2.52.0)
+        working-directory: conformance/java
+        run: ./gradlew test --no-daemon
       - name: Credentials are in Secrets Manager under the key, and no secret or key is logged
         run: |
           secrets=$(aws --endpoint-url http://localhost:4566 secretsmanager list-secrets --include-planned-deletion \
@@ -211,8 +222,7 @@ jobs:
               .KmsKeyId == $key and .DeletedDate != null
               and ([.Tags[] | select(.Key == "managed-by" and .Value == "agentd")] | length == 1))'
           test -z "$(aws --endpoint-url http://localhost:4566 s3 ls s3://agentd-artifacts/secrets/ --recursive)"
-          if grep -qE "sdk-token-|ts-token-|s3cret-|mock-model-key-" agentd.log egress.log; then echo "a credential reached a log"; exit 1; fi
-          grep -q "secret injected" egress.log
+          if grep -qE "sdk-token-|ts-token-|s3cret-|mock-model-key-" agentd.log; then echo "a credential reached a log"; exit 1; fi
           if grep -qF "$AGENTD_TEST_KEY" agentd.log; then echo "the API key reached the log"; exit 1; fi
           ./target/debug/agentd keys list | grep -q "wrkspc_sdk"
       - name: A revoked key is refused on the next request
@@ -237,115 +247,8 @@ jobs:
           test "$(call)" = 401
       - if: failure()
         run: |
-          cat agentd.log egress.log
-          for c in $(docker ps -aq --filter name=agentd-); do echo "== $(docker inspect -f '{{.Name}} {{.State.Status}} {{.State.ExitCode}}' $c)"; docker logs --tail 80 $c 2>&1; done
-
-  demo:
-    # The extraction demo replayed through the Python SDK, every model call
-    # answered by its script: agents, skills, files, threads, outcomes, outputs.
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: agentd
-          POSTGRES_PASSWORD: agentd
-          POSTGRES_DB: agentd
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U agentd"
-          --health-interval 2s --health-timeout 5s --health-retries 30
-      localstack:
-        image: localstack/localstack:3.0
-        env:
-          SERVICES: s3,secretsmanager,kms
-        ports: ["4566:4566"]
-        options: >-
-          --health-cmd "curl -sf http://localhost:4566/_localstack/health"
-          --health-interval 2s --health-timeout 5s --health-retries 60
-    env:
-      DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
-      AGENTD_AWS_ENDPOINT: http://localhost:4566
-      AGENTD_S3_CREATE_BUCKET: "1"
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_DEFAULT_REGION: us-east-1
-      AGENTD_SECRETS_ENDPOINT: http://localhost:4566
-      AGENTD_ADDR: 0.0.0.0:8080
-      AGENTD_BASE_URL: http://127.0.0.1:8080
-      AGENTD_RUNTIME: docker
-      AGENTD_SANDBOX_IMAGE: agentd-sandbox
-      AGENTD_MODEL_BASE_URL: http://mock-model.agentd.test:18766/v1
-      AGENTD_EGRESS_INTERNAL_HOSTS: mock-model.agentd.test
-      AGENTD_EGRESS_ADDR: 0.0.0.0:8890
-      AGENTD_EGRESS_ADMIN_ADDR: 127.0.0.1:8891
-      AGENTD_EGRESS_ADMIN_URL: http://127.0.0.1:8891
-      AGENTD_TEST_DEMO: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Migrate the schema with Flyway
-        run: |
-          docker run --rm --network host \
-            -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
-            flyway/flyway:11 \
-            -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
-            -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
-      - run: docker build -f docker/sandbox/Dockerfile -t agentd-sandbox .
-      - run: echo "127.0.0.1 mock-model.agentd.test" | sudo tee -a /etc/hosts
-      - name: Start the scripted model
-        run: nohup python3 conformance/mock_model.py --port 18766 conformance/demo/mock-model.json > model.log 2>&1 &
-      - run: cargo build --locked -p api -p egress
-      - name: Start agentd-egress
-        run: |
-          token=$(openssl rand -hex 32)
-          echo "::add-mask::$token"
-          echo "AGENTD_EGRESS_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
-          AGENTD_EGRESS_ADMIN_TOKEN=$token nohup ./target/debug/agentd-egress > egress.log 2>&1 &
-          for i in $(seq 1 60); do curl -sf -o /dev/null http://127.0.0.1:8891/healthz && exit 0; sleep 1; done
-          cat egress.log; exit 1
-      - name: Create the secrets KMS key on LocalStack
-        run: |
-          key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
-          echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
-      - name: Store the model key with the CLI
-        run: echo "mock-model-key-$(openssl rand -hex 8)" | ./target/debug/agentd model-key set --host mock-model.agentd.test
-      - name: Create the demo's API key with the CLI
-        run: |
-          key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name demo)
-          echo "::add-mask::$key"
-          echo "AGENTD_TEST_KEY=$key" >> "$GITHUB_ENV"
-      - name: Start agentd
-        run: |
-          nohup ./target/debug/agentd > agentd.log 2>&1 &
-          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8080/ && exit 0; sleep 1; done
-          cat agentd.log; exit 1
-      - name: The scripted demo
-        run: |
-          pip install -r conformance/demo/requirements.txt
-          pytest -q conformance/demo
-      - if: failure()
-        run: |
-          cat agentd.log egress.log
-          for c in $(docker ps -aq --filter name=agentd-); do echo "== $(docker inspect -f '{{.Name}} {{.State.Status}} {{.State.ExitCode}}' $c)"; docker logs --tail 80 $c 2>&1; done
-
-  harness:
-    # The session harness's own tests: the SDK toolset, the loop against the
-    # scripted model, the prompt and the policies.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install ./harness pytest
-      - run: pytest -q harness/tests
+          cat agentd.log model.log
+          docker logs debezium 2>&1 | tail -200
 
   image:
     runs-on: ubuntu-latest
@@ -369,21 +272,3 @@ jobs:
           out=$(docker run --rm -e AGENTD_STORE=none agentd:ci 2>&1 || true)
           echo "$out"
           echo "$out" | grep -q "invalid configuration: AGENTD_STORE"
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/egress/Dockerfile
-          push: false
-          load: true
-          tags: agentd-egress:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # The egress image runs its binary as non-root on a read-only root
-      # filesystem, and has no shell to run anything else.
-      - name: The egress image
-        run: |
-          out=$(docker run --rm --read-only agentd-egress:ci 2>&1 || true)
-          echo "$out"
-          echo "$out" | grep -q "AGENTD_EGRESS_ADMIN_TOKEN: required"
-          test "$(docker inspect -f '{{.Config.User}}' agentd-egress:ci)" = "nonroot:nonroot"
-          if docker run --rm --entrypoint /bin/sh agentd-egress:ci -c true 2>/dev/null; then echo "the image has a shell"; exit 1; fi

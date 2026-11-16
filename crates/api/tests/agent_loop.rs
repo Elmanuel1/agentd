@@ -5,6 +5,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
+#[path = "agent_loop/compact.rs"]
+mod compact;
+#[path = "agent_loop/mcp.rs"]
+mod mcp;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -23,17 +27,17 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 use sessions::signals::{LocalSignals, Signals};
-use sessions::steps::LoopWorkspaces;
-use sessions::store::{SessionFilter, SessionsStore, StoreError};
+use sessions::store::{SessionFilter, SessionReplace, SessionsStore, StoreError};
 use sessions::types::{Session, SessionId};
-use shared::ports::RuntimeError;
 use shared::Pagination;
-use shared::{BackendError, Timestamp, WorkspaceId};
+use shared::{BackendError, WorkspaceId};
 
 /// One scripted answer.
 enum Say {
     Text(&'static str),
     Tool(&'static str, Value),
+    /// Several tool calls in one reply.
+    Calls(Vec<(&'static str, Value)>),
     /// Pend until the call is cancelled.
     Hold,
     /// End the turn with no content at all.
@@ -41,35 +45,73 @@ enum Say {
     Fail(ModelError),
 }
 
-/// Plays its script in order, then says "done"; records each request.
+/// Plays its script in order, then says "done"; records each request. A
+/// compaction request is answered from `summaries` (a summary by default, or
+/// none) and takes no turn of the script.
 #[derive(Default)]
 struct Scripted {
     script: Mutex<VecDeque<Say>>,
     asked: Mutex<Vec<ModelRequest>>,
+    window: Mutex<u64>,
+    summaries: Mutex<VecDeque<Option<&'static str>>>,
+    /// The input tokens each turn reports.
+    input: Mutex<u64>,
 }
 
 impl Scripted {
     fn new(script: Vec<Say>) -> Arc<Self> {
-        Arc::new(Self { script: Mutex::new(script.into()), asked: Mutex::default() })
+        Arc::new(Self {
+            script: Mutex::new(script.into()),
+            window: Mutex::new(200_000),
+            input: Mutex::new(10),
+            ..Self::default()
+        })
     }
 }
 
 #[async_trait]
 impl ModelClient for Scripted {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
+        let compacting = req.compact.is_some();
         self.asked.lock().push(req);
+        if compacting {
+            let usage = ModelUsage { input_tokens: 50, output_tokens: 5, ..ModelUsage::default() };
+            let content = match self.summaries.lock().pop_front().unwrap_or(Some("the summary")) {
+                Some(s) => vec![Block::Compaction { content: s.into(), signature: "sig".into() }],
+                None => Vec::new(),
+            };
+            let stop = if content.is_empty() { StopKind::EndTurn } else { StopKind::Compaction };
+            return Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.001) });
+        }
         let say = self.script.lock().pop_front().unwrap_or(Say::Text("done"));
-        let usage = ModelUsage { input_tokens: 10, output_tokens: 2, ..ModelUsage::default() };
+        let usage =
+            ModelUsage { input_tokens: *self.input.lock(), output_tokens: 2, ..ModelUsage::default() };
         let (content, stop) = match say {
             Say::Text(t) => (vec![Block::text(t)], StopKind::EndTurn),
             Say::Tool(name, input) => {
                 (vec![Block::ToolUse { id: "toolu_1".into(), name: name.into(), input }], StopKind::ToolUse)
+            }
+            Say::Calls(calls) => {
+                let blocks = calls
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (name, input))| Block::ToolUse {
+                        id: format!("toolu_{i}"),
+                        name: name.into(),
+                        input,
+                    })
+                    .collect();
+                (blocks, StopKind::ToolUse)
             }
             Say::Hold => return std::future::pending().await,
             Say::Empty => (Vec::new(), StopKind::EndTurn),
             Say::Fail(e) => return Err(e),
         };
         Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.004) })
+    }
+
+    async fn window(&self, _: &str) -> Result<u64, ModelError> {
+        Ok(*self.window.lock())
     }
 }
 
@@ -86,10 +128,6 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-fn an_hour_ago() -> Timestamp {
-    Timestamp::from_datetime(Timestamp::now().as_datetime() - chrono::Duration::hours(1))
 }
 
 /// The step queue's row for a session.
@@ -135,11 +173,10 @@ impl ModelBudget for Closed {
     }
 }
 
-/// A replica of the rig's app whose workspace joined the loop at `joined`,
-/// and a loop worker calling `model`, sharing one set of signals. Steps
-/// other tests left behind are cleared first.
-async fn on_loop(rig: &Rig, model: Arc<Scripted>, joined: Timestamp) -> (Router, Worker) {
-    worker(rig, model, joined, Tune::default()).await
+/// A replica of the rig's app and a loop worker calling `model`, sharing one
+/// set of signals. Steps other tests left behind are cleared first.
+async fn on_loop(rig: &Rig, model: Arc<Scripted>) -> (Router, Worker) {
+    worker(rig, model, Tune::default()).await
 }
 
 /// How a test's worker differs from the default.
@@ -149,16 +186,42 @@ struct Tune {
     budget: Arc<dyn ModelBudget>,
     /// The session rows it reads, when not the rig's.
     sessions: Option<Arc<dyn SessionsStore>>,
+    /// Where its MCP client may connect.
+    guard: shared::net::Guard,
+    /// Its compaction settings.
+    compaction: engine::turn::compact::Compaction,
+    /// The webhooks its commits and vault writes send.
+    hooks: Option<Arc<webhooks::Webhooks>>,
 }
 
 impl Default for Tune {
     fn default() -> Self {
-        Self { steps: 8, budget: Arc::new(Unlimited), sessions: None }
+        Self {
+            steps: 8,
+            budget: Arc::new(Unlimited),
+            sessions: None,
+            guard: shared::net::Guard::default(),
+            compaction: engine::turn::compact::Compaction::default(),
+            hooks: None,
+        }
     }
 }
 
 /// Session rows whose reads fail, as with the database down.
 struct Unreadable(Arc<dyn SessionsStore>);
+
+#[async_trait]
+impl SessionReplace for Unreadable {
+    async fn replace(
+        &self,
+        ws: &WorkspaceId,
+        read: &Session,
+        s: Session,
+        deliveries: &[webhooks::Delivery],
+    ) -> Result<(), StoreError> {
+        self.0.replace(ws, read, s, deliveries).await
+    }
+}
 
 #[async_trait]
 impl SessionsStore for Unreadable {
@@ -168,10 +231,6 @@ impl SessionsStore for Unreadable {
 
     async fn get(&self, _: &WorkspaceId, _: &SessionId) -> Result<Session, StoreError> {
         Err(StoreError::Backend(BackendError::new(std::io::Error::other("database down"))))
-    }
-
-    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError> {
-        self.0.replace(ws, read, s).await
     }
 
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {
@@ -189,8 +248,8 @@ impl SessionsStore for Unreadable {
 }
 
 /// `on_loop`, with a worker tuned by `tune`.
-async fn worker(rig: &Rig, model: Arc<Scripted>, joined: Timestamp, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions } = tune;
+async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
+    let Tune { steps, budget, sessions, guard, compaction, hooks } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -199,18 +258,19 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, joined: Timestamp, tune: Tune) 
         diesel_async::RunQueryDsl::execute(diesel::sql_query(leftover), &mut *conn).await.unwrap();
     }
     let signals: Arc<dyn Signals> = Arc::new(LocalSignals::default());
-    let on_loop = LoopWorkspaces::new([(WorkspaceId::new(&rig.ws), joined)]);
-    let app =
-        rig.replica(&rig.stores, Streaming { signals: signals.clone(), on_loop, ..Streaming::default() });
+    let app = rig.replica(&rig.stores, Streaming { signals: signals.clone(), ..Streaming::default() });
+    let hooks = hooks.unwrap_or_default();
     let stores = LoopStores {
         steps: rig.stores.steps.clone(),
         sessions: sessions.unwrap_or_else(|| rig.stores.sessions.clone()),
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
+        mcp: api::agent_loop::mcp(&rig.stores, guard, &hooks),
+        webhooks: hooks,
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
-    let models = Models { client: model, retry, budget, max_tokens: 1000 };
+    let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
     let settings = Settings {
         owner: format!("test-{}", common::stamp()),
         lease: Duration::from_secs(60),
@@ -269,9 +329,9 @@ fn toolset(policy: &str) -> Value {
 #[tokio::test]
 async fn a_message_gets_one_answer_in_live_s_order() {
     // L-1, L-16, L-17, S-3, and live probe 1's order.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![Say::Text("hi there")]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let env = rig.environment("cloud").await;
     let s = session(&app, &env, json!([])).await;
     let (st, _) = send(&app, &s, message("hello")).await;
@@ -304,9 +364,9 @@ async fn a_message_gets_one_answer_in_live_s_order() {
 #[tokio::test]
 async fn a_self_hosted_built_in_call_idles_requires_action_and_its_result_continues_the_turn() {
     // L-2, L-3, L-8, L-13.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![Say::Tool("bash", json!({"command": "ls"})), Say::Text("listed")]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let env = rig.environment("self_hosted").await;
     let s = session(&app, &env, toolset(ALLOW)).await;
     send(&app, &s, message("list files")).await;
@@ -366,9 +426,9 @@ async fn a_self_hosted_built_in_call_idles_requires_action_and_its_result_contin
 #[tokio::test]
 async fn a_cloud_session_stays_running_while_its_worker_runs_a_built_in_call() {
     // L-4, L-8: the runtime queue, and the worker's result shown as the agent's.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![Say::Tool("bash", json!({"command": "ls"})), Say::Text("listed")]);
-    let (app, _worker) = on_loop(&rig, model, an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model).await;
     let env = rig.environment("cloud").await;
     let s = session(&app, &env, toolset(ALLOW)).await;
     send(&app, &s, message("list files")).await;
@@ -396,14 +456,14 @@ async fn a_cloud_session_stays_running_while_its_worker_runs_a_built_in_call() {
 #[tokio::test]
 async fn asked_and_custom_tools_wait_for_the_client() {
     // L-13, L-14: a confirmation allows or denies; a custom result continues.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![
         Say::Tool("bash", json!({"command": "rm x"})),
         Say::Text("ok"),
         Say::Tool("lookup", json!({"k": 1})),
         Say::Text("found"),
     ]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let env = rig.environment("self_hosted").await;
     let tools = json!([
         {"type": "agent_toolset_20260401", "default_config": {"permission_policy": {"type": "always_ask"}}},
@@ -442,9 +502,9 @@ async fn asked_and_custom_tools_wait_for_the_client() {
 #[tokio::test]
 async fn an_interrupt_during_the_call_cancels_it_and_idles_the_session() {
     // L-6, P6 (live probe 3).
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![Say::Hold]);
-    let (app, _worker) = on_loop(&rig, model, an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model).await;
     let env = rig.environment("cloud").await;
     let s = session(&app, &env, json!([])).await;
     send(&app, &s, message("write a long story")).await;
@@ -465,10 +525,10 @@ async fn an_interrupt_during_the_call_cancels_it_and_idles_the_session() {
 #[tokio::test]
 async fn a_failing_model_is_retried_then_the_turn_stops_with_retries_exhausted() {
     // M-2.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let busy = || Say::Fail(ModelError::RetryAfter("529".into(), Duration::from_millis(20)));
     let model = Scripted::new(vec![busy(), busy(), busy()]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let env = rig.environment("cloud").await;
     let s = session(&app, &env, json!([])).await;
     send(&app, &s, message("hi")).await;
@@ -481,9 +541,9 @@ async fn a_failing_model_is_retried_then_the_turn_stops_with_retries_exhausted()
 #[tokio::test]
 async fn a_spent_budget_stops_the_turn_before_the_next_call() {
     // L-18.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![Say::Text("one")]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let env = rig.environment("cloud").await;
     let agent = json!({"name": format!("loop-{}", common::stamp()), "model": "claude-haiku-4-5"});
     let (_, agent) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(agent))).await;
@@ -499,43 +559,9 @@ async fn a_spent_budget_stops_the_turn_before_the_next_call() {
 }
 
 #[tokio::test]
-async fn a_harness_session_moves_to_the_loop_at_its_next_turn_and_a_failed_stop_appends_nothing() {
-    // L-19, L-20.
-    let Some(rig) = Rig::with_sandbox().await else { return };
-    let env = rig.environment("cloud").await;
-    let (old, fresh) = (rig.session(&env, json!({})).await, rig.session(&env, json!({})).await);
-    let model = Scripted::new(vec![Say::Text("from the loop")]);
-    let (app, _worker) = on_loop(&rig, model, Timestamp::now()).await;
-    rig.sandboxes.fail_stops(Some(RuntimeError::Unavailable("daemon down".into())));
-    let (st, body) = send(&app, &fresh, message("hi")).await;
-    assert_eq!((st.as_u16(), body["error"]["type"].as_str()), (529, Some("overloaded_error")), "{body}");
-    assert!(step_of(&fresh).await.is_none(), "a failed stop queues no step");
-    rig.sandboxes.fail_stops(Some(RuntimeError::Launch("broken".into())));
-    let (st, body) = send(&app, &fresh, message("hi")).await;
-    assert_eq!((st.as_u16(), body["error"]["type"].as_str()), (500, Some("api_error")), "{body}");
-    assert!(step_of(&fresh).await.is_none(), "a failed stop queues no step");
-    let uri = format!("/v1/sessions/{fresh}/events");
-    let (_, page) = send_to(&app, request("GET", &uri, Auth::Key(KEY), None)).await;
-    assert_eq!(page["data"], json!([]), "a failed stop appends nothing");
-    rig.sandboxes.fail_stops(None);
-    send(&app, &old, message("hello again")).await;
-    let events = events_until(&app, &old, "session.status_idle", 1).await;
-    let answer = events.iter().find(|e| e["type"] == "agent.message").unwrap();
-    assert_eq!(answer["content"][0]["text"], "from the loop");
-    let (st, body) = send(&app, &fresh, message("hi")).await;
-    assert_eq!(st, StatusCode::OK, "the retry is taken once the stop works: {body}");
-    let events = events_until(&app, &fresh, "session.status_idle", 1).await;
-    let answers = events.iter().filter(|e| e["type"] == "agent.message").count();
-    assert_eq!((answers, types(&events).iter().filter(|t| **t == "user.message").count()), (1, 1));
-    let (_, item) =
-        rig.call("GET", &format!("/v1/environments/{env}/work/{old}"), Auth::Key(KEY), None).await;
-    assert_eq!(item["state"], "queued", "its work moved to the runtime queue: {item}");
-}
-
-#[tokio::test]
 async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
     // L-15.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let name = format!("helper-{}", common::stamp());
     let model = Scripted::new(vec![
@@ -544,7 +570,7 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
         Say::Text("done by the helper"),
         Say::Text("all done"),
     ]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let helper = json!({"name": name, "model": "claude-haiku-4-5"});
     let (_, helper) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(helper))).await;
     let coord = json!({
@@ -594,13 +620,12 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
 #[tokio::test]
 async fn an_outcome_is_graded_on_its_own_thread_until_satisfied() {
     // L-5.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let verdict = |result: &str| {
-        Say::Tool(
-            "submit_verdict",
-            json!({"result": result, "findings": [{"criterion": "tone", "finding": "too short"}]}),
-        )
+        let met = result == "satisfied";
+        let grade = json!({"result": result, "criteria": [{"criterion": "tone", "met": met, "finding": "too short"}]});
+        Say::Text(Box::leak(grade.to_string().into_boxed_str()))
     };
     let model = Scripted::new(vec![
         Say::Text("draft"),
@@ -609,7 +634,7 @@ async fn an_outcome_is_graded_on_its_own_thread_until_satisfied() {
         verdict("satisfied"),
         Say::Text("summary"),
     ]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let s = session(&app, &env, json!([])).await;
     let outcome = json!({"events": [{"type": "user.define_outcome", "description": "Write a poem.", "rubric": {"type": "text", "content": "### Tone\nWarm."}, "max_iterations": 3}]});
     let (st, body) = send(&app, &s, outcome).await;
@@ -644,9 +669,9 @@ async fn an_outcome_is_graded_on_its_own_thread_until_satisfied() {
 #[tokio::test]
 async fn an_interrupt_answers_a_waiting_built_in_call_with_live_s_text_and_a_second_stops_the_work() {
     // L-6, L-7.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new(vec![Say::Tool("bash", json!({"command": "sleep 100"}))]);
-    let (app, _worker) = on_loop(&rig, model, an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model).await;
     let env = rig.environment("cloud").await;
     let s = session(&app, &env, toolset(ALLOW)).await;
     send(&app, &s, message("wait")).await;
@@ -673,10 +698,9 @@ async fn an_interrupt_answers_a_waiting_built_in_call_with_live_s_text_and_a_sec
 #[tokio::test]
 async fn a_worker_runs_no_more_steps_at_once_than_it_is_set_to() {
     // S-8.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
-    let (app, _worker) =
-        worker(&rig, model.clone(), an_hour_ago(), Tune { steps: 4, ..Tune::default() }).await;
+    let (app, _worker) = worker(&rig, model.clone(), Tune { steps: 4, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     for _ in 0..5 {
         let s = session(&app, &env, json!([])).await;
@@ -696,13 +720,12 @@ async fn a_worker_runs_no_more_steps_at_once_than_it_is_set_to() {
 async fn a_step_over_the_model_budget_waits_without_calling_the_model() {
     // M-4: over the budget, the step is due again next minute; with the
     // budget unreadable, it goes back on the queue.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     for (budget, due) in [(Closed(Some(42)), 30..=42), (Closed(None), -1..=1)] {
         let model = Scripted::new(Vec::new());
         let (app, worker) =
-            worker(&rig, model.clone(), an_hour_ago(), Tune { budget: Arc::new(budget), ..Tune::default() })
-                .await;
+            worker(&rig, model.clone(), Tune { budget: Arc::new(budget), ..Tune::default() }).await;
         let s = session(&app, &env, json!([])).await;
         send(&app, &s, message("hi")).await;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -727,11 +750,11 @@ async fn a_loop_replica_serves_no_route() {
 #[tokio::test]
 async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
     // Only a deleted session ends its step; a failed read retries it.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let model = Scripted::new(Vec::new());
     let tune = Tune { sessions: Some(Arc::new(Unreadable(rig.stores.sessions.clone()))), ..Tune::default() };
-    let (app, _worker) = worker(&rig, model.clone(), an_hour_ago(), tune).await;
+    let (app, _worker) = worker(&rig, model.clone(), tune).await;
     let s = session(&app, &env, json!([])).await;
     send(&app, &s, message("hi")).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -743,8 +766,8 @@ async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
 #[tokio::test]
 async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the_round() {
     // L-5: the rubric file's text is graded against; a grader that ends three
-    // turns without `submit_verdict`, with text or with nothing, fails the round.
-    let Some(rig) = Rig::with_sandbox().await else { return };
+    // turns without a grade, with other text or with nothing, fails the round.
+    let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let (st, file) = rig.upload(Auth::Key(KEY), "rubric.md", "### Tone\nWarm and specific.", None).await;
     assert_eq!(st, StatusCode::OK, "{file}");
@@ -755,7 +778,7 @@ async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the
         Say::Empty,
         Say::Text("summary"),
     ]);
-    let (app, _worker) = on_loop(&rig, model.clone(), an_hour_ago()).await;
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
     let s = session(&app, &env, json!([])).await;
     let outcome = json!({"events": [{"type": "user.define_outcome", "description": "Write a poem.", "rubric": {"type": "file", "file_id": file["id"]}}]});
     let (st, body) = send(&app, &s, outcome).await;
@@ -773,4 +796,44 @@ async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the
     };
     assert!(rubric(&asked[0]), "the agent reads the rubric");
     assert!(rubric(&asked[1]), "the grader reads the rubric");
+}
+
+/// One endpoint for the rig's organization.
+fn hooks(rig: &Rig) -> Arc<webhooks::Webhooks> {
+    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_c2VjcmV0"}]);
+    Arc::new(webhooks::Webhooks::parse(&json.to_string()).unwrap())
+}
+
+/// The `data.type` of each delivery about `id`, oldest first.
+async fn webhooks_about(id: &str) -> Vec<String> {
+    #[derive(diesel::QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = diesel::sql_types::Text)]
+        kind: String,
+    }
+    let pg = db().await;
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "SELECT body::jsonb->'data'->>'type' AS kind FROM webhook_deliveries \
+         WHERE body::jsonb->'data'->>'id' = $1 ORDER BY next_attempt_at, webhook_id",
+    )
+    .bind::<diesel::sql_types::Text, _>(id);
+    let rows: Vec<Row> = diesel_async::RunQueryDsl::load(q, &mut *conn).await.unwrap();
+    rows.into_iter().map(|r| r.kind).collect()
+}
+
+#[tokio::test]
+async fn each_status_change_of_a_turn_sends_its_webhook_in_its_commit() {
+    // H-1: running, then idle; an interrupt of an idle session sends none.
+    let Some(rig) = Rig::new().await else { return };
+    let model = Scripted::new(vec![Say::Text("hi")]);
+    let (app, _worker) = worker(&rig, model, Tune { hooks: Some(hooks(&rig)), ..Tune::default() }).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, json!([])).await;
+    send(&app, &s, message("hello")).await;
+    events_until(&app, &s, "session.status_idle", 1).await;
+    assert_eq!(webhooks_about(&s).await, ["session.status_run_started", "session.status_idled"]);
+    send(&app, &s, json!({"events": [{"type": "user.interrupt"}]})).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(webhooks_about(&s).await.len(), 2, "no status change, no webhook");
 }

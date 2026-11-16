@@ -1,11 +1,16 @@
-# agentd stack for development: agentd, its egress service, Postgres
-# (migrated by Flyway), LocalStack for S3, Secrets Manager and KMS, and Valkey for the
-# replicas' stream signals. Vault credentials are encrypted
-# under a KMS key on the emulator exactly as in production; there is no weaker
-# mode. The local scheduler is per process, so run one replica. Every published
-# port is bound to 127.0.0.1.
+# agentd stack for development: agentd, Postgres (migrated by Flyway, with
+# logical WAL), Debezium Server reading the WAL into Kafka, Kafka for the
+# change feed, Valkey (a one-node cluster with AOF) for the replicas' signals
+# and the model budget, and LocalStack
+# for S3, Secrets Manager and KMS. Vault credentials are encrypted under a KMS key on the
+# emulator exactly as in production; there is no weaker mode. Every published
+# port is bound to 127.0.0.1. Tools run on a worker that polls the session's
+# environment (`ant beta:worker poll`), outside this stack.
 #
-#   export POSTGRES_PASSWORD=$(openssl rand -hex 16) AGENTD_EGRESS_ADMIN_TOKEN=$(openssl rand -hex 32)
+#   export POSTGRES_PASSWORD=$(openssl rand -hex 16)
+#   for v in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS; do
+#     export "$v=k1:$(openssl rand -hex 32)"; done
+#   export AGENTD_OPENROUTER_API_KEY=...   # or AGENTD_ANTHROPIC_API_KEY, for the loop
 #   docker compose -f docker/docker-compose.yml up
 #   docker compose -f docker/docker-compose.yml logs keys   # the dev API key, printed once
 
@@ -23,20 +28,22 @@ x-agentd: &agentd
     AGENTD_SECRETS_ENDPOINT: http://localstack:4566
     AGENTD_SECRETS_KMS_KEY_ID: alias/agentd-secrets
     AGENTD_VALKEY_URL: redis://valkey:6379
+    AGENTD_VALKEY_CLUSTER: "1"
+    AGENTD_KAFKA_BROKERS: kafka:9092
     # Only the emulator accepts these.
     AWS_ACCESS_KEY_ID: test
     AWS_SECRET_ACCESS_KEY: test
     AWS_DEFAULT_REGION: us-east-1
-    # Each session's sandbox runs on the host's Docker daemon, reached through
-    # a proxy that allows only the API groups the sandbox runtime uses.
-    DOCKER_HOST: tcp://docker:2375
-    # Sandbox traffic leaves through the egress service; agentd registers
-    # sessions on its admin interface, on the control network only the two
-    # share. Both containers join each sandbox's own network, by name
-    # (AGENTD_CONTAINER and AGENTD_CONTROL_NET keep a second stack apart).
-    AGENTD_EGRESS_ADMIN_URL: http://${AGENTD_CONTROL_NET:-172.31.250}.3:8891
-    AGENTD_EGRESS_ADMIN_TOKEN: ${AGENTD_EGRESS_ADMIN_TOKEN:?set AGENTD_EGRESS_ADMIN_TOKEN}
-    AGENTD_SANDBOX_JOIN: ${AGENTD_CONTAINER:-agentd},${AGENTD_CONTAINER:-agentd}-egress
+    # agentd's API as workers reach it, the work secret's `api_base_url`.
+    AGENTD_API_BASE_URL: http://127.0.0.1:8080
+    # Key rings `<id>:<hex>,…`; the first signs or keys, the rest only verify.
+    AGENTD_API_KEY_PEPPERS: ${AGENTD_API_KEY_PEPPERS:?set AGENTD_API_KEY_PEPPERS}
+    AGENTD_WORK_TOKEN_KEYS: ${AGENTD_WORK_TOKEN_KEYS:?set AGENTD_WORK_TOKEN_KEYS}
+    AGENTD_PLACEHOLDER_KEYS: ${AGENTD_PLACEHOLDER_KEYS:?set AGENTD_PLACEHOLDER_KEYS}
+    # agentd's runtime keys (`sk-ant-oat01-…`, current first) and the model keys.
+    AGENTD_RUNTIME_KEYS: ${AGENTD_RUNTIME_KEYS:-}
+    AGENTD_ANTHROPIC_API_KEY: ${AGENTD_ANTHROPIC_API_KEY:-}
+    AGENTD_OPENROUTER_API_KEY: ${AGENTD_OPENROUTER_API_KEY:-}
     RUST_LOG: info
 
 services:
@@ -77,7 +84,6 @@ services:
     container_name: ${AGENTD_CONTAINER:-agentd}
     ports:
       - "127.0.0.1:8080:8080"
-    networks: [default, control]
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,52 +93,16 @@ services:
         condition: service_healthy
       valkey:
         condition: service_healthy
-      docker:
-        condition: service_started
-      egress:
-        condition: service_started
-    deploy:
-      replicas: ${AGENTD_REPLICAS:-1}   # one: the scheduler's timers are per process
-
-  # The egress proxy: sandboxes reach it on their own networks; it reads each
-  # credential from Secrets Manager when a request needs it. No shell in the
-  # image, a non-root user, a read-only root filesystem, no capabilities and
-  # no core dumps. Its admin interface listens on the control network only.
-  egress:
-    build:
-      context: ..
-      dockerfile: docker/egress/Dockerfile
-    image: agentd-egress:dev
-    container_name: ${AGENTD_CONTAINER:-agentd}-egress
-    user: "65532:65532"
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    ulimits:
-      core: 0
-      # Secret buffers are locked in RAM so they never reach swap.
-      memlock: 67108864
-    environment:
-      AGENTD_EGRESS_ADDR: 0.0.0.0:8890
-      AGENTD_EGRESS_ADMIN_ADDR: ${AGENTD_CONTROL_NET:-172.31.250}.3:8891
-      AGENTD_EGRESS_ADMIN_TOKEN: ${AGENTD_EGRESS_ADMIN_TOKEN:?set AGENTD_EGRESS_ADMIN_TOKEN}
-      # Its own credentials in production: a role that may only read
-      # credential values (deploy/iam/egress-secrets-policy.json).
-      AGENTD_SECRETS_ENDPOINT: http://localstack:4566
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      AWS_DEFAULT_REGION: us-east-1
-      RUST_LOG: info
-    networks:
-      default: {}
-      control:
-        ipv4_address: ${AGENTD_CONTROL_NET:-172.31.250}.3
-    depends_on:
-      localstack:
+      kafka:
         condition: service_healthy
+    deploy:
+      replicas: ${AGENTD_REPLICAS:-1}
+
 
   postgres:
     image: postgres:16-alpine   # Flyway 11 supports PG 9.5–latest; 16 is the safe LTS-grade pick
+    # Logical WAL for Debezium; a slot that falls behind keeps at most 1 GB.
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_slot_wal_keep_size=1GB"]
     environment:
       POSTGRES_DB: agentd
       POSTGRES_USER: agentd
@@ -147,16 +117,78 @@ services:
       timeout: 3s
       retries: 20
 
-  # Pub/sub for the replicas' stream signals; it stores nothing.
+  # The replicas' pub/sub signals and the model budget's counters.
+  # A one-node cluster, as production runs (cluster mode enabled), announced
+  # by its name on this network; AOF, fsynced every second, keeps the streams
+  # across a restart. The first health check gives the node every slot.
   valkey:
-    image: valkey/valkey:8.0-alpine
+    image: valkey/valkey:9.0-alpine
+    command:
+      - valkey-server
+      - --cluster-enabled
+      - "yes"
+      - --cluster-announce-hostname
+      - valkey
+      - --cluster-preferred-endpoint-type
+      - hostname
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - valkey_data:/data
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test:
+        - CMD-SHELL
+        - >-
+          valkey-cli cluster info | grep -q cluster_state:ok
+          || { valkey-cli cluster addslotsrange 0 16383 >/dev/null; false; }
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Debezium Server: the committed changes of the tables in
+  # debezium/application.properties, from the WAL into Kafka. One instance:
+  # a second could not take the replication slot.
+  debezium:
+    image: quay.io/debezium/server:3.3.1.Final
+    environment:
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - ./debezium:/debezium/config:ro
+    restart: unless-stopped
+    depends_on:
+      flyway:
+        condition: service_completed_successfully   # its tables exist before the publication
+      kafka:
+        condition: service_healthy
+
+  # The change feed: one Kafka node (KRaft), each topic made on first write
+  # with one partition, kept 7 days.
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
 
   # S3, Secrets Manager and KMS. Healthy once the init hook has made the KMS
   # key (docker/localstack/ready.d).
@@ -175,29 +207,7 @@ services:
       start_period: 60s
       retries: 60
 
-  # The sandbox runtime's Docker API: networks, images and containers only,
-  # so agentd never holds the raw socket. Creating containers is still as
-  # strong as root on that daemon's host: in production give agentd a Docker
-  # daemon on a host or VM of its own (docs/configuration.md, Security).
-  docker:
-    image: tecnativa/docker-socket-proxy:v0.4.1
-    environment:
-      POST: 1
-      CONTAINERS: 1
-      NETWORKS: 1
-      IMAGES: 1
-      ALLOW_START: 1
-      ALLOW_STOP: 1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-
-networks:
-  # agentd and the egress service only: the egress admin interface.
-  control:
-    internal: true
-    ipam:
-      config:
-        - subnet: ${AGENTD_CONTROL_NET:-172.31.250}.0/24
-
 volumes:
   pg_data:
+  valkey_data:
+  kafka_data:

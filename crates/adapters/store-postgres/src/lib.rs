@@ -26,6 +26,7 @@ pub use checkout::{DieselPgPool, PooledConnection};
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 
+pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;
 pub use entities::api_keys::PgApiKeysStore;
 pub use entities::deployments::PgDeploymentsStore;
@@ -33,14 +34,19 @@ pub use entities::dreams::PgDreamsStore;
 pub use entities::environment_keys::PgEnvironmentKeysStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
+pub use entities::fire_claims::PgFireClaims;
 pub use entities::loop_steps::PgSteps;
+pub use entities::mcp_connections::PgMcpConnections;
 pub use entities::memory::PgMemoryStore;
 pub use entities::run_lock::PgRunLock;
+pub use entities::schedules::outbox::ScheduleOutbox;
+pub use entities::schedules::PgScheduler;
 pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;
 pub use entities::skills::PgSkillsStore;
 pub use entities::vaults::PgVaultsStore;
+pub use entities::webhook_deliveries::PgDeliveryMarks;
 pub use entities::work_items::PgWorkStore;
 pub use entities::workspaces::PgWorkspacesStore;
 

@@ -25,7 +25,7 @@
      "id": "toolu_bash",
      "name": "bash",
      "input": {
-      "command": "mkdir -p /mnt/session/outputs/u0 && echo '{\"ok\": true}' > /mnt/session/outputs/u0/result.json && cat /mnt/session/uploads/in/data.txt"
+      "command": "echo tool-ok"
      }
     }
    ],
@@ -191,10 +191,10 @@
    "content": [
     {
      "type": "tool_use",
-     "id": "toolu_read",
-     "name": "read",
+     "id": "toolu_bash",
+     "name": "bash",
      "input": {
-      "file_path": "/workspace/skills/rt-skill/SKILL.md"
+      "command": "echo page-1"
      }
     }
    ],
@@ -256,27 +256,33 @@
     "cache_creation_input_tokens": 0
    },
    "thought": false
+  },
+  {
+   "content": [
+    {
+     "type": "text",
+     "text": "done"
+    }
+   ],
+   "stop": "end_turn",
+   "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0
+   },
+   "thought": false
   }
  ],
  "grader": [
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "needs_revision",
-      "findings": [
-       {
-        "criterion": "1. greeting",
-        "finding": "says draft"
-       }
-      ]
-     }
+     "type": "text",
+     "text": "{\"result\": \"needs_revision\", \"criteria\": [{\"criterion\": \"1. greeting\", \"met\": false, \"finding\": \"says draft\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 10,
     "output_tokens": 5,
@@ -288,16 +294,11 @@
   {
    "content": [
     {
-     "type": "tool_use",
-     "id": "toolu_submit_verdict",
-     "name": "submit_verdict",
-     "input": {
-      "result": "satisfied",
-      "findings": []
-     }
+     "type": "text",
+     "text": "{\"result\": \"satisfied\", \"criteria\": [{\"criterion\": \"deliverable\", \"met\": true, \"finding\": \"checked\"}]}"
     }
    ],
-   "stop": "tool_use",
+   "stop": "end_turn",
    "usage": {
     "input_tokens": 10,
     "output_tokens": 5,

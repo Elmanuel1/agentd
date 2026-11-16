@@ -23,6 +23,8 @@ tokio = { workspace = true }
 secrecy = { workspace = true }
 hmac = { workspace = true }
 zeroize = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

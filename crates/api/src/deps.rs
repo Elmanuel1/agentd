@@ -15,6 +15,7 @@ use organizations::workspaces::WorkspaceKeys;
 use sessions::service::SessionDeps;
 use sessions::SessionsService;
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
+use vaults::VaultsService;
 
 /// SessionDeps over the real agents + environments services.
 pub struct RealSessionDeps {
@@ -22,6 +23,8 @@ pub struct RealSessionDeps {
     pub agents: Arc<AgentsService>,
     /// Environments service.
     pub environments: Arc<EnvironmentsService>,
+    /// Vaults service.
+    pub vaults: Arc<VaultsService>,
 }
 
 impl std::fmt::Debug for RealSessionDeps {
@@ -76,6 +79,13 @@ impl SessionDeps for RealSessionDeps {
         }
         serde_json::to_value(&env.config).map_err(|e| ApiError::internal(e.to_string()))
     }
+
+    async fn check_vaults(&self, ctx: &AuthContext, vault_ids: &[String]) -> Result<(), ApiError> {
+        if vault_ids.is_empty() {
+            return Ok(());
+        }
+        self.vaults.check_usable(ctx, vault_ids).await
+    }
 }
 
 /// DeploymentDeps over the real agents/environments/sessions services.
@@ -123,7 +133,12 @@ impl DeploymentDeps for RealDeploymentDeps {
         Ok(())
     }
 
-    async fn create_session(&self, ctx: &AuthContext, deployment: &Deployment) -> Result<String, ApiError> {
+    async fn create_session(
+        &self,
+        ctx: &AuthContext,
+        deployment: &Deployment,
+        key: Option<&str>,
+    ) -> Result<String, sessions::service::FireRefusal> {
         // Build the session create from the frozen deployment config.
         let mut req: sessions::types::CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "agent": {
@@ -137,20 +152,17 @@ impl DeploymentDeps for RealDeploymentDeps {
         }))
         .map_err(|e| ApiError::internal(e.to_string()))?;
         req.deployment_id = Some(deployment.id.as_str().to_owned());
-        let session = self.sessions.create(ctx, req).await?;
-        // Queue the deployment's initial events as the kickoff.
-        let payloads: Vec<sessions::events::EventPayload> = deployment
+        req.id = key.map(sessions::types::SessionId::derived);
+        req.initial_events = deployment
             .initial_events
             .iter()
             .map(|e| match e {
                 InitialEvent::UserMessage { content } => {
-                    sessions::events::EventPayload::User(sessions::events::UserEvent::Message {
-                        content: content.clone(),
-                    })
+                    sessions::events::UserEvent::Message { content: content.clone() }
                 }
             })
             .collect();
-        self.sessions.send_events(ctx, session.id.as_str(), None, payloads).await?;
+        let session = self.sessions.create_fired(ctx, req).await?;
         Ok(session.id.as_str().to_owned())
     }
 }

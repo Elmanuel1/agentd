@@ -6,11 +6,14 @@ use serde::{Deserialize, Serialize};
 use sessions::events::ModelUsage;
 
 pub mod anthropic;
+mod block;
 pub mod budget;
 pub mod openai;
 pub mod retry;
 pub mod router;
+mod windows;
 
+pub use block::Block;
 pub use router::{ModelRouter, Provider as ModelProvider, ProviderConfig};
 
 /// Who said a message.
@@ -21,42 +24,6 @@ pub enum Role {
     User,
     /// The model.
     Assistant,
-}
-
-/// One block of a message.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Block {
-    /// Text.
-    Text {
-        /// The text.
-        text: String,
-    },
-    /// A tool call by the model.
-    ToolUse {
-        /// The call's id, echoed by its result.
-        id: String,
-        /// The tool.
-        name: String,
-        /// Its input.
-        input: serde_json::Value,
-    },
-    /// The result of a tool call.
-    ToolResult {
-        /// The call it answers.
-        tool_use_id: String,
-        /// The result text.
-        content: String,
-        /// Whether the tool failed.
-        is_error: bool,
-    },
-}
-
-impl Block {
-    /// A text block.
-    pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into() }
-    }
 }
 
 /// One message in the conversation.
@@ -97,6 +64,9 @@ pub struct ModelRequest {
     pub max_tokens: u32,
     /// Reasoning effort (`low` … `max`), when the agent sets one.
     pub effort: Option<String>,
+    /// Summarise the conversation instead of answering, with these
+    /// instructions (CP-7, CP-8).
+    pub compact: Option<String>,
 }
 
 /// Why the model stopped.
@@ -109,6 +79,8 @@ pub enum StopKind {
     ToolUse,
     /// It hit the output cap.
     MaxTokens,
+    /// It summarised the conversation into a compaction block.
+    Compaction,
 }
 
 /// A completion response.
@@ -188,4 +160,6 @@ impl ModelError {
 pub trait ModelClient: Send + Sync {
     /// One completion.
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError>;
+    /// The model's context window in tokens, from its provider's model list.
+    async fn window(&self, model: &str) -> Result<u64, ModelError>;
 }

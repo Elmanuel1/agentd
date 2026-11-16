@@ -16,8 +16,11 @@ use crate::model::budget::ModelBudget;
 use crate::model::retry::Retry;
 use crate::model::ModelClient;
 
+mod compact;
 mod grade;
+mod mcp;
 mod reply;
+mod request;
 mod rubrics;
 mod settle;
 mod stall;
@@ -29,6 +32,7 @@ mod tests;
 mod turn;
 mod usage;
 mod watch;
+mod write;
 
 /// How long an idle worker waits for a signal before it looks again.
 const IDLE: Duration = Duration::from_secs(1);
@@ -46,6 +50,10 @@ pub struct Stores {
     pub work: Arc<WorkService>,
     /// The files outcomes name as rubrics.
     pub files: Arc<FilesService>,
+    /// The agents' MCP servers.
+    pub mcp: crate::mcp::Mcp,
+    /// The endpoints a session's status changes are sent to.
+    pub webhooks: Arc<webhooks::Webhooks>,
 }
 
 /// The model a step calls.
@@ -59,6 +67,8 @@ pub struct Models {
     pub budget: Arc<dyn ModelBudget>,
     /// The output cap per call (`AGENTD_MAX_OUTPUT_TOKENS`).
     pub max_tokens: u32,
+    /// How prompts are kept inside their model's window.
+    pub compaction: crate::turn::compact::Compaction,
 }
 
 impl std::fmt::Debug for Stores {

@@ -7,38 +7,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use sessions::events::{AgentEvent, Event, EventPayload, Rubric, SpanEvent, UserEvent};
+use sessions::events::{AgentEvent, Event, EventId, EventPayload, Rubric, SpanEvent, UserEvent};
 use sessions::types::ThreadId;
 use shared::ContentBlock;
 
 pub use super::prompt::{feedback_prompt, outcome_prompt};
 use crate::model::{Block, Message, Role};
 use builder::Builder;
+pub use unanswered::Unanswered;
 
 /// The coordinator's delegation tool, as history replays it.
 pub const SEND_TO_AGENT: &str = "send_to_agent";
-
-/// A tool call the client still has to answer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Unanswered {
-    /// The `agent.tool_use` / `agent.custom_tool_use` event id.
-    pub id: String,
-    /// The tool.
-    pub name: String,
-    /// Its input.
-    pub input: serde_json::Value,
-    /// A custom tool (the client runs it).
-    pub custom: bool,
-    /// A built-in call waiting on the client's confirmation.
-    pub asked: bool,
-}
-
-impl Unanswered {
-    /// The session's worker runs it: a built-in call the policy allowed.
-    pub fn for_worker(&self) -> bool {
-        !self.custom && !self.asked
-    }
-}
 
 /// What a thread's log says.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -88,16 +67,25 @@ fn texts(content: &[ContentBlock]) -> String {
     content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("\n")
 }
 
+/// What the loop kept beside events (their `engine` object), by event id.
+pub type Kept = HashMap<EventId, serde_json::Value>;
+
 /// Rebuild `events` (one thread's, oldest first) into its conversation.
 /// `rubrics` holds the text of rubric files by file id. A tool call with no
 /// result that the client does not owe gets an error result, so the
 /// conversation stays valid after an interrupted step.
-pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History {
+pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept) -> History {
     let mut b = Builder::default();
     for ev in events {
         let id = ev.id.as_str().to_owned();
         match &ev.payload {
             EventPayload::Span(SpanEvent::ModelRequestStart {}) => b.step(),
+            // Its signed blocks go back unmodified, first in its call's message.
+            EventPayload::Agent(AgentEvent::Thinking { .. }) => b.assistant.extend(
+                kept.get(&ev.id)
+                    .and_then(|k| serde_json::from_value::<Vec<Block>>(k["thinking"].clone()).ok())
+                    .unwrap_or_default(),
+            ),
             EventPayload::Span(SpanEvent::OutcomeEvaluationEnd { result, explanation, .. }) => {
                 b.text(feedback_prompt(*result, explanation.as_deref().unwrap_or_default()));
             }
@@ -114,7 +102,19 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History 
                 b.call(id.clone(), name, input);
                 b.custom.insert(id);
             }
-            EventPayload::Agent(AgentEvent::McpToolUse { name, input, .. }) => b.call(id, name, input),
+            EventPayload::Agent(AgentEvent::McpToolUse {
+                mcp_server_name,
+                name,
+                input,
+                evaluated_permission,
+                ..
+            }) => {
+                b.call(id.clone(), &super::policy::model_name(mcp_server_name, name), input);
+                if evaluated_permission.as_deref() == Some("ask") {
+                    b.owed.insert(id.clone());
+                }
+                b.mcp.insert(id, mcp_server_name.clone());
+            }
             EventPayload::Agent(AgentEvent::ThreadMessageSent {
                 content,
                 to_agent_name,
@@ -177,6 +177,7 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>) -> History 
 }
 
 mod builder;
+mod unanswered;
 
 #[cfg(test)]
 mod tests;

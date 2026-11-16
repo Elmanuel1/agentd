@@ -13,9 +13,9 @@ use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
-use shared::ports::{FakeRuntime, FakeScheduler};
+
 use shared::Timestamp;
-use store_postgres::PgBackend;
+use store_postgres::{PgBackend, PgFireClaims};
 use tower::ServiceExt;
 
 const KEY: &str = "test-key-workspace-a";
@@ -29,10 +29,6 @@ fn enabled() -> bool {
 /// the integration env isn't configured (test skips). Unique tenants per call
 /// isolate the shared DB.
 async fn app() -> Option<Router> {
-    app_with(Arc::new(FakeRuntime::new())).await
-}
-
-async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
     if !enabled() {
         return None;
     }
@@ -48,25 +44,24 @@ async fn app_with(runtime: Arc<FakeRuntime>) -> Option<Router> {
     keys.register(KEY_B, &org, &format!("wrkspc_b{stamp}"), "apikey_01b");
     let load = Arc::new(store_postgres::PgLoad::new(backend.diesel.clone()));
     let backends = Backends {
+        fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(backend.clone())))),
+        fire_sources: None,
         stores: Stores::postgres(backend, blobs.clone(), Arc::new(MemorySecretStore::default())),
         keys: Arc::new(keys),
         admin_keys: Arc::new(StaticAdminKeys::default()),
         environment_keys: Arc::new(test_support::NoEnvironmentKeys),
         system: api::SystemKeys {
-            work_token_key: vec![1; 32],
-            egress_key: vec![2; 32],
+            work_tokens: shared::hash::KeyRing::single(vec![1; 32]),
+            placeholders: shared::hash::KeyRing::single(vec![2; 32]),
             api_base_url: "http://agentd.test".into(),
         },
-        scheduler: Arc::new(FakeScheduler::new()),
-        fires: Arc::new(FireRegistry::new()),
-        runtime: Some(runtime),
-        sandbox: None,
         extra_models: Vec::new(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,
-        on_loop: sessions::steps::LoopWorkspaces::default(),
         role: api::config::Role::All,
+        guard: shared::net::Guard::default(),
+        webhooks: std::sync::Arc::default(),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }
@@ -310,7 +305,8 @@ async fn deployment_create_and_internal_fire_through_http() {
     let (_, events) = call(&app, "GET", &format!("/v1/sessions/{sid}/events"), None).await;
     assert_eq!(events["data"][0]["type"], "user.message");
 
-    // Idempotency: same scheduled_at again → not fired.
+    // The same tick again finds the first fire's run and session: no second
+    // run, session or kickoff.
     let (_, again) = call(
         &app,
         "POST",
@@ -318,7 +314,69 @@ async fn deployment_create_and_internal_fire_through_http() {
         Some(&format!(r#"{{"deployment_id":"{did}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#)),
     )
     .await;
-    assert_eq!(again["fired"], false);
+    assert_eq!(again["run"]["id"], fired["run"]["id"]);
+    assert_eq!(again["run"]["session_id"], fired["run"]["session_id"]);
+    let (_, runs) = call(&app, "GET", &format!("/v1/deployment_runs?deployment_id={did}"), None).await;
+    assert_eq!(runs["data"].as_array().unwrap().len(), 1);
+    let (_, events) = call(&app, "GET", &format!("/v1/sessions/{sid}/events"), None).await;
+    let kickoffs = events["data"].as_array().unwrap().iter().filter(|e| e["type"] == "user.message").count();
+    assert_eq!(kickoffs, 1);
+}
+
+#[tokio::test]
+async fn a_fire_whose_agent_reaches_a_blocked_mcp_host_pauses_the_deployment() {
+    // MC-18, MC-19.
+    let Some(app) = app().await else {
+        return;
+    };
+    let env =
+        |networking: &str| format!(r#"{{"name":"m","config":{{"type":"cloud","networking":{networking}}}}}"#);
+    let (_, closed) = call(
+        &app,
+        "POST",
+        "/v1/environments",
+        Some(&env(r#"{"type":"limited","allowed_hosts":["other.com"]}"#)),
+    )
+    .await;
+    let (_, open) =
+        call(&app, "POST", "/v1/environments", Some(&env(r#"{"type":"limited","allow_mcp_servers":true}"#)))
+            .await;
+    let agent = r#"{"name":"m","model":"claude-sonnet-4-6",
+        "mcp_servers":[{"type":"url","name":"docs","url":"https://mcp.example.com/mcp"}],
+        "tools":[{"type":"mcp_toolset","mcp_server_name":"docs"}]}"#;
+    let (st, agent) = call(&app, "POST", "/v1/agents", Some(agent)).await;
+    assert_eq!(st, StatusCode::OK, "{agent}");
+    let deploy = |env: &serde_json::Value| {
+        format!(
+            r#"{{"name":"m","agent":"{}","environment_id":"{}","initial_events":[{{"type":"user.message","content":[{{"type":"text","text":"go"}}]}}],"schedule":{{"type":"cron","expression":"0 20 * * 5","timezone":"UTC"}}}}"#,
+            agent["id"].as_str().unwrap(),
+            env["id"].as_str().unwrap()
+        )
+    };
+    let fire =
+        |id: &str| format!(r#"{{"deployment_id":"{id}","scheduled_at":"2026-07-10T00:00:00.000000Z"}}"#);
+    let (_, blocked) = call(&app, "POST", "/v1/deployments", Some(&deploy(&closed))).await;
+    let did = blocked["id"].as_str().unwrap_or_else(|| panic!("{blocked}"));
+    let (st, fired) = call(&app, "POST", "/internal/fire", Some(&fire(did))).await;
+    assert_eq!(st, StatusCode::OK, "{fired}");
+    assert_eq!(fired["run"]["session_id"], serde_json::Value::Null, "no session is created");
+    let error = serde_json::json!({"type": "mcp_egress_blocked_error",
+        "message": "An MCP server host used by the deployment's agent is blocked by the environment's network policy"});
+    assert_eq!(fired["run"]["error"], error);
+    let (_, got) = call(&app, "GET", &format!("/v1/deployments/{did}"), None).await;
+    assert_eq!(got["status"], "paused");
+    assert_eq!(got["paused_reason"], serde_json::json!({"type": "error", "error": error}));
+
+    let (_, allowed) = call(&app, "POST", "/v1/deployments", Some(&deploy(&open))).await;
+    let (_, fired) = call(&app, "POST", "/internal/fire", Some(&fire(allowed["id"].as_str().unwrap()))).await;
+    assert!(fired["run"]["session_id"].as_str().is_some_and(|s| s.starts_with("sesn_")), "{fired}");
+    let direct = format!(
+        r#"{{"agent":"{}","environment_id":"{}"}}"#,
+        agent["id"].as_str().unwrap(),
+        closed["id"].as_str().unwrap()
+    );
+    let (st, _) = call(&app, "POST", "/v1/sessions", Some(&direct)).await;
+    assert_eq!(st, StatusCode::OK, "a session created directly is not checked at create");
 }
 
 #[tokio::test]
@@ -402,9 +460,8 @@ async fn exact_live_error_strings_survive_the_full_stack() {
 }
 
 #[tokio::test]
-async fn a_session_launches_its_sandbox_with_the_resolved_environment() {
-    let runtime = Arc::new(FakeRuntime::new());
-    let Some(app) = app_with(runtime.clone()).await else {
+async fn a_session_queues_its_work_item_on_its_environment_s_queue() {
+    let Some(app) = app().await else {
         return;
     };
     let env_body = r#"{"name":"sbx","config":{"type":"cloud","networking":{"type":"limited"}}}"#;
@@ -418,11 +475,10 @@ async fn a_session_launches_its_sandbox_with_the_resolved_environment() {
     );
     let (st, session) = call(&app, "POST", "/v1/sessions", Some(&body)).await;
     assert_eq!(st, StatusCode::OK);
-    let jobs = runtime.launched();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].target_id, session["id"].as_str().unwrap());
-    assert_eq!(jobs[0].environment_id, env["id"].as_str().unwrap());
-    assert_eq!(jobs[0].environment["networking"]["type"], "limited");
+    let item =
+        format!("/v1/environments/{}/work/{}", env["id"].as_str().unwrap(), session["id"].as_str().unwrap());
+    let (st, work) = call(&app, "GET", &item, None).await;
+    assert_eq!((st, work["state"].as_str()), (StatusCode::OK, Some("queued")), "{work}");
 }
 
 /// A stamp no other app in this test binary shares: tests run in parallel, and

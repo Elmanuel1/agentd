@@ -7,16 +7,14 @@ members = [
     "crates/resources/api-keys",
     "crates/resources/organizations",
     "crates/resources/vaults",
+    "crates/resources/webhooks",
     "crates/resources/memory",
     "crates/resources/files",
     "crates/resources/skills",
     "crates/resources/sessions",
     "crates/resources/deployments",
     "crates/resources/work",
-    "crates/sandbox-worker",
-    "crates/egress",
     "crates/resources/dreams",
-    "crates/adapters/scheduler-local",
     "crates/api",
     "conformance/rust",
     "crates/adapters/store-postgres",
@@ -24,9 +22,8 @@ members = [
     "crates/test-support",
     "crates/adapters/secrets-aws",
     "crates/adapters/aws-common",
-    "crates/adapters/sandbox-docker",
-    "crates/adapters/egress-proxy",
     "crates/adapters/signals-valkey",
+    "crates/adapters/changes-kafka",
     "crates/engine",
 ]
 
@@ -44,6 +41,7 @@ environments = { path = "crates/resources/environments" }
 api-keys = { path = "crates/resources/api-keys" }
 organizations = { path = "crates/resources/organizations" }
 vaults = { path = "crates/resources/vaults" }
+webhooks = { path = "crates/resources/webhooks" }
 memory = { path = "crates/resources/memory" }
 files = { path = "crates/resources/files" }
 skills = { path = "crates/resources/skills" }
@@ -51,16 +49,14 @@ sessions = { path = "crates/resources/sessions" }
 deployments = { path = "crates/resources/deployments" }
 work = { path = "crates/resources/work" }
 dreams = { path = "crates/resources/dreams" }
-scheduler-local = { path = "crates/adapters/scheduler-local" }
 api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }
 test-support = { path = "crates/test-support" }
 secrets-aws = { path = "crates/adapters/secrets-aws" }
 aws-common = { path = "crates/adapters/aws-common" }
-sandbox-docker = { path = "crates/adapters/sandbox-docker" }
-egress-proxy = { path = "crates/adapters/egress-proxy" }
 signals-valkey = { path = "crates/adapters/signals-valkey" }
+changes-kafka = { path = "crates/adapters/changes-kafka" }
 engine = { path = "crates/engine" }
 
 # external
@@ -85,8 +81,8 @@ http = "1"
 http-body-util = "0.1"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager"] }
-bollard = "0.21"
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager", "streams", "cluster-async"] }
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.33"

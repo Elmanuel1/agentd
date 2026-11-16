@@ -35,13 +35,32 @@ impl Retry {
         client: &dyn ModelClient,
         req: ModelRequest,
     ) -> Result<ModelResponse, ModelError> {
+        let started = Instant::now();
+        let provider = super::ModelProvider::of(&req.model).name();
+        let answer = self.attempts(|| client.complete(req.clone())).await;
+        let outcome = if answer.is_ok() { "ok" } else { "error" };
+        crate::metrics::model_call(provider, started.elapsed().as_secs_f64(), outcome);
+        answer
+    }
+
+    /// `model`'s window, read with the same retries as a call, so a
+    /// transient failure of the provider's model list does not fail a turn.
+    pub async fn window(&self, client: &dyn ModelClient, model: &str) -> Result<u64, ModelError> {
+        self.attempts(|| client.window(model)).await
+    }
+
+    async fn attempts<T, F, Fut>(&self, try_once: F) -> Result<T, ModelError>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, ModelError>>,
+    {
         let end = Instant::now() + self.deadline;
         let mut backoff = self.first;
         let mut tried = 0;
         loop {
             tried += 1;
             let left = end.saturating_duration_since(Instant::now());
-            let answer = tokio::time::timeout(left, client.complete(req.clone())).await;
+            let answer = tokio::time::timeout(left, try_once()).await;
             let error = match answer {
                 Ok(Ok(response)) => return Ok(response),
                 Ok(Err(e @ ModelError::Fatal(_))) => return Err(e),

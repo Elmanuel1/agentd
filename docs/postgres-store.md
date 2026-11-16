@@ -3,17 +3,16 @@
 Chosen because agentd is **dashboard-first**. Everything a UI needs —
 list, filter, sort, search, paginate, count — is plain SQL, with no second
 search copy to build or keep in sync. Records live in Postgres and blobs in
-object storage. A deployment's fire for one tick is claimed at most once, with
-a native `INSERT … ON CONFLICT DO NOTHING`; a tick whose claim or run fails is
-not retried, so a tick can be lost. Event streams read the log itself: each
+object storage. Each scheduled fire is claimed in `fire_claims` with one
+`INSERT … ON CONFLICT` before it runs: one replica owns it under a 15-minute
+lease, and a fire not done when the lease runs out is taken over by its next
+delivery, up to 3 runs. Event streams read the log itself: each
 replica tails every session it streams, woken by a Valkey signal
 (`AGENTD_VALKEY_URL`) or a fallback timer (5 s plus up to 1 s of jitter), so a
 stream on any replica sees every event. A new stream gets 529
 `overloaded_error` while the primary is overloaded: a pool checkout waited over
 1 s in the last 10 s, or its client connections, counted every 10 s, pass 90%
-of `max_connections`. Streams already open keep streaming. The local scheduler's timers live in the process: run one replica
-until a shared scheduler replaces them, since schedules exist only where they
-were created.
+of `max_connections`. Streams already open keep streaming.
 
 ## Versions (Flyway-compatible)
 
@@ -80,14 +79,16 @@ AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
   cargo test -p store-postgres --test pg_integration
 ```
 
-`dashboard_queries_are_native_sql` proves the list/filter/count value;
-`pg_claim_fire_exactly_once_across_concurrent_callers` races 8 callers at one
-`(deployment, scheduled_at)` and asserts exactly one wins the `ON CONFLICT`.
+`dashboard_queries_are_native_sql` proves the list/filter/count value. In
+`pg_fires`, `one_of_many_concurrent_claims_runs_the_fire_and_the_rest_wait`
+races 8 claims of one fire and asserts exactly one runs it, and
+`a_claim_whose_owner_stopped_is_taken_over_until_its_attempts_run_out` moves
+a claim past its lease to prove the takeover and the attempt limit.
 
 ## Coverage
 
 Implemented + tested against live Postgres: **agents** (versioned, `DISTINCT
-ON` list), **deployments** (+ runs + claim), **files** (metadata in Postgres,
+ON` list), **deployments** (+ runs), **fire claims**, **files** (metadata in Postgres,
 bytes in object storage through the `BlobStore` port
 (`shared::ports::blobs`), which `blobs-s3` implements, never in the DB). Remaining entities reuse the same hybrid pattern — one module + a
 `V2__*.sql` (or extend `V1`) each.

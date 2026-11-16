@@ -1,27 +1,27 @@
 //! Issue, list, revoke and resolve environment keys. A self-hosted
-//! environment's key is digested with the same pepper as workspace keys and
-//! shown once; agentd's own runtime key lives in Secrets Manager, and only
-//! its digest is held here.
+//! environment's key is digested with the same peppers as workspace keys and
+//! shown once. agentd's own runtime keys come from its configuration
+//! (`AGENTD_RUNTIME_KEYS`), and only their digests are held here.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use shared::ports::keys::material::{self, KeyKind};
-use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyError, KeyPepper};
+use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyError, PepperRing};
 use shared::ports::secrets::{ExposeSecret, SecretString};
-use shared::tenancy::{HOSTED_QUEUE, RUNTIME_QUEUE};
+use shared::tenancy::RUNTIME_QUEUE;
 use shared::{AuthContext, EnvironmentCaller, Id, OrgId, Timestamp, WorkspaceId};
 
-use crate::service::{key_error, mint};
+use crate::service::{find, key_error, mint};
 use crate::store::EnvironmentKeysStore;
 use crate::types::{EnvironmentKey, EnvironmentKeyResource};
 
-/// Environment keys over a store, digested with one pepper.
+/// Environment keys over a store, digested with a pepper ring.
 #[derive(Clone)]
 pub struct EnvironmentKeysService {
     store: Arc<dyn EnvironmentKeysStore>,
-    pepper: Arc<KeyPepper>,
-    runtime: Option<Vec<u8>>,
+    peppers: Arc<PepperRing>,
+    runtime: Vec<Vec<u8>>,
 }
 
 impl std::fmt::Debug for EnvironmentKeysService {
@@ -31,15 +31,17 @@ impl std::fmt::Debug for EnvironmentKeysService {
 }
 
 impl EnvironmentKeysService {
-    /// Keys in `store`, digested with `pepper`.
-    pub fn new(store: Arc<dyn EnvironmentKeysStore>, pepper: Arc<KeyPepper>) -> Self {
-        Self { store, pepper, runtime: None }
+    /// Keys in `store`, digested with `peppers`.
+    pub fn new(store: Arc<dyn EnvironmentKeysStore>, peppers: Arc<PepperRing>) -> Self {
+        Self { store, peppers, runtime: Vec::new() }
     }
 
-    /// Also accept agentd's runtime key, `runtime`, for the runtime queue.
+    /// Also accept agentd's runtime keys, `runtime` (the current one, then
+    /// those still in use), for the runtime queue.
     #[must_use]
-    pub fn with_runtime_key(self, runtime: &SecretString) -> Self {
-        let runtime = material::digest(&self.pepper, runtime.expose_secret());
+    pub fn with_runtime_keys(self, runtime: &[SecretString]) -> Self {
+        let current = self.peppers.current();
+        let runtime = runtime.iter().filter_map(|k| material::digest(current, k.expose_secret())).collect();
         Self { runtime, ..self }
     }
 
@@ -54,13 +56,13 @@ impl EnvironmentKeysService {
         name: &str,
     ) -> Result<(EnvironmentKey, SecretString), KeyError> {
         // A key bound to one of agentd's own queues would reach other workspaces' work.
-        if [RUNTIME_QUEUE, HOSTED_QUEUE].contains(&environment) {
+        if environment == RUNTIME_QUEUE {
             return Err(KeyError(format!(
                 "`{environment}` names one of agentd's own queues, not an environment"
             )));
         }
         let (key, digest, hint) =
-            mint(&self.pepper, KeyKind::Environment, &[org, workspace, environment], name)?;
+            mint(&self.peppers, KeyKind::Environment, &[org, workspace, environment], name)?;
         let record = EnvironmentKey {
             id: Id::<EnvironmentKeyResource>::generate().to_string(),
             org: OrgId::new(org),
@@ -92,13 +94,10 @@ impl EnvironmentKeySource for EnvironmentKeysService {
         if !material::well_formed(KeyKind::Environment, key) {
             return Ok(None);
         }
-        if self.runtime.as_ref().is_some_and(|d| material::matches(&self.pepper, key, d)) {
+        if self.runtime.iter().any(|d| material::matches(self.peppers.current(), key, d)) {
             return Ok(Some(EnvironmentGrant::Runtime));
         }
-        let Some(digest) = material::digest(&self.pepper, key) else {
-            return Ok(None);
-        };
-        let found = self.store.find_active(&digest).await.map_err(key_error)?;
+        let found = find(&*self.store, &self.peppers, key).await?;
         Ok(found.map(|k| {
             let ctx = AuthContext { org: k.org, workspace: k.workspace, api_key_id: k.id };
             EnvironmentGrant::Environment(ctx, EnvironmentCaller { queue: k.environment_id })

@@ -8,6 +8,10 @@ use shared::{ApiError, Pagination, Timestamp, WorkspaceId};
 use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
+mod reads;
+
+pub use reads::{Head, SessionEventReads, Tail};
+
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
@@ -73,16 +77,26 @@ impl Default for EventFilter {
     }
 }
 
+/// A session's compare-and-write.
+#[async_trait]
+pub trait SessionReplace: Send + Sync {
+    /// Write `s` and `deliveries` only while the stored session is still `read`, else `Conflict`.
+    async fn replace(
+        &self,
+        ws: &WorkspaceId,
+        read: &Session,
+        s: Session,
+        deliveries: &[webhooks::Delivery],
+    ) -> Result<(), StoreError>;
+}
+
 /// Persistence port.
 #[async_trait]
-pub trait SessionsStore: Send + Sync {
+pub trait SessionsStore: SessionReplace {
     /// Insert a session.
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
     /// Fetch a session.
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
-    /// Write `s` only while the stored session is still `read`; a session
-    /// another writer changed first is [`StoreError::Conflict`].
-    async fn replace(&self, ws: &WorkspaceId, read: &Session, s: Session) -> Result<(), StoreError>;
     /// Under the session's append lock, delete the session unless it is
     /// running ([`StoreError::Conflict`]) and stop its work item.
     async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
@@ -98,63 +112,15 @@ pub trait SessionsStore: Send + Sync {
 /// Whether an append puts its session on the step queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
-    /// It does not: an agent's own event, or a session the harness serves.
+    /// It does not: an agent's own event.
     No,
     /// It does, in the append's commit.
     Step,
-    /// It wakes the step the session already has, and queues none.
-    IfQueued,
 }
 
-/// Refuses results, given the calls they answer and the results already saved.
-pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<(), ApiError> + Send + Sync + 'a;
-
-/// A read of a session's log from a position.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Tail {
-    /// The session is archived.
-    pub archived: bool,
-    /// Each event with its position in the log, in log order.
-    pub events: Vec<(i64, Event)>,
-}
-
-/// Where a new stream of a session starts.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Head {
-    /// The position of the session's latest event, 0 when it has none.
-    pub seq: i64,
-    /// The positions of its client events not processed yet, in log order.
-    pub queued: Vec<i64>,
-}
-
-/// A session's event log, read.
-#[async_trait]
-pub trait SessionEventReads: Send + Sync {
-    /// Full event history, append order.
-    async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
-    /// The client events the agent has not taken yet, append order.
-    async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError>;
-    /// One page of the events `filter` keeps, in its order.
-    async fn events_page(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        filter: &EventFilter,
-        page: &Pagination,
-    ) -> Result<Vec<Event>, StoreError>;
-    /// Up to `limit` events after position `after`, with the events at
-    /// `pending` wherever they are; `None` once the session is gone.
-    async fn tail(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        after: i64,
-        pending: &[i64],
-        limit: usize,
-    ) -> Result<Option<Tail>, StoreError>;
-    /// Where a new stream of the session starts.
-    async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError>;
-}
+/// Refuses results, given the calls they answer and the results already saved;
+/// accepted, it answers each result's thread, its call's.
+pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, ApiError> + Send + Sync + 'a;
 
 /// A session's append-only event log. It has its own lifecycle: the engine
 /// appends to it while the session row is unchanged, and the events list and

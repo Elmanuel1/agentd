@@ -3,38 +3,35 @@
 //! and routes see only the ports.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use blobs_s3::{BlobError, S3BlobStore};
-use sandbox_docker::DockerRuntime;
 
+mod feed;
 mod postgres;
 mod stores;
 
+pub use postgres::FireSources;
 pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
-use api_keys::{ApiKeysService, EnvironmentKeysService};
-use scheduler_local::LocalScheduler;
-use secrets_aws::{AwsAdminKeys, AwsSecretStore};
-use sessions::signals::{LocalSignals, Signals};
-use sessions::steps::LoopWorkspaces;
+use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
+use secrets_aws::AwsSecretStore;
+use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
+use shared::hash::KeyRing;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
-use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
+use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::{SecretError, SecretStore};
-use shared::ports::{Runtime, SchedulerPort};
-use signals_valkey::ValkeySignals;
-use store_postgres::PgError;
+use signals_valkey::{Valkey, ValkeySignals};
+use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgScheduler, ScheduleOutbox};
+use webhooks::WebhookSender;
 
-use crate::config::{
-    BlobsConfig, Config, KeysConfig, Role, RuntimeConfig, SandboxConfig, SchedulerConfig, StoreConfig,
-};
+use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
 
-/// How often the local scheduler checks for due fires (cron is minute-grained).
-const LOCAL_TICK: Duration = Duration::from_secs(10);
+/// The spacing of a webhook's attempts: live retries about 31 s apart (H-3).
+const WEBHOOK_RETRY: std::time::Duration = std::time::Duration::from_secs(31);
 
 /// One backend per port.
 pub struct Backends {
@@ -48,15 +45,11 @@ pub struct Backends {
     pub environment_keys: Arc<dyn EnvironmentKeySource>,
     /// The keys work tokens and placeholders are signed with.
     pub system: SystemKeys,
-    /// The durable timer.
-    pub scheduler: Arc<dyn SchedulerPort>,
-    /// Where the scheduler delivers fires; the modules register their handlers here.
+    /// Where the schedulers deliver fires; the modules register their handlers here.
     pub fires: Arc<FireRegistry>,
-    /// The sandbox runtime. Configuration always gives one; `None` is for tests
-    /// that build their backends in code.
-    pub runtime: Option<Arc<dyn Runtime>>,
-    /// How sandboxes reach agentd and the egress service; set with the runtime.
-    pub sandbox: Option<SandboxConfig>,
+    /// What delivers fires, started once the handlers are registered; none
+    /// in a rig that fires nothing.
+    pub fire_sources: Option<FireSources>,
     /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
     pub extra_models: Vec<String>,
     /// The instruments every boundary records into.
@@ -65,36 +58,32 @@ pub struct Backends {
     pub signals: Arc<dyn Signals>,
     /// The database's load, which new streams wait on.
     pub load: Arc<dyn DatabaseLoad>,
-    /// The workspaces whose sessions the loop serves.
-    pub on_loop: LoopWorkspaces,
     /// What this replica runs; a `loop` replica serves no route.
     pub role: Role,
+    /// Where agentd itself may connect for a tenant: MCP servers, token endpoints.
+    pub guard: shared::net::Guard,
+    /// Each organization's webhook endpoints.
+    pub webhooks: Arc<webhooks::Webhooks>,
 }
 
-/// The deployment's own keys, read from Secrets Manager once at boot.
+/// The deployment's own keys, from its configuration.
 #[derive(Clone)]
 pub struct SystemKeys {
-    /// Signs work tokens (`<prefix>/system/work_token_key`, or `AGENTD_WORK_TOKEN_KEY`).
-    pub work_token_key: Vec<u8>,
-    /// Signs `environment_variable` placeholders (`<prefix>/system/egress_key`).
-    pub egress_key: Vec<u8>,
+    /// Signs and verifies work tokens.
+    pub work_tokens: KeyRing,
+    /// Signs and verifies `environment_variable` placeholders.
+    pub placeholders: KeyRing,
     /// agentd's API as a work secret's `api_base_url` names it.
     pub api_base_url: String,
 }
 
-impl SystemKeys {
-    /// Read the keys from `aws`, each created the first time; with
-    /// `AGENTD_WORK_TOKEN_KEY` set, work tokens are signed with it and
-    /// `system/work_token_key` is not read.
-    pub async fn load(aws: &AwsSecretStore, sandbox: &SandboxConfig) -> Result<Self, SecretError> {
-        Ok(Self {
-            work_token_key: match &sandbox.work_token_key {
-                Some(key) => key.clone(),
-                None => aws.work_token_key().await?.to_vec(),
-            },
-            egress_key: aws.egress_key().await?.to_vec(),
-            api_base_url: sandbox.api_base_url.clone(),
-        })
+impl From<&WorkConfig> for SystemKeys {
+    fn from(work: &WorkConfig) -> Self {
+        Self {
+            work_tokens: work.work_tokens.clone(),
+            placeholders: work.placeholders.clone(),
+            api_base_url: work.api_base_url.clone(),
+        }
     }
 }
 
@@ -122,9 +111,6 @@ pub enum BootError {
     /// The secret store, or its KMS key.
     #[error("secrets: {0}")]
     Secrets(#[from] SecretError),
-    /// The sandbox runtime.
-    #[error("sandbox: {0}")]
-    Sandbox(String),
     /// The Valkey the replicas signal through.
     #[error("signals: {0}")]
     Signals(String),
@@ -134,8 +120,8 @@ pub enum BootError {
 }
 
 impl Backends {
-    /// Connect the backends `config` selects. The local scheduler starts
-    /// ticking here.
+    /// Connect the backends `config` selects. The scheduler and its outbox
+    /// relay start here.
     pub async fn from_config(config: &Config) -> Result<Self, BootError> {
         let metrics = Arc::new(Metrics::global());
         let role = config.agent_loop.role;
@@ -144,58 +130,44 @@ impl Backends {
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
         let aws = AwsSecretStore::connect(&config.secrets).await?;
-        let KeysConfig::Aws = config.keys;
-        let pepper = Arc::new(aws.api_key_pepper().await?);
-        let admin = Arc::new(AwsAdminKeys::new(aws.clone(), pepper.clone()));
-        let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
-        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws.clone()), metrics.clone()));
-        let (stores, load, keys) = match &config.store {
+        let peppers = Arc::new(PepperRing::from_ring(&config.keys.peppers));
+        let streams = &config.streams;
+        let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster)
+            .map_err(|e| BootError::Signals(e.to_string()))?;
+        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
+        let (stores, load, keys, fires, sources) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
-                let s = secrets.clone();
+                let hooks = config.webhooks.clone();
+                let outside = postgres::Outside { blobs, secrets: secrets.clone() };
                 let pg =
-                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, blobs, s).await?;
-                let keys = ApiKeysService::new(pg.stores.api_keys.clone(), pepper.clone());
+                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
+                let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
+                let scheduler = PgScheduler::new(pg.backend.clone(), fires.clone());
+                let feed = feed::ChangeFeed::from_config(streams, &valkey);
+                let sender =
+                    WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
+                        .map_err(BootError::Signals)?;
+                drop(feed.spawn(vec![
+                    Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone()))),
+                    Arc::new(sender),
+                ]));
+                let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                (pg.stores, pg.load, keys)
+                (pg.stores, pg.load, keys, fires, FireSources::new(scheduler, feed))
             }
         };
-        let signals: Arc<dyn Signals> = match &config.streams.valkey_url {
-            Some(url) => {
-                Arc::new(ValkeySignals::connect(url).map_err(|e| BootError::Signals(e.to_string()))?)
-            }
-            None => Arc::new(LocalSignals::default()),
-        };
-        let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), pepper)
-            .with_runtime_key(&aws.runtime_key().await?);
-        let system = SystemKeys::load(&aws, &config.sandbox).await?;
-        let fires = Arc::new(FireRegistry::new());
-        let scheduler: Arc<dyn SchedulerPort> = match config.scheduler {
-            SchedulerConfig::Local => {
-                let local = Arc::new(LocalScheduler::new(fires.clone()));
-                if role.serves_api() {
-                    drop(local.clone().spawn(LOCAL_TICK));
-                }
-                local
-            }
-        };
+        let signals: Arc<dyn Signals> =
+            Arc::new(ValkeySignals::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?);
+        let admin = Arc::new(AdminKeysService::new(stores.admin_keys.clone(), peppers.clone()));
+        let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
+        let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), peppers)
+            .with_runtime_keys(&config.keys.runtime);
+        let system = SystemKeys::from(&config.work);
         if role.runs_loop() {
-            drop(
-                crate::agent_loop::spawn(config, &stores, signals.clone(), secrets.as_ref(), &system).await?,
-            );
+            drop(crate::agent_loop::spawn(config, &stores, signals.clone(), &system).await?);
         }
-        let runtime: Option<Arc<dyn Runtime>> = match &config.runtime {
-            RuntimeConfig::Docker { .. } if !role.serves_api() => None,
-            RuntimeConfig::Docker { image, limits, network } => {
-                let docker = bollard::Docker::connect_with_defaults()
-                    .map_err(|e| BootError::Sandbox(e.to_string()))?;
-                let runtime = DockerRuntime::new(docker, image.clone(), *limits, network.clone());
-                runtime.prepare().await.map_err(|e| BootError::Sandbox(e.to_string()))?;
-                Some(Arc::new(Observed::new(Arc::new(runtime), metrics.clone())))
-            }
-        };
         let extra_models = config.extra_models.clone();
-        let sandbox = runtime.as_ref().map(|_| config.sandbox.clone());
         let environment_keys: Arc<dyn EnvironmentKeySource> = Arc::new(environment_keys);
         Ok(Self {
             stores,
@@ -203,16 +175,15 @@ impl Backends {
             admin_keys,
             environment_keys,
             system,
-            scheduler,
             fires,
-            runtime,
-            sandbox,
+            fire_sources: Some(sources),
             extra_models,
             metrics,
             signals,
             load,
-            on_loop: config.agent_loop.workspaces.clone(),
             role,
+            guard: shared::net::Guard::default(),
+            webhooks: config.webhooks.clone(),
         })
     }
 }

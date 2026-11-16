@@ -1,6 +1,6 @@
 //! shared — shared kernel for the agentd control plane.
 //!
-//! Everything in this crate is pure (no I/O): wire primitives, ID grammar,
+//! Everything in this crate but [`net`] is pure (no I/O): wire primitives, ID grammar,
 //! the error envelope, validation limits with exact wire error strings,
 //! the cron/timezone schedule engine, the swappable ports ([`ports`]), and
 //! the [`module::Module`] each resource contributes to the app.
@@ -25,6 +25,7 @@ pub mod limits;
 pub mod metadata;
 pub mod module;
 pub mod money;
+pub mod net;
 pub mod page;
 pub mod patch;
 pub mod ports;

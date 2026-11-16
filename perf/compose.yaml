@@ -1,5 +1,5 @@
 # The load-test stack: docker/docker-compose.yml (agentd, Postgres, LocalStack
-# for S3, Secrets Manager and KMS, Flyway, the Docker proxy) plus k6, with no
+# for S3, Secrets Manager and KMS, Flyway, Valkey) plus k6, with no
 # host ports published. perf/run.sh is the one command; it makes the API key
 # k6 uses through the CLI. Paths here are relative to docker/, the project
 # directory.

@@ -36,11 +36,10 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
    │    api-keys (workspace and environment keys) · organizations (Admin API: me, workspaces; admin keys only)
    ├─ shared           ids · limits (exact strings) · error envelope · cron/DST engine · ports
    ├─ engine           the agent loop: one model call per step, from the event log (ModelClient, ModelBudget ports)
-   ├─ scheduler-local  SchedulerPort backends (Local; Temporal = same contract)
    └─ conformance      the swappability oracle (fixture diff, normalized)
 ```
 
-**Swappable ports:** `Runtime` (Fargate/Firecracker/local), `SchedulerPort`
+**Swappable ports:** `SchedulerPort`
 (Temporal/EventBridge/local), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
 `BlobStore` (S3), `SecretStore`, `KeySource`, storage traits per entity
 (in-memory/Postgres). The binary picks one backend per port from config at

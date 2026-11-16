@@ -3,7 +3,7 @@ use sessions::events::{Event, EventId, EventPayload, ModelUsage, Rubric, SpanEve
 use sessions::types::{OutcomeId, Session, ThreadId};
 use shared::Timestamp;
 
-use super::grade::{self, active, VERDICT};
+use super::grade::{self, active};
 use super::reply::{led, Call};
 use super::stall::stalled;
 use super::turn::Turn;
@@ -95,29 +95,32 @@ fn a_reply_s_calls_come_before_its_end_and_what_they_lead_to_after_it() {
 }
 
 #[test]
-fn a_verdict_call_comes_before_the_grader_s_end_and_the_round_s_end_after_it() {
+fn a_grader_grades_in_its_reply_and_the_round_ends_after_the_call_with_live_s_explanation() {
+    // Live, 2026-11-12: no verdict tool; the round's end carries the explanation.
     let defined = Event {
         processed_at: Some(Timestamp::now()),
         ..Event::new(EventPayload::User(UserEvent::DefineOutcome {
             description: "Write a poem.".into(),
-            rubric: Rubric::Text { content: "Warm.".into() },
+            rubric: Rubric::Text { content: "### Rain\nAbout rain.".into() },
             max_iterations: None,
             outcome_id: Some(OutcomeId::generate()),
         }))
     };
     let outcome = active(&[defined]).unwrap();
-    let events = lead(&grade::tools(), &reply(&[VERDICT]), Some(&outcome));
+    let grade =
+        json!({"result": "satisfied", "criteria": [{"criterion": "Rain", "met": true, "finding": "It is."}]});
+    let graded = ModelResponse {
+        content: vec![Block::text(grade.to_string())],
+        stop: StopKind::EndTurn,
+        ..reply(&[])
+    };
+    let events = lead(&Toolbox::read_only(), &graded, Some(&outcome));
+    assert_eq!(types(&events), ["agent.message", "span.model_request_end", "span.outcome_evaluation_end"]);
+    assert_eq!(events[2]["result"], "satisfied");
     assert_eq!(
-        types(&events),
-        [
-            "agent.message",
-            "agent.tool_use",
-            "span.model_request_end",
-            "agent.tool_result",
-            "span.outcome_evaluation_end"
-        ]
+        events[2]["explanation"],
+        "An independent grader found all criteria met:\n\n- Rain (met): It is."
     );
-    assert_eq!(events[4]["result"], "satisfied");
 }
 
 #[test]
@@ -143,4 +146,44 @@ fn a_grader_stalls_after_three_calls_with_no_tool_call() {
     assert!(stalled(&log, &turn.thread));
     log.insert(3, call());
     assert!(!stalled(&log, &turn.thread));
+}
+
+#[test]
+fn a_reply_s_signed_thinking_is_kept_beside_its_agent_thinking() {
+    let (turn, start, session) = (turn(), EventId::generate(), session());
+    let thought = Block::Thinking { thinking: String::new(), signature: "sig".into() };
+    let r = ModelResponse {
+        content: vec![thought, Block::text("hi")],
+        thought: true,
+        stop: StopKind::EndTurn,
+        ..reply(&[])
+    };
+    let tools = Toolbox::default();
+    let call = Call {
+        turn: &turn,
+        start: &start,
+        tools: &tools,
+        cloud: false,
+        more: false,
+        session: &session,
+        log: &[],
+        grading: None,
+    };
+    let out = led(&call, &r);
+    let thinking = out
+        .events
+        .iter()
+        .find(|e| matches!(e.payload, EventPayload::Agent(sessions::events::AgentEvent::Thinking { .. })))
+        .unwrap();
+    assert_eq!(
+        out.engine,
+        vec![(
+            thinking.id.clone(),
+            json!({"thinking": [{"type": "thinking", "thinking": "", "signature": "sig"}]})
+        )]
+    );
+    assert!(
+        serde_json::to_value(thinking).unwrap().get("content").is_none(),
+        "live's agent.thinking carries no content"
+    );
 }

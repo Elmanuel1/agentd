@@ -13,20 +13,25 @@ fn config(vars: &[(&str, &str)]) -> Result<Config, ConfigError> {
     let mut all: HashMap<String, String> = HashMap::from([
         ("DATABASE_URL".into(), URL.into()),
         ("AGENTD_SECRETS_KMS_KEY_ID".into(), "alias/agentd".into()),
+        ("AGENTD_API_BASE_URL".into(), "http://agentd:8080".into()),
+        ("AGENTD_VALKEY_URL".into(), "redis://valkey:6379".into()),
+        ("AGENTD_WORK_TOKEN_KEYS".into(), "k1:000102030405060708090a0b0c0d0e0f".into()),
+        ("AGENTD_PLACEHOLDER_KEYS".into(), "k1:101112131415161718191a1b1c1d1e1f".into()),
+        ("AGENTD_API_KEY_PEPPERS".into(), "p1:202122232425262728292a2b2c2d2e2f".into()),
     ]);
     all.extend(vars.iter().map(|(k, v)| ((*k).into(), (*v).into())));
     Config::from_lookup(|k| all.get(k).cloned())
 }
 
 #[test]
-fn defaults_select_postgres_s3_aws_aws_keys_local_docker() {
+fn defaults_select_postgres_s3_and_aws_secrets() {
     let c = config(&[]).unwrap();
     let StoreConfig::Postgres { url, .. } = &c.store;
     assert_eq!(url, URL);
     assert_eq!(c.blobs, BlobsConfig::S3(S3Config::new("agentd-artifacts")));
     assert_eq!(c.secrets, AwsSecretsConfig::new("agentd", "alias/agentd"));
-    assert_eq!((c.keys, c.scheduler), (KeysConfig::Aws, SchedulerConfig::Local));
-    assert!(matches!(c.runtime, RuntimeConfig::Docker { ref image, .. } if image == DEFAULT_SANDBOX_IMAGE));
+    assert!(c.keys.runtime.is_empty() && c.keys.anthropic.is_none() && c.keys.openrouter.is_none());
+    assert_eq!(c.work.api_base_url, "http://agentd:8080");
 }
 
 #[test]
@@ -37,13 +42,22 @@ fn an_unknown_backend_is_an_error() {
 
 #[test]
 fn no_value_weakens_security() {
-    for (var, value) in [("AGENTD_SECRETS", "blob"), ("AGENTD_KEYS", "env"), ("AGENTD_RUNTIME", "none")] {
-        assert_eq!(config(&[(var, value)]).unwrap_err().var, var, "{var}={value}");
-    }
+    assert_eq!(config(&[("AGENTD_SECRETS", "blob")]).unwrap_err().var, "AGENTD_SECRETS");
     // The removed development switches are not read at all.
-    let c = config(&[("AGENTD_API_KEYS", "k:o:w"), ("AGENTD_DEV_KEY", "1"), ("AGENTD_DEV_SECRETS", "1")])
-        .unwrap();
+    let c = config(&[
+        ("AGENTD_API_KEYS", "k:o:w"),
+        ("AGENTD_DEV_KEY", "1"),
+        ("AGENTD_DEV_SECRETS", "1"),
+        ("AGENTD_KEYS", "env"),
+    ])
+    .unwrap();
     assert_eq!(c, config(&[]).unwrap());
+}
+
+#[test]
+fn the_api_base_url_is_required() {
+    let err = config(&[("AGENTD_API_BASE_URL", "")]).unwrap_err();
+    assert_eq!(err.var, "AGENTD_API_BASE_URL");
 }
 
 #[test]
@@ -160,4 +174,5 @@ fn aws_secret_options_come_from_config() {
     }
 }
 
+mod keys;
 mod streams;

@@ -12,21 +12,15 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
-pub mod admin_keys;
 mod failure;
 mod key;
 mod name;
-mod pepper;
-mod reader;
 mod store;
-mod system_secret;
 mod tag;
 
 use std::time::Duration;
 
-pub use admin_keys::{AdminKeyRecord, AwsAdminKeys};
 use aws_sdk_secretsmanager::config::timeout::TimeoutConfig;
-pub use reader::AwsSecretReader;
 pub use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 
 /// The prefix every secret name starts with unless configured otherwise.

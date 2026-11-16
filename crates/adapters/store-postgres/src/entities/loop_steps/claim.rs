@@ -9,7 +9,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
-use super::rows::{Counts, Due, Flag, Held};
+use super::rows::{Claimed, Counts, Due, Flag};
 use super::KEY;
 use crate::{diesel_be, pool_be, PgBackend};
 
@@ -56,9 +56,10 @@ pub(super) async fn claim(
                     .await?;
                     return Ok(None);
                 }
-                let held: Held = diesel::sql_query(format!(
+                let held: Claimed = diesel::sql_query(format!(
                     "UPDATE loop_steps SET lease_owner = $3, lease_until = now() + make_interval(secs => $4),
-                     attempts = attempts + 1 WHERE {KEY} RETURNING attempts, wakes"
+                     attempts = attempts + 1 WHERE {KEY}
+                     RETURNING attempts, wakes, greatest(0, extract(epoch FROM now() - due_at) * 1000)::bigint AS waited_ms"
                 ))
                 .bind::<Text, _>(&due.workspace_id)
                 .bind::<Text, _>(&due.session_id)
@@ -73,6 +74,7 @@ pub(super) async fn claim(
                     owner: owner.to_owned(),
                     attempts: held.attempts,
                     wakes: held.wakes,
+                    waited_ms: held.waited_ms,
                 }))
             }
             .scope_boxed()

@@ -19,7 +19,7 @@ use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, U
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
     AnswerCheck, DatabaseLoad, EventFilter, Head, SessionEventLog, SessionEventReads, SessionFilter,
-    SessionsStore, StoreError, Tail, Wake,
+    SessionReplace, SessionsStore, StoreError, Tail, Wake,
 };
 use sessions::{SessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
@@ -107,20 +107,25 @@ impl SessionEventLog for Scripted {
 struct OneSession(sessions::Session);
 
 #[async_trait]
+impl SessionReplace for OneSession {
+    async fn replace(
+        &self,
+        _: &WorkspaceId,
+        _: &sessions::Session,
+        _: sessions::Session,
+        _: &[webhooks::Delivery],
+    ) -> Result<(), StoreError> {
+        unimplemented!()
+    }
+}
+
+#[async_trait]
 impl SessionsStore for OneSession {
     async fn insert(&self, _: &WorkspaceId, _: sessions::Session) -> Result<(), StoreError> {
         unimplemented!()
     }
     async fn get(&self, _: &WorkspaceId, _: &SessionId) -> Result<sessions::Session, StoreError> {
         Ok(self.0.clone())
-    }
-    async fn replace(
-        &self,
-        _: &WorkspaceId,
-        _: &sessions::Session,
-        _: sessions::Session,
-    ) -> Result<(), StoreError> {
-        unimplemented!()
     }
     async fn delete(&self, _: &WorkspaceId, _: &SessionId) -> Result<sessions::Session, StoreError> {
         unimplemented!()
@@ -148,6 +153,9 @@ impl SessionDeps for NoDeps {
         unimplemented!()
     }
     async fn resolve_environment(&self, _: &AuthContext, _: &str) -> Result<serde_json::Value, ApiError> {
+        unimplemented!()
+    }
+    async fn check_vaults(&self, _: &AuthContext, _: &[String]) -> Result<(), ApiError> {
         unimplemented!()
     }
 }

@@ -5,7 +5,7 @@
 //!   ([`http`]); an SSE response counts in `agentd.sse.active_streams` until
 //!   the client goes away,
 //! - every SQL statement feeds `db.client.operation.duration` ([`db`]),
-//! - every blob, secret and sandbox operation is a span and feeds
+//! - every blob and secret operation is a span and feeds
 //!   `agentd.port.operation.duration` ([`ports`]),
 //! - each of these carries `outcome` (`ok` or `error`) or the status code. A
 //!   5xx, a failed statement or a failed connection is logged at `error`, a
@@ -68,7 +68,7 @@ impl Metrics {
                 .f64_histogram("agentd.port.operation.duration")
                 .with_unit("s")
                 .with_boundaries(SECONDS.to_vec())
-                .with_description("Blob, secret and sandbox operations")
+                .with_description("Blob and secret operations")
                 .build(),
             db_duration: meter
                 .f64_histogram("db.client.operation.duration")

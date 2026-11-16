@@ -1,8 +1,8 @@
 //! `agentd keys create|list|revoke`: workspace keys, in Postgres.
-//! `agentd admin-keys create|list|revoke`: admin keys, in Secrets Manager
-//! ([`admin_keys`]). Both digest keys with the pepper in Secrets Manager. A
-//! created key is printed once, alone on stdout, and is never stored;
-//! everything else goes to stderr.
+//! `agentd admin-keys create|list|revoke`: admin keys, in Postgres
+//! ([`admin_keys`]). Both digest keys with the current pepper of
+//! `AGENTD_API_KEY_PEPPERS`. A created key is printed once, alone on stdout,
+//! and is never stored; everything else goes to stderr.
 
 pub mod admin_keys;
 mod command;
@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use api_keys::{ApiKey, ApiKeysService};
-use secrets_aws::AwsSecretStore;
+use shared::ports::keys::PepperRing;
 use shared::ports::secrets::ExposeSecret;
 use store_postgres::{PgApiKeysStore, PgBackend};
 
@@ -33,12 +33,16 @@ pub async fn keys(config: &Config, args: &[String]) -> ExitCode {
     command::run("keys", USAGE, Kind::Workspace, args, |c| run(config, c)).await
 }
 
-async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
-    let secrets = AwsSecretStore::connect(&config.secrets).await.map_err(|e| e.to_string())?;
-    let pepper = secrets.api_key_pepper().await.map_err(|e| e.to_string())?;
+/// The database and peppers every key command works with.
+pub(crate) async fn backend(config: &Config) -> Result<(PgBackend, Arc<PepperRing>), String> {
     let StoreConfig::Postgres { url, .. } = &config.store;
     let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
-    let keys = ApiKeysService::new(Arc::new(PgApiKeysStore::new(pg)), Arc::new(pepper));
+    Ok((pg, Arc::new(PepperRing::from_ring(&config.keys.peppers))))
+}
+
+async fn run(config: &Config, command: KeysCommand) -> Result<(), String> {
+    let (pg, peppers) = backend(config).await?;
+    let keys = ApiKeysService::new(Arc::new(PgApiKeysStore::new(pg)), peppers);
     match command {
         KeysCommand::Create { org, workspace, name, .. } => {
             let workspace = workspace.unwrap_or_default();

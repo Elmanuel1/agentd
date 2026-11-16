@@ -10,6 +10,7 @@ use sessions::types::{OutcomeEvaluation, Session};
 use super::grade::{self, Outcome};
 use super::team::Thread;
 use super::turn::Turn;
+use serde_json::{json, Value};
 use shared::ContentBlock;
 
 use crate::model::{Block, ModelResponse};
@@ -23,6 +24,8 @@ pub(super) struct Led {
     pub(super) idle: Option<StopReason>,
     /// The grader's verdict, for the session to record.
     pub(super) evaluation: Option<OutcomeEvaluation>,
+    /// The signed thinking blocks, kept beside the `agent.thinking` event.
+    pub(super) engine: Vec<(EventId, Value)>,
 }
 
 /// One model call, as the reply's events need it.
@@ -44,9 +47,16 @@ pub(super) struct Call<'a> {
 /// The reply's events, and how the step ends.
 pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
     let (turn, start, tools, cloud, more) = (c.turn, c.start, c.tools, c.cloud, c.more);
-    let mut events = Vec::new();
+    let (mut events, mut engine) = (Vec::new(), Vec::new());
     if r.thought {
-        events.push(turn.event(AgentEvent::Thinking { content: None }));
+        let thinking = turn.event(AgentEvent::Thinking { content: None });
+        let blocks: Vec<&Block> = r
+            .content
+            .iter()
+            .filter(|b| matches!(b, Block::Thinking { .. } | Block::RedactedThinking { .. }))
+            .collect();
+        engine.extend((!blocks.is_empty()).then(|| (thinking.id.clone(), json!({ "thinking": blocks }))));
+        events.push(thinking);
     }
     let text: Vec<ContentBlock> = r
         .content
@@ -80,20 +90,26 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                 evaluated_permission: Some("allow".into()),
                 evaluation: evaluation.clone(),
             }),
-            Some(Disposition::Verdict) => {
-                let Some(outcome) = c.grading else { continue };
-                unknown = true;
-                let call = turn.event(AgentEvent::ToolUse {
-                    name: name.to_owned(),
+            Some(Disposition::Mcp { server, tool, ask, evaluation }) => {
+                let call = turn.event(AgentEvent::McpToolUse {
+                    mcp_server_name: server.clone(),
+                    name: tool.clone(),
                     input: input.clone(),
-                    evaluated_permission: Some("allow".into()),
-                    evaluation: None,
+                    evaluated_permission: Some(
+                        match ask {
+                            true => "ask",
+                            false => "allow",
+                        }
+                        .into(),
+                    ),
+                    evaluation: evaluation.clone(),
                 });
-                let primary = Thread::primary(c.session).turn();
-                let (end, eval) = grade::verdict(&primary, outcome, input, r.usage.clone());
-                after.extend([grade::recorded(turn, &call.id), end]);
+                // An allowed call runs in the next step, before the model is called again (MC-24).
+                match ask {
+                    true => waiting.push(call.id.clone()),
+                    false => unknown = true,
+                }
                 calls.push(call);
-                evaluation = Some(eval);
                 continue;
             }
             Some(Disposition::Delegate) => {
@@ -130,6 +146,20 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         }
         calls.push(call);
     }
+    // A grader grades in its reply's text, with no tool call.
+    let said = r.content.iter().filter_map(|b| match b {
+        Block::Text { text } => Some(text.as_str()),
+        _ => None,
+    });
+    let grade =
+        c.grading.filter(|_| calls.is_empty()).zip(grade::graded(&said.collect::<Vec<_>>().join("\n")));
+    if let Some((outcome, grade)) = grade {
+        let primary = Thread::primary(c.session).turn();
+        let (end, eval) = grade::verdict(&primary, outcome, &grade, r.usage.clone());
+        after.push(end);
+        evaluation = Some(eval);
+        unknown = true;
+    }
     events.extend(calls);
     events.push(turn.event(SpanEvent::ModelRequestEnd {
         model_request_start_id: start.clone(),
@@ -148,5 +178,5 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         (true, false) => Some(StopReason::EndTurn {}),
         (true, true) => None,
     };
-    Led { events, end, idle, evaluation }
+    Led { events, end, idle, evaluation, engine }
 }

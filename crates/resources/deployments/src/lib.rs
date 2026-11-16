@@ -5,8 +5,10 @@
 //! tz-correct fire times (`0 0 1 1 *` NY → `2027-01-01T05:00:00Z`),
 //! `paused_reason: {type:"manual"}` after pause.
 //!
-//! Fire contract (`/internal/fire`, called by the scheduler backend):
-//! - **no retry** — the scheduler fires once per `(target, scheduled_at)`,
+//! Fire contract (the fire inbox, or `/internal/fire`):
+//! - a fire of one `(deployment, scheduled_at)` may arrive more than once;
+//!   its run and session ids come from that pair, so a repeat finds what the
+//!   first made instead of making another,
 //! - business failures (rate-limited, agent/env archived, vault missing)
 //!   are recorded as error runs and return success to the scheduler,
 //! - a missed tick is dropped (no backfill).
