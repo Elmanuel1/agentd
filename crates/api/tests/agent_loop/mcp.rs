@@ -714,9 +714,13 @@ async fn a_step_whose_claim_is_gone_stops_before_its_next_call() {
     let env = rig.environment("cloud").await;
     let s = mcp_session(&app, &env, &url, Some("always_allow"), json!([])).await;
     send(&app, &s, message("try")).await;
-    while server.count("tools/call") == 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    let first = async {
+        while server.count("tools/call") == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(10), first).await;
+    assert!(waited.is_ok(), "no tools/call within 10 s; the server got {:?}", server.methods());
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
     let q = diesel::sql_query("DELETE FROM loop_steps WHERE session_id = $1")
@@ -726,8 +730,9 @@ async fn a_step_whose_claim_is_gone_stops_before_its_next_call() {
     assert_eq!(server.count("tools/call"), 1, "the step stopped before its second call");
 }
 
-/// The rig's step queue, failing the first renewal: a write with nothing in it.
-struct FailOnce(Arc<dyn Steps>, AtomicBool);
+/// The rig's step queue, failing the first renewal (a write with nothing in
+/// it) and counting the renewals that kept the claim after it.
+struct FailOnce(Arc<dyn Steps>, AtomicBool, AtomicUsize);
 
 #[async_trait::async_trait]
 impl Steps for FailOnce {
@@ -742,7 +747,11 @@ impl Steps for FailOnce {
                 "database down",
             ))));
         }
-        self.0.write(claim, lease, write).await
+        let landed = self.0.write(claim, lease, write).await;
+        if renewal && matches!(landed, Ok(true)) {
+            self.2.fetch_add(1, Ordering::SeqCst);
+        }
+        landed
     }
 
     async fn commit(&self, claim: &Claim, end: StepEnd, write: StepWrite<'_>) -> Result<bool, StoreError> {
@@ -766,7 +775,8 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     let (server, url, guard) = serve().await;
     let calls = vec![("mcp__docs__hang", json!({"n": 1})), ("mcp__docs__hang", json!({"n": 2}))];
     let model = Scripted::new(vec![Say::Calls(calls), Say::Text("sorry")]);
-    let queue: Arc<dyn Steps> = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false)));
+    let fail = Arc::new(FailOnce(rig.stores.steps.clone(), AtomicBool::new(false), AtomicUsize::new(0)));
+    let queue: Arc<dyn Steps> = fail.clone();
     let tune = Tune {
         guard,
         mcp_timeout: Some(std::time::Duration::from_millis(1500)),
@@ -781,4 +791,6 @@ async fn a_renewal_that_fails_is_tried_again_and_the_step_goes_on() {
     let events = events_until(&app, &s, "session.status_idle", 1).await;
     assert_eq!(of(&events, "agent.mcp_tool_result").len(), 2, "one result for each call");
     assert_eq!(server.count("tools/call"), 2, "no claim sent a call again");
+    assert!(fail.1.load(Ordering::SeqCst), "the first renewal failed");
+    assert!(fail.2.load(Ordering::SeqCst) > 0, "a later renewal kept the claim");
 }
