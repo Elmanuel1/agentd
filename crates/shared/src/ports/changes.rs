@@ -62,37 +62,32 @@ impl Change {
             "c" | "r" => ChangeOp::Insert,
             "u" => ChangeOp::Update,
             "d" => ChangeOp::Delete,
-            "m" => return Self::message(event),
+            "m" => ChangeOp::Message,
             _ => return None,
         };
+        let position = event.get("source").and_then(|source| {
+            let committed_at = chrono::DateTime::from_timestamp_millis(source.get("ts_ms")?.as_i64()?)?;
+            Some(Position {
+                lsn: source.get("lsn")?.as_u64()?,
+                tx_id: source.get("txId").and_then(Value::as_i64),
+                committed_at: Timestamp::from_datetime(committed_at),
+            })
+        });
+        if op == ChangeOp::Message {
+            let message = event.get("message")?;
+            let prefix = message.get("prefix")?.as_str()?.to_owned();
+            let content = message.get("content")?.as_str()?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(content).ok()?;
+            let after = match serde_json::from_slice(&bytes) {
+                Ok(json) => json,
+                Err(_) => Value::String(String::from_utf8_lossy(&bytes).into_owned()),
+            };
+            return Some(Self { table: prefix, op, position, before: None, after: Some(after) });
+        }
         let row = |k: &str| event.get(k).filter(|v| !v.is_null()).cloned();
         let table = event.get("source")?.get("table")?.as_str()?.to_owned();
-        let position = position(event);
         Some(Self { table, op, position, before: row("before"), after: row("after") })
     }
-
-    fn message(event: &Value) -> Option<Self> {
-        let message = event.get("message")?;
-        let prefix = message.get("prefix")?.as_str()?.to_owned();
-        let content = message.get("content")?.as_str()?;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(content).ok()?;
-        let after = match serde_json::from_slice(&bytes) {
-            Ok(json) => json,
-            Err(_) => Value::String(String::from_utf8_lossy(&bytes).into_owned()),
-        };
-        let position = position(event);
-        Some(Self { table: prefix, op: ChangeOp::Message, position, before: None, after: Some(after) })
-    }
-}
-
-fn position(event: &Value) -> Option<Position> {
-    let source = event.get("source")?;
-    let committed_at = chrono::DateTime::from_timestamp_millis(source.get("ts_ms")?.as_i64()?)?;
-    Some(Position {
-        lsn: source.get("lsn")?.as_u64()?,
-        tx_id: source.get("txId").and_then(Value::as_i64),
-        committed_at: Timestamp::from_datetime(committed_at),
-    })
 }
 
 /// What a handler reads from the feed.
@@ -136,15 +131,15 @@ mod tests {
     fn a_debezium_event_reads_with_or_without_its_schema_envelope() {
         let source = json!({"table": "sessions", "lsn": 24023128, "txId": 771, "ts_ms": 1763290000123_i64});
         let event = json!({"op": "d", "before": {"id": 1}, "after": null, "source": source});
-        let change = Change::from_debezium(&event).unwrap();
-        assert_eq!(
-            (change.op, change.table.as_str(), change.after.clone()),
-            (ChangeOp::Delete, "sessions", None)
-        );
-        let at = chrono::DateTime::from_timestamp_millis(1763290000123).unwrap();
-        let position =
-            Position { lsn: 24023128, tx_id: Some(771), committed_at: Timestamp::from_datetime(at) };
-        assert_eq!(change.position, Some(position));
+        let at = Timestamp::from_datetime(chrono::DateTime::from_timestamp_millis(1763290000123).unwrap());
+        let change = Change {
+            table: "sessions".into(),
+            op: ChangeOp::Delete,
+            position: Some(Position { lsn: 24023128, tx_id: Some(771), committed_at: at }),
+            before: Some(json!({"id": 1})),
+            after: None,
+        };
+        assert_eq!(Change::from_debezium(&event), Some(change.clone()));
         assert_eq!(Change::from_debezium(&json!({"schema": {}, "payload": event})), Some(change));
         assert_eq!(Change::from_debezium(&json!("default")), None, "a tombstone");
     }
@@ -157,14 +152,25 @@ mod tests {
             "source": {"table": "", "lsn": 7, "txId": 9, "ts_ms": 1},
             "message": {"prefix": "agentd-history", "content": content},
         });
-        let change = Change::from_debezium(&event).unwrap();
-        assert_eq!((change.op, change.table.as_str()), (ChangeOp::Message, "agentd-history"));
-        assert_eq!(change.after, Some(json!({"table": "vaults"})));
-        assert_eq!(change.position.map(|p| (p.lsn, p.tx_id)), Some((7, Some(9))));
+        let at = Timestamp::from_datetime(chrono::DateTime::from_timestamp_millis(1).unwrap());
+        let expected = Change {
+            table: "agentd-history".into(),
+            op: ChangeOp::Message,
+            position: Some(Position { lsn: 7, tx_id: Some(9), committed_at: at }),
+            before: None,
+            after: Some(json!({"table": "vaults"})),
+        };
+        assert_eq!(Change::from_debezium(&event), Some(expected));
         let text = base64::engine::general_purpose::STANDARD.encode(b"2026-11-16 10:00:00+00");
         let other = json!({"op": "m", "message": {"prefix": "agentd-heartbeat", "content": text}});
-        let other = Change::from_debezium(&other).unwrap();
-        assert_eq!((other.after, other.position), (Some(json!("2026-11-16 10:00:00+00")), None));
+        let expected = Change {
+            table: "agentd-heartbeat".into(),
+            op: ChangeOp::Message,
+            position: None,
+            before: None,
+            after: Some(json!("2026-11-16 10:00:00+00")),
+        };
+        assert_eq!(Change::from_debezium(&other), Some(expected));
     }
 
     #[test]

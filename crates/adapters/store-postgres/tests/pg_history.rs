@@ -165,14 +165,20 @@ async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_t
     // So does the version's own insert, which an unordered stream may hand over last.
     log.record("memory_versions", HistoryOp::Insert, &at(1, 1), &old_version).await.unwrap();
     log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    // And a head deleted for good after the redaction, its row as Postgres's to_jsonb gives it.
+    let mut deleted = old_head.clone();
+    deleted["doc"] = serde_json::from_str(old_head["doc"].as_str().unwrap()).unwrap();
+    log.record("memories", HistoryOp::Delete, &at(6, 1), &deleted).await.unwrap();
+    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
     let cleared = json!({"v": old, "sha": null, "path": null});
     assert_eq!(
         rows(&pg, versions, &store).await,
         vec![cleared.clone(), json!({"v": new, "sha": "bbb", "path": "/a.md"}), cleared]
     );
+    let none = json!({"sha": null, "path": null});
     assert_eq!(
         rows(&pg, heads, &store).await,
-        vec![json!({"sha": null, "path": null}), json!({"sha": "bbb", "path": "/a.md"})]
+        vec![none.clone(), json!({"sha": "bbb", "path": "/a.md"}), none]
     );
 }
 

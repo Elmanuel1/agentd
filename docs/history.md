@@ -44,7 +44,8 @@ While history catches up after a feed outage, its recorders share the replica's 
 tracked table at a time; `db.client.connection.pending_requests` shows when requests wait for them.
 
 Redacting a memory version removes its `content_sha256`, `content_size_bytes` and `path` from that version's
-history rows and from the rows of every head of its memory that held it, in whichever order the feed delivers them.
+history rows and from the rows of every head of its memory that held it, a head deleted later included, in
+whichever order the feed delivers them.
 
 ## Read a row's history
 

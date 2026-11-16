@@ -10,7 +10,7 @@ use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::BackendError;
 
-use crate::{settle, Applied};
+use crate::{redact, settle, Applied};
 
 /// The prefix of the messages a delete emits.
 pub const PREFIX: &str = "agentd-history";
@@ -55,7 +55,14 @@ impl ChangeHandler for DeletedRecorder {
             for writer in ["actor", "request_id"] {
                 row.insert(writer.into(), message.get(writer).cloned().unwrap_or(Value::Null));
             }
-            self.log.record(table, HistoryOp::Delete, position, &Value::Object(row)).await
+            let row = Value::Object(row);
+            self.log.record(table, HistoryOp::Delete, position, &row).await?;
+            match redact::scrubbed(table, &row) {
+                Some((workspace, store, version)) => {
+                    self.log.scrub_memory_content(&workspace, &store, &version).await
+                }
+                None => Ok(()),
+            }
         };
         settle(recorded.await, change, &self.applied)
     }

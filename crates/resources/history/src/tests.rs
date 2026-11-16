@@ -22,7 +22,7 @@ struct Kept {
 #[async_trait]
 impl HistoryLog for Kept {
     fn tables(&self) -> Vec<String> {
-        vec!["memory_versions".into(), "vaults".into()]
+        vec!["memories".into(), "memory_versions".into(), "vaults".into()]
     }
 
     async fn record(
@@ -79,7 +79,8 @@ fn handler<'a>(handlers: &'a [Arc<dyn ChangeHandler>], source: &Source) -> &'a d
 async fn each_history_table_gets_a_recorder_and_the_messages_one() {
     let Fixture { handlers, .. } = fixture();
     let sources: Vec<Source> = handlers.iter().map(|h| h.source()).collect();
-    let tables = [Source::Table("memory_versions".into()), Source::Table("vaults".into()), Source::Messages];
+    let tables = ["memories", "memory_versions", "vaults"].map(|t| Source::Table(t.into()));
+    let tables = [tables.as_slice(), &[Source::Messages]].concat();
     assert_eq!(sources, tables);
 }
 
@@ -135,6 +136,17 @@ async fn a_memory_version_s_update_is_scrubbed_once_it_is_recorded() {
     let versions = handler(&handlers, &Source::Table("memory_versions".into()));
     let row = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "version_id": "memver_1"});
     versions.handle(&change("memory_versions", ChangeOp::Update, 60, Some(row))).await.unwrap();
+    assert_eq!(kept.recorded.lock().len(), 1);
+    assert_eq!(*kept.scrubbed.lock(), ["memver_1"]);
+}
+
+#[tokio::test]
+async fn a_memory_head_s_delete_is_scrubbed_once_it_is_recorded() {
+    let Fixture { kept, handlers, .. } = fixture();
+    let head = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "head_version_id": "memver_1"});
+    let content = json!({"table": "memories", "actor": "apikey_a", "request_id": "req_a", "row": head});
+    let messages = handler(&handlers, &Source::Messages);
+    messages.handle(&change("agentd-history", ChangeOp::Message, 70, Some(content))).await.unwrap();
     assert_eq!(kept.recorded.lock().len(), 1);
     assert_eq!(*kept.scrubbed.lock(), ["memver_1"]);
 }
