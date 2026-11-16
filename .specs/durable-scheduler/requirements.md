@@ -19,13 +19,18 @@ Server reading Postgres's WAL, and agentd's consumers of it).
 - **Live:** Anthropic's hosted Managed Agents API, the behaviour agentd matches.
 - **Occurrence:** one listed time of a schedule (`scheduled_at`), as `upcoming_runs_at` shows it.
 - **Following occurrence:** the schedule's next listed time after an occurrence.
-- **Due time** (`due_at`): the occurrence plus its jitter (DS-3), the earliest moment its fire may run.
+- **Due time:** the occurrence plus its jitter (DS-3), the earliest moment its fire may first run. It is the same
+  for every delivery of the occurrence, so it can always be worked out again from the spec and `scheduled_at`.
+- **`due_at`:** the column holding the earliest moment a fire may run next: its due time until a retry moves it out.
+- **Claim token:** the `attempts` value a worker's claim set; a worker writes its fire's row only while `attempts`
+  still holds its token.
 - **Fire queue:** the `fire_claims` table, one row per occurrence until it is done.
 - **Business failure:** a fire whose session cannot be created; its run is recorded with an `error`.
 - **Infra failure:** any other failed fire: the database is unavailable, the handler times out, or the replica stops
   mid-fire.
 
-**Build order:** deployment writes (DS-14) → fire queue columns → fire queue and workers (DS-3 to DS-7, DS-18) →
+**Build order:** deployment writes (DS-14) → fire queue columns → fire queue and workers (DS-3 to DS-7, DS-18,
+DS-19) →
 tick and feed on the queue (DS-1, DS-2, DS-8 to DS-10, DS-12) → schedule changes (DS-11) → Kafka (DS-13) → metrics
 and retention (DS-15, DS-16) → Temporal (DS-17).
 
@@ -48,6 +53,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | DS-4 | The scheduler shall run, on every replica, the occurrences in `fire_claims` that are due and not done, claimed with `FOR UPDATE SKIP LOCKED` under a 2-minute lease, up to 16 at a time per replica. |
+| DS-19 | If a worker finishes or retries a fire whose claim token another worker has since replaced, then the scheduler shall leave the row unchanged and log the lost lease at `WARN`. |
 | DS-5 | If a fire fails with an infra failure, then the scheduler shall run it again after a backoff from 2 s doubling to 5 minutes, with jitter, until its following occurrence is due. |
 | DS-6 | If a fire runs longer than 60 s, then the scheduler shall count it as an infra failure (DS-5). |
 | DS-7 | When a fire records a run, with a session or with an error, the scheduler shall mark it done with outcome `ran` and not run it again (D7). |
@@ -61,14 +67,14 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | DS-11 | If the scheduler sink refuses a schedule change as invalid, then the change feed shall log it at `ERROR` and pass over it; a change the sink cannot apply because it is unavailable still holds the stream. |
-| DS-13 | While the Kafka change feed retries a record, the change feed shall pause that partition and keep polling, so that its consumer stays in the group and no second replica reads the partition. |
+| DS-13 | While the Kafka change feed retries a record, the change feed shall pause every partition its consumer is assigned and keep polling, so that the consumer stays in the group, no second replica reads the partition, and no record behind the failed one is read. |
 
 ## 4. Operations
 
 | ID | Requirement |
 |---|---|
 | DS-15 | The scheduler shall delete, every hour, the `fire_claims` rows that are done and whose occurrence is more than 30 days old (D12). |
-| DS-16 | The scheduler shall export the fires by outcome (`enqueued`, `ran`, `retried`, `skipped`, `dropped`), the fire lag (start minus due time) and the count of due fires not done (D10). |
+| DS-16 | The scheduler shall export the fires by outcome (`enqueued`, `ran`, `retried`, `skipped`, `dropped`), the fire lag (a run's start minus its occurrence's due time, worked out from the spec, not from `due_at`) and the count of due fires not done (D10). |
 | DS-17 | Where `AGENTD_SCHEDULER` is `temporal`, agentd shall apply schedule changes to Temporal Schedules, not run its built-in tick, and write each Temporal action's occurrence to `fire_claims` as DS-9 does (D2). |
 
 ## Industry practice
@@ -92,7 +98,7 @@ on.
 | 0 | This spec | none (docs) |
 | 1 | A deployment write never overwrites a newer one | DS-14 |
 | 2 | Migrations V16 and V17: the fire queue columns and indexes | none (schema for DS-1, DS-15, DS-18) |
-| 3 | The fire queue and its workers, unused | DS-3 to DS-7, DS-18 |
+| 3 | The fire queue and its workers, unused | DS-3 to DS-7, DS-18, DS-19 |
 | 4 | The tick and the feed on the queue | DS-1, DS-2, DS-8, DS-9, DS-10, DS-12 |
 | 5 | An invalid schedule change is passed over | DS-11 |
 | 6 | A Kafka consumer keeps its group while it retries | DS-13 |
@@ -116,7 +122,8 @@ on.
 
 - `V16__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
   outcome text check (outcome in ('ran', 'skipped', 'dropped'));`. The columns are nullable and nothing reads them
-  yet; `outcome` is null until a fire is done.
+  yet; `outcome` is null until a fire is done. No backfill: agentd is not deployed (runtime-parity D45), so no
+  database holds an unfinished claim from the old path when PR 4 removes `take`.
 - `V17__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
   fire_claims (due_at) where not done;` and `create index concurrently fire_claims_done_idx on fire_claims
   (scheduled_at) where done;`.
@@ -139,12 +146,17 @@ Opens with probes B33 and B34.
     `claimed_at` `'-infinity'` and `attempts` 0, `ON CONFLICT DO NOTHING`.
   - `claim_due`, one transaction: 1 `SELECT workspace_id, target, scheduled_at, spec, due_at FROM fire_claims WHERE
     NOT done AND due_at <= now() AND claimed_at < now() - interval '120 seconds' ORDER BY due_at LIMIT $1 FOR UPDATE
-    SKIP LOCKED`; 1 `UPDATE fire_claims SET claimed_at = now(), attempts = attempts + 1 FROM unnest(…)` on the keys.
-  - `finish`: 1 `UPDATE fire_claims SET done = true, outcome = $4` on the key. `retry`: 1 `UPDATE fire_claims SET
-    due_at = $4, claimed_at = '-infinity'` on the key `AND NOT done`.
+    SKIP LOCKED`; 1 `UPDATE fire_claims SET claimed_at = now(), attempts = attempts + 1 FROM unnest(…) … RETURNING
+    attempts` on the keys. Each claimed fire carries its `attempts` as its claim token.
+  - `finish`: 1 `UPDATE fire_claims SET done = true, outcome = $5` on the key `AND attempts = $4`. `retry`: 1
+    `UPDATE fire_claims SET due_at = $5, claimed_at = '-infinity'` on the key `AND attempts = $4 AND NOT done`. Zero
+    rows means another worker took the lease: the row stays as it is and the lost lease is logged (DS-19).
+  - The lag of DS-16 is measured from the due time worked out again from the spec (DS-3), so a retry that moves
+    `due_at` does not shorten it.
 - Tests: `pg_fire_queue` (new) "an enqueued occurrence is claimed once across two workers", "a claim whose worker
   stopped is taken again after its lease", "a retried fire waits for its backoff", "enqueuing an occurrence twice
-  keeps the first due time", "a done fire records ran, skipped or dropped"; unit tests for the jitter (bounds for
+  keeps the first due time", "a done fire records ran, skipped or dropped", "a worker whose lease was taken over
+  cannot finish or retry the fire"; unit tests for the jitter (bounds for
   minute, hourly and daily crons; the same occurrence gets the same delay) and for the worker (ran, business failure,
   timeout, infra failure).
 
@@ -176,9 +188,10 @@ Opens with probes B33 and B34.
 
 ### PR 6: a Kafka consumer keeps its group while it retries
 
-- `changes-kafka/src/lib.rs`: on a failed record, pause its partition, then alternate the backoff retry with
-  `consumer.recv()`, which serves rebalances and returns nothing while the partition is paused; stop retrying if the
-  partition is revoked; resume and commit once the record succeeds. The retry moves to `retry.rs` if `lib.rs` would
+- `changes-kafka/src/lib.rs`: on a failed record, pause every partition the consumer is assigned, then alternate the
+  backoff retry with `consumer.recv()`, which serves rebalances and returns no record while every partition is
+  paused; stop retrying if the record's partition is revoked; resume the assignment and commit once the record
+  succeeds. No record of another partition is read, so none is skipped or committed past. The retry moves to `retry.rs` if `lib.rs` would
   pass 200 lines.
 - Test: `changes-kafka/tests/kafka.rs` "a record retried past max.poll.interval.ms keeps one reader", with
   `max.poll.interval.ms` at 10 s and a record failing for 20 s: no second consumer is assigned the partition and the

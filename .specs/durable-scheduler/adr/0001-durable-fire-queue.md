@@ -24,7 +24,8 @@ burst of more than about 600 schedules a minute per replica is served late and t
 1. The tick writes each due occurrence into `fire_claims`, with its spec and due time, in the same transaction that
    moves its schedule on. It claims batches of 100 until a batch comes back short.
 2. Every replica runs the due, undone rows of `fire_claims`, claimed with `FOR UPDATE SKIP LOCKED` under a 2-minute
-   lease, up to 16 at a time, each with a 60 s timeout.
+   lease, up to 16 at a time, each with a 60 s timeout. A claim's `attempts` is its token: a worker finishes or
+   retries its fire only while the row still holds that token, so a worker whose lease was taken over writes nothing.
 3. A fire that records a run, with a session or with an error, is done (`outcome` `ran`). An infra failure is run
    again after a backoff from 2 s doubling to 5 minutes, with jitter.
 4. A fire still not run when its schedule's following occurrence is due is done with `outcome` `skipped`, logged at
