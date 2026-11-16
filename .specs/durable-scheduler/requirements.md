@@ -122,8 +122,8 @@ on.
 
 - `V16__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
   outcome text check (outcome in ('ran', 'skipped', 'dropped'));`. The columns are nullable and nothing reads them
-  yet; `outcome` is null until a fire is done. No backfill: agentd is not deployed (runtime-parity D45), so no
-  database holds an unfinished claim from the old path when PR 4 removes `take`.
+  yet; `outcome` is null until a fire is done. No backfill: `take` keeps writing claims without these columns until
+  PR 4, and PR 4 recovers any such claim left unfinished.
 - `V17__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
   fire_claims (due_at) where not done;` and `create index concurrently fire_claims_done_idx on fire_claims
   (scheduled_at) where done;`.
@@ -173,11 +173,19 @@ Opens with probes B33 and B34.
   commits; `changes-kafka` and `signals-valkey/src/fires.rs` call it unchanged.
 - `api/src/backends/postgres.rs`: `FireSources::start` spawns the tick and the worker (every 1 s).
 - `fire_claims/claim.rs`: `take` and its 15-minute and 3-attempt rules are removed, with their `pg_fires` tests.
+- Claims `take` wrote before this PR have no `due_at` and no `spec`. `claim_due`'s condition becomes `NOT done AND
+  (due_at <= now() OR due_at IS NULL) AND claimed_at < now() - interval '120 seconds'`, so such a claim is taken once
+  its old owner's lease has run out, marked done with outcome `dropped` (its spec cannot be read, DS-18) and logged at
+  `WARN`. `enqueue`'s conflict clause becomes `ON CONFLICT (workspace_id, target, scheduled_at) DO UPDATE SET spec =
+  EXCLUDED.spec, due_at = EXCLUDED.due_at WHERE fire_claims.spec IS NULL AND NOT fire_claims.done`, so a redelivered
+  external fire fills in its old claim and runs, as `take` would have run it again. A built-in fire is never delivered
+  twice, and `main` never ran an unfinished built-in claim again, so dropping it loses no fire `main` would have run.
 - Tests: `pg_schedules` "a due occurrence fires once across two schedulers" over the queue; "250 due schedules all
   fire in one tick", with 150 older due rows first; "a fire that fails is run again, then done"; "a crash after the
   tick commits loses nothing"; "after downtime only the latest missed occurrence fires"; "a fire not run before its
   following occurrence is skipped"; "an unpaused schedule does not fire the time it missed"; "an unreadable schedule
-  is paused and does not hold the batch".
+  is paused and does not hold the batch"; `pg_fire_queue` "an unfinished claim written by take is dropped once its
+  lease runs out" and "a redelivered external fire fills in its unfinished take claim and runs".
 
 ### PR 5: an invalid schedule change is passed over
 
