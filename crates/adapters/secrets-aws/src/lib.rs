@@ -1,4 +1,5 @@
-//! secrets-aws: the AWS Secrets Manager implementation of [`SecretStore`].
+//! secrets-aws: the AWS implementations of [`SecretStore`], on Secrets Manager
+//! and on SSM Parameter Store ([`AwsParameterStore`]).
 //!
 //! Each credential is one secret, `<prefix>/<workspace>/<vault>/<credential>`,
 //! encrypted under one customer-managed KMS key and tagged with its workspace,
@@ -15,12 +16,13 @@
 mod failure;
 mod key;
 mod name;
+mod ssm;
 mod store;
 mod tag;
 
-use std::time::Duration;
+pub use name::parameter_prefix_problem;
+pub use ssm::AwsParameterStore;
 
-use aws_sdk_secretsmanager::config::timeout::TimeoutConfig;
 pub use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 
 /// The prefix every secret name starts with unless configured otherwise.
@@ -95,20 +97,11 @@ impl AwsSecretStore {
                 config.recovery_window_days
             )));
         }
-        let shared = aws_common::sdk_config(config.region.as_deref(), config.role_arn.as_deref()).await;
-        // A stalled call fails the request it serves instead of holding it.
-        let timeouts = TimeoutConfig::builder()
-            .operation_attempt_timeout(Duration::from_secs(5))
-            .operation_timeout(Duration::from_secs(15))
-            .build();
-        let mut sm = aws_sdk_secretsmanager::config::Builder::from(&shared).timeout_config(timeouts.clone());
-        let mut kms = aws_sdk_kms::config::Builder::from(&shared).timeout_config(timeouts);
+        let (shared, key_arn) = key::connect(config).await?;
+        let mut sm = aws_sdk_secretsmanager::config::Builder::from(&shared);
         if let Some(endpoint) = &config.endpoint {
             sm = sm.endpoint_url(endpoint);
-            kms = kms.endpoint_url(endpoint);
         }
-        let kms = aws_sdk_kms::Client::from_conf(kms.build());
-        let key_arn = key::customer_key_arn(&kms, &config.kms_key_id).await?;
         Ok(Self {
             client: aws_sdk_secretsmanager::Client::from_conf(sm.build()),
             prefix: config.prefix.clone(),

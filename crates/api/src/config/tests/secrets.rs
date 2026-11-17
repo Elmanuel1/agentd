@@ -45,3 +45,17 @@ fn postgres_needs_32_byte_keys_and_names_a_bad_entry_by_its_position() {
         assert!(err.reason.contains(why) && !err.to_string().contains(&KEY[..8]), "{err}");
     }
 }
+
+#[test]
+fn ssm_takes_the_aws_settings_but_no_recovery_window_and_a_parameter_prefix() {
+    let c = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_PREFIX", "agentd/prod")]).unwrap();
+    let SecretsConfig::Ssm(ssm) = c.secrets else { panic!("{:?}", c.secrets) };
+    assert_eq!((ssm.prefix.as_str(), ssm.kms_key_id.as_str()), ("agentd/prod", "alias/agentd"));
+    let err = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_RECOVERY_DAYS", "7")]).unwrap_err();
+    assert_eq!(err.var, "AGENTD_SECRETS_RECOVERY_DAYS");
+    let thirteen = ["a"; 13].join("/");
+    for prefix in ["aws", "AWS/agentd", "Ssm_x", "sSm/agentd", thirteen.as_str()] {
+        let err = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_PREFIX", prefix)]).unwrap_err();
+        assert_eq!(err.var, "AGENTD_SECRETS_PREFIX", "{prefix}");
+    }
+}

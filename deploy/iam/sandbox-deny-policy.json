@@ -8,6 +8,12 @@
       "Resource": "arn:aws:secretsmanager:*:*:secret:PREFIX/*"
     },
     {
+      "Sid": "NoAgentdParameters",
+      "Effect": "Deny",
+      "Action": "ssm:GetParameter*",
+      "Resource": ["arn:aws:ssm:*:*:parameter/PREFIX", "arn:aws:ssm:*:*:parameter/PREFIX/*"]
+    },
+    {
       "Sid": "NoSecretInventory",
       "Effect": "Deny",
       "Action": ["secretsmanager:ListSecrets", "secretsmanager:BatchGetSecretValue"],

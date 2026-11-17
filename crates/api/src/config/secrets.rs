@@ -1,4 +1,5 @@
-//! The secret store setting: Postgres, the default, or AWS Secrets Manager.
+//! The secret store setting: Postgres, the default, AWS Secrets Manager or
+//! SSM Parameter Store.
 
 use secrets_aws::{AwsSecretsConfig, DEFAULT_PREFIX, DEFAULT_RECOVERY_WINDOW_DAYS};
 use shared::hash::SecretKeys;
@@ -15,6 +16,9 @@ pub enum SecretsConfig {
     /// `AGENTD_SECRETS_PREFIX`, encrypted with the customer-managed KMS key
     /// `AGENTD_SECRETS_KMS_KEY_ID`.
     Aws(AwsSecretsConfig),
+    /// `ssm`: one SecureString parameter per credential, under the same
+    /// prefix and key settings; a parameter has no recovery window.
+    Ssm(AwsSecretsConfig),
 }
 
 /// The store `AGENTD_SECRETS` names; unset, `aws` when a KMS key is set and
@@ -31,6 +35,17 @@ pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Secre
             Ok(SecretsConfig::Postgres(keys))
         }
         "aws" => aws(get).map(SecretsConfig::Aws),
+        "ssm" => {
+            if let Some(days) = set("AGENTD_SECRETS_RECOVERY_DAYS") {
+                let reason = format!("`{days}`: Parameter Store has no recovery window");
+                return Err(ConfigError { var: "AGENTD_SECRETS_RECOVERY_DAYS", reason });
+            }
+            let ssm = aws(get)?;
+            match secrets_aws::parameter_prefix_problem(&ssm.prefix) {
+                Some(reason) => Err(ConfigError { var: "AGENTD_SECRETS_PREFIX", reason }),
+                None => Ok(SecretsConfig::Ssm(ssm)),
+            }
+        }
         other => Err(unknown("AGENTD_SECRETS", other)),
     }
 }

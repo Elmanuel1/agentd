@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use secrets_aws::AwsSecretStore;
+use secrets_aws::{AwsParameterStore, AwsSecretStore};
 use shared::hash::SecretKeys;
 use shared::ports::secrets::{SecretError, SecretStore};
 use store_postgres::{PgBackend, PgSecretStore};
@@ -26,6 +26,7 @@ impl Secrets {
         let store: Arc<dyn SecretStore> = match config {
             SecretsConfig::Postgres(keys) => return Ok(Self::Postgres(keys.clone())),
             SecretsConfig::Aws(aws) => Arc::new(AwsSecretStore::connect(aws).await?),
+            SecretsConfig::Ssm(ssm) => Arc::new(AwsParameterStore::connect(ssm).await?),
         };
         Ok(Self::Ready(Arc::new(Observed::new(store, metrics.clone()))))
     }

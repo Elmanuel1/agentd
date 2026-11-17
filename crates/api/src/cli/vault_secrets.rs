@@ -7,6 +7,10 @@
 //!
 //! `reseal` seals every Postgres row not under the first key of
 //! `AGENTD_SECRET_KEYS` again, so that an older master key can be dropped.
+//!
+//! Neither has anything to do on the other stores: Postgres and Parameter
+//! Store record the kind when they write, and the AWS stores' KMS key does
+//! their encryption.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -114,8 +118,11 @@ mod tests {
         // connected anything would fail.
         let postgres = config(&[]);
         let aws = config(&[("AGENTD_SECRETS", "aws"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
+        let ssm = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
         assert_eq!(vault_secrets(&postgres, &words("tag")).await, ExitCode::SUCCESS);
+        assert_eq!(vault_secrets(&ssm, &words("tag")).await, ExitCode::SUCCESS);
         assert_eq!(vault_secrets(&aws, &words("reseal")).await, ExitCode::SUCCESS);
+        assert_eq!(vault_secrets(&ssm, &words("reseal")).await, ExitCode::SUCCESS);
         assert_eq!(vault_secrets(&postgres, &words("rotate")).await, ExitCode::FAILURE);
     }
 
