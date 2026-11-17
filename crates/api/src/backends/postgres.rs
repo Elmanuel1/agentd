@@ -14,8 +14,8 @@ use store_postgres::{
     PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
 
-use super::feed::ChangeFeed;
 use super::Stores;
+use super::feed::ChangeFeed;
 use crate::telemetry::{self, Metrics};
 
 /// How often each replica claims due schedules (cron is minute-grained).

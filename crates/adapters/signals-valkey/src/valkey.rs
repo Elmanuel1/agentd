@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::stream::BoxStream;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig, MultiplexedConnection};
 use redis::cluster::{ClusterClient, ClusterClientBuilder, ClusterConfig};
 use redis::cluster_async::ClusterConnection;

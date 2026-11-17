@@ -123,7 +123,9 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 if ev.session_thread_id.is_none() {
                     let input = serde_json::json!({"agent_name": to_agent_name, "session_thread_id": to_session_thread_id, "message": texts(content)});
                     b.call(id.clone(), SEND_TO_AGENT, &input);
-                    let note = format!("Sent to thread {to_session_thread_id}. The reply arrives as a message from that thread.");
+                    let note = format!(
+                        "Sent to thread {to_session_thread_id}. The reply arrives as a message from that thread."
+                    );
                     b.result(id, note, false);
                 }
             }

@@ -30,8 +30,8 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
+edition = "2024"
+rust-version = "1.100"
 license = "UNLICENSED"
 
 [workspace.dependencies]
@@ -69,20 +69,20 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 chrono-tz = "0.10"
 thiserror = "2"
 async-trait = "0.1"
-rand = "0.8"
+rand = "0.10"
 sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
-base64 = "0.22"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+base64 = "0.23"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { version = "1", features = ["full"] }
-deadpool = { version = "0.12", default-features = false, features = ["managed", "rt_tokio_1"] }
+deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
 futures = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-rustls-comp", "connection-manager", "streams", "cluster-async"] }
 rdkafka = { version = "0.39", default-features = false, features = ["tokio", "libz-static"] }
 tracing = "0.1"
@@ -93,7 +93,7 @@ opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic", "metrics", "t
 opentelemetry-appender-tracing = "0.33"
 tracing-opentelemetry = "0.34"
 bytes = "1"
-parking_lot = "0.12"
+parking_lot = "0.13"
 uuid = { version = "1", features = ["v4"] }
 aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process", "sso"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
@@ -104,8 +104,8 @@ aws-credential-types = "1"
 aws-smithy-types = "1"
 secrecy = "0.10"
 zeroize = { version = "1", features = ["serde"] }
-diesel = { version = "2.2", default-features = false, features = ["postgres_backend", "serde_json", "chrono"] }
-diesel-async = { version = "0.5", default-features = false, features = ["postgres", "deadpool"] }
+diesel = { version = "2.4", default-features = false, features = ["postgres_backend", "serde_json", "chrono"] }
+diesel-async = { version = "0.10", default-features = false, features = ["postgres", "deadpool"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

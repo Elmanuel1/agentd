@@ -6,8 +6,8 @@
 use sessions::events::{Event, EventId, EventPayload, SpanEvent, UserEvent};
 use shared::ContentBlock;
 
-use super::checkpoint::Checkpoint;
 use super::BYTES_PER_TOKEN;
+use super::checkpoint::Checkpoint;
 use crate::model::{Block, ModelResponse};
 
 /// What the summary must carry.

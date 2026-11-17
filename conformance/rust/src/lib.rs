@@ -35,14 +35,13 @@ pub fn normalize(v: &Value) -> Value {
 fn normalize_field(key: &str, v: &Value) -> Value {
     if let Value::String(s) = v {
         // Resource ids: {prefix}_{20..32 alnum}.
-        if let Some((prefix, body)) = s.split_once('_') {
-            if !prefix.is_empty()
-                && prefix.chars().all(|c| c.is_ascii_lowercase())
-                && (20..=32).contains(&body.len())
-                && body.bytes().all(|b| b.is_ascii_alphanumeric())
-            {
-                return Value::String(format!("<{prefix}_id>"));
-            }
+        if let Some((prefix, body)) = s.split_once('_')
+            && !prefix.is_empty()
+            && prefix.chars().all(|c| c.is_ascii_lowercase())
+            && (20..=32).contains(&body.len())
+            && body.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return Value::String(format!("<{prefix}_id>"));
         }
         // Timestamps.
         if key.ends_with("_at") || key == "scheduled_at" {
@@ -57,10 +56,10 @@ fn normalize_field(key: &str, v: &Value) -> Value {
         }
     }
     // upcoming_runs_at arrays of timestamps.
-    if key == "upcoming_runs_at" {
-        if let Value::Array(items) = v {
-            return Value::Array(items.iter().map(|_| Value::String("<timestamp>".into())).collect());
-        }
+    if key == "upcoming_runs_at"
+        && let Value::Array(items) = v
+    {
+        return Value::Array(items.iter().map(|_| Value::String("<timestamp>".into())).collect());
     }
     normalize(v)
 }

@@ -12,11 +12,11 @@ use axum::middleware::Next;
 use axum::response::Response;
 use shared::ports::keys::material::KeyKind;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
-use shared::{current_request_id, wire_response, with_writer, ApiError, AuthContext, Writer};
+use shared::{ApiError, AuthContext, Writer, current_request_id, wire_response, with_writer};
 use work::WorkCaller;
 
 use super::reach::is_poll;
-use super::scoped::{environment_key, work_token, WorkAccess};
+use super::scoped::{WorkAccess, environment_key, work_token};
 
 /// What a request may authenticate with: a workspace key, an admin key, an
 /// environment key, or a session's work token.

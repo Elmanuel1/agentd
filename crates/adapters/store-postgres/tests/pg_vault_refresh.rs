@@ -11,9 +11,9 @@ use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
+use vaults::VaultsService;
 use vaults::store::{ClaimedWrite, CredentialClaims, VaultCredentialStore};
 use vaults::types::VaultId;
-use vaults::VaultsService;
 
 #[tokio::test]
 async fn one_claim_of_a_read_wins_and_the_first_vault_s_credential_is_used() {

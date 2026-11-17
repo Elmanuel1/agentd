@@ -1,10 +1,10 @@
 //! Hashing: memory `content_sha256` (lowercase hex, live-verified), and the
 //! signed tokens agentd issues (work tokens, egress proxy passwords).
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use serde::de::DeserializeOwned;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 /// Lowercase-hex SHA-256 of raw bytes.

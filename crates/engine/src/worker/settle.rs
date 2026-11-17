@@ -10,8 +10,8 @@ use sessions::types::{Session, SessionStatus};
 use super::grade::{active, begin};
 use super::reply::Led;
 use super::stall::{no_verdict, stalled};
-use super::team::{busy, reply, threads, Thread};
-use super::turn::{thread_idle, Turn};
+use super::team::{Thread, busy, reply, threads};
+use super::turn::{Turn, thread_idle};
 use super::usage::final_text;
 use crate::model::ModelResponse;
 

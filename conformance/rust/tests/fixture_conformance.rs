@@ -10,10 +10,10 @@
 use std::sync::Arc;
 use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
 
-use api::{build_router, AppState, Backends, Stores};
+use api::{AppState, Backends, Stores, build_router};
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
@@ -294,10 +294,9 @@ async fn memory_conflict_409_matches_live_capture() {
     // id inline so compare the surrounding shape + typed fields).
     assert_eq!(actual["error"]["type"], "memory_path_conflict_error");
     assert_eq!(actual["error"]["conflicting_path"], "/a.md");
-    assert!(actual["error"]["message"]
-        .as_str()
-        .unwrap()
-        .starts_with("path `/a.md` is already used by `mem_"));
+    assert!(
+        actual["error"]["message"].as_str().unwrap().starts_with("path `/a.md` is already used by `mem_")
+    );
     assert!(actual["error"]["message"].as_str().unwrap().ends_with("`; use update to modify it"));
 }
 

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use super::{ScheduleSpec, TenantRef};
-use crate::{with_writer, AuthContext, OrgId, WorkspaceId, Writer};
+use crate::{AuthContext, OrgId, WorkspaceId, Writer, with_writer};
 
 mod claims;
 mod delivery;

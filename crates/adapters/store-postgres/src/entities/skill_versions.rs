@@ -6,20 +6,19 @@ use std::sync::Arc;
 use ::skills::{SkillId, SkillVersion, SkillVersionsStore, StoreError, VersionRef};
 use async_trait::async_trait;
 use bytes::Bytes;
+use diesel::AnyJsonExpressionMethods;
 use diesel::OptionalExtension;
-use diesel::PgAnyJsonExpressionMethods;
 use diesel::{ExpressionMethods, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::blobs::BlobStore;
 use shared::{Pagination, WorkspaceId};
 
-use super::skills::{version_col, PgSkillsStore};
+use super::skills::{PgSkillsStore, version_col};
 
 mod latest;
 
 use crate::schema::skill_versions;
-use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, blob_be, diesel_be, parse_doc, pool_be, to_doc};
 use latest::{locked_latest, set_latest};
 
 /// Postgres-backed skill versions store (Diesel).
@@ -82,28 +81,25 @@ impl SkillVersionsStore for PgSkillVersionsStore {
         }))?;
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let added = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    // The skill's row lock orders its version writes.
-                    let Some(current) = locked_latest(c, ws, &version.skill_id).await? else {
-                        return Ok(Err(StoreError::SkillNotFound));
-                    };
-                    diesel::insert_into(skill_versions::table)
-                        .values((
-                            skill_versions::workspace_id.eq(ws.as_str()),
-                            skill_versions::skill_id.eq(version.skill_id.as_str()),
-                            skill_versions::version.eq(version_col(&version.version)),
-                            skill_versions::created_at.eq(version.created_at.as_datetime()),
-                            skill_versions::doc.eq(doc),
-                        ))
-                        .execute(c)
-                        .await?;
-                    if version_col(&version.version) > version_col(&current.0) {
-                        set_latest(c, ws, &version.skill_id, latest).await?;
-                    }
-                    Ok(Ok(()))
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                // The skill's row lock orders its version writes.
+                let Some(current) = locked_latest(c, ws, &version.skill_id).await? else {
+                    return Ok(Err(StoreError::SkillNotFound));
+                };
+                diesel::insert_into(skill_versions::table)
+                    .values((
+                        skill_versions::workspace_id.eq(ws.as_str()),
+                        skill_versions::skill_id.eq(version.skill_id.as_str()),
+                        skill_versions::version.eq(version_col(&version.version)),
+                        skill_versions::created_at.eq(version.created_at.as_datetime()),
+                        skill_versions::doc.eq(doc),
+                    ))
+                    .execute(c)
+                    .await?;
+                if version_col(&version.version) > version_col(&current.0) {
+                    set_latest(c, ws, &version.skill_id, latest).await?;
                 }
-                .scope_boxed()
+                Ok(Ok(()))
             })
             .await
             .map_err(diesel_be)
@@ -163,43 +159,39 @@ impl SkillVersionsStore for PgSkillVersionsStore {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let now = to_doc(&shared::Timestamp::now())?;
         let deleted = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    // Under the skill's row lock, the count cannot change
-                    // before the delete: two deletes cannot both pass it.
-                    let Some((_, latest_id)) = locked_latest(c, ws, &version.skill_id).await? else {
-                        return Ok(Err(StoreError::SkillNotFound));
-                    };
-                    let mine = skill_versions::table
-                        .filter(skill_versions::workspace_id.eq(ws.as_str()))
-                        .filter(skill_versions::skill_id.eq(version.skill_id.as_str()));
-                    if mine.count().get_result::<i64>(c).await? <= 1 {
-                        return Ok(Err(StoreError::OnlyVersion));
-                    }
-                    let gone = diesel::delete(
-                        mine.filter(skill_versions::version.eq(version_col(&version.version))),
-                    )
-                    .execute(c)
-                    .await?;
-                    if gone == 0 {
-                        return Ok(Err(StoreError::VersionNotFound));
-                    }
-                    if latest_id.as_deref() == Some(version.id.as_str()) {
-                        let newest: serde_json::Value = mine
-                            .order(skill_versions::version.desc())
-                            .select(skill_versions::doc)
-                            .first(c)
-                            .await?;
-                        let patch = serde_json::json!({
-                            "latest_version": newest.get("version"),
-                            "latest_version_id": newest.get("id"),
-                            "updated_at": now,
-                        });
-                        set_latest(c, ws, &version.skill_id, patch).await?;
-                    }
-                    Ok(Ok(()))
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                // Under the skill's row lock, the count cannot change
+                // before the delete: two deletes cannot both pass it.
+                let Some((_, latest_id)) = locked_latest(c, ws, &version.skill_id).await? else {
+                    return Ok(Err(StoreError::SkillNotFound));
+                };
+                let mine = skill_versions::table
+                    .filter(skill_versions::workspace_id.eq(ws.as_str()))
+                    .filter(skill_versions::skill_id.eq(version.skill_id.as_str()));
+                if mine.count().get_result::<i64>(c).await? <= 1 {
+                    return Ok(Err(StoreError::OnlyVersion));
                 }
-                .scope_boxed()
+                let gone =
+                    diesel::delete(mine.filter(skill_versions::version.eq(version_col(&version.version))))
+                        .execute(c)
+                        .await?;
+                if gone == 0 {
+                    return Ok(Err(StoreError::VersionNotFound));
+                }
+                if latest_id.as_deref() == Some(version.id.as_str()) {
+                    let newest: serde_json::Value = mine
+                        .order(skill_versions::version.desc())
+                        .select(skill_versions::doc)
+                        .first(c)
+                        .await?;
+                    let patch = serde_json::json!({
+                        "latest_version": newest.get("version"),
+                        "latest_version_id": newest.get("id"),
+                        "updated_at": now,
+                    });
+                    set_latest(c, ws, &version.skill_id, patch).await?;
+                }
+                Ok(Ok(()))
             })
             .await
             .map_err(diesel_be)

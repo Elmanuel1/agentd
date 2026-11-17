@@ -7,19 +7,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use diesel::sql_types::{Jsonb, Text};
 use diesel::QueryableByName;
-use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel::sql_types::{Jsonb, Text};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde_json::Value;
 use shared::ports::changes::Position;
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 
-use crate::{diesel_be, pool_be, PgBackend, PgError};
+use crate::{PgBackend, PgError, diesel_be, pool_be};
 
 mod decode;
 
-use decode::{decoded, lsn_text, Encoding};
+use decode::{Encoding, decoded, lsn_text};
 
 /// Records history into the `history` schema.
 #[derive(Clone)]
@@ -122,33 +121,30 @@ impl HistoryLog for PgHistoryLog {
         const REDACTED: &str = "r.workspace_id = $1 AND r.store_id = $2 AND r.version_id = $3
                                 AND jsonb_typeof(r.doc->'redacted_at') = 'string'";
         let mut conn = self.backend.diesel.get().await.map_err(pool_be::<HistoryError>)?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                diesel::sql_query(format!(
-                    "UPDATE history.memory_versions h SET doc = h.doc || {CLEARED}
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            diesel::sql_query(format!(
+                "UPDATE history.memory_versions h SET doc = h.doc || {CLEARED}
                        FROM history.memory_versions r
                       WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
                         AND h.version_id = r.version_id"
-                ))
-                .bind::<Text, _>(workspace)
-                .bind::<Text, _>(store)
-                .bind::<Text, _>(version)
-                .execute(c)
-                .await?;
-                diesel::sql_query(format!(
-                    "UPDATE history.memories h SET path = NULL, doc = h.doc || {CLEARED}
+            ))
+            .bind::<Text, _>(workspace)
+            .bind::<Text, _>(store)
+            .bind::<Text, _>(version)
+            .execute(c)
+            .await?;
+            diesel::sql_query(format!(
+                "UPDATE history.memories h SET path = NULL, doc = h.doc || {CLEARED}
                        FROM history.memory_versions r
                       WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
                         AND h.memory_id = r.memory_id AND h.head_version_id = r.version_id"
-                ))
-                .bind::<Text, _>(workspace)
-                .bind::<Text, _>(store)
-                .bind::<Text, _>(version)
-                .execute(c)
-                .await
-                .map(drop)
-            }
-            .scope_boxed()
+            ))
+            .bind::<Text, _>(workspace)
+            .bind::<Text, _>(store)
+            .bind::<Text, _>(version)
+            .execute(c)
+            .await
+            .map(drop)
         })
         .await
         .map_err(diesel_be)

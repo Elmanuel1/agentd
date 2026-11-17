@@ -10,10 +10,10 @@ use memory::store::{
 use memory::types::{MemoryId, MemoryStoreId, MemoryVersion, MemoryVersionId};
 use shared::{Pagination, WorkspaceId};
 
-use super::heads::HeadWrite;
 use super::PgMemoryStore;
+use super::heads::HeadWrite;
 use crate::schema::memory_versions;
-use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, DocRow};
+use crate::{DocRow, blob_be, diesel_be, parse_doc, pool_be, to_doc};
 
 impl PgMemoryStore {
     /// Put a version's content blob, or remove it when the version has none.

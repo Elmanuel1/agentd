@@ -2,7 +2,7 @@
 //! hex>", "created_at", "data": {"type", "id", "organization_id",
 //! "workspace_id"}}`, with `vault_id` on a credential's events.
 
-use rand::RngCore;
+use rand::Rng;
 use serde::Serialize;
 use shared::Timestamp;
 
@@ -107,7 +107,7 @@ struct Data<'a> {
 /// A new event's id and body.
 pub(super) fn body(org: &str, workspace: &str, kind: &EventKind, id: &str) -> (String, String) {
     let mut raw = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut raw);
+    rand::rng().fill_bytes(&mut raw);
     let webhook_id = format!("whe_{}", hex::encode(raw));
     let body = Body {
         tag: "event",

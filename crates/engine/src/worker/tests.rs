@@ -1,14 +1,14 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sessions::events::{Event, EventId, EventPayload, ModelUsage, Rubric, SpanEvent, UserEvent};
 use sessions::types::{OutcomeId, Session, ThreadId};
 use shared::Timestamp;
 
 use super::grade::{self, active};
-use super::reply::{led, Call};
+use super::reply::{Call, led};
 use super::stall::stalled;
 use super::turn::Turn;
 use crate::model::{Block, ModelResponse, ModelTool, StopKind};
-use crate::turn::policy::{Disposition, Toolbox, LIST_AGENTS};
+use crate::turn::policy::{Disposition, LIST_AGENTS, Toolbox};
 
 const SESSION: &str = include_str!("../../../../conformance/fixtures/session.create.json");
 

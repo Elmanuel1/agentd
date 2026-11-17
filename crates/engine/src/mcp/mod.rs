@@ -19,7 +19,7 @@ mod probe;
 pub mod server;
 mod servers;
 
-pub use errors::{is_mcp_error, CONNECTION_FAILED};
+pub use errors::{CONNECTION_FAILED, is_mcp_error};
 pub use probe::Probe;
 pub use servers::{CallOutcome, McpTool, Servers};
 

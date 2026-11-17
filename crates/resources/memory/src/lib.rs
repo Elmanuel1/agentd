@@ -27,8 +27,8 @@ pub mod types;
 
 use std::sync::Arc;
 
-use shared::beta::{BetaGate, AGENT_MEMORY, MANAGED_AGENTS};
 use shared::Module;
+use shared::beta::{AGENT_MEMORY, BetaGate, MANAGED_AGENTS};
 
 pub use service::MemoriesService;
 pub use store::{

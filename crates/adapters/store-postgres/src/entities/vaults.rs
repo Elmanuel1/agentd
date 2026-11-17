@@ -9,7 +9,6 @@ use ::vaults::types::{Vault, VaultId};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::secrets::SecretStore;
 use shared::{Pagination, WorkspaceId};
@@ -17,7 +16,7 @@ use webhooks::Delivery;
 
 use super::webhook_deliveries::insert_deliveries;
 use crate::schema::vaults;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 mod archive;
 mod secret;
@@ -68,12 +67,9 @@ impl VaultStore for PgVaultsStore {
             doc: to_doc(&vault)?,
         };
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                diesel::insert_into(vaults::table).values(row).execute(c).await?;
-                insert_deliveries(c, deliveries).await
-            }
-            .scope_boxed()
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            diesel::insert_into(vaults::table).values(row).execute(c).await?;
+            insert_deliveries(c, deliveries).await
         })
         .await
         .map_err(diesel_be)

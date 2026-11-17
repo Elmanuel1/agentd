@@ -9,7 +9,7 @@ use shared::{ApiError, AuthContext, Timestamp};
 
 use crate::mcp::Refresh;
 use crate::refresh::HttpResponse;
-use crate::service::{map_store, parse_pair, VaultsService};
+use crate::service::{VaultsService, map_store, parse_pair};
 use crate::store::StoreError;
 use crate::types::CredentialAuthInput;
 

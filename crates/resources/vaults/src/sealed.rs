@@ -8,7 +8,7 @@
 
 use std::fmt::Write as _;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::ports::secrets::{ExposeSecret, SecretString as Sealed};
 use zeroize::Zeroize;
 

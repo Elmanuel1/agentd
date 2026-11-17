@@ -1,10 +1,10 @@
 //! MCP tools in the toolbox: each offered under its server's `mcp_toolset`,
 //! with that toolset's policy.
 
-use agents::types::Tool;
 use agents::AgentSnapshot;
+use agents::types::Tool;
 
-use super::{from_policy, Disposition, Toolbox};
+use super::{Disposition, Toolbox, from_policy};
 use crate::mcp::McpTool;
 use crate::model::ModelTool;
 

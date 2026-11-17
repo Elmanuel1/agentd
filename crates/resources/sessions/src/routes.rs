@@ -7,7 +7,7 @@ use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use shared::page::filters::{bool_param, CreatedRange};
+use shared::page::filters::{CreatedRange, bool_param};
 use shared::{
     ApiError, ApiJson, AuthContext, Deleted, EnvironmentCaller, ListQuery, ListSpec, Page, RouteError,
 };

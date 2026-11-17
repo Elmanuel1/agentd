@@ -7,8 +7,8 @@ use memory::store::{
 use memory::types::{Memory, MemoryId, MemoryStoreId, MemoryVersionId};
 use shared::WorkspaceId;
 
-use super::heads::HeadWrite;
 use super::PgMemoryStore;
+use super::heads::HeadWrite;
 use crate::schema::memories;
 use crate::{diesel_be, parse_doc, pool_be};
 

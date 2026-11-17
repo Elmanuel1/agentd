@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use shared::BackendError;
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
-use shared::BackendError;
 
-use crate::{redact, settle, Applied};
+use crate::{Applied, redact, settle};
 
 /// The prefix of the messages a delete emits.
 pub const PREFIX: &str = "agentd-history";

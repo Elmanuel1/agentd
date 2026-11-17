@@ -7,9 +7,9 @@ use sessions::steps::{Claim, StepEnd};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
 
+use super::Loop;
 use super::take::Taken;
 use super::turn::batch;
-use super::Loop;
 use crate::mcp::CallOutcome;
 use crate::turn::policy::model_name;
 

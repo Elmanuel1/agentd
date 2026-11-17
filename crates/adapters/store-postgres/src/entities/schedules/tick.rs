@@ -4,13 +4,12 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use diesel::sql_types::{Array, Jsonb, Nullable, Text, Timestamptz};
 use diesel::QueryableByName;
-use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel::sql_types::{Array, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::{ScheduleSpec, SchedulerError};
 
-use super::{compile, unavailable, PgScheduler};
+use super::{PgScheduler, compile, unavailable};
 
 /// A fire later than this after its time is skipped, never sent late (no
 /// backfill): after downtime the schedule moves on to its next time.
@@ -55,8 +54,7 @@ impl PgScheduler {
     pub async fn tick(&self) -> Result<(), SchedulerError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
         let fire = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
                     let due: Vec<Due> = diesel::sql_query(
                         "SELECT target, spec, next_fire_at, now() AS now FROM schedules
                          WHERE next_fire_at <= now() AND NOT paused
@@ -91,9 +89,7 @@ impl PgScheduler {
                         .execute(c)
                         .await?;
                     Ok(fire)
-                }
-                .scope_boxed()
-            })
+                })
             .await
             .map_err(unavailable)?;
         drop(conn);

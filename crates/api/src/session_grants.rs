@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use agents::types::{Multiagent, RosterMember};
 use agents::AgentSnapshot;
+use agents::types::{Multiagent, RosterMember};
 use async_trait::async_trait;
 use files::SessionFiles;
-use sessions::types::{MemoryAccess, Session, SessionId, SessionResource};
 use sessions::SessionsStore;
+use sessions::types::{MemoryAccess, Session, SessionId, SessionResource};
 use shared::{ApiError, AuthContext};
 use vaults::variables::VaultCredentials;
 use work::{SessionVariables, Variable};

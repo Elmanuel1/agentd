@@ -1,7 +1,7 @@
 //! The toolbox an agent's tools build, and how each call runs.
 
-use agents::types::{ToolConfig, ToolDefaultConfig};
 use agents::ModelSpec;
+use agents::types::{ToolConfig, ToolDefaultConfig};
 
 use super::*;
 

@@ -2,7 +2,7 @@ use shared::limits::{required, validate_string_len};
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
-use super::{map_store, parse_store_id, MemoriesService};
+use super::{MemoriesService, map_store, parse_store_id};
 use crate::store::StoreFilter;
 use crate::types::{
     CreateStoreRequest, MemoryStoreEntity, MemoryStoreId, MemoryStoreTag, UpdateStoreRequest,

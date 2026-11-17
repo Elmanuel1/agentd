@@ -90,11 +90,7 @@ impl BetaSet {
             .map(str::to_owned)
             .collect();
         let unknown: Vec<String> = names.iter().filter(|n| !KNOWN.contains(&n.as_str())).cloned().collect();
-        if unknown.is_empty() {
-            Ok(Self(names))
-        } else {
-            Err(unknown)
-        }
+        if unknown.is_empty() { Ok(Self(names)) } else { Err(unknown) }
     }
 
     /// Whether the request opted into `beta`.

@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use shared::hash::{KeyRing, Signer};
 

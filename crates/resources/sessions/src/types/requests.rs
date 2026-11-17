@@ -1,7 +1,7 @@
-use agents::types::{McpServer, ModelInput, SkillParams, ToolParams};
 use agents::AgentSnapshot;
+use agents::types::{McpServer, ModelInput, SkillParams, ToolParams};
 use serde::Deserialize;
-use shared::limits::{validate_array_max, validate_model_supported, values, ModelCatalog};
+use shared::limits::{ModelCatalog, validate_array_max, validate_model_supported, values};
 use shared::{ApiError, Metadata, MetadataPatch, Patch};
 
 use super::{Budget, SessionId, SessionResourceInput};

@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::{flag, number, ConfigError};
+use super::{ConfigError, flag, number};
 
 /// How replicas share session changes, and event retention.
 #[derive(Clone, PartialEq, Eq)]

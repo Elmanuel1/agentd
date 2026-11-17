@@ -4,8 +4,8 @@
 
 use ::vaults::store::StoreError;
 use ::vaults::types::{CredentialAuthInput, CredentialId, VaultId};
-use shared::ports::secrets::SecretKey;
 use shared::WorkspaceId;
+use shared::ports::secrets::SecretKey;
 
 use diesel::dsl::sql;
 use diesel::sql_types::Bool;

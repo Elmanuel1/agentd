@@ -2,7 +2,7 @@
 
 use secrets_aws::{AwsSecretsConfig, DEFAULT_PREFIX, DEFAULT_RECOVERY_WINDOW_DAYS};
 
-use super::{endpoint, number, selector, unknown, ConfigError};
+use super::{ConfigError, endpoint, number, selector, unknown};
 
 /// `AGENTD_SECRETS=aws`: one Secrets Manager secret per credential, under
 /// `AGENTD_SECRETS_PREFIX`, encrypted with the customer-managed KMS key

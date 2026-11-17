@@ -5,9 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use diesel::sql_types::{Nullable, Text};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use shared::{with_writer, RequestId, Timestamp, Writer};
+use shared::{RequestId, Timestamp, Writer, with_writer};
 use store_postgres::PgBackend;
 
 fn enabled() -> bool {
@@ -101,15 +100,12 @@ async fn a_delete_emits_one_message_with_the_row_only_when_it_commits() {
     let (vault, deleter) = (vault_id(), Writer::fresh("adminkey_d"));
     write_as(&pg, &Writer::fresh("apikey_a"), INSERT, &vault).await;
     let rolled_back = conn
-        .transaction::<(), diesel::result::Error, _>(|c| {
-            async {
-                diesel::sql_query("DELETE FROM vaults WHERE vault_id = $1")
-                    .bind::<Text, _>(&vault)
-                    .execute(c)
-                    .await?;
-                Err(diesel::result::Error::RollbackTransaction)
-            }
-            .scope_boxed()
+        .transaction::<(), diesel::result::Error, _>(async |c| {
+            diesel::sql_query("DELETE FROM vaults WHERE vault_id = $1")
+                .bind::<Text, _>(&vault)
+                .execute(c)
+                .await?;
+            Err(diesel::result::Error::RollbackTransaction)
         })
         .await;
     assert!(rolled_back.is_err());

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use shared::{IdCursor, WorkspaceId};
 
-use crate::types::{FileId, FileMetadata};
 use crate::FileFilter;
+use crate::types::{FileId, FileMetadata};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

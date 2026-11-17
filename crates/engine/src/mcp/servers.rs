@@ -7,10 +7,10 @@ use sessions::types::SessionId;
 use shared::{BackendError, ContentBlock, WorkspaceId};
 use vaults::Credential;
 
+use super::Mcp;
 use super::client::{Failure, Rpc};
 use super::errors::{session_error, unanswered};
 use super::server::{self, Called};
-use super::Mcp;
 
 mod open;
 mod reach;

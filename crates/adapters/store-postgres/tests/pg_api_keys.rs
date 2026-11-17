@@ -120,11 +120,9 @@ async fn a_key_under_a_retired_pepper_is_found_and_moved_to_the_current_one() {
     let (record, key) = before.create("org_keys", &format!("wrkspc_r{}", stamp()), "ci").await.unwrap();
     let rotated = ring(&format!("{new},{old}"));
     let current = rotated.digests(key.expose_secret())[0].clone();
-    assert!(ApiKeysService::new(store.clone(), rotated)
-        .resolve(key.expose_secret())
-        .await
-        .unwrap()
-        .is_some());
+    assert!(
+        ApiKeysService::new(store.clone(), rotated).resolve(key.expose_secret()).await.unwrap().is_some()
+    );
     let mut conn = pg.diesel.get().await.unwrap();
     let stored: Vec<u8> = api_keys::table
         .filter(api_keys::api_key_id.eq(&record.id))

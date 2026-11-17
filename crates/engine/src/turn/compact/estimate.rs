@@ -3,8 +3,8 @@
 
 use sessions::events::{Event, EventPayload, SpanEvent};
 
-use super::checkpoint::View;
 use super::BYTES_PER_TOKEN;
+use super::checkpoint::View;
 
 fn bytes(events: &[&Event]) -> u64 {
     let n: usize = events.iter().map(|e| serde_json::to_string(e).map_or(0, |s| s.len())).sum();

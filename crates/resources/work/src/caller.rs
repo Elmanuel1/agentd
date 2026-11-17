@@ -4,7 +4,7 @@
 
 use shared::{ApiError, AuthContext, WorkspaceId};
 
-use crate::service::{not_found, WorkService};
+use crate::service::{WorkService, not_found};
 use crate::store::{Reach, Scope};
 use crate::tokens::WorkClaims;
 use shared::tenancy::RUNTIME_QUEUE;

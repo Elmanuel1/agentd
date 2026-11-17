@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
-use serde_json::{json, Value};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap};
+use serde_json::{Value, json};
 use shared::net::{Guard, NetError};
 
 /// The protocol version agentd speaks, as live's client falls back to it.
@@ -193,8 +193,7 @@ mod tests {
 
     #[test]
     fn an_event_stream_yields_each_data_message() {
-        let text =
-            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n\
+        let text = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n\
                     id: 2\ndata: {\"jsonrpc\":\"2.0\",\n data: \"id\":1,\"result\":{}}\n\n";
         let got = events(text);
         assert_eq!(got.len(), 1, "a data line that does not start the field is not one");

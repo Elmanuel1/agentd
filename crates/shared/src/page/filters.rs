@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::error::ApiError;
 use crate::Timestamp;
+use crate::error::ApiError;
 
 /// A `created_at[gt|gte|lt|lte]` range; each bound optional.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

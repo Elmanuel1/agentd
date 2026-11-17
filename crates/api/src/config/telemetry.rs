@@ -1,6 +1,6 @@
 //! Telemetry settings: OTLP export and the log format.
 
-use super::{selector, ConfigError};
+use super::{ConfigError, selector};
 
 /// Where logs, traces and metrics go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -22,7 +22,7 @@ impl TelemetryConfig {
                 return Err(ConfigError {
                     var: "AGENTD_LOG_FORMAT",
                     reason: format!("unknown format `{other}`"),
-                })
+                });
             }
         };
         Ok(Self { otlp, json_logs })

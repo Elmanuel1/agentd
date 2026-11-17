@@ -1,15 +1,15 @@
 //! The database's load as the overload gate reads it: the pool's slow
 //! checkouts, and the database's connections against `max_connections`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use diesel::sql_types::BigInt;
 use diesel_async::RunQueryDsl;
 use sessions::store::{DatabaseLoad, StoreError};
 
-use crate::{diesel_be, pool_be, DieselPgPool};
+use crate::{DieselPgPool, diesel_be, pool_be};
 
 /// How far back a slow checkout counts, and how often connections are counted.
 pub const WINDOW: Duration = Duration::from_secs(10);

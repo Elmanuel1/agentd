@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use shared::{OrgId, Pagination};
 
 use crate::schema::environments;
-use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, enum_str, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed environments store (Diesel).
 #[derive(Debug, Clone)]

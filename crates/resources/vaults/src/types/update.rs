@@ -3,11 +3,11 @@
 //! or sent as `null` keeps its value.
 
 use serde::Deserialize;
-use shared::patch::{MetadataPatch, Patch};
 use shared::Timestamp;
+use shared::patch::{MetadataPatch, Patch};
 
-use super::auth::{CredentialNetworking, InjectionLocation};
 use super::SecretString;
+use super::auth::{CredentialNetworking, InjectionLocation};
 
 /// `POST /v1/vaults/{vid}/credentials/{cid}` body.
 #[derive(Debug, Clone, Deserialize)]

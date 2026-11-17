@@ -8,8 +8,8 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{Auth, Rig, KEY};
-use serde_json::{json, Value};
+use common::{Auth, KEY, Rig};
+use serde_json::{Value, json};
 
 async fn vault(rig: &Rig) -> String {
     let (st, v) = rig.call("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))).await;

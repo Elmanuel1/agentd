@@ -21,12 +21,12 @@ use serde_json::json;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
+use vaults::VaultsService;
 use vaults::store::{
     ClaimedWrite, CredentialClaims, CredentialReads, CredentialWrites, StoreError, StoredCredential,
     VaultCredentialStore,
 };
 use vaults::types::{Credential, CredentialAuthInput, CredentialId, SecretString, VaultId};
-use vaults::VaultsService;
 use webhooks::Delivery;
 
 /// What the other writer does before the update's next store call.

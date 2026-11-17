@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::str::FromStr;
 
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// A resource type that owns an ID prefix.
@@ -35,12 +35,12 @@ const BODY_MIN: usize = 20;
 const BODY_MAX: usize = 32;
 
 fn gen_body() -> String {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut s = String::with_capacity(BODY_LEN);
     s.push('0');
     s.push('1');
     for _ in 0..(BODY_LEN - 2) {
-        let i = rng.gen_range(0..BASE62.len());
+        let i = rng.random_range(0..BASE62.len());
         // BASE62 is a fixed non-empty table; index is in range by construction.
         s.push(BASE62.get(i).copied().unwrap_or(b'0') as char);
     }

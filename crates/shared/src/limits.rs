@@ -9,7 +9,7 @@ use crate::error::ApiError;
 /// Numeric limits (live-verified unless noted).
 mod models;
 
-pub use models::{validate_model_supported, ModelCatalog};
+pub use models::{ModelCatalog, validate_model_supported};
 
 pub mod values {
     /// `agent.name` length range.
@@ -167,12 +167,7 @@ mod tests {
     #[test]
     fn range_exact_live_string() {
         assert_eq!(
-            msg(validate_range_u32(
-                "events.0.user_define_outcome.max_iterations",
-                21,
-                1,
-                20
-            )),
+            msg(validate_range_u32("events.0.user_define_outcome.max_iterations", 21, 1, 20)),
             "events.0.user_define_outcome.max_iterations: value must be greater than or equal to 1 and less than or equal to 20"
         );
         assert!(validate_range_u32("x", 20, 1, 20).is_ok());

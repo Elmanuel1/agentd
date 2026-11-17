@@ -1,7 +1,7 @@
 //! Applying an update body to a stored workspace.
 
-use shared::limits::validate_string_len;
 use shared::ApiError;
+use shared::limits::validate_string_len;
 
 use crate::workspaces::requests::UpdateWorkspaceRequest;
 use crate::workspaces::service::{validate_color, validate_residency, validate_tags};

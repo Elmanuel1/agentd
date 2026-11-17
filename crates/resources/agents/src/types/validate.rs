@@ -2,7 +2,7 @@
 //! exact live error strings, in the live order.
 
 use shared::limits::{
-    required, validate_array_max, validate_model_supported, validate_string_len, values, ModelCatalog,
+    ModelCatalog, required, validate_array_max, validate_model_supported, validate_string_len, values,
 };
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, Metadata, Patch};

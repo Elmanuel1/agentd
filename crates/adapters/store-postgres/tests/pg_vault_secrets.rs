@@ -11,8 +11,8 @@ use shared::ports::secrets::SecretKey;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
-use vaults::store::CredentialReads;
 use vaults::VaultsService;
+use vaults::store::CredentialReads;
 
 #[tokio::test]
 async fn environment_variable_credentials_are_listed_and_their_secrets_found_for_tagging() {

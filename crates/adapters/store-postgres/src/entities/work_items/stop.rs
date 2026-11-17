@@ -6,8 +6,8 @@ use diesel::sql_types::{Bool, Text, Timestamptz};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
-use super::filter::{keyed, KEY, REACH};
-use super::row::{first, queued, requeuable, Row, COLS};
+use super::filter::{KEY, REACH, keyed};
+use super::row::{COLS, Row, first, queued, requeuable};
 
 /// `stopped` when `force` or no worker holds the item, else `stopping`.
 pub(crate) async fn stop(

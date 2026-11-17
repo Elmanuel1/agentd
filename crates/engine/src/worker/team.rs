@@ -6,7 +6,7 @@
 use agents::AgentSnapshot;
 use serde_json::Value;
 use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent};
-use sessions::types::{primary_thread_id, Session, ThreadId};
+use sessions::types::{Session, ThreadId, primary_thread_id};
 use shared::ContentBlock;
 
 use super::grade::Outcome;

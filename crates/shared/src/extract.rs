@@ -7,10 +7,10 @@
 //! field is `Failed to parse request body: unknown field "X"`. Request types
 //! opt into unknown-field rejection with `#[serde(deny_unknown_fields)]`.
 
+use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Request};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 use crate::error::{ApiError, ErrorType};
 use crate::id::RequestId;

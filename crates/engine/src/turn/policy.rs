@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 
-use agents::types::{PermissionPolicy, Tool};
 use agents::AgentSnapshot;
-use serde_json::{json, Value};
+use agents::types::{PermissionPolicy, Tool};
+use serde_json::{Value, json};
 
 use super::history::SEND_TO_AGENT;
 use super::specs;

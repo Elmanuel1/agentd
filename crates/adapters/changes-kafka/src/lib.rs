@@ -13,13 +13,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::error::KafkaError;
-use rdkafka::Message;
+use shared::ports::ScheduleSpec;
 use shared::ports::changes::{self, ChangeHandler};
 use shared::ports::fire::{self, FireRegistry};
-use shared::ports::ScheduleSpec;
 
 /// The pause before a failed record, or a failed read, is tried again.
 const BACKOFF: Duration = Duration::from_secs(1);

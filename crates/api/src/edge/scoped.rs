@@ -9,13 +9,13 @@ use axum::middleware::Next;
 use axum::response::Response;
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource};
 use shared::tenancy::RUNTIME_QUEUE;
-use shared::{wire_response, ApiError, AuthContext, OrgId, SessionCaller, WorkspaceId};
+use shared::{ApiError, AuthContext, OrgId, SessionCaller, WorkspaceId, wire_response};
 use work::store::Reach;
 use work::{WorkCaller, WorkReads, WorkState, WorkTokens};
 
 use super::auth::{run, run_in_workspace};
 use super::reach::{
-    environment_read, environment_route, granted, named_session, out_of_scope, work_route, SessionGrants,
+    SessionGrants, environment_read, environment_route, granted, named_session, out_of_scope, work_route,
 };
 
 /// The runtime key's actor, as every write it makes records.

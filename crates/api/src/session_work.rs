@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use sessions::types::{Session, SessionId};
 use sessions::SessionWork;
+use sessions::types::{Session, SessionId};
 use shared::{ApiError, AuthContext, WorkspaceId};
 use work::WorkService;
 

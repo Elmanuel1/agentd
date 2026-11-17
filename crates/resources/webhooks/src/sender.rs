@@ -29,7 +29,7 @@ const RETRYING: usize = 256;
 pub trait DeliveryMarks: Send + Sync {
     /// The delivery was answered 2xx on attempt `attempt`.
     async fn delivered(&self, webhook_id: &str, endpoint_key: &str, attempt: i64)
-        -> Result<(), BackendError>;
+    -> Result<(), BackendError>;
     /// The delivery was dropped after `attempt` attempts.
     async fn dropped(&self, webhook_id: &str, endpoint_key: &str, attempt: i64) -> Result<(), BackendError>;
 }

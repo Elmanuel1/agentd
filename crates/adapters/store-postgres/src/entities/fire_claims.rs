@@ -5,11 +5,11 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use diesel::sql_types::{Bool, Double, Integer, Text, Timestamptz};
 use diesel::QueryableByName;
+use diesel::sql_types::{Bool, Double, Integer, Text, Timestamptz};
 use diesel_async::RunQueryDsl;
-use shared::ports::fire::{Claim, FireClaims, FireError};
 use shared::ports::ScheduleSpec;
+use shared::ports::fire::{Claim, FireClaims, FireError};
 
 use crate::PgBackend;
 

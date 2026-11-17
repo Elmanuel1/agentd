@@ -6,7 +6,7 @@ use shared::limits::validate_string_len;
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Timestamp};
 
-use crate::service::{map_store, parse_pair, VaultsService};
+use crate::service::{VaultsService, map_store, parse_pair};
 use crate::store::ClaimedWrite;
 use crate::types::{
     ClientSecretUpdate, Credential, CredentialAuthInput, CredentialAuthUpdate, OauthRefreshInput,
@@ -89,7 +89,7 @@ fn rotate(
                 (None, Some(_)) => {
                     return Err(ApiError::invalid_request(
                         "auth.refresh: this credential was created without refresh capability",
-                    ))
+                    ));
                 }
                 (Some(refresh), Some(new)) => Some(rotate_refresh(refresh, new)?),
             };
@@ -145,12 +145,16 @@ fn rotate_client_secret(
         )));
     }
     match current {
-        Some(TokenEndpointAuthInput::ClientSecretBasic { client_secret }) => Ok(TokenEndpointAuthInput::ClientSecretBasic {
-            client_secret: update.client_secret.unwrap_or(client_secret),
-        }),
-        Some(TokenEndpointAuthInput::ClientSecretPost { client_secret }) => Ok(TokenEndpointAuthInput::ClientSecretPost {
-            client_secret: update.client_secret.unwrap_or(client_secret),
-        }),
+        Some(TokenEndpointAuthInput::ClientSecretBasic { client_secret }) => {
+            Ok(TokenEndpointAuthInput::ClientSecretBasic {
+                client_secret: update.client_secret.unwrap_or(client_secret),
+            })
+        }
+        Some(TokenEndpointAuthInput::ClientSecretPost { client_secret }) => {
+            Ok(TokenEndpointAuthInput::ClientSecretPost {
+                client_secret: update.client_secret.unwrap_or(client_secret),
+            })
+        }
         Some(TokenEndpointAuthInput::None) | None => Err(ApiError::invalid_request(
             "auth.refresh.token_endpoint_auth: client_secret does not match this credential's stored auth method",
         )),

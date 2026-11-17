@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use shared::net::Guard;
 use shared::Timestamp;
+use shared::net::Guard;
 
 use crate::types::{OauthRefreshInput, SecretString, TokenEndpointAuthInput};
 

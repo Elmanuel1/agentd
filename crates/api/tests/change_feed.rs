@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use changes_kafka::KafkaChanges;
-use common::{Auth, Rig, KEY};
+use common::{Auth, KEY, Rig};
 use deployments::fire::target;
 use deployments::types::DeploymentId;
-use diesel::sql_types::{BigInt, Text};
 use diesel::QueryableByName;
+use diesel::sql_types::{BigInt, Text};
 use diesel_async::RunQueryDsl;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::ports::changes::ChangeHandler;
 use shared::ports::fire::FireRegistry;
 use shared::ports::{FireTarget, SchedulerError, SchedulerPort};

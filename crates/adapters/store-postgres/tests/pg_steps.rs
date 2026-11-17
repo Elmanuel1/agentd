@@ -220,54 +220,57 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
     assert_eq!(second.attempts, first.attempts + 1);
     let late = reply();
     let none: &[Event] = std::slice::from_ref(&late);
-    assert!(!r
-        .steps
-        .write(
-            &first,
-            60,
-            StepWrite {
-                read: &[],
-                at: Timestamp::now(),
-                events: none,
-                engine: &[],
-                session: &unchanged,
-                deliveries: None
-            }
-        )
-        .await
-        .unwrap());
-    assert!(!r
-        .steps
-        .commit(
-            &first,
-            StepEnd::Done,
-            StepWrite {
-                read: &[],
-                at: Timestamp::now(),
-                events: none,
-                engine: &[],
-                session: &unchanged,
-                deliveries: None
-            }
-        )
-        .await
-        .unwrap());
-    assert!(r
-        .steps
-        .commit(
-            &second,
-            StepEnd::Done,
-            StepWrite {
-                read: &[],
-                at: Timestamp::now(),
-                events: &[reply()],
-                engine: &[],
-                session: &unchanged,
-                deliveries: None
-            }
-        )
-        .await
-        .unwrap());
+    assert!(
+        !r.steps
+            .write(
+                &first,
+                60,
+                StepWrite {
+                    read: &[],
+                    at: Timestamp::now(),
+                    events: none,
+                    engine: &[],
+                    session: &unchanged,
+                    deliveries: None
+                }
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        !r.steps
+            .commit(
+                &first,
+                StepEnd::Done,
+                StepWrite {
+                    read: &[],
+                    at: Timestamp::now(),
+                    events: none,
+                    engine: &[],
+                    session: &unchanged,
+                    deliveries: None
+                }
+            )
+            .await
+            .unwrap()
+    );
+    assert!(
+        r.steps
+            .commit(
+                &second,
+                StepEnd::Done,
+                StepWrite {
+                    read: &[],
+                    at: Timestamp::now(),
+                    events: &[reply()],
+                    engine: &[],
+                    session: &unchanged,
+                    deliveries: None
+                }
+            )
+            .await
+            .unwrap()
+    );
     let events = r.log.events(&ws, &s.id).await.unwrap();
     assert_eq!(events.len(), 2, "the late commit appended nothing");
     assert!(events.iter().all(|e| e.id != late.id));
@@ -285,40 +288,42 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
     r.wake(&ws, &s.id).await;
     let c = r.claim_of("w1", 60, &s.id).await.unwrap();
     r.wake(&ws, &s.id).await;
-    assert!(r
-        .steps
-        .commit(
-            &c,
-            StepEnd::Done,
-            StepWrite {
-                read: &[],
-                at: Timestamp::now(),
-                events: &[reply()],
-                engine: &[],
-                session: &unchanged,
-                deliveries: None
-            }
-        )
-        .await
-        .unwrap());
+    assert!(
+        r.steps
+            .commit(
+                &c,
+                StepEnd::Done,
+                StepWrite {
+                    read: &[],
+                    at: Timestamp::now(),
+                    events: &[reply()],
+                    engine: &[],
+                    session: &unchanged,
+                    deliveries: None
+                }
+            )
+            .await
+            .unwrap()
+    );
     let next = r.claim_of("w2", 60, &s.id).await.unwrap();
     assert_eq!(next.attempts, c.attempts + 1);
-    assert!(r
-        .steps
-        .commit(
-            &next,
-            StepEnd::Again,
-            StepWrite {
-                read: &[],
-                at: Timestamp::now(),
-                events: &[],
-                engine: &[],
-                session: &unchanged,
-                deliveries: None
-            }
-        )
-        .await
-        .unwrap());
+    assert!(
+        r.steps
+            .commit(
+                &next,
+                StepEnd::Again,
+                StepWrite {
+                    read: &[],
+                    at: Timestamp::now(),
+                    events: &[],
+                    engine: &[],
+                    session: &unchanged,
+                    deliveries: None
+                }
+            )
+            .await
+            .unwrap()
+    );
     assert!(r.claim_of("w3", 60, &s.id).await.is_some(), "a step that goes on is due again");
 }
 
@@ -335,22 +340,23 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
     let c = r.claim_of("w1", 60, &s.id).await.unwrap();
     let before = r.log.head(&ws, &s.id).await.unwrap().seq;
     r.sessions.delete(&ws, &s.id).await.unwrap();
-    assert!(!r
-        .steps
-        .commit(
-            &c,
-            StepEnd::Done,
-            StepWrite {
-                read: &[],
-                at: Timestamp::now(),
-                events: &[reply()],
-                engine: &[],
-                session: &unchanged,
-                deliveries: None
-            }
-        )
-        .await
-        .unwrap());
+    assert!(
+        !r.steps
+            .commit(
+                &c,
+                StepEnd::Done,
+                StepWrite {
+                    read: &[],
+                    at: Timestamp::now(),
+                    events: &[reply()],
+                    engine: &[],
+                    session: &unchanged,
+                    deliveries: None
+                }
+            )
+            .await
+            .unwrap()
+    );
     assert!(r.claim_of("w2", 60, &s.id).await.is_none());
     assert_eq!(r.log.head(&ws, &s.id).await.unwrap().seq, before, "nothing appended for a deleted session");
 }

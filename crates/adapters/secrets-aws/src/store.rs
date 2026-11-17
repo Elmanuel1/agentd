@@ -9,7 +9,7 @@ use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, 
 use zeroize::Zeroize;
 
 use crate::failure::failure;
-use crate::{name, AwsSecretStore};
+use crate::{AwsSecretStore, name};
 
 impl AwsSecretStore {
     /// Whether `name` exists and is scheduled for deletion: Secrets Manager
