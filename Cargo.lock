@@ -3056,7 +3056,6 @@ dependencies = [
  "shared",
  "tokio",
  "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -3224,6 +3223,7 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -3355,6 +3355,7 @@ dependencies = [
  "agents",
  "api-keys",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64 0.22.1",
  "blobs-s3",
@@ -3386,6 +3387,7 @@ dependencies = [
  "vaults",
  "webhooks",
  "work",
+ "zeroize",
 ]
 
 [[package]]

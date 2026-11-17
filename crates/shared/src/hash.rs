@@ -59,25 +59,7 @@ impl KeyRing {
     /// `<id>:<hex>,…`, the signing key first; each id is letters and digits,
     /// each key at least 16 bytes.
     pub fn parse(raw: &str) -> Result<Self, KeyRingError> {
-        let keys = raw.split(',').map(str::trim).filter(|k| !k.is_empty()).map(|entry| {
-            let bad = || {
-                KeyRingError(format!(
-                    "`{}…` is not `<id>:<hex of at least 16 bytes>`",
-                    entry.chars().take(4).collect::<String>()
-                ))
-            };
-            let (id, key) = entry.split_once(':').ok_or_else(bad)?;
-            let key = hex::decode(key).ok().filter(|k| k.len() >= 16).ok_or_else(bad)?;
-            match !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
-                true => Ok((id.to_owned(), key)),
-                false => Err(bad()),
-            }
-        });
-        let keys = keys.collect::<Result<Vec<_>, _>>()?;
-        match keys.is_empty() {
-            true => Err(KeyRingError("no key".into())),
-            false => Ok(Self { keys }),
-        }
+        Ok(Self { keys: entries(raw, "at least 16 bytes", |k| (k.len() >= 16).then_some(k))? })
     }
 
     /// The ring with each key derived for one purpose.
@@ -90,6 +72,31 @@ impl KeyRing {
     /// Each key derived for `purpose`, the first key's first.
     pub(crate) fn derived(&self, purpose: &str) -> Vec<[u8; 32]> {
         self.keys.iter().map(|(_, k)| hmac_sha256(k, purpose.as_bytes())).collect()
+    }
+}
+
+/// The entries of a key ring `<id>:<hex>,…`, each key kept as `key` makes it
+/// (`None` refuses it). An error names an entry by its position, never its
+/// text: an entry typed `<hex>:<id>` would print the key as its id.
+fn entries<K>(
+    raw: &str,
+    size: &str,
+    key: impl Fn(Vec<u8>) -> Option<K>,
+) -> Result<Vec<(String, K)>, KeyRingError> {
+    let entries = raw.split(',').map(str::trim).filter(|k| !k.is_empty()).enumerate();
+    let keys = entries.map(|(i, entry)| {
+        let bad = || KeyRingError(format!("entry {} is not `<id>:<hex of {size}>`", i + 1));
+        let (id, hex) = entry.split_once(':').ok_or_else(bad)?;
+        let key = hex::decode(hex).ok().and_then(&key).ok_or_else(bad)?;
+        match !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            true => Ok((id.to_owned(), key)),
+            false => Err(bad()),
+        }
+    });
+    let keys = keys.collect::<Result<Vec<_>, _>>()?;
+    match keys.is_empty() {
+        true => Err(KeyRingError("no key".into())),
+        false => Ok(keys),
     }
 }
 
@@ -144,6 +151,9 @@ impl Signer {
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body).ok()?).ok()
     }
 }
+
+mod secret_keys;
+pub use secret_keys::SecretKeys;
 
 #[cfg(test)]
 mod tests;

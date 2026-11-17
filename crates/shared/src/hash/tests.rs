@@ -57,3 +57,16 @@ fn a_token_names_its_key_and_verifies_while_that_key_is_in_the_ring() {
             && KeyRing::parse("k-1:000102030405060708090a0b0c0d0e0f").is_err()
     );
 }
+
+#[test]
+fn a_bad_entry_is_named_by_its_position_never_its_text() {
+    let key = "000102030405060708090a0b0c0d0e0f";
+    for raw in [format!("{key}:k1"), format!("k1:{key},k2{key}"), format!("k1:{key},k2:00")] {
+        let err = KeyRing::parse(&raw).unwrap_err().to_string();
+        assert!(err.starts_with("entry ") && !err.contains("0001"), "{err}");
+    }
+    assert_eq!(
+        KeyRing::parse(&format!("k1:{key},{key}:k2")).unwrap_err().to_string(),
+        "entry 2 is not `<id>:<hex of at least 16 bytes>`"
+    );
+}
