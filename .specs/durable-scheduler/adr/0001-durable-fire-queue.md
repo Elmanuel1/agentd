@@ -48,7 +48,7 @@ burst of more than about 600 schedules a minute per replica is served late and t
 
 - An occurrence can no longer be lost once its schedule has moved on, and a top-of-hour burst is spread by the
   jitter and run concurrently.
-- `fire_claims` gains `spec`, `due_at` and `outcome` (V16) and two partial indexes (V17); done rows are deleted 30
+- `fire_claims` gains `spec`, `due_at` and `outcome` (V18) and two partial indexes (V19); done rows are deleted 30
   days after their occurrence (D12).
 - The 15-minute lease and 3-attempt limit of runtime-parity K-8 are replaced by the 2-minute lease and the backoff
   bounded by the following occurrence.

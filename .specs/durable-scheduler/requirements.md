@@ -88,24 +88,26 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | A durable engine owns the timers | Temporal Schedules | Followed for the Temporal sink (D2). Departure: Temporal delivers the occurrence and agentd's queue runs it, so every sink has one run path. |
 | Pause a partition and keep polling while a record is retried | librdkafka (I6) | Followed (DS-13). |
 
-## Plan of PRs
+## Plan: one PR
 
-Stacked with `gh stack` in this order. Each PR deploys on its own and changes nothing before the PR that switches it
-on.
+The code lands as one PR after this spec, built as the ordered commits below, as the resource history PR was. Each
+commit builds and passes the suite on its own; a split the 200-line rule forces happens inside the commit that needs
+it. The PR touches about 55 files, under CodeRabbit's 100-file review limit: about 6 for commit 1, 2 for commit 2,
+10 for commit 3, 7 for commit 4, 2 for commit 5, 3 for commit 6, 10 for commit 7 and 15 for commit 8 (the Temporal
+crate, its workspace and lock entries, the settings and the CI service).
 
-| PR | What | Requirements |
+| Commit | What | Requirements |
 |---|---|---|
-| 0 | This spec | none (docs) |
 | 1 | A deployment write never overwrites a newer one | DS-14 |
-| 2 | Migrations V16 and V17: the fire queue columns and indexes | none (schema for DS-1, DS-15, DS-18) |
-| 3 | The fire queue and its workers, unused | DS-3 to DS-7, DS-18, DS-19 |
+| 2 | Migrations V18 and V19: the fire queue columns and indexes | none (schema for DS-1, DS-15, DS-18) |
+| 3 | The fire queue and its workers, not yet called | DS-3 to DS-7, DS-18, DS-19 |
 | 4 | The tick and the feed on the queue | DS-1, DS-2, DS-8, DS-9, DS-10, DS-12 |
 | 5 | An invalid schedule change is passed over | DS-11 |
 | 6 | A Kafka consumer keeps its group while it retries | DS-13 |
 | 7 | Metrics, retention and docs | DS-15, DS-16 |
 | 8 | Temporal as a scheduler sink | DS-17 |
 
-### PR 1: a deployment write never overwrites a newer one
+### Commit 1: a deployment write never overwrites a newer one
 
 - `store-postgres/src/entities/deployments.rs`: `replace` takes the `updated_at` it read. Statement:
   `UPDATE deployments SET name, status, archived_at, doc WHERE workspace_id = $1 AND deployment_id = $2 AND
@@ -118,23 +120,23 @@ on.
 - Tests: `pg_deployments` "a pause between a fire's read and its write survives the fire"; unit "rewrite redoes on a
   stale write and gives up after 5".
 
-### PR 2: migrations V16 and V17
+### Commit 2: migrations V18 and V19
 
-- `V16__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
+- `V18__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
   outcome text check (outcome in ('ran', 'skipped', 'dropped'));`. The columns are nullable and nothing reads them
-  yet; `outcome` is null until a fire is done. No backfill: `take` keeps writing claims without these columns until
-  PR 4, and PR 4 recovers any such claim left unfinished.
-- `V17__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
+  yet; `outcome` is null until a fire is done. No backfill: a database that ran `main` may hold claims `take` wrote without
+  these columns, and commit 4 recovers any such claim left unfinished.
+- `V19__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
   fire_claims (due_at) where not done;` and `create index concurrently fire_claims_done_idx on fire_claims
   (scheduled_at) where done;`.
 - Tests: the migration suite; `pg_fires` passes unchanged.
 
-### PR 3: the fire queue and its workers, unused
+### Commit 3: the fire queue and its workers, unused
 
-Opens with probes B33 and B34.
+The PR's build opens with probes B33 and B34.
 
 - `shared/src/ports/fire/claims.rs`: `Fire { spec, scheduled_at, due_at }`; `FireClaims` gains `enqueue`,
-  `claim_due(limit)` and `retry(&Fire, at)`, and `finish` takes an `Outcome`. `take` stays until PR 4.
+  `claim_due(limit)` and `retry(&Fire, at)`, and `finish` takes an `Outcome`. `take` stays until commit 4.
 - `shared/src/ports/fire/worker.rs` (new): `FireWorker::run_due` claims up to 16 fires, runs each through
   `FireRegistry` with a 60 s timeout, then finishes or retries it, and reports each outcome and lag to a callback
   the api crate passes in.
@@ -160,7 +162,7 @@ Opens with probes B33 and B34.
   minute, hourly and daily crons; the same occurrence gets the same delay) and for the worker (ran, business failure,
   timeout, infra failure).
 
-### PR 4: the tick and the feed on the queue
+### Commit 4: the tick and the feed on the queue
 
 - `schedules/tick.rs`, per batch in one transaction: the existing `SELECT … FOR UPDATE SKIP LOCKED`, `enqueue_in`,
   the existing `UPDATE … FROM unnest`, 1 `UPDATE schedules SET paused = true WHERE target = ANY($1)` for unreadable
@@ -173,7 +175,7 @@ Opens with probes B33 and B34.
   commits; `changes-kafka` and `signals-valkey/src/fires.rs` call it unchanged.
 - `api/src/backends/postgres.rs`: `FireSources::start` spawns the tick and the worker (every 1 s).
 - `fire_claims/claim.rs`: `take` and its 15-minute and 3-attempt rules are removed, with their `pg_fires` tests.
-- Claims `take` wrote before this PR have no `due_at` and no `spec`, and `claim_due` never selects them (`due_at <=
+- Claims `take` wrote on `main` have no `due_at` and no `spec`, and `claim_due` never selects them (`due_at <=
   now()` is not true for `NULL`). They follow `main`'s rules: `enqueue`'s conflict clause becomes `ON CONFLICT
   (workspace_id, target, scheduled_at) DO UPDATE SET spec = EXCLUDED.spec, due_at = EXCLUDED.due_at WHERE
   fire_claims.spec IS NULL AND NOT fire_claims.done`, so a redelivered external fire fills in its unfinished claim
@@ -190,14 +192,14 @@ Opens with probes B33 and B34.
   claim and runs once", "a claim take finished is not run again on redelivery" and "an unfinished built-in take claim
   is not run and is swept after 30 days".
 
-### PR 5: an invalid schedule change is passed over
+### Commit 5: an invalid schedule change is passed over
 
 - `schedules/outbox.rs`: `SchedulerError::InvalidSpec` is logged at `ERROR` with its target and returns `Ok`;
   `Unavailable` still returns an error. If probe B34 shows live refuses a never-firing cron, deployment create refuses
   it too, in `deployments/src/service.rs`; `types.rs` does not grow.
 - Test: `pg_schedules` "an invalid change is passed over and the next one applies".
 
-### PR 6: a Kafka consumer keeps its group while it retries
+### Commit 6: a Kafka consumer keeps its group while it retries
 
 - `changes-kafka/src/lib.rs`: on a failed record, pause every partition the consumer is assigned, then alternate the
   backoff retry with `consumer.recv()`, which serves rebalances and returns no record while every partition is
@@ -208,21 +210,21 @@ Opens with probes B33 and B34.
   `max.poll.interval.ms` at 10 s and a record failing for 20 s: no second consumer is assigned the partition and the
   record applies once.
 
-### PR 7: metrics, retention and docs
+### Commit 7: metrics, retention and docs
 
 - `api/src/telemetry/scheduler.rs` (new): counter `agentd.scheduler.fires` by `outcome`, histogram
   `agentd.scheduler.fire.lag` (s), gauge `agentd.scheduler.fires.due` from 1 `SELECT count(*) FROM fire_claims WHERE
   NOT done AND due_at <= now()` every 30 s per replica.
 - `fire_claims/sweep.rs` (new): hourly, 1 `DELETE FROM fire_claims WHERE done AND scheduled_at < now() - interval
   '30 days'` on the `done` index, and 1 `DELETE FROM fire_claims WHERE NOT done AND due_at IS NULL AND scheduled_at <
-  now() - interval '30 days'` on the `due_at` index, for unfinished claims `take` left (PR 4).
+  now() - interval '30 days'` on the `due_at` index, for unfinished claims `take` left (commit 4).
 - Docs: `configuration.md` "Scheduled work" describes the queue, the jitter, retries and the window;
   `observability.md` names each signal and its threshold for any backend (due fires above 0 for 5 minutes, lag p99
   over 60 s, any `skipped` or `dropped`); `operations.md` says every role runs the feed handlers; the
-  `scheduler.rs` module doc, the `agentd-fire-failures` alert text and the README's backend line describe the queue.
+  `scheduler.rs` module doc and the README's backend line describe the queue.
 - Tests: telemetry unit tests; `pg_fire_queue` "done rows older than 30 days are swept, newer and undone rows stay".
 
-### PR 8: Temporal as a scheduler sink
+### Commit 8: Temporal as a scheduler sink
 
 - `crates/adapters/scheduler-temporal` (new): `TemporalScheduler: SchedulerPort` over Temporal Schedules. `upsert`
   creates or updates a schedule with the cron and timezone, jitter 0, overlap `AllowAll` and a catch-up window up to
