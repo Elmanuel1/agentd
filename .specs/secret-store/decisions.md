@@ -11,7 +11,7 @@ Secrets Manager and SSM Parameter Store are the external adapters, chosen by a s
 |---|---|---|
 | D1 | `AGENTD_SECRETS` picks the store: `postgres`, `aws` (Secrets Manager) or `ssm` (Parameter Store). Unset, it is `postgres`, unless `AGENTD_SECRETS_KMS_KEY_ID` is set, which picks `aws`; an empty or blank value counts as unset. An AWS deployment keeps working with no change and moves to Postgres by dropping the KMS variable. | User, 2026-11-16 ("kms already infer aws. its not neutral") |
 | D2 | The Postgres store is the default and has no KMS plugin. The external-KMS path is an AWS adapter, chosen whole. | User, 2026-11-16 (default, then external backend) |
-| D3 | The Secrets Manager adapter stores secrets exactly as it does today. | User, 2026-11-17 (plan approved) |
+| D3 | The Secrets Manager adapter keeps its calls, names, tags and recovery window. | User, 2026-11-17 (plan approved) |
 | D4 | An SSM Parameter Store adapter keeps each credential as one SecureString parameter under the customer KMS key, in the Intelligent-Tiering tier, tagged as the Secrets Manager adapter tags. | User, 2026-11-17 ("no openbao for now. and ssm.") |
 | D5 | OpenBao is out for now. | User, 2026-11-17 ("no openbao for now. and ssm.") |
 | D6 | Our `cloud` runtime swaps `environment_variable` values at egress from Secrets Manager or SSM through iron-proxy, never from Postgres. A deployment on the Postgres store runs no egress swap. | User, 2026-11-17 ("this cloud is ours") |

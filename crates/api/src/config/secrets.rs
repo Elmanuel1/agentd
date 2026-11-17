@@ -17,7 +17,8 @@ pub enum SecretsConfig {
     /// `AGENTD_SECRETS_KMS_KEY_ID`.
     Aws(AwsSecretsConfig),
     /// `ssm`: one SecureString parameter per credential, under the same
-    /// prefix and key settings; a parameter has no recovery window.
+    /// prefix and key settings, the prefix checked at connect; a parameter
+    /// has no recovery window.
     Ssm(AwsSecretsConfig),
 }
 
@@ -25,7 +26,10 @@ pub enum SecretsConfig {
 /// `postgres` otherwise. A blank value counts as unset.
 pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<SecretsConfig, ConfigError> {
     let set = |var: &str| get(var).filter(|v| !v.trim().is_empty());
-    let default = if set("AGENTD_SECRETS_KMS_KEY_ID").is_some() { "aws" } else { "postgres" };
+    let default = match set("AGENTD_SECRETS_KMS_KEY_ID") {
+        Some(_) => "aws",
+        None => "postgres",
+    };
     match set("AGENTD_SECRETS").as_deref().unwrap_or(default) {
         "postgres" => {
             let var = "AGENTD_SECRET_KEYS";
@@ -40,11 +44,7 @@ pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Secre
                 let reason = format!("`{days}`: Parameter Store has no recovery window");
                 return Err(ConfigError { var: "AGENTD_SECRETS_RECOVERY_DAYS", reason });
             }
-            let ssm = aws(get)?;
-            match secrets_aws::parameter_prefix_problem(&ssm.prefix) {
-                Some(reason) => Err(ConfigError { var: "AGENTD_SECRETS_PREFIX", reason }),
-                None => Ok(SecretsConfig::Ssm(ssm)),
-            }
+            aws(get).map(SecretsConfig::Ssm)
         }
         other => Err(unknown("AGENTD_SECRETS", other)),
     }

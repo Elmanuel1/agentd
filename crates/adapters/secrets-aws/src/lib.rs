@@ -20,7 +20,6 @@ mod ssm;
 mod store;
 mod tag;
 
-pub use name::parameter_prefix_problem;
 pub use ssm::AwsParameterStore;
 
 pub use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};

@@ -1,8 +1,9 @@
 //! Envelope encryption of one vault secret: the value sealed with AES-256-GCM
 //! under a fresh data key, the data key sealed under a single-use wrap key
-//! from the master key ring ([`SecretKeys::wrap_key`]). No database.
+//! from the master key ring ([`SecretKeys::wrap_key`]). It runs no statement.
 
 use aws_lc_rs::aead::{Aad, Nonce, RandomizedNonceKey, AES_256_GCM, NONCE_LEN};
+use diesel::{Queryable, QueryableByName, Selectable};
 use shared::hash::SecretKeys;
 use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretString};
 use zeroize::{Zeroize, Zeroizing};
@@ -12,7 +13,8 @@ const KEY_LEN: usize = 32;
 const TAG_LEN: usize = 16;
 
 /// One secret as `vault_secrets` keeps it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, QueryableByName, Selectable)]
+#[diesel(table_name = crate::schema::vault_secrets, check_for_backend(diesel::pg::Pg))]
 pub(crate) struct Sealed {
     pub(crate) environment_variable: bool,
     /// The master key the data key is wrapped under.
@@ -46,8 +48,7 @@ pub(crate) fn open(keys: &SecretKeys, key: &SecretKey, row: &Sealed) -> Result<S
     let aad = aad(key, row.environment_variable);
     let (salt, wrapped) = row.sealed_key.split_at_checked(SALT_LEN).ok_or_else(fails)?;
     let (_, wrap) = keys.wrap_key(Some(&row.key_id), salt).ok_or_else(fails)?;
-    let data_key =
-        open_with(wrap.as_slice(), &aad, wrapped).filter(|k| k.len() == KEY_LEN).ok_or_else(fails)?;
+    let data_key = open_with(wrap.as_slice(), &aad, wrapped).ok_or_else(fails)?;
     let mut plain = open_with(&data_key, &aad, &row.sealed_value).ok_or_else(fails)?;
     match String::from_utf8(std::mem::take(&mut *plain)) {
         Ok(text) => Ok(into_secret(text)),
@@ -62,7 +63,10 @@ pub(crate) fn open(keys: &SecretKeys, key: &SecretKey, row: &Sealed) -> Result<S
 /// ids are in the id charset, which has no `/`, so the layout is unambiguous:
 /// a row moved to another credential, or with its kind flipped, does not open.
 fn aad(key: &SecretKey, environment_variable: bool) -> Vec<u8> {
-    let kind = if environment_variable { "env" } else { "mcp" };
+    let kind = match environment_variable {
+        true => "env",
+        false => "mcp",
+    };
     format!("agentd/vault-secret/v1/{key}/{kind}").into_bytes()
 }
 

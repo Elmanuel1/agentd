@@ -90,5 +90,7 @@ mod tests {
             assert_eq!(err, format!("entry {entry} is not `<id>:<hex of exactly 32 bytes>`"));
         }
         assert_eq!(SecretKeys::parse(" , ").unwrap_err().to_string(), "no key");
+        let repeated = SecretKeys::parse(&format!("k1:{K2},k1:{K1}")).unwrap_err().to_string();
+        assert_eq!(repeated, "entry 2 repeats an earlier id", "a rotation that reuses an id is refused");
     }
 }

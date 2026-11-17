@@ -11,7 +11,7 @@ pub use reseal::Resealed;
 
 use async_trait::async_trait;
 use diesel::upsert::excluded;
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
 use shared::hash::SecretKeys;
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
@@ -79,20 +79,14 @@ impl SecretStore for PgSecretStore {
 
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
         let mut conn = self.conn().await?;
-        let row: Option<(bool, String, Vec<u8>, Vec<u8>)> = t::table
+        let row = t::table
             .find((key.workspace(), key.vault(), key.credential()))
-            .select((t::environment_variable, t::key_id, t::sealed_key, t::sealed_value))
+            .select(Sealed::as_select())
             .first(&mut conn)
             .await
             .optional()
             .map_err(backend_error)?;
-        let (environment, id, wrapped, value) = row.ok_or_else(|| SecretError::NotFound(key.to_string()))?;
-        let row = Sealed {
-            environment_variable: environment,
-            key_id: id,
-            sealed_key: wrapped,
-            sealed_value: value,
-        };
+        let row = row.ok_or_else(|| SecretError::NotFound(key.to_string()))?;
         self.open(key, &row)
     }
 

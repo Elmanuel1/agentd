@@ -1,7 +1,7 @@
 //! `agentd vault-secrets reseal`: every row not under the master key ring's
 //! first key, sealed again under a new data key and the first key.
 
-use diesel::sql_types::{BigInt, Bool, Bytea, Text};
+use diesel::sql_types::{BigInt, Text};
 use diesel::{ExpressionMethods, QueryDsl, QueryableByName};
 use diesel_async::RunQueryDsl;
 use shared::ports::secrets::{SecretError, SecretKey};
@@ -23,21 +23,13 @@ pub struct Resealed {
 }
 
 #[derive(QueryableByName)]
+#[diesel(table_name = t)]
 struct Row {
-    #[diesel(sql_type = Text)]
     workspace_id: String,
-    #[diesel(sql_type = Text)]
     vault_id: String,
-    #[diesel(sql_type = Text)]
     credential_id: String,
-    #[diesel(sql_type = Bool)]
-    environment_variable: bool,
-    #[diesel(sql_type = Text)]
-    key_id: String,
-    #[diesel(sql_type = Bytea)]
-    sealed_key: Vec<u8>,
-    #[diesel(sql_type = Bytea)]
-    sealed_value: Vec<u8>,
+    #[diesel(embed)]
+    sealed: Sealed,
 }
 
 impl PgSecretStore {
@@ -89,12 +81,10 @@ impl PgSecretStore {
     /// 1 when `row` moved to the first key; 0 when it does not open or a put won.
     async fn reseal_row(&self, conn: &mut PooledConnection, row: Row) -> Result<usize, SecretError> {
         let key = SecretKey::new(&row.workspace_id, &row.vault_id, &row.credential_id)?;
-        let key = if row.environment_variable { key.environment_variable() } else { key };
-        let read = Sealed {
-            environment_variable: row.environment_variable,
-            key_id: row.key_id,
-            sealed_key: row.sealed_key,
-            sealed_value: row.sealed_value,
+        let read = row.sealed;
+        let key = match read.environment_variable {
+            true => key.environment_variable(),
+            false => key,
         };
         let Ok(secret) = self.open(&key, &read) else { return Ok(0) };
         let next = envelope::seal(&self.keys, &key, &secret)?;

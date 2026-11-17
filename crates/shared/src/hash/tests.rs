@@ -69,4 +69,8 @@ fn a_bad_entry_is_named_by_its_position_never_its_text() {
         KeyRing::parse(&format!("k1:{key},{key}:k2")).unwrap_err().to_string(),
         "entry 2 is not `<id>:<hex of at least 16 bytes>`"
     );
+    assert_eq!(
+        KeyRing::parse(&format!("k1:{key},k2:{key},k1:{key}")).unwrap_err().to_string(),
+        "entry 3 repeats an earlier id"
+    );
 }

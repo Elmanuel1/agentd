@@ -37,20 +37,21 @@ fn prefix_problem(prefix: &str) -> Option<String> {
 /// Why `prefix` cannot start parameter names, if it cannot: beyond a secret
 /// name prefix's rules, SSM reserves names starting `aws` or `ssm` in any
 /// letter case, and a prefix has at most 12 segments.
-pub fn parameter_prefix_problem(prefix: &str) -> Option<String> {
+pub(crate) fn parameter_prefix_problem(prefix: &str) -> Option<String> {
     let reserved =
         prefix.get(..3).is_some_and(|s| s.eq_ignore_ascii_case("aws") || s.eq_ignore_ascii_case("ssm"));
-    prefix_problem(prefix).or_else(|| {
-        if reserved {
-            Some(format!("the parameter prefix `{prefix}` starts with `aws` or `ssm`, which SSM reserves"))
-        } else if prefix.split('/').count() > PARAMETER_PREFIX_SEGMENTS {
-            Some(format!(
-                "the parameter prefix `{prefix}` has more than {PARAMETER_PREFIX_SEGMENTS} segments"
-            ))
-        } else {
-            None
-        }
-    })
+    let too_deep = prefix.split('/').count() > PARAMETER_PREFIX_SEGMENTS;
+    prefix_problem(prefix)
+        .or_else(|| {
+            reserved.then(|| {
+                format!("the parameter prefix `{prefix}` starts with `aws` or `ssm`, which SSM reserves")
+            })
+        })
+        .or_else(|| {
+            too_deep.then(|| {
+                format!("the parameter prefix `{prefix}` has more than {PARAMETER_PREFIX_SEGMENTS} segments")
+            })
+        })
 }
 
 pub(crate) fn secret_name(prefix: &str, key: &SecretKey) -> String {

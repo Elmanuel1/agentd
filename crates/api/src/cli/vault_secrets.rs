@@ -16,7 +16,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use secrets_aws::{AwsSecretStore, AwsSecretsConfig};
-use shared::hash::SecretKeys;
 use store_postgres::{PgBackend, PgSecretStore, PgVaultsStore, Resealed};
 
 use super::command::as_operator;
@@ -27,33 +26,43 @@ pub const USAGE: &str = "usage: agentd vault-secrets tag|reseal";
 
 /// Run `args` (the words after `agentd vault-secrets`) against `config`'s backends.
 pub async fn vault_secrets(config: &Config, args: &[String]) -> ExitCode {
-    let done = match (args, &config.secrets) {
-        ([cmd], SecretsConfig::Aws(aws)) if cmd == "tag" => {
-            as_operator(tag(config, aws)).await.map(|n| format!("tagged {n} environment_variable secrets"))
-        }
-        ([cmd], _) if cmd == "tag" => Ok("nothing to tag: this store records the kind when it writes".into()),
-        ([cmd], SecretsConfig::Postgres(keys)) if cmd == "reseal" => match reseal(config, keys).await {
-            Ok(resealed) => return report(&resealed),
-            Err(e) => Err(e),
-        },
-        ([cmd], _) if cmd == "reseal" => {
-            Ok("nothing to reseal: the store's KMS key does the encryption".into())
-        }
-        _ => {
-            eprintln!("unknown vault-secrets command\n{USAGE}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match done {
-        Ok(line) => {
-            eprintln!("{line}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("agentd vault-secrets: {e}");
-            ExitCode::FAILURE
-        }
+    let (lines, code) = outcome(config, args).await;
+    for line in lines {
+        eprintln!("{line}");
     }
+    code
+}
+
+/// What the command prints, and how it exits.
+async fn outcome(config: &Config, args: &[String]) -> (Vec<String>, ExitCode) {
+    let cmd = match args {
+        [cmd] => cmd.as_str(),
+        _ => "",
+    };
+    let error = |e: String| failed(format!("agentd vault-secrets: {e}"));
+    match (cmd, &config.secrets) {
+        ("tag", SecretsConfig::Aws(aws)) => as_operator(tag(config, aws)).await.map_or_else(error, |n| {
+            (vec![format!("tagged {n} environment_variable secrets")], ExitCode::SUCCESS)
+        }),
+        ("tag", _) => (vec![NOTHING_TO_TAG.into()], ExitCode::SUCCESS),
+        ("reseal", SecretsConfig::Postgres(keys)) => {
+            let StoreConfig::Postgres { url, .. } = &config.store;
+            let resealed = async {
+                let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
+                PgSecretStore::new(pg, keys.clone()).reseal().await.map_err(|e| e.to_string())
+            };
+            resealed.await.map_or_else(error, |r| report(&r))
+        }
+        ("reseal", _) => (vec![NOTHING_TO_RESEAL.into()], ExitCode::SUCCESS),
+        _ => failed(format!("unknown vault-secrets command\n{USAGE}")),
+    }
+}
+
+const NOTHING_TO_TAG: &str = "nothing to tag: this store records the kind when it writes";
+const NOTHING_TO_RESEAL: &str = "nothing to reseal: the store's KMS key does the encryption";
+
+fn failed(line: String) -> (Vec<String>, ExitCode) {
+    (vec![line], ExitCode::FAILURE)
 }
 
 async fn tag(config: &Config, aws: &AwsSecretsConfig) -> Result<usize, String> {
@@ -68,25 +77,20 @@ async fn tag(config: &Config, aws: &AwsSecretsConfig) -> Result<usize, String> {
     Ok(keys.len())
 }
 
-async fn reseal(config: &Config, keys: &SecretKeys) -> Result<Resealed, String> {
-    let StoreConfig::Postgres { url, .. } = &config.store;
-    let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
-    PgSecretStore::new(pg, keys.clone()).reseal().await.map_err(|e| e.to_string())
-}
-
 /// Each row still under another key, then the counts; a failure while any
 /// row remains, since its key cannot be dropped yet.
-fn report(resealed: &Resealed) -> ExitCode {
-    for (credential, key) in &resealed.remaining {
-        eprintln!("still under key {key}: {credential}");
-    }
+fn report(resealed: &Resealed) -> (Vec<String>, ExitCode) {
+    let mut lines: Vec<String> = resealed
+        .remaining
+        .iter()
+        .map(|(credential, key)| format!("still under key {key}: {credential}"))
+        .collect();
     let (moved, left) = (resealed.moved, resealed.remaining.len());
-    eprintln!("resealed {moved} vault secrets; {left} remain under another key");
-    if left == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    lines.push(format!("resealed {moved} vault secrets; {left} remain under another key"));
+    if left > 0 {
+        return (lines, ExitCode::FAILURE);
     }
+    (lines, ExitCode::SUCCESS)
 }
 
 #[cfg(test)]
@@ -113,24 +117,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tag_and_reseal_change_nothing_where_the_store_needs_neither() {
+    async fn tag_and_reseal_change_nothing_where_the_store_needs_neither_and_say_why() {
         // Nothing listens on the database or Valkey addresses: a command that
         // connected anything would fail.
         let postgres = config(&[]);
         let aws = config(&[("AGENTD_SECRETS", "aws"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
         let ssm = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
-        assert_eq!(vault_secrets(&postgres, &words("tag")).await, ExitCode::SUCCESS);
-        assert_eq!(vault_secrets(&ssm, &words("tag")).await, ExitCode::SUCCESS);
-        assert_eq!(vault_secrets(&aws, &words("reseal")).await, ExitCode::SUCCESS);
-        assert_eq!(vault_secrets(&ssm, &words("reseal")).await, ExitCode::SUCCESS);
-        assert_eq!(vault_secrets(&postgres, &words("rotate")).await, ExitCode::FAILURE);
+        let said = |line: &str| (vec![line.to_owned()], ExitCode::SUCCESS);
+        let tag = "nothing to tag: this store records the kind when it writes";
+        let reseal = "nothing to reseal: the store's KMS key does the encryption";
+        assert_eq!(outcome(&postgres, &words("tag")).await, said(tag));
+        assert_eq!(outcome(&ssm, &words("tag")).await, said(tag));
+        assert_eq!(outcome(&aws, &words("reseal")).await, said(reseal));
+        assert_eq!(outcome(&ssm, &words("reseal")).await, said(reseal));
+        let (_, code) = outcome(&postgres, &words("rotate")).await;
+        assert_eq!(code, ExitCode::FAILURE);
     }
 
     #[test]
-    fn reseal_fails_while_any_row_remains_under_another_key() {
+    fn reseal_names_each_remaining_row_and_fails_while_any_remains() {
         let done = Resealed { moved: 3, remaining: vec![] };
-        assert_eq!(report(&done), ExitCode::SUCCESS);
+        let lines = vec!["resealed 3 vault secrets; 0 remain under another key".to_owned()];
+        assert_eq!(report(&done), (lines, ExitCode::SUCCESS));
         let left = Resealed { moved: 2, remaining: vec![("wrkspc_a/vlt_b/cred_c".into(), "k0".into())] };
-        assert_eq!(report(&left), ExitCode::FAILURE);
+        let lines = vec![
+            "still under key k0: wrkspc_a/vlt_b/cred_c".to_owned(),
+            "resealed 2 vault secrets; 1 remain under another key".to_owned(),
+        ];
+        assert_eq!(report(&left), (lines, ExitCode::FAILURE));
     }
 }

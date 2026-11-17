@@ -94,6 +94,12 @@ fn entries<K>(
         }
     });
     let keys = keys.collect::<Result<Vec<_>, _>>()?;
+    // A repeated id would leave one of its keys unreachable, and what it sealed with it.
+    let repeated =
+        keys.iter().enumerate().find(|(i, (id, _))| keys.iter().take(*i).any(|(seen, _)| seen == id));
+    if let Some((i, _)) = repeated {
+        return Err(KeyRingError(format!("entry {} repeats an earlier id", i + 1)));
+    }
     match keys.is_empty() {
         true => Err(KeyRingError("no key".into())),
         false => Ok(keys),

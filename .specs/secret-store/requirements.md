@@ -32,7 +32,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 |---|---|
 | SS-1 | agentd shall take its secret store from `AGENTD_SECRETS` (`postgres`, `aws` or `ssm`), and shall use `postgres` when the variable is unset and SS-12 does not apply. |
 | SS-2 | When `AGENTD_SECRETS` is `postgres`, agentd shall refuse to start unless `AGENTD_SECRET_KEYS` holds at least one `<id>:<hex>` key of exactly 32 bytes, naming the variable and the bad entry's position, never its text. |
-| SS-10 | When `AGENTD_SECRETS` is `aws`, agentd shall store secrets exactly as the `secrets-aws` adapter does today. |
+| SS-10 | When `AGENTD_SECRETS` is `aws`, agentd shall keep each credential as one Secrets Manager secret `<prefix>/<workspace>/<vault>/<credential>`, created under the customer-managed KMS key `AGENTD_SECRETS_KMS_KEY_ID` and tagged `workspace`, `vault` and `managed-by=agentd`, restore and write again a secret deleted inside its recovery window, and delete with the recovery window `AGENTD_SECRETS_RECOVERY_DAYS`. |
 | SS-12 | While `AGENTD_SECRETS` is unset, agentd shall use the `aws` store when `AGENTD_SECRETS_KMS_KEY_ID` is set and the `postgres` store otherwise; a set `AGENTD_SECRETS` wins, and an empty or blank value of either counts as unset. |
 
 ## The Postgres store
