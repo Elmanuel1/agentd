@@ -3,8 +3,9 @@
 //! the one source, and a lost signal only delays a read to the fallback
 //! timer.
 
-use async_trait::async_trait;
+use shared::ports::BoxFuture;
 use shared::{BackendError, WorkspaceId};
+use std::future::Future;
 use tokio::sync::broadcast;
 
 use crate::types::SessionId;
@@ -19,13 +20,27 @@ pub struct Signal {
 }
 
 /// Every replica's signals, in and out.
-#[async_trait]
 pub trait Signals: Send + Sync {
     /// Tell every replica `session` changed.
-    async fn publish(&self, signal: &Signal) -> Result<(), BackendError>;
+    fn publish<'a>(&'a self, signal: &'a Signal) -> BoxFuture<'a, Result<(), BackendError>>;
     /// The signals every replica publishes, this one's included. A receiver
     /// that falls behind sees `Lagged`, not the signals it missed.
     fn subscribe(&self) -> broadcast::Receiver<Signal>;
+}
+
+/// What an adapter implements to provide [`Signals`]; the methods are documented there.
+pub trait SignalsImpl: Send + Sync {
+    fn publish(&self, signal: &Signal) -> impl Future<Output = Result<(), BackendError>> + Send;
+    fn subscribe(&self) -> broadcast::Receiver<Signal>;
+}
+
+impl<T: SignalsImpl> Signals for T {
+    fn publish<'a>(&'a self, signal: &'a Signal) -> BoxFuture<'a, Result<(), BackendError>> {
+        Box::pin(SignalsImpl::publish(self, signal))
+    }
+    fn subscribe(&self) -> broadcast::Receiver<Signal> {
+        SignalsImpl::subscribe(self)
+    }
 }
 
 /// The signals of one process, for a single replica.
@@ -41,8 +56,7 @@ impl Default for LocalSignals {
 /// Signals a replica holds before a slow reader lags.
 pub const CAPACITY: usize = 4096;
 
-#[async_trait]
-impl Signals for LocalSignals {
+impl SignalsImpl for LocalSignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         // No receiver is not an error: nothing streams that session here.
         let _ = self.0.send(signal.clone());

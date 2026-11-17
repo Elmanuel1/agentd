@@ -4,10 +4,9 @@ mod archived;
 mod replace;
 mod terminate;
 
-use ::sessions::store::{Order, SessionFilter, SessionsStore, StoreError};
+use ::sessions::store::{Order, SessionFilter, SessionsStoreImpl, StoreError};
 use ::sessions::types::{Session, SessionId, SessionStatus};
 use ::work::store::Reach;
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
@@ -44,8 +43,7 @@ struct NewSession {
     doc: serde_json::Value,
 }
 
-#[async_trait]
-impl SessionsStore for PgSessionsStore {
+impl SessionsStoreImpl for PgSessionsStore {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(sessions::table)

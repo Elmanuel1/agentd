@@ -242,14 +242,12 @@ async fn dashboard_queries_are_native_sql() {
 }
 
 // ── deployment fakes for the dashboard test ──────────────────────────────
-use async_trait::async_trait;
-use deployments::service::DeploymentDeps;
+use deployments::service::DeploymentDepsImpl;
 use deployments::types::{CreateDeploymentRequest, Deployment as Depl};
 
 struct FakeDeps;
 
-#[async_trait]
-impl DeploymentDeps for FakeDeps {
+impl DeploymentDepsImpl for FakeDeps {
     async fn resolve_agent_ref(
         &self,
         _ctx: &AuthContext,

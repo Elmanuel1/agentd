@@ -6,13 +6,12 @@
 
 #![forbid(unsafe_code)]
 
-use async_trait::async_trait;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
-pub use shared::ports::blobs::{BlobError, BlobStore};
+pub use shared::ports::blobs::{BlobError, BlobStore, BlobStoreImpl};
 
 /// Where and how to reach the bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,8 +115,7 @@ impl S3BlobStore {
     }
 }
 
-#[async_trait]
-impl BlobStore for S3BlobStore {
+impl BlobStoreImpl for S3BlobStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), BlobError> {
         self.client
             .put_object()

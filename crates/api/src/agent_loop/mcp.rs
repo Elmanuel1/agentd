@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use engine::mcp::{Mcp, McpEnvironments, Probe};
+use engine::mcp::{Mcp, McpEnvironmentsImpl, Probe};
 use environments::store::EnvironmentsStore;
 use environments::types::EnvironmentConfig;
 use parking_lot::RwLock;
@@ -47,8 +46,7 @@ impl Environments {
     }
 }
 
-#[async_trait]
-impl McpEnvironments for Environments {
+impl McpEnvironmentsImpl for Environments {
     async fn config(
         &self,
         ws: &WorkspaceId,

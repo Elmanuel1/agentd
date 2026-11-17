@@ -5,13 +5,12 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use redis::streams::StreamId;
 use shared::ports::fire::{self, FireRegistry};
 use shared::ports::ScheduleSpec;
 
-use crate::changes::Consumer;
+use crate::changes::ConsumerImpl;
 
 /// Runs the fires of the stream.
 pub(crate) struct Fires {
@@ -33,8 +32,7 @@ fn parse(entry: &StreamId) -> Option<(ScheduleSpec, DateTime<Utc>)> {
     Some((spec, at.with_timezone(&Utc)))
 }
 
-#[async_trait]
-impl Consumer for Fires {
+impl ConsumerImpl for Fires {
     fn ordered(&self) -> bool {
         false
     }

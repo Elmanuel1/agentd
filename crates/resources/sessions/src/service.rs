@@ -30,7 +30,7 @@ mod work;
 pub use threads::threads_projection;
 
 pub use egress::{FireRefusal, MCP_EGRESS_BLOCKED};
-pub use ports::{SessionDeps, SessionWork};
+pub use ports::{SessionDeps, SessionDepsImpl, SessionWork, SessionWorkImpl};
 pub use stream::{Streams, Subscription};
 
 /// Sessions service.

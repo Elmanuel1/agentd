@@ -6,12 +6,13 @@
 //! least once; a replica that stops during the retries leaves the row with
 //! neither `delivered_at` nor `dropped_at`.
 
+use shared::ports::BoxFuture;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::Value;
-use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
 use shared::{BackendError, Timestamp};
 
 use super::endpoints::Webhooks;
@@ -25,13 +26,56 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const RETRYING: usize = 256;
 
 /// Where a delivery's end is recorded.
-#[async_trait]
 pub trait DeliveryMarks: Send + Sync {
     /// The delivery was answered 2xx on attempt `attempt`.
-    async fn delivered(&self, webhook_id: &str, endpoint_key: &str, attempt: i64)
-        -> Result<(), BackendError>;
+    fn delivered<'a>(
+        &'a self,
+        webhook_id: &'a str,
+        endpoint_key: &'a str,
+        attempt: i64,
+    ) -> BoxFuture<'a, Result<(), BackendError>>;
     /// The delivery was dropped after `attempt` attempts.
-    async fn dropped(&self, webhook_id: &str, endpoint_key: &str, attempt: i64) -> Result<(), BackendError>;
+    fn dropped<'a>(
+        &'a self,
+        webhook_id: &'a str,
+        endpoint_key: &'a str,
+        attempt: i64,
+    ) -> BoxFuture<'a, Result<(), BackendError>>;
+}
+
+/// What an adapter implements to provide [`DeliveryMarks`]; the methods are documented there.
+pub trait DeliveryMarksImpl: Send + Sync {
+    fn delivered(
+        &self,
+        webhook_id: &str,
+        endpoint_key: &str,
+        attempt: i64,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send;
+    fn dropped(
+        &self,
+        webhook_id: &str,
+        endpoint_key: &str,
+        attempt: i64,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send;
+}
+
+impl<T: DeliveryMarksImpl> DeliveryMarks for T {
+    fn delivered<'a>(
+        &'a self,
+        webhook_id: &'a str,
+        endpoint_key: &'a str,
+        attempt: i64,
+    ) -> BoxFuture<'a, Result<(), BackendError>> {
+        Box::pin(DeliveryMarksImpl::delivered(self, webhook_id, endpoint_key, attempt))
+    }
+    fn dropped<'a>(
+        &'a self,
+        webhook_id: &'a str,
+        endpoint_key: &'a str,
+        attempt: i64,
+    ) -> BoxFuture<'a, Result<(), BackendError>> {
+        Box::pin(DeliveryMarksImpl::dropped(self, webhook_id, endpoint_key, attempt))
+    }
 }
 
 /// Posts deliveries to their endpoints.
@@ -83,8 +127,7 @@ impl WebhookSender {
     }
 }
 
-#[async_trait]
-impl ChangeHandler for WebhookSender {
+impl ChangeHandlerImpl for WebhookSender {
     fn source(&self) -> Source {
         Source::Table("webhook_deliveries".into())
     }

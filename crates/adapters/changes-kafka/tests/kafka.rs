@@ -5,11 +5,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use changes_kafka::KafkaChanges;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use shared::ports::changes::{Change, ChangeHandler, Source};
+use shared::ports::changes::{Change, ChangeHandlerImpl, Source};
 use shared::BackendError;
 
 fn brokers() -> Option<String> {
@@ -24,8 +23,7 @@ struct Seen {
     seen: Mutex<Vec<i64>>,
 }
 
-#[async_trait]
-impl ChangeHandler for Seen {
+impl ChangeHandlerImpl for Seen {
     fn source(&self) -> Source {
         Source::Table(self.table.into())
     }
@@ -74,8 +72,7 @@ async fn a_failed_record_is_retried_before_the_ones_behind_it() {
 /// Records the content of each message it is handed.
 struct Messages(Mutex<Vec<serde_json::Value>>);
 
-#[async_trait]
-impl ChangeHandler for Messages {
+impl ChangeHandlerImpl for Messages {
     fn source(&self) -> Source {
         Source::Messages
     }

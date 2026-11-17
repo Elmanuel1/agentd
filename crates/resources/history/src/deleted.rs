@@ -4,9 +4,8 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::Value;
-use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::BackendError;
 
@@ -34,8 +33,7 @@ impl DeletedRecorder {
     }
 }
 
-#[async_trait]
-impl ChangeHandler for DeletedRecorder {
+impl ChangeHandlerImpl for DeletedRecorder {
     fn source(&self) -> Source {
         Source::Messages
     }

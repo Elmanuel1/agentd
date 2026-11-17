@@ -1,9 +1,10 @@
 //! The ModelClient port: the LLM behind a trait, with a provider-neutral
 //! conversation. Each client maps these types to its own wire format.
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sessions::events::ModelUsage;
+use shared::ports::BoxFuture;
+use std::future::Future;
 
 pub mod anthropic;
 mod block;
@@ -156,10 +157,24 @@ impl ModelError {
 }
 
 /// The LLM port.
-#[async_trait]
 pub trait ModelClient: Send + Sync {
     /// One completion.
-    async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError>;
+    fn complete(&self, req: ModelRequest) -> BoxFuture<'_, Result<ModelResponse, ModelError>>;
     /// The model's context window in tokens, from its provider's model list.
-    async fn window(&self, model: &str) -> Result<u64, ModelError>;
+    fn window<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Result<u64, ModelError>>;
+}
+
+/// What an adapter implements to provide [`ModelClient`]; the methods are documented there.
+pub trait ModelClientImpl: Send + Sync {
+    fn complete(&self, req: ModelRequest) -> impl Future<Output = Result<ModelResponse, ModelError>> + Send;
+    fn window(&self, model: &str) -> impl Future<Output = Result<u64, ModelError>> + Send;
+}
+
+impl<T: ModelClientImpl> ModelClient for T {
+    fn complete(&self, req: ModelRequest) -> BoxFuture<'_, Result<ModelResponse, ModelError>> {
+        Box::pin(ModelClientImpl::complete(self, req))
+    }
+    fn window<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Result<u64, ModelError>> {
+        Box::pin(ModelClientImpl::window(self, model))
+    }
 }

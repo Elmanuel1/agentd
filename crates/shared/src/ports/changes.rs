@@ -2,9 +2,10 @@
 //! database's log (Debezium over the Postgres WAL), handed to the handler of
 //! each source. Delivery is at least once, so every handler is idempotent.
 
-use async_trait::async_trait;
+use crate::ports::BoxFuture;
 use base64::Engine as _;
 use serde_json::Value;
+use std::future::Future;
 
 use crate::{BackendError, Timestamp};
 
@@ -110,16 +111,34 @@ impl Source {
 }
 
 /// Reacts to the changes of one source.
-#[async_trait]
 pub trait ChangeHandler: Send + Sync {
     /// What it reads.
     fn source(&self) -> Source;
     /// Whether its changes must be handled one at a time, in commit order.
+    fn ordered(&self) -> bool;
+    /// Handle `change`; an error leaves it to be handled again.
+    fn handle<'a>(&'a self, change: &'a Change) -> BoxFuture<'a, Result<(), BackendError>>;
+}
+
+/// What an adapter implements to provide [`ChangeHandler`]; the methods are documented there.
+pub trait ChangeHandlerImpl: Send + Sync {
+    fn source(&self) -> Source;
     fn ordered(&self) -> bool {
         false
     }
-    /// Handle `change`; an error leaves it to be handled again.
-    async fn handle(&self, change: &Change) -> Result<(), BackendError>;
+    fn handle(&self, change: &Change) -> impl Future<Output = Result<(), BackendError>> + Send;
+}
+
+impl<T: ChangeHandlerImpl> ChangeHandler for T {
+    fn source(&self) -> Source {
+        ChangeHandlerImpl::source(self)
+    }
+    fn ordered(&self) -> bool {
+        ChangeHandlerImpl::ordered(self)
+    }
+    fn handle<'a>(&'a self, change: &'a Change) -> BoxFuture<'a, Result<(), BackendError>> {
+        Box::pin(ChangeHandlerImpl::handle(self, change))
+    }
 }
 
 #[cfg(test)]

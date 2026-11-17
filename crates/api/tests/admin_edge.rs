@@ -17,17 +17,16 @@ use shared::{AdminContext, AuthContext};
 use test_support::{StaticAdminKeys, StaticKeySource};
 use tower::ServiceExt;
 
-use api::edge::reach::{Grants, SessionGrants};
+use api::edge::reach::{Grants, SessionGrantsImpl};
 use api::edge::scoped::WorkAccess;
 use shared::{ApiError, OrgId, Pagination, Timestamp, WorkspaceId};
 use work::store::{Counts, Reach, Scope, StoreError};
-use work::{WorkItem, WorkReads};
+use work::{WorkItem, WorkReadsImpl};
 
 /// No work items: these tests send no work token or environment key.
 struct NoWork;
 
-#[async_trait::async_trait]
-impl WorkReads for NoWork {
+impl WorkReadsImpl for NoWork {
     async fn get(&self, _: &WorkspaceId, _: &str, _: &Reach) -> Result<Option<WorkItem>, StoreError> {
         Ok(None)
     }
@@ -47,8 +46,7 @@ impl WorkReads for NoWork {
 
 struct NoGrants;
 
-#[async_trait::async_trait]
-impl SessionGrants for NoGrants {
+impl SessionGrantsImpl for NoGrants {
     async fn grants(&self, _: &AuthContext, _: &str) -> Result<Grants, ApiError> {
         Ok(Grants::default())
     }

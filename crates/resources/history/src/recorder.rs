@@ -2,8 +2,7 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::BackendError;
 
@@ -33,8 +32,7 @@ fn missing(what: &str) -> HistoryError {
     HistoryError::Unrecordable(what.to_owned())
 }
 
-#[async_trait]
-impl ChangeHandler for HistoryRecorder {
+impl ChangeHandlerImpl for HistoryRecorder {
     fn source(&self) -> Source {
         Source::Table(self.table.clone())
     }

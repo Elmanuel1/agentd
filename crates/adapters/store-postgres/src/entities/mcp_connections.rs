@@ -1,10 +1,9 @@
 //! [`McpConnections`] on Postgres: the `mcp_connections` rows (V9), keyed by
 //! workspace, session and server URL.
 
-use ::sessions::mcp::{McpConnection, McpConnections};
+use ::sessions::mcp::{McpConnection, McpConnectionsImpl};
 use ::sessions::store::StoreError;
 use ::sessions::types::SessionId;
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::{Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
@@ -51,8 +50,7 @@ pub(crate) async fn forget(
         .map(drop)
 }
 
-#[async_trait]
-impl McpConnections for PgMcpConnections {
+impl McpConnectionsImpl for PgMcpConnections {
     async fn connections(
         &self,
         ws: &WorkspaceId,

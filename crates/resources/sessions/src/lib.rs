@@ -27,8 +27,13 @@ use shared::beta::BetaGate;
 use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
-pub use service::{SessionDeps, SessionWork, SessionsService, Streams, Subscription};
-pub use store::{SessionEventLog, SessionEventReads, SessionsStore};
+pub use service::{
+    SessionDeps, SessionDepsImpl, SessionWork, SessionWorkImpl, SessionsService, Streams, Subscription,
+};
+pub use store::{
+    SessionEventLog, SessionEventLogImpl, SessionEventReads, SessionEventReadsImpl, SessionsStore,
+    SessionsStoreImpl,
+};
 pub use types::{Session, SessionId, SessionStatus};
 
 /// The sessions module: its routes, behind the Managed Agents beta.

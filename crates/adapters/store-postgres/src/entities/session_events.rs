@@ -4,9 +4,8 @@
 mod reads;
 
 use ::sessions::events::{Event, EventId};
-use ::sessions::store::{AnswerCheck, SessionEventLog, StoreError, Wake};
+use ::sessions::store::{AnswerCheck, SessionEventLogImpl, StoreError, Wake};
 use ::sessions::types::SessionId;
-use async_trait::async_trait;
 use diesel::sql_types::{Array, BigInt, Jsonb, Text};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
@@ -28,8 +27,7 @@ impl PgSessionEventLog {
     }
 }
 
-#[async_trait]
-impl SessionEventLog for PgSessionEventLog {
+impl SessionEventLogImpl for PgSessionEventLog {
     async fn append_events(
         &self,
         ws: &WorkspaceId,

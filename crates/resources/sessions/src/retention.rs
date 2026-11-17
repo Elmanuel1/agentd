@@ -1,10 +1,10 @@
 //! Event retention: the events of sessions archived longer ago than the
 //! retention period are deleted, by one replica at a time.
 
+use shared::ports::BoxFuture;
+use std::future::Future;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use futures::future::BoxFuture;
 use shared::{Timestamp, WorkspaceId};
 
 use crate::store::{SessionEventLog, StoreError};
@@ -42,28 +42,66 @@ pub struct ArchivedSession {
 }
 
 /// The archived sessions, in the order the walk takes them.
-#[async_trait]
 pub trait ArchivedSessions: Send + Sync {
     /// Up to `limit` sessions after `after` and archived before `to`.
-    async fn archived_between(
+    fn archived_between<'a>(
+        &'a self,
+        after: &'a ArchivedCursor,
+        to: Timestamp,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<ArchivedSession>, StoreError>>;
+}
+
+/// What an adapter implements to provide [`ArchivedSessions`]; the methods are documented there.
+pub trait ArchivedSessionsImpl: Send + Sync {
+    fn archived_between(
         &self,
         after: &ArchivedCursor,
         to: Timestamp,
         limit: usize,
-    ) -> Result<Vec<ArchivedSession>, StoreError>;
+    ) -> impl Future<Output = Result<Vec<ArchivedSession>, StoreError>> + Send;
+}
+
+impl<T: ArchivedSessionsImpl> ArchivedSessions for T {
+    fn archived_between<'a>(
+        &'a self,
+        after: &'a ArchivedCursor,
+        to: Timestamp,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<ArchivedSession>, StoreError>> {
+        Box::pin(ArchivedSessionsImpl::archived_between(self, after, to, limit))
+    }
 }
 
 /// A lock every replica sees.
-#[async_trait]
 pub trait RunLock: Send + Sync {
     /// Run `job` only while this process alone holds `name`; `false`, with
     /// `job` not run, while another holds it. A job that fails or panics
     /// still frees the lock.
-    async fn exclusive(
+    fn exclusive<'a>(
+        &'a self,
+        name: &'a str,
+        job: BoxFuture<'a, Result<(), StoreError>>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
+}
+
+/// What an adapter implements to provide [`RunLock`]; the methods are documented there.
+pub trait RunLockImpl: Send + Sync {
+    fn exclusive(
         &self,
         name: &str,
         job: BoxFuture<'_, Result<(), StoreError>>,
-    ) -> Result<bool, StoreError>;
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+}
+
+impl<T: RunLockImpl> RunLock for T {
+    fn exclusive<'a>(
+        &'a self,
+        name: &'a str,
+        job: BoxFuture<'a, Result<(), StoreError>>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(RunLockImpl::exclusive(self, name, job))
+    }
 }
 
 /// The retention runs of one replica.

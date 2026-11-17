@@ -12,7 +12,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use sessions::steps::{Claim, StepCounts, StepEnd, StepWrite, Steps};
+use sessions::steps::{Claim, StepCounts, StepEnd, StepWrite, Steps, StepsImpl};
 use sessions::store::StoreError;
 use shared::net::Guard;
 
@@ -760,8 +760,7 @@ impl FailOnce {
     }
 }
 
-#[async_trait::async_trait]
-impl Steps for FailOnce {
+impl StepsImpl for FailOnce {
     async fn claim(&self, owner: &str, lease: i64, per_workspace: i64) -> Result<Option<Claim>, StoreError> {
         self.0.claim(owner, lease, per_workspace).await
     }

@@ -22,9 +22,9 @@ use shared::Module;
 
 pub use caller::WorkCaller;
 pub use placeholder::{PlaceholderClaims, Placeholders};
-pub use secret::{CloudVariables, SessionVariables, Variable};
+pub use secret::{CloudVariables, SessionVariables, SessionVariablesImpl, Variable};
 pub use service::WorkService;
-pub use store::{WorkItem, WorkReads, WorkStore};
+pub use store::{WorkItem, WorkReads, WorkReadsImpl, WorkStore, WorkStoreImpl};
 pub use tokens::{WorkClaims, WorkTokens};
 pub use types::{Work, WorkState};
 

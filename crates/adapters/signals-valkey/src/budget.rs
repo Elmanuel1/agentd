@@ -4,8 +4,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use engine::model::budget::{Admit, ModelBudget};
+use engine::model::budget::{Admit, ModelBudgetImpl};
 use redis::RedisError;
 use shared::BackendError;
 
@@ -53,8 +52,7 @@ fn key(provider: &str, minute: u64, what: &str) -> String {
     format!("agentd:budget:{{{provider}:{minute}}}:{what}")
 }
 
-#[async_trait]
-impl ModelBudget for ValkeyBudget {
+impl ModelBudgetImpl for ValkeyBudget {
     async fn admit(&self, provider: &str) -> Result<Admit, BackendError> {
         let (minute, left) = minute();
         let (requests, tokens) = (key(provider, minute, "requests"), key(provider, minute, "tokens"));

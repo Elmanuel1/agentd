@@ -1,16 +1,20 @@
 //! Session persistence: session rows ([`SessionsStore`]) and the append-only
 //! event log ([`SessionEventLog`], read through [`SessionEventReads`]).
 
-use async_trait::async_trait;
 use shared::page::filters::CreatedRange;
+use shared::ports::BoxFuture;
 use shared::{ApiError, Pagination, Timestamp, WorkspaceId};
+use std::future::Future;
 
 use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
 mod reads;
 
-pub use reads::{Head, SessionEventReads, Tail};
+pub use reads::{Head, SessionEventReads, SessionEventReadsImpl, Tail};
+
+mod native;
+pub use native::{SessionEventLogImpl, SessionReplaceImpl, SessionsStoreImpl};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -78,35 +82,41 @@ impl Default for EventFilter {
 }
 
 /// A session's compare-and-write.
-#[async_trait]
 pub trait SessionReplace: Send + Sync {
     /// Write `s` and `deliveries` only while the stored session is still `read`, else `Conflict`.
-    async fn replace(
-        &self,
-        ws: &WorkspaceId,
-        read: &Session,
+    fn replace<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        read: &'a Session,
         s: Session,
-        deliveries: &[webhooks::Delivery],
-    ) -> Result<(), StoreError>;
+        deliveries: &'a [webhooks::Delivery],
+    ) -> BoxFuture<'a, Result<(), StoreError>>;
 }
 
 /// Persistence port.
-#[async_trait]
 pub trait SessionsStore: SessionReplace {
     /// Insert a session.
-    async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError>;
+    fn insert<'a>(&'a self, ws: &'a WorkspaceId, s: Session) -> BoxFuture<'a, Result<(), StoreError>>;
     /// Fetch a session.
-    async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
+    fn get<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a SessionId,
+    ) -> BoxFuture<'a, Result<Session, StoreError>>;
     /// Under the session's append lock, delete the session unless it is
     /// running ([`StoreError::Conflict`]) and stop its work item.
-    async fn delete(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError>;
+    fn delete<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a SessionId,
+    ) -> BoxFuture<'a, Result<Session, StoreError>>;
     /// One page of the sessions `filter` keeps, in its order.
-    async fn list(
-        &self,
-        ws: &WorkspaceId,
-        filter: &SessionFilter,
-        page: &Pagination,
-    ) -> Result<Vec<Session>, StoreError>;
+    fn list<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        filter: &'a SessionFilter,
+        page: &'a Pagination,
+    ) -> BoxFuture<'a, Result<Vec<Session>, StoreError>>;
 }
 
 /// Whether an append puts its session on the step queue.
@@ -125,40 +135,42 @@ pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, Api
 /// A session's append-only event log. It has its own lifecycle: the engine
 /// appends to it while the session row is unchanged, and the events list and
 /// stream read it on its own.
-#[async_trait]
 pub trait SessionEventLog: SessionEventReads {
     /// Append `events`, in order, to the log of an existing session, under
     /// the session's append lock.
-    async fn append_events(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        events: &[Event],
+    fn append_events<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a SessionId,
+        events: &'a [Event],
         wake: Wake,
-    ) -> Result<(), StoreError>;
+    ) -> BoxFuture<'a, Result<(), StoreError>>;
     /// Stamp `at` on those of `ids` not processed yet; the events it stamped,
     /// in log order.
-    async fn update_processed_at(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        ids: &[EventId],
+    fn update_processed_at<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a SessionId,
+        ids: &'a [EventId],
         at: Timestamp,
-    ) -> Result<Vec<Event>, StoreError>;
+    ) -> BoxFuture<'a, Result<Vec<Event>, StoreError>>;
     /// Under the session's append lock: `check` reads the events whose id is
     /// one of `calls` and the results that answer them, and `events` are
     /// appended only when it passes; otherwise its refusal is returned.
-    async fn append_answers(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        calls: &[EventId],
-        events: &[Event],
-        check: &AnswerCheck<'_>,
+    fn append_answers<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a SessionId,
+        calls: &'a [EventId],
+        events: &'a [Event],
+        check: &'a AnswerCheck<'a>,
         wake: Wake,
-    ) -> Result<Result<(), ApiError>, StoreError>;
+    ) -> BoxFuture<'a, Result<Result<(), ApiError>, StoreError>>;
     /// Delete the whole log of each session.
-    async fn delete_events_of(&self, sessions: &[(WorkspaceId, SessionId)]) -> Result<(), StoreError>;
+    fn delete_events_of<'a>(
+        &'a self,
+        sessions: &'a [(WorkspaceId, SessionId)],
+    ) -> BoxFuture<'a, Result<(), StoreError>>;
 }
 
 /// How loaded the database is, as a replica last measured it.

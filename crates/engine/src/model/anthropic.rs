@@ -1,10 +1,9 @@
 //! The Anthropic Messages API client.
 
-use async_trait::async_trait;
 use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 
-use super::{Block, Message, ModelClient, ModelError, ModelRequest, ModelResponse, Role, StopKind};
+use super::{Block, Message, ModelClientImpl, ModelError, ModelRequest, ModelResponse, Role, StopKind};
 
 /// The Messages API version header every request sends.
 const API_VERSION: &str = "2023-06-01";
@@ -172,8 +171,7 @@ pub fn parse(v: &Value) -> ModelResponse {
     ModelResponse { content, stop, usage, thought, cost: None }
 }
 
-#[async_trait]
-impl ModelClient for AnthropicModel {
+impl ModelClientImpl for AnthropicModel {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         let resp = self
             .http

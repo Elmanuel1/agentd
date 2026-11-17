@@ -8,15 +8,14 @@ use std::sync::Arc;
 
 use agents::types::{Multiagent, RosterMember};
 use agents::AgentSnapshot;
-use async_trait::async_trait;
-use files::SessionFiles;
+use files::SessionFilesImpl;
 use sessions::types::{MemoryAccess, Session, SessionId, SessionResource};
 use sessions::SessionsStore;
 use shared::{ApiError, AuthContext};
 use vaults::variables::VaultCredentials;
-use work::{SessionVariables, Variable};
+use work::{SessionVariablesImpl, Variable};
 
-use crate::edge::reach::{Grants, SessionGrants};
+use crate::edge::reach::{Grants, SessionGrantsImpl};
 
 /// The session-side ports over the session rows and the vaults' credentials.
 #[derive(Clone)]
@@ -56,8 +55,7 @@ fn skills(agent: &AgentSnapshot) -> Vec<String> {
     out
 }
 
-#[async_trait]
-impl SessionGrants for SessionReach {
+impl SessionGrantsImpl for SessionReach {
     async fn grants(&self, ctx: &AuthContext, session: &str) -> Result<Grants, ApiError> {
         let s = self.session(ctx, session).await?;
         let memory_stores = s
@@ -74,8 +72,7 @@ impl SessionGrants for SessionReach {
     }
 }
 
-#[async_trait]
-impl SessionFiles for SessionReach {
+impl SessionFilesImpl for SessionReach {
     async fn mounts(&self, ctx: &AuthContext, session: &str) -> Result<Vec<String>, ApiError> {
         let s = self.session(ctx, session).await?;
         Ok(s.resources
@@ -88,8 +85,7 @@ impl SessionFiles for SessionReach {
     }
 }
 
-#[async_trait]
-impl SessionVariables for SessionReach {
+impl SessionVariablesImpl for SessionReach {
     async fn variables(&self, ctx: &AuthContext, session: &str) -> Result<Vec<Variable>, ApiError> {
         let s = self.session(ctx, session).await?;
         let listed = self.vaults.environment_credentials(&ctx.workspace, &s.vault_ids).await?;

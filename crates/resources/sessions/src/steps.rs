@@ -3,8 +3,9 @@
 //! and commits its events, so a replica holds nothing between steps and a
 //! step cut off by a crash runs again from the log after its lease.
 
-use async_trait::async_trait;
+use shared::ports::BoxFuture;
 use shared::WorkspaceId;
+use std::future::Future;
 
 use crate::events::{Event, EventId};
 use crate::store::StoreError;
@@ -84,21 +85,92 @@ pub struct StepCounts {
 }
 
 /// The step queue.
-#[async_trait]
 pub trait Steps: Send + Sync {
     /// The oldest due step, held by `owner` for `lease` seconds; `None` when
     /// none is due, or its workspace is at `per_workspace` held steps, which
     /// defers the workspace's waiting steps by a second.
-    async fn claim(&self, owner: &str, lease: i64, per_workspace: i64) -> Result<Option<Claim>, StoreError>;
+    fn claim<'a>(
+        &'a self,
+        owner: &'a str,
+        lease: i64,
+        per_workspace: i64,
+    ) -> BoxFuture<'a, Result<Option<Claim>, StoreError>>;
     /// Under the session's append lock, write `write` while `claim` still
     /// holds the step, and keep its lease for `lease` more seconds; `false`
     /// when it no longer does, with nothing written.
-    async fn write(&self, claim: &Claim, lease: i64, write: StepWrite<'_>) -> Result<bool, StoreError>;
+    fn write<'a>(
+        &'a self,
+        claim: &'a Claim,
+        lease: i64,
+        write: StepWrite<'a>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
     /// Write the step's last events and release it as `end` says; `false`
     /// when another worker took it over, with nothing written.
-    async fn commit(&self, claim: &Claim, end: StepEnd, write: StepWrite<'_>) -> Result<bool, StoreError>;
+    fn commit<'a>(
+        &'a self,
+        claim: &'a Claim,
+        end: StepEnd,
+        write: StepWrite<'a>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
     /// Release the step unrun, due again in `seconds`.
-    async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError>;
+    fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>>;
     /// The queue's rows, counted.
-    async fn counts(&self) -> Result<StepCounts, StoreError>;
+    fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>>;
+}
+
+/// What an adapter implements to provide [`Steps`]; the methods are documented there.
+pub trait StepsImpl: Send + Sync {
+    fn claim(
+        &self,
+        owner: &str,
+        lease: i64,
+        per_workspace: i64,
+    ) -> impl Future<Output = Result<Option<Claim>, StoreError>> + Send;
+    fn write(
+        &self,
+        claim: &Claim,
+        lease: i64,
+        write: StepWrite<'_>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn commit(
+        &self,
+        claim: &Claim,
+        end: StepEnd,
+        write: StepWrite<'_>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+    fn defer(&self, claim: &Claim, seconds: i64) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn counts(&self) -> impl Future<Output = Result<StepCounts, StoreError>> + Send;
+}
+
+impl<T: StepsImpl> Steps for T {
+    fn claim<'a>(
+        &'a self,
+        owner: &'a str,
+        lease: i64,
+        per_workspace: i64,
+    ) -> BoxFuture<'a, Result<Option<Claim>, StoreError>> {
+        Box::pin(StepsImpl::claim(self, owner, lease, per_workspace))
+    }
+    fn write<'a>(
+        &'a self,
+        claim: &'a Claim,
+        lease: i64,
+        write: StepWrite<'a>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(StepsImpl::write(self, claim, lease, write))
+    }
+    fn commit<'a>(
+        &'a self,
+        claim: &'a Claim,
+        end: StepEnd,
+        write: StepWrite<'a>,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(StepsImpl::commit(self, claim, end, write))
+    }
+    fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(StepsImpl::defer(self, claim, seconds))
+    }
+    fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>> {
+        Box::pin(StepsImpl::counts(self))
+    }
 }

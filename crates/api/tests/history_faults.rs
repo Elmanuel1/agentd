@@ -20,14 +20,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
-
 use axum::http::StatusCode;
 use common::Rig;
 use diesel_async::RunQueryDsl;
 use kit::{call, cdc_enabled, eventually, summary, Container};
 use serde_json::json;
-use shared::ports::changes::{Change, ChangeHandler, Source};
+use shared::ports::changes::{Change, ChangeHandler, ChangeHandlerImpl, Source};
 use shared::{BackendError, Timestamp};
 use tokio::sync::Notify;
 
@@ -89,8 +87,7 @@ struct Stall {
     stalled: Arc<Stalled>,
 }
 
-#[async_trait]
-impl ChangeHandler for Stall {
+impl ChangeHandlerImpl for Stall {
     fn source(&self) -> Source {
         self.inner.source()
     }

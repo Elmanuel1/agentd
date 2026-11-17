@@ -100,8 +100,7 @@ fn a_path_names_its_session_and_the_environment_it_reads() {
 
 struct Fixed(Grants);
 
-#[async_trait]
-impl SessionGrants for Fixed {
+impl SessionGrantsImpl for Fixed {
     async fn grants(&self, _: &AuthContext, _: &str) -> Result<Grants, ApiError> {
         Ok(self.0.clone())
     }

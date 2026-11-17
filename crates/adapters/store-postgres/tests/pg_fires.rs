@@ -14,7 +14,7 @@ use agents::Agent;
 use async_trait::async_trait;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use chrono::Utc;
-use deployments::service::DeploymentDeps;
+use deployments::service::DeploymentDepsImpl;
 use deployments::types::DeploymentId;
 use deployments::types::{Deployment, TriggerContext};
 use deployments::DeploymentsService;
@@ -49,8 +49,7 @@ fn tenant(tag: &str) -> AuthContext {
 
 struct FakeDeps;
 
-#[async_trait]
-impl DeploymentDeps for FakeDeps {
+impl DeploymentDepsImpl for FakeDeps {
     async fn resolve_agent_ref(
         &self,
         _ctx: &AuthContext,

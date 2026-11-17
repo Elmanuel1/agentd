@@ -3,9 +3,10 @@
 //! its `secret_name` and set to its placeholder, never its value; for a
 //! `self_hosted` session, none, as on live.
 
+use shared::ports::BoxFuture;
 use std::collections::BTreeMap;
+use std::future::Future;
 
-use async_trait::async_trait;
 use shared::{ApiError, AuthContext};
 
 use crate::placeholder::{PlaceholderClaims, Placeholders};
@@ -22,11 +23,33 @@ pub struct Variable {
 }
 
 /// What the work API asks of sessions and vaults.
-#[async_trait]
 pub trait SessionVariables: Send + Sync {
     /// The unarchived `environment_variable` credentials of `session`'s
     /// vaults, one per name: the first vault in its `vault_ids` wins a name.
-    async fn variables(&self, ctx: &AuthContext, session: &str) -> Result<Vec<Variable>, ApiError>;
+    fn variables<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<Variable>, ApiError>>;
+}
+
+/// What an adapter implements to provide [`SessionVariables`]; the methods are documented there.
+pub trait SessionVariablesImpl: Send + Sync {
+    fn variables(
+        &self,
+        ctx: &AuthContext,
+        session: &str,
+    ) -> impl Future<Output = Result<Vec<Variable>, ApiError>> + Send;
+}
+
+impl<T: SessionVariablesImpl> SessionVariables for T {
+    fn variables<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<Variable>, ApiError>> {
+        Box::pin(SessionVariablesImpl::variables(self, ctx, session))
+    }
 }
 
 /// Builds `environment_variables` for `cloud` hand-outs.

@@ -6,10 +6,11 @@
 //! trimmed of what every group has acknowledged ([`crate::trim`]). An ordered handler's stream is read
 //! by one replica at a time, which holds a lease in Valkey, in entry order, stopping at a failure.
 
+use shared::ports::BoxFuture;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,
 };
@@ -20,6 +21,9 @@ use shared::ports::fire::FireRegistry;
 use crate::fires::Fires;
 use crate::trim::{self, Keep};
 use crate::valkey::{Conn, Valkey};
+
+mod native;
+pub(crate) use native::ConsumerImpl;
 
 /// The consumer group every replica reads in.
 const GROUP: &str = "agentd";
@@ -35,12 +39,11 @@ const LEASE_MS: u64 = 30_000;
 const BACKOFF: Duration = Duration::from_secs(1);
 
 /// What reads one stream.
-#[async_trait]
 pub(crate) trait Consumer: Send + Sync {
     /// Whether its entries are read one at a time, in order.
     fn ordered(&self) -> bool;
     /// Handle one entry; `true` once it needs no more handling.
-    async fn consume(&self, entry: &StreamId) -> bool;
+    fn consume<'a>(&'a self, entry: &'a StreamId) -> BoxFuture<'a, bool>;
 }
 
 /// Reads the change streams of one Valkey.
@@ -186,8 +189,7 @@ async fn handle(
 /// A table's changes, as Debezium writes them.
 struct Changes(Arc<dyn ChangeHandler>);
 
-#[async_trait]
-impl Consumer for Changes {
+impl ConsumerImpl for Changes {
     fn ordered(&self) -> bool {
         self.0.ordered()
     }

@@ -13,10 +13,9 @@ mod valkey;
 
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures::StreamExt;
 use redis::{AsyncCommands, RedisError};
-use sessions::signals::{Signal, Signals, CAPACITY};
+use sessions::signals::{Signal, SignalsImpl, CAPACITY};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;
@@ -57,8 +56,7 @@ impl ValkeySignals {
     }
 }
 
-#[async_trait]
-impl Signals for ValkeySignals {
+impl SignalsImpl for ValkeySignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         let payload = format!("{} {}", signal.workspace.as_str(), signal.session);
         let published = tokio::time::timeout(PUBLISH_WAIT, async {
