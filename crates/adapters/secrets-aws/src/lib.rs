@@ -20,6 +20,8 @@ mod ssm;
 mod store;
 mod tag;
 
+use std::time::Duration;
+
 pub use ssm::AwsParameterStore;
 
 pub use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
@@ -30,6 +32,11 @@ pub const DEFAULT_PREFIX: &str = "agentd";
 /// shortest window Secrets Manager allows, nearest to the purge an archive
 /// promises.
 pub const DEFAULT_RECOVERY_WINDOW_DAYS: i64 = 7;
+/// The longest one attempt of an AWS call takes unless configured otherwise.
+pub const DEFAULT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+/// The longest an AWS call takes, its retries included, unless configured
+/// otherwise: a stalled call fails the request it serves instead of holding it.
+pub const DEFAULT_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Where and how to reach Secrets Manager and the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,11 +55,16 @@ pub struct AwsSecretsConfig {
     pub role_arn: Option<String>,
     /// Days a deleted secret stays recoverable, 7 to 30.
     pub recovery_window_days: i64,
+    /// The longest one attempt of a call takes.
+    pub attempt_timeout: Duration,
+    /// The longest a call takes, its retries included.
+    pub operation_timeout: Duration,
 }
 
 impl AwsSecretsConfig {
     /// Secrets under `prefix`, encrypted under `kms_key_id`, in the
-    /// default-chain region on AWS, with the default recovery window.
+    /// default-chain region on AWS, with the default recovery window and
+    /// timeouts.
     pub fn new(prefix: impl Into<String>, kms_key_id: impl Into<String>) -> Self {
         Self {
             prefix: prefix.into(),
@@ -61,6 +73,8 @@ impl AwsSecretsConfig {
             endpoint: None,
             role_arn: None,
             recovery_window_days: DEFAULT_RECOVERY_WINDOW_DAYS,
+            attempt_timeout: DEFAULT_ATTEMPT_TIMEOUT,
+            operation_timeout: DEFAULT_OPERATION_TIMEOUT,
         }
     }
 }

@@ -58,3 +58,17 @@ fn aws_ssm_takes_the_aws_settings_but_no_recovery_window() {
     let err = config(&[("AGENTD_SECRETS", "aws_ssm"), ("AGENTD_SECRETS_RECOVERY_DAYS", "7")]).unwrap_err();
     assert_eq!(err.var, "AGENTD_SECRETS_RECOVERY_DAYS");
 }
+
+#[test]
+fn the_aws_timeouts_default_to_5_and_15_seconds_and_an_attempt_fits_inside_its_call() {
+    let SecretsConfig::AwsSm(aws) = config(&[]).unwrap().secrets else {
+        panic!("the KMS key selects aws_sm")
+    };
+    let (attempt, call) = (std::time::Duration::from_secs(5), std::time::Duration::from_secs(15));
+    assert_eq!((aws.attempt_timeout, aws.operation_timeout), (attempt, call));
+    let longer = config(&[("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "20000")]).unwrap_err();
+    assert_eq!(longer.var, "AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS");
+    for (var, bad) in [("AGENTD_SECRETS_TIMEOUT_MS", "0"), ("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "5s")] {
+        assert_eq!(config(&[(var, bad)]).unwrap_err().var, var, "{bad}");
+    }
+}

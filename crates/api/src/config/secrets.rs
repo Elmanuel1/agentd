@@ -1,7 +1,12 @@
 //! The secret store setting: Postgres, the default, AWS Secrets Manager or
 //! SSM Parameter Store.
 
-use secrets_aws::{AwsSecretsConfig, DEFAULT_PREFIX, DEFAULT_RECOVERY_WINDOW_DAYS};
+use std::time::Duration;
+
+use secrets_aws::{
+    AwsSecretsConfig, DEFAULT_ATTEMPT_TIMEOUT, DEFAULT_OPERATION_TIMEOUT, DEFAULT_PREFIX,
+    DEFAULT_RECOVERY_WINDOW_DAYS,
+};
 use shared::hash::SecretKeys;
 
 use super::{endpoint, number, unknown, ConfigError};
@@ -63,6 +68,15 @@ fn aws(get: &impl Fn(&str) -> Option<String>) -> Result<AwsSecretsConfig, Config
             reason: format!("{recovery_window_days} is outside Secrets Manager's 7 to 30 days"),
         });
     }
+    let ms = |var, default: Duration| {
+        number(get, var, u64::try_from(default.as_millis()).unwrap_or(u64::MAX)).map(Duration::from_millis)
+    };
+    let attempt_timeout = ms("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", DEFAULT_ATTEMPT_TIMEOUT)?;
+    let operation_timeout = ms("AGENTD_SECRETS_TIMEOUT_MS", DEFAULT_OPERATION_TIMEOUT)?;
+    if attempt_timeout > operation_timeout {
+        let reason = format!("{attempt_timeout:?} is longer than the whole call's {operation_timeout:?}");
+        return Err(ConfigError { var: "AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", reason });
+    }
     Ok(AwsSecretsConfig {
         prefix: get("AGENTD_SECRETS_PREFIX").unwrap_or_else(|| DEFAULT_PREFIX.into()),
         kms_key_id,
@@ -70,5 +84,7 @@ fn aws(get: &impl Fn(&str) -> Option<String>) -> Result<AwsSecretsConfig, Config
         endpoint: endpoint(get, "AGENTD_SECRETS_ENDPOINT")?,
         role_arn: get("AGENTD_SECRETS_ROLE_ARN"),
         recovery_window_days,
+        attempt_timeout,
+        operation_timeout,
     })
 }

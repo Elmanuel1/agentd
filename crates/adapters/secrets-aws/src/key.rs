@@ -1,8 +1,6 @@
 //! What both stores do at connect: the AWS configuration their clients start
 //! from, and the KMS key check.
 
-use std::time::Duration;
-
 use aws_common::SdkConfig;
 use aws_sdk_kms::config::timeout::TimeoutConfig;
 use aws_sdk_kms::types::{KeyManagerType, KeyMetadata, KeySpec, KeyState, KeyUsageType};
@@ -16,10 +14,9 @@ use crate::AwsSecretsConfig;
 /// client applies `config.endpoint` itself.
 pub(crate) async fn connect(config: &AwsSecretsConfig) -> Result<(SdkConfig, String), SecretError> {
     let shared = aws_common::sdk_config(config.region.as_deref(), config.role_arn.as_deref()).await;
-    // A stalled call fails the request it serves instead of holding it.
     let timeouts = TimeoutConfig::builder()
-        .operation_attempt_timeout(Duration::from_secs(5))
-        .operation_timeout(Duration::from_secs(15))
+        .operation_attempt_timeout(config.attempt_timeout)
+        .operation_timeout(config.operation_timeout)
         .build();
     let shared = shared.into_builder().timeout_config(timeouts).build();
     let mut kms = aws_sdk_kms::config::Builder::from(&shared);

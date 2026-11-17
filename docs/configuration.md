@@ -280,6 +280,8 @@ Parameter Store's limits, as AWS states them:
 | `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager or SSM, and KMS (LocalStack), under the same rule as `AGENTD_AWS_ENDPOINT` |
 | `AGENTD_SECRETS_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
 | `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | `aws_sm` only: days a deleted secret stays recoverable, 7 to 30 |
+| `AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS` | `5000` | The longest one attempt of a secret store or KMS call waits; at most `AGENTD_SECRETS_TIMEOUT_MS` |
+| `AGENTD_SECRETS_TIMEOUT_MS` | `15000` | The longest a secret store or KMS call takes, its retries included; past it the request it serves fails instead of waiting |
 
 Credentials come from the AWS default chain, as for S3. The least-privilege
 IAM policies for agentd, the key and the workers are in
