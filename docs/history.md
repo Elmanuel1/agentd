@@ -124,7 +124,7 @@ agentd reads the slot every 10 s on every replica (take the maximum across repli
 | Signal | Alarm when | What it means, and what to do |
 |---|---|---|
 | `agentd.feed.slot.safe_wal` | below 25% of `max_slot_wal_keep_size` (page) | the feed has stalled long enough to near the limit: bring Debezium and its sink back before the slot is lost |
-| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap unless its database already had rows, and then needs only the baseline and scrub (steps 5 and 6) |
+| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap only if no change commits before Debezium Server first creates the slot; any earlier change is lost, and the baseline and scrub (steps 5 and 6) recover only the rows that still exist |
 | `agentd.feed.slot.retained_wal` | growing for 15 minutes (ticket) | Debezium is not confirming: check its health (`GET /q/health`) and logs |
 | `agentd.history.apply_delay` p99 | over 5 minutes (ticket) | history lags its commits: check the feed backlog and the `history:` log lines |
 
@@ -151,7 +151,8 @@ history reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up 
 ### Faults
 
 Each boundary on the way to history recovers on its own: while the feed keeps its records and each change can be
-recorded, the changes made during a fault reach history once, in order.
+recorded, the changes made during a fault reach history once, each row's in its commit order (a row's writes take its
+lock in turn, so its `lsn` order is its commit order; across rows `lsn` is the write's place in the WAL).
 
 | Fault | What happens |
 |---|---|
@@ -168,9 +169,9 @@ These lose changes instead:
 | Loss | Signal | Recovery |
 |---|---|---|
 | The slot passes `max_slot_wal_keep_size` | `agentd.feed.slot.lost` | "After a lost slot" |
-| A Kafka record expires before a replica reads it (every replica down longer than the topic's retention) | none from agentd: watch the `agentd.<topic>` consumer groups' lag against the retention | the baseline and scrub, "After a lost slot" steps 5 and 6, with agentd stopped |
-| Valkey crashes under `appendfsync everysec` | none: up to 1 s of entries | the baseline and scrub, with agentd stopped |
-| A change cannot be recorded (its table has no history table, or its row is not a row) | the `ERROR` line `history: a change cannot be recorded; passed over`, with the table and lsn | fix the cause, then the baseline and scrub, with agentd stopped |
+| A Kafka record expires before a replica reads it (every replica down longer than the topic's retention) | none from agentd: watch the `agentd.<topic>` consumer groups' lag against the retention | the baseline and scrub, "After a lost slot" steps 5 and 6, with agentd stopped; the baseline holds only live rows, so a lost delete or update stays lost |
+| Valkey crashes under `appendfsync everysec` | none: up to 1 s of entries | the baseline and scrub, with agentd stopped; the baseline holds only live rows, so a lost delete or update stays lost |
+| A change cannot be recorded (its table has no history table, or its row is not a row) | the `ERROR` line `history: a change cannot be recorded; passed over`, with the table and lsn | fix the cause, then the baseline and scrub, with agentd stopped; the baseline holds only live rows, so a lost delete or update stays lost |
 
 ## After a lost slot
 
@@ -178,8 +179,10 @@ These lose changes instead:
    while the baseline reads its table can leave the older row as the latest one, and a redaction made then can leave
    its content in the baseline.
 2. Stop Debezium Server.
-3. Drop the slot, if it still exists, and Debezium's offsets:
-   `select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = 'agentd_changes';` and
+3. Note the slot's `confirmed_flush_lsn`, if it still reports one: history may lack changes from there on. Drop
+   the slot, if it still exists, and Debezium's offsets, with `<slot>` the configured `AGENTD_CHANGES_SLOT`
+   (default `agentd_changes`):
+   `select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = '<slot>';` and
    `delete from debezium_offsets;`.
 4. Start Debezium Server. It makes a new slot and streams changes from then on.
 5. Record every live row as a `baseline`, one statement per tracked table:
@@ -226,8 +229,9 @@ commit;
 
 7. Start agentd.
 
-The changes between the loss and the baseline are gone; the `agentd.feed.slot.lost` gauge's samples bound the
-window. The same baseline and scrub, with agentd stopped, start history on a database that already has rows.
+Changes committed after the slot's last confirmed position, before the baseline, are gone: the gap can start before
+the loss was seen, since `agentd.feed.slot.lost` bounds when the loss was observed, not when the oldest lost change
+committed. The same baseline and scrub, with agentd stopped, start history on a database that already has rows.
 
 ## A new column or tracked table
 

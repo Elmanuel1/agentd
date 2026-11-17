@@ -16,7 +16,7 @@ mod common;
 mod kit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -67,13 +67,25 @@ async fn update(rig: &Rig, v: &str) -> Kept {
     panic!("vault {v} could not be updated");
 }
 
+/// Where a recorder stalled, shared by the recorders before and after agentd restarts.
+#[derive(Default)]
+struct Stalled {
+    /// The next vault change stalls its recorder.
+    armed: AtomicBool,
+    /// Its recorder stored it and stalled.
+    stored: Notify,
+    /// Its position.
+    at: Mutex<Option<u64>>,
+    /// A recorder handled it again.
+    again: Notify,
+}
+
 /// A recorder that, once armed, stops after it stores a vault change and
 /// before the feed learns it was handled, as a replica that dies between the
-/// two would.
+/// two would; and that notes when it handles the stalled change again.
 struct Stall {
     inner: Arc<dyn ChangeHandler>,
-    armed: Arc<AtomicBool>,
-    stored: Arc<Notify>,
+    stalled: Arc<Stalled>,
 }
 
 #[async_trait]
@@ -88,12 +100,28 @@ impl ChangeHandler for Stall {
 
     async fn handle(&self, change: &Change) -> Result<(), BackendError> {
         self.inner.handle(change).await?;
-        if change.table == "vaults" && self.armed.swap(false, Ordering::SeqCst) {
-            self.stored.notify_one();
+        let lsn = change.position.map(|p| p.lsn);
+        if change.table != "vaults" || lsn.is_none() {
+            return Ok(());
+        }
+        if self.stalled.armed.swap(false, Ordering::SeqCst) {
+            *self.stalled.at.lock().unwrap() = lsn;
+            self.stalled.stored.notify_one();
             std::future::pending::<()>().await;
+        }
+        if *self.stalled.at.lock().unwrap() == lsn {
+            self.stalled.again.notify_one();
         }
         Ok(())
     }
+}
+
+/// The recorders of every history table, each a [`Stall`] sharing `stalled`.
+async fn stalling(stalled: &Arc<Stalled>) -> Vec<Arc<dyn ChangeHandler>> {
+    let recorders = kit::recorders().await.into_iter();
+    recorders
+        .map(|inner| Arc::new(Stall { inner, stalled: stalled.clone() }) as Arc<dyn ChangeHandler>)
+        .collect()
 }
 
 /// Wait out a broker outage of at least `LONG_OUTAGE` until Debezium Server
@@ -161,12 +189,8 @@ async fn every_change_reaches_history_once_through_each_fault() {
     let postgres = Container::named("AGENTD_POSTGRES_CONTAINER", "postgres");
     let debezium = Container::named("AGENTD_DEBEZIUM_CONTAINER", "debezium");
     let broker = Container::named("AGENTD_FEED_CONTAINER", "kafka");
-    let (armed, stored) = (Arc::new(AtomicBool::new(false)), Arc::new(Notify::new()));
-    let stalling = kit::recorders().await.into_iter().map(|inner| {
-        let stall = Stall { inner, armed: armed.clone(), stored: stored.clone() };
-        Arc::new(stall) as Arc<dyn ChangeHandler>
-    });
-    let mut tasks = kit::spawn(CONSUMER, stalling.collect());
+    let stalled = Arc::new(Stalled::default());
+    let mut tasks = kit::spawn(CONSUMER, stalling(&stalled).await);
 
     let (st, vault, created) = call(&rig, "POST", "/v1/vaults", Some(json!({"display_name": "f"}))).await;
     assert_eq!(st, StatusCode::OK, "{vault}");
@@ -209,13 +233,15 @@ async fn every_change_reaches_history_once_through_each_fault() {
     // The broker to the recorders: agentd stops mid-batch, after a recorder stored a change and
     // before the feed learned it, and starts again; what it had not acknowledged is delivered again.
     let batch = expected.len();
-    armed.store(true, Ordering::SeqCst);
+    stalled.armed.store(true, Ordering::SeqCst);
     expected.extend(updates(&rig, &v, 20).await);
-    let stalled = tokio::time::timeout(Duration::from_secs(120), stored.notified()).await;
-    assert!(stalled.is_ok(), "no recorder stored a vault change and stalled");
+    let stored = tokio::time::timeout(Duration::from_secs(120), stalled.stored.notified()).await;
+    assert!(stored.is_ok(), "no recorder stored a vault change and stalled");
     assert!(kit::kept(&rig, "vaults", "vault_id", &v).await.len() > batch, "the stalled change is stored");
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
-    tasks = kit::record(CONSUMER).await;
+    tasks = kit::spawn(CONSUMER, stalling(&stalled).await);
+    let again = tokio::time::timeout(Duration::from_secs(120), stalled.again.notified()).await;
+    assert!(again.is_ok(), "the feed did not deliver the stalled change again");
     kept_once(&rig, &v, &expected, "an agentd restart").await;
 
     // The recorders to Postgres: their connections are cut mid-batch, leaving Debezium's slot, then

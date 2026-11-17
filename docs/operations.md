@@ -45,7 +45,7 @@ A `self_hosted` environment's tools run on the customer's worker (`ant beta:work
 | `http.server.request.duration` 5xx ratio | above 1% for 5 minutes | the API fails: read the `request failed` log lines and their spans |
 | `db.client.connection.pending_requests` | above 0 for 5 minutes | the pool is saturated: raise `AGENTD_DB_POOL_SIZE` or add replicas within the database's connection limit |
 | Slot, Debezium health, feed backlog | as `configuration.md`'s change feed section says | the change feed stalls: schedules, webhooks and history wait until it moves again |
-| `agentd.feed.slot.lost` | 1, or absent from every replica for 5 minutes | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: re-baseline as `history.md` says ("After a lost slot"). A slot that does not exist yet, on a new deployment, is no gap unless the database already had rows. Absent: no replica can read the slot |
+| `agentd.feed.slot.lost` | 1, or absent from every replica for 5 minutes | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: re-baseline as `history.md` says ("After a lost slot"). A slot that does not exist yet, on a new deployment, is no gap only if nothing committed before Debezium Server first made it. Absent: no replica can read the slot |
 | `agentd.history.apply_delay` p99 | over 5 minutes | history lags its commits: check the feed backlog and the `history:` log lines |
 | `webhook_deliveries` rows with `dropped_at` set | any for a configured endpoint | an endpoint refused three attempts: check the endpoint and its secret |
 | `agentd.retention.last_success` | older than 15 minutes while retention is set | retention stopped: read its `warn` lines |

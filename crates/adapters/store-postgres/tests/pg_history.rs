@@ -305,6 +305,10 @@ async fn live(pg: &PgBackend, vault: &str) -> Option<(String, String, Option<Str
     rows.into_iter().next().map(|r| (r.display_name, r.actor, r.request_id))
 }
 
+/// The two runbook tests each run the baseline, which copies every live row, so they hold this lock in turn.
+const RUNBOOK_LOCK: &str = "SELECT pg_advisory_lock(7464)";
+const RUNBOOK_UNLOCK: &str = "SELECT pg_advisory_unlock(7464)";
+
 /// Run a runbook block on its own connection, as an operator's psql session would.
 async fn run(pg: &PgBackend, sql: &str) {
     use diesel_async::SimpleAsyncConnection;
@@ -319,6 +323,8 @@ async fn the_runbook_s_rollbacks_and_baseline_run_as_documented() {
         return;
     }
     let (pg, log) = log().await;
+    let mut lock = pg.diesel.get().await.unwrap();
+    diesel::sql_query(RUNBOOK_LOCK).execute(&mut *lock).await.unwrap();
     let blocks = runbook();
     let id = format!("vlt_r{}", stamp());
     let fill = |sql: String, lsn: &str| {
@@ -368,6 +374,7 @@ async fn the_runbook_s_rollbacks_and_baseline_run_as_documented() {
         run(&pg, &sql).await;
     }
     run(&pg, &fill(block(&blocks, "order by lsn;"), "0/64")).await;
+    diesel::sql_query(RUNBOOK_UNLOCK).execute(&mut *lock).await.unwrap();
 }
 
 #[tokio::test]
@@ -376,9 +383,12 @@ async fn the_baseline_and_scrub_keep_no_content_of_a_version_redacted_after_its_
         return;
     }
     let (pg, _) = log().await;
+    let mut lock = pg.diesel.get().await.unwrap();
+    diesel::sql_query(RUNBOOK_LOCK).execute(&mut *lock).await.unwrap();
     let blocks = runbook();
     let (memory, version) = (format!("mem_b{}", stamp()), format!("memver_b{}", stamp()));
-    // A soft-deleted head keeps its last version's path and digest; that version is redacted after.
+    // A soft-deleted head keeps its last version's path and digest; that version is redacted after, so its
+    // own row holds no content and only the head's copy needs the scrub.
     run(
         &pg,
         &format!(
@@ -393,21 +403,19 @@ async fn the_baseline_and_scrub_keep_no_content_of_a_version_redacted_after_its_
         ),
     )
     .await;
-    // The other runbook test may run the same baseline at once, so each statement reads every baseline row.
-    const HEADS: &str = "SELECT jsonb_build_object('path', path, 'sha', doc->'content_sha256') AS row
+    // Every field the scrub clears, of the head and of the version.
+    const HEADS: &str = "SELECT jsonb_build_object('column_path', path, 'sha', doc->'content_sha256',
+                                'size', doc->'content_size_bytes', 'path', doc->'path') AS row
                            FROM history.memories WHERE memory_id = $1 AND op = 'baseline'";
-    const VERSIONS: &str =
-        "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', doc->'path') AS row
+    const VERSIONS: &str = "SELECT jsonb_build_object('sha', doc->'content_sha256',
+                                   'size', doc->'content_size_bytes', 'path', doc->'path') AS row
                               FROM history.memory_versions WHERE version_id = $1 AND op = 'baseline'";
     run(&pg, &block(&blocks, "do $$")).await;
-    let copied = rows(&pg, HEADS, &memory).await;
-    assert!(
-        !copied.is_empty() && copied.iter().all(|r| r == &json!({"path": "/a.md", "sha": "abc"})),
-        "{copied:?}"
-    );
+    let copied = json!({"column_path": "/a.md", "sha": "abc", "size": 3, "path": "/a.md"});
+    assert_eq!(rows(&pg, HEADS, &memory).await, [copied]);
     run(&pg, &block(&blocks, "update history.memories h")).await;
-    let heads = rows(&pg, HEADS, &memory).await;
-    assert!(heads.iter().all(|r| r == &json!({"path": null, "sha": null})), "{heads:?}");
-    let versions = rows(&pg, VERSIONS, &version).await;
-    assert!(!versions.is_empty() && versions.iter().all(|r| r == &json!({"sha": null, "path": null})));
+    let cleared = json!({"column_path": null, "sha": null, "size": null, "path": null});
+    assert_eq!(rows(&pg, HEADS, &memory).await, [cleared]);
+    assert_eq!(rows(&pg, VERSIONS, &version).await, [json!({"sha": null, "size": null, "path": null})]);
+    diesel::sql_query(RUNBOOK_UNLOCK).execute(&mut *lock).await.unwrap();
 }
