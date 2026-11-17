@@ -25,8 +25,8 @@ impl Secrets {
     pub(super) async fn connect(config: &SecretsConfig, metrics: &Arc<Metrics>) -> Result<Self, SecretError> {
         let store: Arc<dyn SecretStore> = match config {
             SecretsConfig::Postgres(keys) => return Ok(Self::Postgres(keys.clone())),
-            SecretsConfig::Aws(aws) => Arc::new(AwsSecretStore::connect(aws).await?),
-            SecretsConfig::Ssm(ssm) => Arc::new(AwsParameterStore::connect(ssm).await?),
+            SecretsConfig::AwsSm(aws) => Arc::new(AwsSecretStore::connect(aws).await?),
+            SecretsConfig::AwsSsm(ssm) => Arc::new(AwsParameterStore::connect(ssm).await?),
         };
         Ok(Self::Ready(Arc::new(Observed::new(store, metrics.clone()))))
     }

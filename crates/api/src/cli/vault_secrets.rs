@@ -41,7 +41,7 @@ async fn outcome(config: &Config, args: &[String]) -> (Vec<String>, ExitCode) {
     };
     let error = |e: String| failed(format!("agentd vault-secrets: {e}"));
     match (cmd, &config.secrets) {
-        ("tag", SecretsConfig::Aws(aws)) => as_operator(tag(config, aws)).await.map_or_else(error, |n| {
+        ("tag", SecretsConfig::AwsSm(aws)) => as_operator(tag(config, aws)).await.map_or_else(error, |n| {
             (vec![format!("tagged {n} environment_variable secrets")], ExitCode::SUCCESS)
         }),
         ("tag", _) => (vec![NOTHING_TO_TAG.into()], ExitCode::SUCCESS),
@@ -121,8 +121,8 @@ mod tests {
         // Nothing listens on the database or Valkey addresses: a command that
         // connected anything would fail.
         let postgres = config(&[]);
-        let aws = config(&[("AGENTD_SECRETS", "aws"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
-        let ssm = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
+        let aws = config(&[("AGENTD_SECRETS", "aws_sm"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
+        let ssm = config(&[("AGENTD_SECRETS", "aws_ssm"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
         let said = |line: &str| (vec![line.to_owned()], ExitCode::SUCCESS);
         let tag = "nothing to tag: this store records the kind when it writes";
         let reseal = "nothing to reseal: the store's KMS key does the encryption";

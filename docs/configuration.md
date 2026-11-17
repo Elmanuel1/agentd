@@ -14,7 +14,7 @@ fakes in test code, never from configuration ([Security](#security)).
 |---|---|---|
 | Record store | `AGENTD_STORE` | `postgres` |
 | Blob store | `AGENTD_BLOBS` | `s3` |
-| Secret store | `AGENTD_SECRETS` | `postgres`: sealed in Postgres under the master keys `AGENTD_SECRET_KEYS`; `aws`: one AWS Secrets Manager secret per credential; `ssm`: one SSM Parameter Store parameter per credential, both under a customer-managed KMS key. Unset, `aws` when `AGENTD_SECRETS_KMS_KEY_ID` is set, else `postgres` (see [Vault credentials](#vault-credentials)) |
+| Secret store | `AGENTD_SECRETS` | `postgres`: sealed in Postgres under the master keys `AGENTD_SECRET_KEYS`; `aws_sm`: one AWS Secrets Manager secret per credential; `aws_ssm`: one SSM Parameter Store parameter per credential, both under a customer-managed KMS key. Unset, `aws_sm` when `AGENTD_SECRETS_KMS_KEY_ID` is set, else `postgres` (see [Vault credentials](#vault-credentials)) |
 
 ## Settings
 
@@ -174,9 +174,10 @@ web identity, the ECS task role or the EC2 instance role. This holds with or wit
 ## Vault credentials
 
 Each credential's secret material goes to the secret store `AGENTD_SECRETS`
-names: `postgres`, `aws` or `ssm`. Unset (or blank), it is `aws` when
-`AGENTD_SECRETS_KMS_KEY_ID` is set and `postgres` otherwise, so an existing
-AWS deployment keeps its store with no change. Every store keeps one secret
+names: `postgres`, `aws_sm` or `aws_ssm`, the names iron-proxy gives the same
+sources. `aws` is accepted as the older name of `aws_sm`. Unset (or blank), it
+is `aws_sm` when `AGENTD_SECRETS_KMS_KEY_ID` is set and `postgres` otherwise,
+so an existing AWS deployment keeps its store with no change. Every store keeps one secret
 per credential, keyed by its workspace, vault and credential ids, each checked
 against the id charset before any call, so no input reaches a secret in
 another workspace. Archiving a credential deletes its secret. Archiving a
@@ -188,7 +189,7 @@ credential keeps a secret. Reads are not cached.
 
 Our `cloud` runtime swaps `environment_variable` values in at egress from
 Secrets Manager or Parameter Store, never from Postgres, so a deployment that
-runs that swap uses `aws` or `ssm`.
+runs that swap uses `aws_sm` or `aws_ssm`.
 
 ### Postgres
 
@@ -228,7 +229,7 @@ need no rotation, since every write makes a new one.
 
 ### Secrets Manager
 
-With `AGENTD_SECRETS=aws`, each secret is one Secrets Manager secret,
+With `AGENTD_SECRETS=aws_sm`, each secret is one Secrets Manager secret,
 `<prefix>/<workspace>/<vault>/<credential>`, created under the configured KMS
 key and tagged `workspace`, `vault` and `managed-by=agentd`. A write creates
 the secret, or puts a new value when it exists, with one
@@ -242,7 +243,7 @@ one `TagResource` each; tagging one twice changes nothing).
 
 ### SSM Parameter Store
 
-With `AGENTD_SECRETS=ssm`, each secret is one SecureString parameter,
+With `AGENTD_SECRETS=aws_ssm`, each secret is one SecureString parameter,
 `/<prefix>/<workspace>/<vault>/<credential>`, encrypted under the configured
 KMS key, in the Intelligent-Tiering tier, tagged as Secrets Manager secrets
 are. A write creates the parameter with its tags, or, when it exists,
@@ -273,12 +274,12 @@ Parameter Store's limits, as AWS states them:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_SECRETS_KMS_KEY_ID` | required for `aws` and `ssm` | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. An AWS managed key (`aws/secretsmanager`, `aws/ssm`) is refused |
+| `AGENTD_SECRETS_KMS_KEY_ID` | required for `aws_sm` and `aws_ssm` | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. An AWS managed key (`aws/secretsmanager`, `aws/ssm`) is refused |
 | `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters |
 | `AGENTD_SECRETS_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Region |
 | `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager or SSM, and KMS (LocalStack), under the same rule as `AGENTD_AWS_ENDPOINT` |
 | `AGENTD_SECRETS_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
-| `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | `aws` only: days a deleted secret stays recoverable, 7 to 30 |
+| `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | `aws_sm` only: days a deleted secret stays recoverable, 7 to 30 |
 
 Credentials come from the AWS default chain, as for S3. The least-privilege
 IAM policies for agentd, the key and the workers are in

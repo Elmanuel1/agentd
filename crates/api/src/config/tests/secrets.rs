@@ -19,14 +19,18 @@ fn unset_with_no_kms_key_is_postgres_under_the_master_keys() {
 }
 
 #[test]
-fn a_kms_key_selects_aws_unless_the_selector_says_otherwise() {
+fn a_kms_key_selects_aws_sm_unless_the_selector_says_otherwise() {
     for unset in [None, Some(""), Some(" ")] {
         let vars: Vec<_> = unset.map(|v| ("AGENTD_SECRETS", v)).into_iter().collect();
-        assert!(matches!(config(&vars).unwrap().secrets, SecretsConfig::Aws(_)), "{unset:?}");
+        assert!(matches!(config(&vars).unwrap().secrets, SecretsConfig::AwsSm(_)), "{unset:?}");
     }
     let c = config(&[("AGENTD_SECRETS", "postgres"), ("AGENTD_SECRET_KEYS", &ring())]).unwrap();
     assert!(matches!(c.secrets, SecretsConfig::Postgres(_)), "a set selector wins over the KMS key");
-    assert_eq!(config(&[("AGENTD_SECRETS", "vault")]).unwrap_err().var, "AGENTD_SECRETS");
+    let c = config(&[("AGENTD_SECRETS", "aws")]).unwrap();
+    assert!(matches!(c.secrets, SecretsConfig::AwsSm(_)), "`aws` is the older name of `aws_sm`");
+    for unknown in ["vault", "ssm", "sm"] {
+        assert_eq!(config(&[("AGENTD_SECRETS", unknown)]).unwrap_err().var, "AGENTD_SECRETS", "{unknown}");
+    }
 }
 
 #[test]
@@ -47,10 +51,10 @@ fn postgres_needs_32_byte_keys_and_names_a_bad_entry_by_its_position() {
 }
 
 #[test]
-fn ssm_takes_the_aws_settings_but_no_recovery_window() {
-    let c = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_PREFIX", "agentd/prod")]).unwrap();
-    let SecretsConfig::Ssm(ssm) = c.secrets else { panic!("{:?}", c.secrets) };
+fn aws_ssm_takes_the_aws_settings_but_no_recovery_window() {
+    let c = config(&[("AGENTD_SECRETS", "aws_ssm"), ("AGENTD_SECRETS_PREFIX", "agentd/prod")]).unwrap();
+    let SecretsConfig::AwsSsm(ssm) = c.secrets else { panic!("{:?}", c.secrets) };
     assert_eq!((ssm.prefix.as_str(), ssm.kms_key_id.as_str()), ("agentd/prod", "alias/agentd"));
-    let err = config(&[("AGENTD_SECRETS", "ssm"), ("AGENTD_SECRETS_RECOVERY_DAYS", "7")]).unwrap_err();
+    let err = config(&[("AGENTD_SECRETS", "aws_ssm"), ("AGENTD_SECRETS_RECOVERY_DAYS", "7")]).unwrap_err();
     assert_eq!(err.var, "AGENTD_SECRETS_RECOVERY_DAYS");
 }

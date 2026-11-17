@@ -12,22 +12,22 @@ pub enum SecretsConfig {
     /// `postgres`: each secret sealed in `vault_secrets` under the master
     /// keys `AGENTD_SECRET_KEYS`.
     Postgres(SecretKeys),
-    /// `aws`: one Secrets Manager secret per credential, under
+    /// `aws_sm` (or `aws`, its older name): one Secrets Manager secret per credential, under
     /// `AGENTD_SECRETS_PREFIX`, encrypted with the customer-managed KMS key
     /// `AGENTD_SECRETS_KMS_KEY_ID`.
-    Aws(AwsSecretsConfig),
-    /// `ssm`: one SecureString parameter per credential, under the same
+    AwsSm(AwsSecretsConfig),
+    /// `aws_ssm`: one SecureString parameter per credential, under the same
     /// prefix and key settings, the prefix checked at connect; a parameter
     /// has no recovery window.
-    Ssm(AwsSecretsConfig),
+    AwsSsm(AwsSecretsConfig),
 }
 
-/// The store `AGENTD_SECRETS` names; unset, `aws` when a KMS key is set and
+/// The store `AGENTD_SECRETS` names; unset, `aws_sm` when a KMS key is set and
 /// `postgres` otherwise. A blank value counts as unset.
 pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<SecretsConfig, ConfigError> {
     let set = |var: &str| get(var).filter(|v| !v.trim().is_empty());
     let default = match set("AGENTD_SECRETS_KMS_KEY_ID") {
-        Some(_) => "aws",
+        Some(_) => "aws_sm",
         None => "postgres",
     };
     match set("AGENTD_SECRETS").as_deref().unwrap_or(default) {
@@ -38,13 +38,13 @@ pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Secre
             let keys = SecretKeys::parse(&raw).map_err(|e| ConfigError { var, reason: e.to_string() })?;
             Ok(SecretsConfig::Postgres(keys))
         }
-        "aws" => aws(get).map(SecretsConfig::Aws),
-        "ssm" => {
+        "aws_sm" | "aws" => aws(get).map(SecretsConfig::AwsSm),
+        "aws_ssm" => {
             if let Some(days) = set("AGENTD_SECRETS_RECOVERY_DAYS") {
                 let reason = format!("`{days}`: Parameter Store has no recovery window");
                 return Err(ConfigError { var: "AGENTD_SECRETS_RECOVERY_DAYS", reason });
             }
-            aws(get).map(SecretsConfig::Ssm)
+            aws(get).map(SecretsConfig::AwsSsm)
         }
         other => Err(unknown("AGENTD_SECRETS", other)),
     }

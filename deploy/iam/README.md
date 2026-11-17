@@ -1,12 +1,12 @@
 # Vault credential storage: IAM
 
-These policies are for the AWS secret stores, `AGENTD_SECRETS=aws` (Secrets
-Manager) and `AGENTD_SECRETS=ssm` (Parameter Store). The default store,
+These policies are for the AWS secret stores, `AGENTD_SECRETS=aws_sm` (Secrets
+Manager) and `AGENTD_SECRETS=aws_ssm` (Parameter Store). The default store,
 `postgres`, keeps credentials sealed in agentd's own database and needs no AWS
 permission.
 
-With `aws`, agentd keeps each vault credential in Secrets Manager as
-`PREFIX/<workspace>/<vault>/<credential>`; with `ssm`, as the SecureString
+With `aws_sm`, agentd keeps each vault credential in Secrets Manager as
+`PREFIX/<workspace>/<vault>/<credential>`; with `aws_ssm`, as the SecureString
 parameter `/PREFIX/<workspace>/<vault>/<credential>`. Either is encrypted under
 one customer-managed KMS key and tagged `workspace`, `vault` and
 `managed-by=agentd`. An `environment_variable` credential's secret is also
@@ -51,7 +51,7 @@ region and account is tighter and loses nothing.
     through Secrets Manager (`kms:ViaService`) and only for `PREFIX/` secrets
     (`kms:EncryptionContext:SecretARN`).
 - `agentd-ssm-policy.json`, on agentd's role in place of the Secrets Manager
-  policy when the store is `ssm`:
+  policy when the store is `aws_ssm`:
   - `PutParameter`, `GetParameter` and `DeleteParameter` on `/PREFIX/`
     parameters, scoped by name only for the reason above. An overwrite
     carries no tags, so `PutParameter` takes no tag condition.
