@@ -27,7 +27,7 @@ fn a_kms_key_selects_aws_sm_unless_the_selector_says_otherwise() {
     let c = config(&[("AGENTD_SECRETS", "postgres"), ("AGENTD_SECRET_KEYS", &ring())]).unwrap();
     assert!(matches!(c.secrets, SecretsConfig::Postgres(_)), "a set selector wins over the KMS key");
     let c = config(&[("AGENTD_SECRETS", "aws")]).unwrap();
-    assert!(matches!(c.secrets, SecretsConfig::AwsSm(_)), "`aws` is the older name of `aws_sm`");
+    assert!(matches!(c.secrets, SecretsConfig::AwsSm(_)), "`aws` also selects Secrets Manager");
     for unknown in ["vault", "ssm", "sm"] {
         assert_eq!(config(&[("AGENTD_SECRETS", unknown)]).unwrap_err().var, "AGENTD_SECRETS", "{unknown}");
     }

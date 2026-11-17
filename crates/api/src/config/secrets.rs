@@ -12,7 +12,7 @@ pub enum SecretsConfig {
     /// `postgres`: each secret sealed in `vault_secrets` under the master
     /// keys `AGENTD_SECRET_KEYS`.
     Postgres(SecretKeys),
-    /// `aws_sm` (or `aws`, its older name): one Secrets Manager secret per credential, under
+    /// `aws_sm` (`aws` too): one Secrets Manager secret per credential, under
     /// `AGENTD_SECRETS_PREFIX`, encrypted with the customer-managed KMS key
     /// `AGENTD_SECRETS_KMS_KEY_ID`.
     AwsSm(AwsSecretsConfig),

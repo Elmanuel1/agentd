@@ -18,7 +18,7 @@ Secrets Manager or SSM Parameter Store, not Postgres.
 ## Decision
 
 1. `AGENTD_SECRETS` picks the store: `postgres` (the default), `aws_sm` or `aws_ssm`, as iron-proxy names its
-   sources (`aws` stays accepted as `aws_sm`). A set `AGENTD_SECRETS_KMS_KEY_ID` picks `aws_sm` while
+   sources (`aws` also selects the Secrets Manager store). A set `AGENTD_SECRETS_KMS_KEY_ID` picks `aws_sm` while
    `AGENTD_SECRETS` is unset, so an AWS deployment keeps working unchanged.
 2. The Postgres store keeps each secret in `vault_secrets` under envelope encryption: a fresh AES-256-GCM data key
    per put seals the value, and a single-use key HKDF-SHA256 derives from the first master key and a fresh salt

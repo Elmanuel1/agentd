@@ -32,6 +32,7 @@ documentation; `ASSUMED` rows name what reopens them.
 | C3 | Intelligent-Tiering stores a parameter as standard unless it needs advanced (a value over 4 KB); advanced holds 8 KB. | VERIFIED | AWS Systems Manager User Guide, "Managing parameter tiers" |
 | C4 | `GetParameter` is 40 TPS per account and region by default, 10,000 with higher throughput; `PutParameter` is 3 TPS by default and 10 with higher throughput. | VERIFIED | AWS General Reference, Systems Manager endpoints and quotas |
 | C5 | Parameter Store keeps a parameter's 100 most recent versions; `DeleteParameter` removes them all. | VERIFIED | AWS Systems Manager User Guide, "Working with parameter versions" |
+| C6 | iron-proxy names its Secrets Manager source `aws_sm` and its Parameter Store source `aws_ssm`. | VERIFIED | github.com/ironsh/iron-proxy README, the secret sources list (read 2026-11-17); `aws_sm` exercised against LocalStack on 2026-11-04 |
 
 ## Load
 

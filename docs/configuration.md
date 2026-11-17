@@ -175,7 +175,7 @@ web identity, the ECS task role or the EC2 instance role. This holds with or wit
 
 Each credential's secret material goes to the secret store `AGENTD_SECRETS`
 names: `postgres`, `aws_sm` or `aws_ssm`, the names iron-proxy gives the same
-sources. `aws` is accepted as the older name of `aws_sm`. Unset (or blank), it
+sources. `aws` also selects the Secrets Manager store. Unset (or blank), it
 is `aws_sm` when `AGENTD_SECRETS_KMS_KEY_ID` is set and `postgres` otherwise,
 so an existing AWS deployment keeps its store with no change. Every store keeps one secret
 per credential, keyed by its workspace, vault and credential ids, each checked
