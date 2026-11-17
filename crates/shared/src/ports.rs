@@ -10,6 +10,9 @@ pub mod keys;
 pub mod scheduler;
 pub mod secrets;
 
+/// The future a port's `dyn` trait returns: native `async fn` in a trait cannot be called through `dyn`.
+pub use futures::future::BoxFuture;
+
 pub use scheduler::{
     FakeScheduler, FireId, FireTarget, ScheduleChange, ScheduleSpec, ScheduleState, SchedulerError,
     SchedulerPort, TenantRef,
