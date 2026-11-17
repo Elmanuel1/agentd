@@ -471,7 +471,7 @@ The signals to alarm on, with their thresholds:
 |---|---|---|
 | Slot | `agentd.feed.slot.safe_wal`, `agentd.feed.slot.lost` and `agentd.feed.slot.retained_wal` (`docs/history.md`, "The slot") | safe WAL below 25% of `max_slot_wal_keep_size`, lost, or retained WAL growing for 15 minutes |
 | Debezium health | `GET /q/health` | down for 2 minutes |
-| Feed backlog | Kafka: the lag of the group `agentd.agentd.public.<table>`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
+| Feed backlog | Kafka: the lag of the groups `agentd.agentd.public.<table>` and `agentd.agentd.message`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` and `XINFO GROUPS agentd.message` | above 0 for 10 minutes |
 
 ## Webhooks
 
