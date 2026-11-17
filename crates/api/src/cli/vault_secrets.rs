@@ -130,8 +130,18 @@ mod tests {
         assert_eq!(outcome(&ssm, &words("tag")).await, said(tag));
         assert_eq!(outcome(&aws, &words("reseal")).await, said(reseal));
         assert_eq!(outcome(&ssm, &words("reseal")).await, said(reseal));
-        let (_, code) = outcome(&postgres, &words("rotate")).await;
+        let usage = vec![format!("unknown vault-secrets command\n{USAGE}")];
+        assert_eq!(outcome(&postgres, &words("rotate")).await, (usage, ExitCode::FAILURE));
+    }
+
+    #[tokio::test]
+    async fn a_reseal_that_cannot_reach_the_database_fails_and_says_so() {
+        let (lines, code) = outcome(&config(&[]), &words("reseal")).await;
         assert_eq!(code, ExitCode::FAILURE);
+        assert!(
+            lines.len() == 1 && lines[0].starts_with("agentd vault-secrets: secret backend: vault_secrets: "),
+            "{lines:?}"
+        );
     }
 
     #[test]
