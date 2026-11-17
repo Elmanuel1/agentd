@@ -1,29 +1,48 @@
-//! `agentd vault-secrets tag`: tag every `environment_variable` credential's
+//! `agentd vault-secrets tag|reseal`.
+//!
+//! `tag` tags every `environment_variable` credential's Secrets Manager
 //! secret `credential_type=environment_variable`, so that the egress swap's
 //! AWS policy reaches those secrets and no others. Secrets created since
 //! carry the tag already; tagging one twice changes nothing.
+//!
+//! `reseal` seals every Postgres row not under the first key of
+//! `AGENTD_SECRET_KEYS` again, so that an older master key can be dropped.
 
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use secrets_aws::AwsSecretStore;
-use store_postgres::{PgBackend, PgVaultsStore};
+use secrets_aws::{AwsSecretStore, AwsSecretsConfig};
+use shared::hash::SecretKeys;
+use store_postgres::{PgBackend, PgSecretStore, PgVaultsStore, Resealed};
 
 use super::command::as_operator;
-use crate::config::{Config, StoreConfig};
+use crate::config::{Config, SecretsConfig, StoreConfig};
 
 /// How to call it.
-pub const USAGE: &str = "usage: agentd vault-secrets tag";
+pub const USAGE: &str = "usage: agentd vault-secrets tag|reseal";
 
 /// Run `args` (the words after `agentd vault-secrets`) against `config`'s backends.
 pub async fn vault_secrets(config: &Config, args: &[String]) -> ExitCode {
-    if !matches!(args, [cmd] if cmd == "tag") {
-        eprintln!("unknown vault-secrets command\n{USAGE}");
-        return ExitCode::FAILURE;
-    }
-    match as_operator(tag(config)).await {
-        Ok(tagged) => {
-            eprintln!("tagged {tagged} environment_variable secrets");
+    let done = match (args, &config.secrets) {
+        ([cmd], SecretsConfig::Aws(aws)) if cmd == "tag" => {
+            as_operator(tag(config, aws)).await.map(|n| format!("tagged {n} environment_variable secrets"))
+        }
+        ([cmd], _) if cmd == "tag" => Ok("nothing to tag: this store records the kind when it writes".into()),
+        ([cmd], SecretsConfig::Postgres(keys)) if cmd == "reseal" => match reseal(config, keys).await {
+            Ok(resealed) => return report(&resealed),
+            Err(e) => Err(e),
+        },
+        ([cmd], _) if cmd == "reseal" => {
+            Ok("nothing to reseal: the store's KMS key does the encryption".into())
+        }
+        _ => {
+            eprintln!("unknown vault-secrets command\n{USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match done {
+        Ok(line) => {
+            eprintln!("{line}");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -33,8 +52,8 @@ pub async fn vault_secrets(config: &Config, args: &[String]) -> ExitCode {
     }
 }
 
-async fn tag(config: &Config) -> Result<usize, String> {
-    let secrets = AwsSecretStore::connect(&config.secrets).await.map_err(|e| e.to_string())?;
+async fn tag(config: &Config, aws: &AwsSecretsConfig) -> Result<usize, String> {
+    let secrets = AwsSecretStore::connect(aws).await.map_err(|e| e.to_string())?;
     let StoreConfig::Postgres { url, .. } = &config.store;
     let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
     let vaults = PgVaultsStore::new(pg, Arc::new(secrets.clone()));
@@ -43,4 +62,68 @@ async fn tag(config: &Config) -> Result<usize, String> {
         secrets.tag_environment_variable(key).await.map_err(|e| e.to_string())?;
     }
     Ok(keys.len())
+}
+
+async fn reseal(config: &Config, keys: &SecretKeys) -> Result<Resealed, String> {
+    let StoreConfig::Postgres { url, .. } = &config.store;
+    let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
+    PgSecretStore::new(pg, keys.clone()).reseal().await.map_err(|e| e.to_string())
+}
+
+/// Each row still under another key, then the counts; a failure while any
+/// row remains, since its key cannot be dropped yet.
+fn report(resealed: &Resealed) -> ExitCode {
+    for (credential, key) in &resealed.remaining {
+        eprintln!("still under key {key}: {credential}");
+    }
+    let (moved, left) = (resealed.moved, resealed.remaining.len());
+    eprintln!("resealed {moved} vault secrets; {left} remain under another key");
+    if left == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(vars: &[(&str, &str)]) -> Config {
+        let mut all = vec![
+            ("DATABASE_URL", "postgres://agentd@127.0.0.1:1/agentd"),
+            ("AGENTD_API_BASE_URL", "http://agentd:8080"),
+            ("AGENTD_VALKEY_URL", "redis://127.0.0.1:1"),
+            ("AGENTD_WORK_TOKEN_KEYS", "k1:000102030405060708090a0b0c0d0e0f"),
+            ("AGENTD_PLACEHOLDER_KEYS", "k1:101112131415161718191a1b1c1d1e1f"),
+            ("AGENTD_API_KEY_PEPPERS", "p1:202122232425262728292a2b2c2d2e2f"),
+            ("AGENTD_SECRET_KEYS", "k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
+        ];
+        all.extend_from_slice(vars);
+        Config::from_lookup(|k| all.iter().rev().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned()))
+            .unwrap()
+    }
+
+    fn words(cmd: &str) -> Vec<String> {
+        vec![cmd.to_owned()]
+    }
+
+    #[tokio::test]
+    async fn tag_and_reseal_change_nothing_where_the_store_needs_neither() {
+        // Nothing listens on the database or Valkey addresses: a command that
+        // connected anything would fail.
+        let postgres = config(&[]);
+        let aws = config(&[("AGENTD_SECRETS", "aws"), ("AGENTD_SECRETS_KMS_KEY_ID", "alias/k")]);
+        assert_eq!(vault_secrets(&postgres, &words("tag")).await, ExitCode::SUCCESS);
+        assert_eq!(vault_secrets(&aws, &words("reseal")).await, ExitCode::SUCCESS);
+        assert_eq!(vault_secrets(&postgres, &words("rotate")).await, ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn reseal_fails_while_any_row_remains_under_another_key() {
+        let done = Resealed { moved: 3, remaining: vec![] };
+        assert_eq!(report(&done), ExitCode::SUCCESS);
+        let left = Resealed { moved: 2, remaining: vec![("wrkspc_a/vlt_b/cred_c".into(), "k0".into())] };
+        assert_eq!(report(&left), ExitCode::FAILURE);
+    }
 }

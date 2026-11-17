@@ -75,11 +75,14 @@ async fn run(url: &str, sql: &str) {
     diesel::sql_query(sql).execute(&mut pg.diesel.get().await.unwrap()).await.unwrap();
 }
 
-/// Every statement a pool runs; the first one containing `trigger` runs `hook` before it is sent.
+/// What runs before the first statement containing its text is sent.
+type Hook = Option<(String, Box<dyn FnOnce() + Send>)>;
+
+/// Every statement a pool runs, and a hook.
 #[derive(Clone, Default)]
 struct Seen {
     statements: Arc<Mutex<Vec<String>>>,
-    hook: Arc<Mutex<Option<(String, Box<dyn FnOnce() + Send>)>>>,
+    hook: Arc<Mutex<Hook>>,
 }
 
 impl PgObserver for Seen {
