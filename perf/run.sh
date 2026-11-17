@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build and start agentd with Postgres and LocalStack (S3, Secrets Manager, KMS),
+# Build and start agentd with Postgres (records and vault secrets) and LocalStack (S3),
 # make an API key through the CLI, run the k6 suite, and leave the summary in
 # perf/results/summary.json. Each run gets a fresh database password and key.
 #   perf/run.sh                 the suite at the defaults (RATE=20, STREAMS=50, DURATION=2m)

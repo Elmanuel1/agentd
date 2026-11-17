@@ -59,11 +59,12 @@ resolving `latest` adopts the promotion — promote-don't-replace.
 ```sh
 POSTGRES_PASSWORD=$(openssl rand -hex 16) docker compose -f docker/docker-compose.yml up   # full stack on LocalStack
 docker compose -f docker/docker-compose.yml logs keys   # the dev API key, made at startup and printed once
-cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, AGENTD_AWS_ENDPOINT the S3, Secrets Manager and KMS ones
+cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, AGENTD_AWS_ENDPOINT the S3, Secrets Manager, SSM and KMS ones
 ```
 
-There is no development mode: the stack runs Secrets Manager and KMS on
-LocalStack exactly as production runs them on AWS, and API keys come from
+There is no development mode: the stack seals vault credentials in Postgres
+under `AGENTD_SECRET_KEYS` as a production deployment on the default store
+does, the AWS stores run on LocalStack as on AWS, and API keys come from
 `agentd keys create`.
 
 Backends and settings: [docs/configuration.md](docs/configuration.md).
