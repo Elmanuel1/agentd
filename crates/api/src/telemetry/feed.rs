@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use store_postgres::{read_slot, DieselPgPool};
+use store_postgres::{read_slot, DieselPgPool, Slot};
 
 /// How often the slot is read.
 const EVERY: Duration = Duration::from_secs(10);
@@ -30,14 +30,37 @@ const ABSENT: i64 = i64::MIN;
 /// as minutes, not as the HTTP buckets' 10 s.
 const DELAY: [f64; 12] = [0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0];
 
+/// The slot's last reading, each value [`ABSENT`] when it has nothing to report.
+#[derive(Clone)]
+struct Readings([Arc<AtomicI64>; 4]);
+
+impl Readings {
+    fn new() -> Self {
+        Self([(); 4].map(|()| Arc::new(AtomicI64::new(ABSENT))))
+    }
+
+    /// Store a read of the slot; a failed read (`None`) leaves every value
+    /// absent, so a stale reading never reports as current.
+    fn set(&self, slot: Option<&Slot>) {
+        let [retained, safe, lost, written] = &self.0;
+        let value = |f: fn(&Slot) -> Option<i64>| slot.and_then(f).unwrap_or(ABSENT);
+        retained.store(value(|s| s.retained), Ordering::Relaxed);
+        safe.store(value(|s| s.safe), Ordering::Relaxed);
+        lost.store(value(|s| Some(i64::from(s.lost))), Ordering::Relaxed);
+        written.store(value(|s| Some(s.wal_written)), Ordering::Relaxed);
+    }
+}
+
 /// Read `slot` every 10 s into the gauges, until the task is aborted. A
-/// gauge with nothing to report (a missing slot's retained WAL) is absent.
+/// gauge with nothing to report (a missing slot's retained WAL, or any value
+/// while the slot cannot be read) is absent.
 pub fn watch(
     meter: &opentelemetry::metrics::Meter,
     pool: DieselPgPool,
     slot: &str,
 ) -> tokio::task::JoinHandle<()> {
-    let [retained, safe, lost, written] = [(); 4].map(|()| Arc::new(AtomicI64::new(ABSENT)));
+    let readings = Readings::new();
+    let [retained, safe, lost, written] = &readings.0;
     let gauge = |name: &'static str, unit: &'static str, about: &'static str, value: &Arc<AtomicI64>| {
         let value = value.clone();
         let builder = meter.i64_observable_gauge(name).with_description(about).with_unit(unit);
@@ -50,9 +73,9 @@ pub fn watch(
             })
             .build();
     };
-    gauge("agentd.feed.slot.retained_wal", "By", "WAL the change feed's slot holds back", &retained);
-    gauge("agentd.feed.slot.safe_wal", "By", "WAL that may be written before the slot is lost", &safe);
-    gauge("agentd.feed.slot.lost", "1", "1 when the change feed's slot is lost or missing", &lost);
+    gauge("agentd.feed.slot.retained_wal", "By", "WAL the change feed's slot holds back", retained);
+    gauge("agentd.feed.slot.safe_wal", "By", "WAL that may be written before the slot is lost", safe);
+    gauge("agentd.feed.slot.lost", "1", "1 when the change feed's slot is lost or missing", lost);
     let read_written = written.clone();
     meter
         .u64_observable_counter("agentd.feed.wal_written")
@@ -70,13 +93,11 @@ pub fn watch(
         loop {
             every.tick().await;
             match read_slot(&pool, &slot).await {
-                Ok(s) => {
-                    retained.store(s.retained.unwrap_or(ABSENT), Ordering::Relaxed);
-                    safe.store(s.safe.unwrap_or(ABSENT), Ordering::Relaxed);
-                    lost.store(i64::from(s.lost), Ordering::Relaxed);
-                    written.store(s.wal_written, Ordering::Relaxed);
+                Ok(s) => readings.set(Some(&s)),
+                Err(e) => {
+                    readings.set(None);
+                    tracing::warn!(%slot, error = %e, "feed: could not read the slot");
                 }
-                Err(e) => tracing::warn!(%slot, error = %e, "feed: could not read the slot"),
             }
         }
     })
@@ -98,6 +119,18 @@ mod tests {
     use opentelemetry::metrics::MeterProvider as _;
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    #[test]
+    fn a_failed_read_leaves_every_slot_value_absent() {
+        let readings = super::Readings::new();
+        let slot = store_postgres::Slot { retained: Some(10), safe: None, lost: false, wal_written: 99 };
+        let values =
+            |r: &super::Readings| r.0.each_ref().map(|v| v.load(std::sync::atomic::Ordering::Relaxed));
+        readings.set(Some(&slot));
+        assert_eq!(values(&readings), [10, super::ABSENT, 0, 99]);
+        readings.set(None);
+        assert_eq!(values(&readings), [super::ABSENT; 4]);
+    }
 
     #[test]
     fn each_recorded_change_s_delay_lands_in_minute_scale_buckets() {

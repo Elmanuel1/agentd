@@ -93,7 +93,7 @@ async fn a_delete_emits_one_message_with_the_row_only_when_it_commits() {
     let pg = backend().await;
     let mut conn = pg.diesel.get().await.unwrap();
     let slot = format!("history_capture_{}", Timestamp::now().as_datetime().timestamp_micros());
-    diesel::sql_query("SELECT 1 FROM pg_create_logical_replication_slot($1, 'test_decoding')")
+    diesel::sql_query("SELECT 1 FROM pg_create_logical_replication_slot($1, 'test_decoding', true)")
         .bind::<Text, _>(&slot)
         .execute(&mut *conn)
         .await

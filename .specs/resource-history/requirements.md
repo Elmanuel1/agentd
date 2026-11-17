@@ -44,7 +44,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | HI-7 | The history consumer shall record each change once, however often the feed delivers it. |
 | HI-8 | When a memory version is redacted, the history consumer shall remove that content from the history of the version and of every memory head that held it. |
 | HI-13 | The history consumer shall record every update of a tracked table, the agent loop's included. |
-| HI-16 | If Debezium Server, the feed's broker, an agentd replica or Postgres stops, crashes, hangs or loses its connections, then once it is back the history consumer shall record every change committed before and during the fault, once and in commit order, while the slot is not lost. |
+| HI-16 | If Debezium Server, the feed's broker, an agentd replica or Postgres stops, crashes, hangs or loses its connections, then once it is back the history consumer shall record every change committed before and during the fault, once and in commit order, while the feed keeps its records (the slot is not lost, and no record expires or is lost by its broker before it is read). |
 
 ## Storage and search
 

@@ -124,11 +124,13 @@ agentd reads the slot every 10 s on every replica (take the maximum across repli
 | Signal | Alarm when | What it means, and what to do |
 |---|---|---|
 | `agentd.feed.slot.safe_wal` | below 25% of `max_slot_wal_keep_size` (page) | the feed has stalled long enough to near the limit: bring Debezium and its sink back before the slot is lost |
-| `agentd.feed.slot.lost` | 1 (page) | the slot is lost or missing and history has a gap: follow "After a lost slot" |
+| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap unless its database already had rows, and then needs only the baseline (step 5) |
 | `agentd.feed.slot.retained_wal` | growing for 15 minutes (ticket) | Debezium is not confirming: check its health (`GET /q/health`) and logs |
 | `agentd.history.apply_delay` p99 | over 5 minutes (ticket) | history lags its commits: check the feed backlog and the `history:` log lines |
 
-`agentd.feed.wal_written` counts the WAL Postgres writes, for sizing.
+While a replica cannot read the slot, its slot values are absent, never the last reading: alarm when no replica
+reports `agentd.feed.slot.lost` for 5 minutes (page). `agentd.feed.wal_written` counts the WAL Postgres writes, for
+sizing.
 
 ### WAL sizing
 
@@ -148,8 +150,8 @@ history reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up 
 
 ### Faults
 
-Each boundary on the way to history recovers on its own, and the changes made during a fault reach history once,
-in order. Only a slot past `max_slot_wal_keep_size` loses changes.
+Each boundary on the way to history recovers on its own: while the feed keeps its records, the changes made during
+a fault reach history once, in order.
 
 | Fault | What happens |
 |---|---|
@@ -161,13 +163,26 @@ in order. Only a slot past `max_slot_wal_keep_size` loses changes.
 
 `crates/api/tests/history_faults.rs` makes each of these faults while changes are written, on Kafka and on Valkey.
 
+These lose changes instead:
+
+| Loss | Signal | Recovery |
+|---|---|---|
+| The slot passes `max_slot_wal_keep_size` | `agentd.feed.slot.lost` | "After a lost slot" |
+| A Kafka record expires before a replica reads it (every replica down longer than the topic's retention) | none from agentd: watch the `agentd.<topic>` consumer groups' lag against the retention | the baseline, "After a lost slot" step 5, with agentd stopped |
+| Valkey crashes under `appendfsync everysec` | none: up to 1 s of entries | the baseline, with agentd stopped |
+| A change cannot be recorded (its table has no history table, or its row is not a row) | the `ERROR` line `history: a change cannot be recorded; passed over`, with the table and lsn | fix the cause, then the baseline, with agentd stopped |
+
 ## After a lost slot
 
-1. Stop Debezium Server.
-2. Drop the slot and Debezium's offsets: `select pg_drop_replication_slot('agentd_changes');` and
+1. Stop every agentd replica, so nothing writes a tracked table until the baseline is done: a write that commits
+   while the baseline reads its table can leave the older row as the latest one, and a redaction made then can leave
+   its content in the baseline.
+2. Stop Debezium Server.
+3. Drop the slot, if it still exists, and Debezium's offsets:
+   `select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = 'agentd_changes';` and
    `delete from debezium_offsets;`.
-3. Start Debezium Server. It makes a new slot and streams changes from then on.
-4. Record every live row as a `baseline`, one statement per tracked table:
+4. Start Debezium Server. It makes a new slot and streams changes from then on.
+5. Record every live row as a `baseline`, one statement per tracked table:
 
 ```sql
 do $$
@@ -189,8 +204,12 @@ begin
 end $$;
 ```
 
+6. Start agentd.
+
 The changes between the loss and the baseline are gone; the `agentd.feed.slot.lost` gauge's samples bound the
-window. The same baseline starts history on a database that already has rows.
+window. The same baseline, with agentd stopped, starts history on a database that already has rows. A redacted
+version's live row holds no content and a live memory's current version cannot be redacted, so the baseline copies
+no redacted content.
 
 ## A new column or tracked table
 
