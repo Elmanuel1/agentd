@@ -1,5 +1,5 @@
 //! The Postgres secret store over live Postgres: its three operations, one
-//! statement each, the envelope as stored, rotation and `reseal`, and the
+//! statement each, the sealed row as stored, rotation and `reseal`, and the
 //! table kept off the change feed. Gated by `AGENTD_PG_TESTS=1` +
 //! `DATABASE_URL`, on a database Flyway migrated.
 
@@ -49,7 +49,7 @@ struct Stored {
     #[diesel(sql_type = Text)]
     key_id: String,
     #[diesel(sql_type = Bytea)]
-    sealed_key: Vec<u8>,
+    salt: Vec<u8>,
     #[diesel(sql_type = Bytea)]
     sealed_value: Vec<u8>,
 }
@@ -58,7 +58,7 @@ async fn stored(url: &str, key: &SecretKey) -> Option<Stored> {
     let pg = PgBackend::connect(url).await.unwrap();
     let mut conn = pg.diesel.get().await.unwrap();
     diesel::sql_query(
-        "SELECT environment_variable, key_id, sealed_key, sealed_value FROM vault_secrets
+        "SELECT environment_variable, key_id, salt, sealed_value FROM vault_secrets
          WHERE workspace_id = $1 AND vault_id = $2 AND credential_id = $3",
     )
     .bind::<Text, _>(key.workspace())
@@ -177,7 +177,7 @@ async fn the_row_holds_no_value_or_key_bytes_and_names_the_first_key() {
     let (k1, k2) = (hex::decode(K1).unwrap(), hex::decode(K2).unwrap());
     for needle in [value.as_bytes(), &k1, &k2] {
         for window in needle.windows(8) {
-            for bytes in [&row.sealed_key, &row.sealed_value] {
+            for bytes in [&row.salt, &row.sealed_value] {
                 assert!(!bytes.windows(8).any(|w| w == window), "a stored column holds known bytes");
             }
         }
@@ -202,7 +202,7 @@ async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_past_a_bad_row_and_
         &url,
         &format!(
             "INSERT INTO vault_secrets VALUES ('{ws}', 'vlt_01a', 'cred-0', false, 'r1',
-             decode(repeat('00', 92), 'hex'), decode(repeat('00', 28), 'hex'))"
+             decode(repeat('00', 32), 'hex'), decode(repeat('00', 28), 'hex'))"
         ),
     )
     .await;
@@ -234,7 +234,7 @@ async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_past_a_bad_row_and_
 
     let after = stored(&url, &moved).await.unwrap();
     assert_eq!(after.key_id, "r2");
-    assert_ne!(after.sealed_key, before.sealed_key, "a new data key");
+    assert_ne!(after.salt, before.salt, "a new salt");
     assert_ne!(after.sealed_value, before.sealed_value, "the value sealed again");
     assert_eq!(next.get(&moved).await.unwrap().expose_secret(), "v4");
     assert_eq!(next.get(&raced).await.unwrap().expose_secret(), "newer", "the newer put is kept");

@@ -14,12 +14,11 @@
 *the SSM store* (`AwsParameterStore`), *the change feed* and *the history consumer* (as in resource history).
 
 **Terms:**
-- **Master key ring:** `AGENTD_SECRET_KEYS`, `<id>:<hex>,…`, each key 32 bytes; the first wraps, every one opens.
-- **Data key:** the random 256-bit key one put seals one value with.
-- **Wrap key:** the single-use key HKDF-SHA256 derives from a master key and a salt, which seals one data key.
+- **Master key ring:** `AGENTD_SECRET_KEYS`, `<id>:<hex>,…`, each key 32 bytes; the first seals, every one opens.
+- **Value key:** the single-use key HKDF-SHA256 derives from a master key and a row's 32-byte salt, which seals one value.
 - **Kind:** `env` for an `environment_variable` credential, `mcp` for every other.
 
-**Build order:** spec → V20 `vault_secrets` (SS-9) → the envelope (SS-3 to SS-5, SS-7) → the store and reseal (SS-6,
+**Build order:** spec → V20 `vault_secrets` (SS-9) → the cipher (SS-3 to SS-5, SS-7) → the store and reseal (SS-6,
 SS-8, SS-13) → selection and the CLI (SS-1, SS-2, SS-10 to SS-12, SS-14) → the SSM adapter (SS-15 to SS-18) → docs,
 stacks and CI, one PR (D14).
 
@@ -39,11 +38,11 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 | ID | Requirement |
 |---|---|
-| SS-3 | When the Postgres store puts a secret, it shall encrypt the value with AES-256-GCM under a new random 256-bit data key and wrap that data key with AES-256-GCM under a single-use key derived from the ring's first key and a new random 32-byte salt, in one statement. |
-| SS-4 | The Postgres store shall authenticate both ciphertexts with associated data naming the workspace, vault, credential and kind, so that a row moved to another key or kind does not open. |
+| SS-3 | When the Postgres store puts a secret, it shall encrypt the value with AES-256-GCM under a value key derived from the ring's first key and a new random 32-byte salt, and store the salt and the key's id with it, in one statement. |
+| SS-4 | The Postgres store shall authenticate the ciphertext with associated data naming the workspace, vault, credential and kind, so that a row moved to another key or kind does not open. |
 | SS-5 | When the Postgres store reads a secret, it shall open it with the ring key its row names, and shall return a backend error naming the credential key and key id when that key is absent or a tag fails. |
 | SS-6 | When no row exists, the Postgres store shall return `NotFound` on read and succeed on delete. |
-| SS-7 | The Postgres store shall never write a master key to the database, a log, an error or a metric, and shall zero every data key, wrap key and plaintext buffer it allocates. |
+| SS-7 | The Postgres store shall never write a master key to the database, a log, an error or a metric, and shall zero every value key and plaintext buffer it allocates. |
 | SS-8 | The Postgres store shall issue exactly one SQL statement for each put, get and delete, on the primary. |
 | SS-9 | The change feed and the history consumer shall not capture `vault_secrets`. |
 
@@ -52,7 +51,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | SS-11 | When `AGENTD_SECRETS` is `postgres` or `aws_ssm`, `agentd vault-secrets tag` shall change nothing and exit successfully, saying the store records the kind when it writes. |
-| SS-13 | `agentd vault-secrets reseal` shall seal every row not under the ring's first key again under a new data key and the first key, print how many rows it moved and how many remain under another key, naming each remaining row by its ids and key id, and exit with failure while any remain. |
+| SS-13 | `agentd vault-secrets reseal` shall seal every row not under the ring's first key again under the first key with a new salt, print how many rows it moved and how many remain under another key, naming each remaining row by its ids and key id, and exit with failure while any remain. |
 | SS-14 | When `AGENTD_SECRETS` is `aws_sm` or `aws_ssm`, `agentd vault-secrets reseal` shall change nothing and exit successfully, saying the store's KMS key does the encryption. |
 
 ## The SSM store

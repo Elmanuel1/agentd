@@ -1,4 +1,4 @@
-# ADR 0001: Vault secrets default to Postgres under envelope encryption, with AWS stores as adapters
+# ADR 0001: Vault secrets default to Postgres, sealed under master keys, with AWS stores as adapters
 
 Status: Accepted
 Date: 2026-11-17
@@ -20,12 +20,12 @@ Secrets Manager or SSM Parameter Store, not Postgres.
 1. `AGENTD_SECRETS` picks the store: `postgres` (the default), `aws_sm` or `aws_ssm`, as iron-proxy names its
    sources (`aws` also selects the Secrets Manager store). A set `AGENTD_SECRETS_KMS_KEY_ID` picks `aws_sm` while
    `AGENTD_SECRETS` is unset, so an AWS deployment keeps working unchanged.
-2. The Postgres store keeps each secret in `vault_secrets` under envelope encryption: a fresh AES-256-GCM data key
-   per put seals the value, and a single-use key HKDF-SHA256 derives from the first master key and a fresh salt
-   wraps the data key. Both are bound to the credential and its kind through the associated data.
-3. The master keys are a key ring from `AGENTD_SECRET_KEYS`: the first wraps, every one opens. A new type,
-   `shared::hash::SecretKeys`, holds them and derives wrap keys only, so no key can be read out.
-4. `agentd vault-secrets reseal` moves every row to the first key with a new data key; rotation is add, move first,
+2. The Postgres store keeps each secret in `vault_secrets`, sealed with AES-256-GCM under a single-use key that
+   HKDF-SHA256 derives from the first master key and a fresh 32-byte salt per put. The row keeps the salt and the
+   master key's id. The value is bound to the credential and its kind through the associated data.
+3. The master keys are a key ring from `AGENTD_SECRET_KEYS`: the first seals, every one opens. A new type,
+   `shared::hash::SecretKeys`, holds them and derives value keys only, so no key can be read out.
+4. `agentd vault-secrets reseal` moves every row to the first key with a new salt; rotation is add, move first,
    reseal, drop.
 5. An SSM Parameter Store adapter sits beside the Secrets Manager one in `secrets-aws`, sharing its KMS key check,
    error mapping and tags.
@@ -37,7 +37,7 @@ Secrets Manager or SSM Parameter Store, not Postgres.
 |---|---|
 | One AES-GCM key for every value (Kubernetes `aesgcm`) | Needs rotation every 200,000 writes to stay inside the nonce limit. |
 | A KMS plugin in the Postgres store | Mixes the default with an external service; the external path is an AWS adapter, chosen whole. |
-| Rewrap only on rotation (Vault `rewrap`) | Keeps each data key, so an old backup plus a leaked old key still opens the current value. |
+| A random data key per row, wrapped under the derived key (envelope encryption) | A second key and a second seal per row for no gain: the derived key is already single-use, and reseal encrypts the value again either way. |
 | Supabase Vault, `pgsodium` | Needs a Postgres extension most managed databases lack. |
 | AWS Encryption SDK | Pulls the AWS SDK into the default store. |
 | OpenBao | Another service to run; out for now. |

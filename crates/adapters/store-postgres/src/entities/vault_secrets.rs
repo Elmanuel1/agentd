@@ -1,10 +1,10 @@
 //! [`SecretStore`] on Postgres: each credential's secret sealed in
-//! `vault_secrets` under envelope encryption ([`envelope`]), with the master
+//! `vault_secrets` under a single-use key per write ([`cipher`]), with the master
 //! keys only in agentd's environment. Every operation is one statement on a
 //! plain checkout: the table is untracked, so it needs none of `write()`'s
 //! writer settings.
 
-pub(crate) mod envelope;
+pub(crate) mod cipher;
 mod reseal;
 
 pub use reseal::Resealed;
@@ -16,7 +16,7 @@ use diesel_async::RunQueryDsl;
 use shared::hash::SecretKeys;
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 
-use self::envelope::Sealed;
+use self::cipher::Sealed;
 use crate::schema::vault_secrets as t;
 use crate::{PgBackend, PooledConnection};
 
@@ -44,14 +44,14 @@ impl PgSecretStore {
     /// `row` opened for `key`; a row that does not open needs a person (a key
     /// left the ring, or the row was altered), so it is logged at `ERROR`.
     fn open(&self, key: &SecretKey, row: &Sealed) -> Result<SecretString, SecretError> {
-        envelope::open(&self.keys, key, row).inspect_err(|e| tracing::error!(error = %e, "vault secret"))
+        cipher::open(&self.keys, key, row).inspect_err(|e| tracing::error!(error = %e, "vault secret"))
     }
 }
 
 #[async_trait]
 impl SecretStore for PgSecretStore {
     async fn put(&self, key: &SecretKey, secret: &SecretString) -> Result<(), SecretError> {
-        let sealed = envelope::seal(&self.keys, key, secret)?;
+        let sealed = cipher::seal(&self.keys, key, secret)?;
         let mut conn = self.conn().await?;
         diesel::insert_into(t::table)
             .values((
@@ -60,7 +60,7 @@ impl SecretStore for PgSecretStore {
                 t::credential_id.eq(key.credential()),
                 t::environment_variable.eq(sealed.environment_variable),
                 t::key_id.eq(&sealed.key_id),
-                t::sealed_key.eq(&sealed.sealed_key),
+                t::salt.eq(&sealed.salt),
                 t::sealed_value.eq(&sealed.sealed_value),
             ))
             .on_conflict((t::workspace_id, t::vault_id, t::credential_id))
@@ -68,7 +68,7 @@ impl SecretStore for PgSecretStore {
             .set((
                 t::environment_variable.eq(excluded(t::environment_variable)),
                 t::key_id.eq(excluded(t::key_id)),
-                t::sealed_key.eq(excluded(t::sealed_key)),
+                t::salt.eq(excluded(t::salt)),
                 t::sealed_value.eq(excluded(t::sealed_value)),
             ))
             .execute(&mut conn)

@@ -884,7 +884,7 @@ The launch deployment (D34) and the scale-up path, each switch a setting:
 | agentd's keys | environment variables, filled however the deployment chooses (D59) | unchanged |
 | Objects, logs, metrics | tosspaper's S3 bucket, logs and metrics | unchanged |
 | Event log | Postgres, behind the event-log port | DynamoDB for large workspaces behind the same port, a later plan (Out of scope) |
-| Credentials | the secret store: Postgres under envelope encryption, Secrets Manager or SSM Parameter Store (secret-store ADR 0001) | Secrets Manager or SSM Parameter Store for our `cloud` egress |
+| Credentials | the secret store: Postgres sealed under master keys, Secrets Manager or SSM Parameter Store (secret-store ADR 0001) | Secrets Manager or SSM Parameter Store for our `cloud` egress |
 | `cloud` sandboxes | Cloudflare Containers, no warm pool; our runtime poller on tosspaper's host | the same, with a raised account capacity; Fargate with its fleet and `warm_buffer` for an AWS-only operator |
 
 Cost at launch for 10,000 extractions a month, excluding the model (G2): agentd, Postgres, Valkey and S3 run on

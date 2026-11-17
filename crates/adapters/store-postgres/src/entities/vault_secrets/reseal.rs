@@ -1,12 +1,12 @@
 //! `agentd vault-secrets reseal`: every row not under the master key ring's
-//! first key, sealed again under a new data key and the first key.
+//! first key, sealed again under the first key with a new salt.
 
 use diesel::sql_types::{BigInt, Text};
 use diesel::{ExpressionMethods, QueryDsl, QueryableByName};
 use diesel_async::RunQueryDsl;
 use shared::ports::secrets::{SecretError, SecretKey};
 
-use super::envelope::{self, Sealed};
+use super::cipher::{self, Sealed};
 use super::{backend_error, PgSecretStore};
 use crate::schema::vault_secrets as t;
 use crate::PooledConnection;
@@ -33,8 +33,8 @@ struct Row {
 }
 
 impl PgSecretStore {
-    /// Seal every row not under the first key again, under a new data key and
-    /// the first key. A put between a row's read and its write wins: the write
+    /// Seal every row not under the first key again, under the first key with
+    /// a new salt. A put between a row's read and its write wins: the write
     /// matches the sealed key it read. Rows that do not open stay, and are named.
     pub async fn reseal(&self) -> Result<Resealed, SecretError> {
         let first = self.keys.first_id().to_owned();
@@ -42,7 +42,7 @@ impl PgSecretStore {
         let (mut moved, mut after) = (0, [String::new(), String::new(), String::new()]);
         loop {
             let page: Vec<Row> = diesel::sql_query(
-                "SELECT workspace_id, vault_id, credential_id, environment_variable, key_id, sealed_key,
+                "SELECT workspace_id, vault_id, credential_id, environment_variable, key_id, salt,
                         sealed_value
                  FROM vault_secrets
                  WHERE key_id <> $1 AND (workspace_id, vault_id, credential_id) > ($2, $3, $4)
@@ -90,15 +90,11 @@ impl PgSecretStore {
             false => key,
         };
         let Ok(secret) = self.open(&key, &read) else { return Ok(0) };
-        let next = envelope::seal(&self.keys, &key, &secret)?;
+        let next = cipher::seal(&self.keys, &key, &secret)?;
         diesel::update(t::table.find((key.workspace(), key.vault(), key.credential())))
             .filter(t::key_id.eq(&read.key_id))
-            .filter(t::sealed_key.eq(&read.sealed_key))
-            .set((
-                t::key_id.eq(&next.key_id),
-                t::sealed_key.eq(&next.sealed_key),
-                t::sealed_value.eq(&next.sealed_value),
-            ))
+            .filter(t::salt.eq(&read.salt))
+            .set((t::key_id.eq(&next.key_id), t::salt.eq(&next.salt), t::sealed_value.eq(&next.sealed_value)))
             .execute(conn)
             .await
             .map_err(backend_error)

@@ -7,7 +7,7 @@ diesel::table! {
         credential_id -> Text,
         environment_variable -> Bool,
         key_id -> Text,
-        sealed_key -> Bytea,
+        salt -> Bytea,
         sealed_value -> Bytea,
     }
 }
