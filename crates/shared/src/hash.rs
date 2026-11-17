@@ -83,26 +83,27 @@ fn entries<K>(
     size: &str,
     key: impl Fn(Vec<u8>) -> Option<K>,
 ) -> Result<Vec<(String, K)>, KeyRingError> {
-    let entries = raw.split(',').map(str::trim).filter(|k| !k.is_empty()).enumerate();
+    // Positions count every comma-separated field, empty ones included, as the operator sees them.
+    let entries = raw.split(',').map(str::trim).enumerate().filter(|(_, k)| !k.is_empty());
     let keys = entries.map(|(i, entry)| {
         let bad = || KeyRingError(format!("entry {} is not `<id>:<hex of {size}>`", i + 1));
         let (id, hex) = entry.split_once(':').ok_or_else(bad)?;
         let key = hex::decode(hex).ok().and_then(&key).ok_or_else(bad)?;
         match !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
-            true => Ok((id.to_owned(), key)),
+            true => Ok((i, id.to_owned(), key)),
             false => Err(bad()),
         }
     });
     let keys = keys.collect::<Result<Vec<_>, _>>()?;
     // A repeated id would leave one of its keys unreachable, and what it sealed with it.
     let repeated =
-        keys.iter().enumerate().find(|(i, (id, _))| keys.iter().take(*i).any(|(seen, _)| seen == id));
-    if let Some((i, _)) = repeated {
+        keys.iter().enumerate().find(|(n, (_, id, _))| keys.iter().take(*n).any(|(_, seen, _)| seen == id));
+    if let Some((_, (i, _, _))) = repeated {
         return Err(KeyRingError(format!("entry {} repeats an earlier id", i + 1)));
     }
     match keys.is_empty() {
         true => Err(KeyRingError("no key".into())),
-        false => Ok(keys),
+        false => Ok(keys.into_iter().map(|(_, id, key)| (id, key)).collect()),
     }
 }
 

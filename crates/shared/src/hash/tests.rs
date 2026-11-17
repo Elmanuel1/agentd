@@ -73,4 +73,10 @@ fn a_bad_entry_is_named_by_its_position_never_its_text() {
         KeyRing::parse(&format!("k1:{key},k2:{key},k1:{key}")).unwrap_err().to_string(),
         "entry 3 repeats an earlier id"
     );
+    for (raw, want) in [
+        (format!("k1:{key},,k2:00"), "entry 3 is not `<id>:<hex of at least 16 bytes>`"),
+        (format!(",k1:{key}, ,k1:{key}"), "entry 4 repeats an earlier id"),
+    ] {
+        assert_eq!(KeyRing::parse(&raw).unwrap_err().to_string(), want, "an empty field counts");
+    }
 }
