@@ -21,10 +21,12 @@ pub mod entities;
 mod load;
 mod pool;
 pub mod schema;
+mod slot;
 
 pub use checkout::{DieselPgPool, PooledConnection};
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
+pub use slot::{read_slot, Slot};
 
 pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;
@@ -35,6 +37,7 @@ pub use entities::environment_keys::PgEnvironmentKeysStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
 pub use entities::fire_claims::PgFireClaims;
+pub use entities::history::PgHistoryLog;
 pub use entities::loop_steps::PgSteps;
 pub use entities::mcp_connections::PgMcpConnections;
 pub use entities::memory::PgMemoryStore;
@@ -112,6 +115,7 @@ from_backend!(
     memory::store::StoreError,
     organizations::workspaces::StoreError,
     work::store::StoreError,
+    shared::ports::history::HistoryError,
 );
 
 /// Serialize a snake_case enum to its wire string for a filter column

@@ -7,6 +7,7 @@
 //! - every SQL statement feeds `db.client.operation.duration` ([`db`]),
 //! - every blob and secret operation is a span and feeds
 //!   `agentd.port.operation.duration` ([`ports`]),
+//! - the change feed's slot and the history apply delay feed `agentd.feed.*` and `agentd.history.*` ([`feed`]),
 //! - each of these carries `outcome` (`ok` or `error`) or the status code. A
 //!   5xx, a failed statement or a failed connection is logged at `error`, a
 //!   failed port operation at `warn`.
@@ -16,6 +17,7 @@
 //! when `AGENTD_LOG_FORMAT=json`.
 
 pub mod db;
+pub mod feed;
 pub mod http;
 pub mod ports;
 pub mod retention;

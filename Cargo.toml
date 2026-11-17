@@ -15,6 +15,7 @@ members = [
     "crates/resources/deployments",
     "crates/resources/work",
     "crates/resources/dreams",
+    "crates/resources/history",
     "crates/api",
     "conformance/rust",
     "crates/adapters/store-postgres",
@@ -49,6 +50,7 @@ sessions = { path = "crates/resources/sessions" }
 deployments = { path = "crates/resources/deployments" }
 work = { path = "crates/resources/work" }
 dreams = { path = "crates/resources/dreams" }
+history = { path = "crates/resources/history" }
 api = { path = "crates/api" }
 store-postgres = { path = "crates/adapters/store-postgres" }
 blobs-s3 = { path = "crates/adapters/blobs-s3" }

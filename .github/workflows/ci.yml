@@ -87,6 +87,19 @@ jobs:
       - name: Start a one-node Valkey cluster, for the cluster-mode tests
         run: docker/valkey/start-cluster.sh 7001
       - run: cargo test --workspace --locked --no-fail-fast
+        env:
+          AGENTD_FAULT_TESTS: "1"
+          AGENTD_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+      - name: Move the change feed to Valkey Streams
+        run: |
+          docker rm -f debezium >/dev/null
+          docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" redis localhost:6379 false
+      - name: History and its faults on the Valkey feed
+        run: env -u AGENTD_KAFKA_BROKERS cargo test -p api --locked --test history --test history_faults
+        env:
+          AGENTD_FAULT_TESTS: "1"
+          AGENTD_POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          AGENTD_FEED_CONTAINER: ${{ job.services.valkey.id }}
       - if: failure()
         run: docker logs debezium 2>&1 | tail -200
 

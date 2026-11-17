@@ -26,7 +26,8 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
 | `AGENTD_KAFKA_BROKERS` | unset | Kafka's brokers (`host:port,…`), from whose topics agentd reads the change feed; unset, it reads it from Valkey Streams on `AGENTD_VALKEY_URL` |
 | `AGENTD_VALKEY_CLUSTER` | `false` | `true` when `AGENTD_VALKEY_URL` is a cluster's configuration endpoint (cluster mode enabled): agentd then follows the cluster's slots and subscribes over RESP3 |
-| `AGENTD_CHANGES_PREFIX` | `agentd` | Debezium's `topic.prefix`: agentd reads the change feed's tables from `<prefix>.public.<table>` and an external scheduler's fires from `<prefix>.fires` |
+| `AGENTD_CHANGES_PREFIX` | `agentd` | Debezium's `topic.prefix`: agentd reads the change feed's tables from `<prefix>.public.<table>`, the delete messages from `<prefix>.message` and an external scheduler's fires from `<prefix>.fires` |
+| `AGENTD_CHANGES_SLOT` | `agentd_changes` | Debezium's replication slot, which every replica reads every 10 s into the `agentd.feed.slot.*` gauges (`docs/history.md`) |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
@@ -391,14 +392,13 @@ needs no run.
 
 ## The change feed
 
-Debezium Server reads the committed changes of the tables in
-`docker/debezium/application.properties` from Postgres's WAL (pgoutput, the
-publication and slot `agentd_changes`) and writes each table's to the topic
-`agentd.public.<table>` of the feed. Its offsets are rows of
-`debezium_offsets` in the same database, which it creates on first start.
-Every minute it writes a logical message to the WAL, so the slot moves on while
-the captured tables are quiet, and a heartbeat record to
-`__debezium-heartbeat.agentd`, which agentd does not read. The same properties
+Debezium Server reads the committed changes of the tables in `docker/debezium/application.properties` (the
+outboxes and the tracked tables of `docs/history.md`) from Postgres's WAL (pgoutput, the publication and slot
+`agentd_changes`) and writes each table's to the topic `agentd.public.<table>` of the feed, and the tracked
+tables' `agentd-history` delete messages to `agentd.message`. Its offsets are rows of `debezium_offsets` in the
+same database, which it creates on first start. Every minute it writes a logical message to the WAL, so the slot
+moves on while the captured tables are quiet, and a heartbeat record to `__debezium-heartbeat.agentd`, which agentd
+does not read. The same properties
 file runs in every deployment; the environment overrides any key in it
 (`debezium.source.database.hostname` is `DEBEZIUM_SOURCE_DATABASE_HOSTNAME`).
 Compose runs it as the `debezium` service; CI starts it with
@@ -428,13 +428,13 @@ cluster.
 In production:
 
 - **Postgres** runs with `wal_level=logical` (on RDS and Aurora, the parameter
-  `rds.logical_replication=1`, then a reboot) and `max_slot_wal_keep_size` set
-  to what the disk can spare, so a stalled slot cannot fill it. A slot past
-  that size is invalidated and the changes in it are lost.
+  `rds.logical_replication=1`, then a reboot) and `max_slot_wal_keep_size` sized as `docs/history.md` says
+  ("WAL sizing"), so a stalled slot cannot fill the disk. A slot past that size is invalidated and the changes
+  in it are lost, to the feed's handlers and to history.
 - **Debezium's role** has `REPLICATION` (on RDS, `GRANT rds_replication`),
   `SELECT` on the captured tables, and `CREATE` on the schema for its offsets
   table. The publication is made once by the tables' owner,
-  `CREATE PUBLICATION agentd_changes FOR TABLE schedule_outbox, webhook_deliveries`, and Debezium
+  `CREATE PUBLICATION agentd_changes FOR TABLE` with the tables of `table.include.list`, and Debezium
   runs with `DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE=disabled`. A table
   added to the feed joins `table.include.list` and the publication
   (`ALTER PUBLICATION agentd_changes ADD TABLE …`).
@@ -447,8 +447,8 @@ In production:
   and `_PASSWORD`; and the Kafka sink's
   `DEBEZIUM_SINK_KAFKA_PRODUCER_BOOTSTRAP_SERVERS`. It answers
   `GET /q/health` on port 8080.
-- **Kafka** has the topics `agentd.public.schedule_outbox`,
-  `agentd.public.webhook_deliveries` and `agentd.fires`
+- **Kafka** has the topics `agentd.public.<table>` for each table of `table.include.list`,
+  `agentd.message` and `agentd.fires`
   made before Debezium starts, each with one partition, replication factor 3
   and `min.insync.replicas=2`, so a record Debezium has written survives the
   loss of a broker. Retention is longer than the longest time every replica
@@ -463,7 +463,7 @@ The signals to alarm on, with their thresholds:
 
 | Signal | Read from | Alarm when |
 |---|---|---|
-| Slot lag | `pg_current_wal_lsn() - confirmed_flush_lsn` of `agentd_changes` in `pg_replication_slots` (RDS: `OldestReplicationSlotLag`) | over 1 GB, or growing for 15 minutes |
+| Slot | `agentd.feed.slot.safe_wal`, `agentd.feed.slot.lost` and `agentd.feed.slot.retained_wal` (`docs/history.md`, "The slot") | safe WAL below 25% of `max_slot_wal_keep_size`, lost, or retained WAL growing for 15 minutes |
 | Debezium health | `GET /q/health` | down for 2 minutes |
 | Feed backlog | Kafka: the lag of the group `agentd.agentd.public.<table>`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
 

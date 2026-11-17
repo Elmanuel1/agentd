@@ -20,6 +20,8 @@ pub struct StreamsConfig {
     /// `AGENTD_CHANGES_PREFIX` (`agentd`): Debezium's `topic.prefix`, which
     /// names the change streams `<prefix>.public.<table>`.
     pub changes_prefix: String,
+    /// `AGENTD_CHANGES_SLOT` (`agentd_changes`): Debezium's replication slot, whose WAL agentd reports.
+    pub changes_slot: String,
     /// `AGENTD_EVENT_RETENTION_DAYS`: archived sessions lose their events
     /// this long after archiving. Unset, events are kept.
     pub retention: Option<Duration>,
@@ -33,6 +35,7 @@ impl std::fmt::Debug for StreamsConfig {
             .field("valkey_cluster", &self.valkey_cluster)
             .field("kafka_brokers", &self.kafka_brokers)
             .field("changes_prefix", &self.changes_prefix)
+            .field("changes_slot", &self.changes_slot)
             .field("retention", &self.retention)
             .finish()
     }
@@ -53,6 +56,7 @@ impl StreamsConfig {
             valkey_cluster: flag(get, "AGENTD_VALKEY_CLUSTER", false)?,
             kafka_brokers: get("AGENTD_KAFKA_BROKERS").filter(|b| !b.is_empty()),
             changes_prefix: get("AGENTD_CHANGES_PREFIX").unwrap_or_else(|| "agentd".into()),
+            changes_slot: get("AGENTD_CHANGES_SLOT").unwrap_or_else(|| "agentd_changes".into()),
             retention: days.map(|d| Duration::from_secs(d.saturating_mul(DAY))),
         })
     }

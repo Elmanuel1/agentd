@@ -1,12 +1,10 @@
-//! The change feed over Valkey Streams: Debezium Server writes each table's
-//! committed changes to the stream `<prefix>.public.<table>` (its Redis
-//! sink, `extended` format), an external scheduler writes its fires to
-//! `<prefix>.fires`, and the replicas read them in the consumer group
-//! `agentd`. An entry is acknowledged once its handler succeeds; an
-//! entry left pending by a replica that stopped is claimed by another after
-//! [`RECLAIM_MS`], and each stream is trimmed of what every group has
-//! acknowledged ([`crate::trim`]). An ordered handler's stream is read by one replica at a
-//! time, which holds a lease in Valkey, in entry order, stopping at a failure.
+//! The change feed over Valkey Streams: Debezium Server writes each table's committed changes to the
+//! stream `<prefix>.public.<table>` and the logical messages to `<prefix>.message` (its Redis sink,
+//! `extended` format), an external scheduler writes its fires to `<prefix>.fires`, and the replicas read
+//! them in the consumer group `agentd`. An entry is acknowledged once its handler succeeds; an entry left
+//! pending by a replica that stopped is claimed by another after [`RECLAIM_MS`], and each stream is
+//! trimmed of what every group has acknowledged ([`crate::trim`]). An ordered handler's stream is read
+//! by one replica at a time, which holds a lease in Valkey, in entry order, stopping at a failure.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,7 +72,7 @@ impl ValkeyChanges {
         handlers
             .into_iter()
             .map(|h| {
-                let stream = format!("{}.public.{}", self.prefix, h.table());
+                let stream = h.source().topic(&self.prefix);
                 tokio::spawn(self.clone().run(stream, Arc::new(Changes(h))))
             })
             .collect()
@@ -111,16 +109,13 @@ impl ValkeyChanges {
         }
     }
 
-    /// Claim what stopped replicas left, then read new entries; handle each.
+    /// Claim what stopped replicas left and handle it, then read new entries
+    /// and handle those: a failed read never drops what was claimed.
     async fn pass(&self, conn: &mut Conn, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
         let stale = self.claim(conn, stream, RECLAIM_MS).await?;
+        handle(conn, stream, handler, stale).await?;
         let fresh = self.read(conn, stream).await?;
-        for entry in stale.into_iter().chain(fresh) {
-            if handler.consume(&entry).await {
-                let _: usize = conn.xack(stream, GROUP, &[&entry.id]).await?;
-            }
-        }
-        Ok(())
+        handle(conn, stream, handler, fresh).await
     }
 
     /// Under the lease only: every pending entry, then new ones, in order,
@@ -171,6 +166,21 @@ impl ValkeyChanges {
         let reply: StreamReadReply = conn.xread_options(&[stream], &[">"], &options).await?;
         Ok(reply.keys.into_iter().flat_map(|k| k.ids).collect())
     }
+}
+
+/// Handle each of `entries`, acknowledging those that need no more handling.
+async fn handle(
+    conn: &mut Conn,
+    stream: &str,
+    handler: &dyn Consumer,
+    entries: Vec<StreamId>,
+) -> RedisResult<()> {
+    for entry in entries {
+        if handler.consume(&entry).await {
+            let _: usize = conn.xack(stream, GROUP, &[&entry.id]).await?;
+        }
+    }
+    Ok(())
 }
 
 /// A table's changes, as Debezium writes them.

@@ -47,6 +47,7 @@ fn change(url: &str) -> Change {
     Change {
         table: "webhook_deliveries".into(),
         op: ChangeOp::Insert,
+        position: None,
         before: None,
         after: Some(json!({"webhook_id": "whe_1", "endpoint_key": "a", "endpoint_url": url, "body": "{}"})),
     }

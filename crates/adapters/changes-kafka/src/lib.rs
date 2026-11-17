@@ -1,6 +1,7 @@
 //! changes-kafka: the change feed over Kafka. Debezium Server writes each
-//! table's committed changes to the topic `<prefix>.public.<table>` (its
-//! Kafka sink, JSON values without schemas), an external scheduler writes its
+//! table's committed changes to the topic `<prefix>.public.<table>`, and the
+//! logical messages to `<prefix>.message` (its Kafka sink, JSON values without
+//! schemas), an external scheduler writes its
 //! fires to `<prefix>.fires`, and the replicas read each topic in the
 //! consumer group `agentd.<topic>`. A record's offset is committed once its
 //! handler succeeds; a failed record is retried in place, so nothing behind
@@ -68,7 +69,7 @@ impl KafkaChanges {
         handlers
             .into_iter()
             .map(|h| {
-                let topic = format!("{}.public.{}", self.prefix, h.table());
+                let topic = h.source().topic(&self.prefix);
                 tokio::spawn(self.clone().run(topic, Reader::Changes(h)))
             })
             .collect()
