@@ -60,7 +60,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | DS-8 | If an occurrence is not run by the time its following occurrence is due, then the scheduler shall mark it done with outcome `skipped` and log it at `WARN`, with no backfill; after downtime, the scheduler shall write only each schedule's latest missed occurrence to `fire_claims` (D1). |
 | DS-18 | When the scheduler marks a fire done, the scheduler shall record its outcome in `fire_claims.outcome`: `ran`, `skipped`, or `dropped` when no handler owns its kind or its spec cannot be read (D3). |
 | DS-9 | When a fire arrives on the change feed's `agentd.fires`, the scheduler shall write it to `fire_claims` as DS-1 and DS-3 do, and acknowledge the delivery once that write commits. |
-| DS-20 | If two creates of a session with the same requested id overlap, then the API shall return the session the first insert made to the create whose insert fails on that id, and leave the session's work item as the first create queued it. |
+| DS-20 | If two creates of a session with the same requested id overlap, then the API shall return the session the first insert made to the create whose insert fails on that id, and leave the session's work item as queued, matching that session. |
 | DS-14 | When the API writes a deployment it read earlier (a fire's bookkeeping, a pause, an unpause or an archive), the API shall write only if the deployment has not changed since that read, and otherwise read it again and redo the change. |
 
 ## 3. Schedule changes and the change feed
@@ -122,10 +122,14 @@ crate, its workspace and lock entries, the settings and the CI service).
   `StoreError::Conflict`. `sessions/src/service/lifecycle.rs` (191 lines): on `Conflict` for a create with a requested
   id, `create_fired` returns the session through `made` and does not call `end_work`, so the losing create never stops
   the winner's work item (DS-20). Its queue write is the existing upsert, which leaves a work item that is not
-  requeuable as it is. The file stays under 200 lines.
+  requeuable as it is. Whichever create queues first and whichever inserts first, the work item matches the winning
+  session: both creates fire one occurrence of one deployment, and a deployment's agent and environment are fixed at
+  its create (no route updates them). The file stays under 200 lines.
 - Tests: `pg_deployments` "a pause between a fire's read and its write survives the fire"; unit "rewrite redoes on a
   stale write and gives up after 5"; `sessions` "two overlapping fired creates of one occurrence make one session and
-  keep its work item queued".
+  keep its work item queued", run for both orders (one create queues first while the other inserts first), asserting
+  one session, one queued work item whose environment and session are the winning session's, and one deployment run
+  whose `session_id` is that session and whose `error` is null.
 
 ### Commit 2: migrations V18 and V19
 
