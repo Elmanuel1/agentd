@@ -1,6 +1,6 @@
 //! `EnvironmentsStore` on Postgres via Diesel — org-scoped CRUD.
 
-use ::environments::store::{EnvironmentsStoreImpl, StoreError};
+use ::environments::store::{NativeEnvironmentsStore, StoreError};
 use ::environments::types::{Environment, EnvironmentId};
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -34,7 +34,7 @@ struct NewEnvironment {
     doc: serde_json::Value,
 }
 
-impl EnvironmentsStoreImpl for PgEnvironmentsStore {
+impl NativeEnvironmentsStore for PgEnvironmentsStore {
     async fn insert(&self, org: &OrgId, env: Environment) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(environments::table)

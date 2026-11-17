@@ -17,10 +17,10 @@ use parking_lot::Mutex;
 use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, UserEvent};
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
-    AnswerCheck, DatabaseLoad, EventFilter, Head, SessionEventLogImpl, SessionEventReadsImpl, SessionFilter,
-    SessionReplaceImpl, SessionsStoreImpl, StoreError, Tail, Wake,
+    AnswerCheck, DatabaseLoad, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
+    NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
 };
-use sessions::{SessionDepsImpl, SessionId, SessionsService, Streams, Subscription};
+use sessions::{NativeSessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
 use shared::{ApiError, AuthContext, BackendError, ErrorType, OrgId, Pagination, Timestamp, WorkspaceId};
 use tokio::sync::broadcast::error::RecvError;
@@ -33,7 +33,7 @@ struct Scripted {
     asked: Mutex<Vec<(i64, Vec<i64>)>>,
 }
 
-impl SessionEventReadsImpl for Scripted {
+impl NativeSessionEventReads for Scripted {
     async fn events(&self, _: &WorkspaceId, _: &SessionId) -> Result<Vec<Event>, StoreError> {
         unimplemented!()
     }
@@ -65,7 +65,7 @@ impl SessionEventReadsImpl for Scripted {
     }
 }
 
-impl SessionEventLogImpl for Scripted {
+impl NativeSessionEventLog for Scripted {
     async fn append_events(
         &self,
         _: &WorkspaceId,
@@ -103,7 +103,7 @@ impl SessionEventLogImpl for Scripted {
 /// One session, archived or not.
 struct OneSession(sessions::Session);
 
-impl SessionReplaceImpl for OneSession {
+impl NativeSessionReplace for OneSession {
     async fn replace(
         &self,
         _: &WorkspaceId,
@@ -115,7 +115,7 @@ impl SessionReplaceImpl for OneSession {
     }
 }
 
-impl SessionsStoreImpl for OneSession {
+impl NativeSessionsStore for OneSession {
     async fn insert(&self, _: &WorkspaceId, _: sessions::Session) -> Result<(), StoreError> {
         unimplemented!()
     }
@@ -137,7 +137,7 @@ impl SessionsStoreImpl for OneSession {
 
 struct NoDeps;
 
-impl SessionDepsImpl for NoDeps {
+impl NativeSessionDeps for NoDeps {
     async fn resolve_agent(
         &self,
         _: &AuthContext,

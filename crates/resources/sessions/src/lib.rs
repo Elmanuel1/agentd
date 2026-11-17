@@ -28,11 +28,11 @@ use shared::Module;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
 pub use service::{
-    SessionDeps, SessionDepsImpl, SessionWork, SessionWorkImpl, SessionsService, Streams, Subscription,
+    NativeSessionDeps, NativeSessionWork, SessionDeps, SessionWork, SessionsService, Streams, Subscription,
 };
 pub use store::{
-    SessionEventLog, SessionEventLogImpl, SessionEventReads, SessionEventReadsImpl, SessionsStore,
-    SessionsStoreImpl,
+    NativeSessionEventLog, NativeSessionEventReads, NativeSessionsStore, SessionEventLog, SessionEventReads,
+    SessionsStore,
 };
 pub use types::{Session, SessionId, SessionStatus};
 

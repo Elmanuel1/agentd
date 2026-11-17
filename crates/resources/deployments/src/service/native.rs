@@ -3,7 +3,7 @@
 use super::*;
 
 /// What an adapter implements to provide [`DeploymentDeps`]; the methods are documented there.
-pub trait DeploymentDepsImpl: Send + Sync {
+pub trait NativeDeploymentDeps: Send + Sync {
     fn resolve_agent_ref(
         &self,
         ctx: &AuthContext,
@@ -23,21 +23,21 @@ pub trait DeploymentDepsImpl: Send + Sync {
     ) -> impl Future<Output = Result<String, sessions::service::FireRefusal>> + Send;
 }
 
-impl<T: DeploymentDepsImpl> DeploymentDeps for T {
+impl<T: NativeDeploymentDeps> DeploymentDeps for T {
     fn resolve_agent_ref<'a>(
         &'a self,
         ctx: &'a AuthContext,
         agent_id: &'a str,
         version: Option<u64>,
     ) -> BoxFuture<'a, Result<AgentRef, ApiError>> {
-        Box::pin(DeploymentDepsImpl::resolve_agent_ref(self, ctx, agent_id, version))
+        Box::pin(NativeDeploymentDeps::resolve_agent_ref(self, ctx, agent_id, version))
     }
     fn check_environment<'a>(
         &'a self,
         ctx: &'a AuthContext,
         env_id: &'a str,
     ) -> BoxFuture<'a, Result<(), ApiError>> {
-        Box::pin(DeploymentDepsImpl::check_environment(self, ctx, env_id))
+        Box::pin(NativeDeploymentDeps::check_environment(self, ctx, env_id))
     }
     fn create_session<'a>(
         &'a self,
@@ -45,6 +45,6 @@ impl<T: DeploymentDepsImpl> DeploymentDeps for T {
         deployment: &'a Deployment,
         key: Option<&'a str>,
     ) -> BoxFuture<'a, Result<String, sessions::service::FireRefusal>> {
-        Box::pin(DeploymentDepsImpl::create_session(self, ctx, deployment, key))
+        Box::pin(NativeDeploymentDeps::create_session(self, ctx, deployment, key))
     }
 }

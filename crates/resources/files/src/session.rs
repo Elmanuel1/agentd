@@ -26,7 +26,7 @@ pub trait SessionFiles: Send + Sync {
 }
 
 /// What an adapter implements to provide [`SessionFiles`]; the methods are documented there.
-pub trait SessionFilesImpl: Send + Sync {
+pub trait NativeSessionFiles: Send + Sync {
     fn mounts(
         &self,
         ctx: &AuthContext,
@@ -34,13 +34,13 @@ pub trait SessionFilesImpl: Send + Sync {
     ) -> impl Future<Output = Result<Vec<String>, ApiError>> + Send;
 }
 
-impl<T: SessionFilesImpl> SessionFiles for T {
+impl<T: NativeSessionFiles> SessionFiles for T {
     fn mounts<'a>(
         &'a self,
         ctx: &'a AuthContext,
         session: &'a str,
     ) -> BoxFuture<'a, Result<Vec<String>, ApiError>> {
-        Box::pin(SessionFilesImpl::mounts(self, ctx, session))
+        Box::pin(NativeSessionFiles::mounts(self, ctx, session))
     }
 }
 

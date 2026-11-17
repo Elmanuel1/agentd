@@ -69,7 +69,7 @@ pub trait HistoryLog: Send + Sync {
 }
 
 /// What an adapter implements to provide [`HistoryLog`]; the methods are documented there.
-pub trait HistoryLogImpl: Send + Sync {
+pub trait NativeHistoryLog: Send + Sync {
     fn tables(&self) -> Vec<String>;
     fn record(
         &self,
@@ -86,9 +86,9 @@ pub trait HistoryLogImpl: Send + Sync {
     ) -> impl Future<Output = Result<(), HistoryError>> + Send;
 }
 
-impl<T: HistoryLogImpl> HistoryLog for T {
+impl<T: NativeHistoryLog> HistoryLog for T {
     fn tables(&self) -> Vec<String> {
-        HistoryLogImpl::tables(self)
+        NativeHistoryLog::tables(self)
     }
     fn record<'a>(
         &'a self,
@@ -97,7 +97,7 @@ impl<T: HistoryLogImpl> HistoryLog for T {
         position: &'a Position,
         row: &'a Value,
     ) -> BoxFuture<'a, Result<(), HistoryError>> {
-        Box::pin(HistoryLogImpl::record(self, table, op, position, row))
+        Box::pin(NativeHistoryLog::record(self, table, op, position, row))
     }
     fn scrub_memory_content<'a>(
         &'a self,
@@ -105,6 +105,6 @@ impl<T: HistoryLogImpl> HistoryLog for T {
         store: &'a str,
         version: &'a str,
     ) -> BoxFuture<'a, Result<(), HistoryError>> {
-        Box::pin(HistoryLogImpl::scrub_memory_content(self, workspace, store, version))
+        Box::pin(NativeHistoryLog::scrub_memory_content(self, workspace, store, version))
     }
 }

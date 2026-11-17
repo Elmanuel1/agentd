@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use ::files::store::{FilesStoreImpl, StoreError, StoredFile};
+use ::files::store::{NativeFilesStore, StoreError, StoredFile};
 use ::files::types::{FileId, FileMetadata};
 use ::files::FileFilter;
 use bytes::Bytes;
@@ -65,7 +65,7 @@ fn stored(doc: serde_json::Value) -> Result<StoredFile, StoreError> {
     Ok(StoredFile { meta: doc.meta, bytes: Bytes::new(), scope_id: doc.scope_id })
 }
 
-impl FilesStoreImpl for PgFilesStore {
+impl NativeFilesStore for PgFilesStore {
     async fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> Result<(), StoreError> {
         // Bytes → S3 first, then metadata → Postgres.
         self.blobs.put(&Self::key(ws, &f.meta.id), f.bytes.clone()).await.map_err(blob_be)?;

@@ -67,7 +67,7 @@ pub trait DeploymentsStore: Send + Sync {
 }
 
 /// What an adapter implements to provide [`DeploymentsStore`]; the methods are documented there.
-pub trait DeploymentsStoreImpl: Send + Sync {
+pub trait NativeDeploymentsStore: Send + Sync {
     fn insert(
         &self,
         ws: &WorkspaceId,
@@ -104,21 +104,21 @@ pub trait DeploymentsStoreImpl: Send + Sync {
     ) -> impl Future<Output = Result<Vec<DeploymentRun>, StoreError>> + Send;
 }
 
-impl<T: DeploymentsStoreImpl> DeploymentsStore for T {
+impl<T: NativeDeploymentsStore> DeploymentsStore for T {
     fn insert<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         d: Deployment,
         schedule: &'a ScheduleChange,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(DeploymentsStoreImpl::insert(self, ws, d, schedule))
+        Box::pin(NativeDeploymentsStore::insert(self, ws, d, schedule))
     }
     fn get<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a DeploymentId,
     ) -> BoxFuture<'a, Result<Deployment, StoreError>> {
-        Box::pin(DeploymentsStoreImpl::get(self, ws, id))
+        Box::pin(NativeDeploymentsStore::get(self, ws, id))
     }
     fn replace<'a>(
         &'a self,
@@ -126,24 +126,24 @@ impl<T: DeploymentsStoreImpl> DeploymentsStore for T {
         d: Deployment,
         schedule: Option<&'a ScheduleChange>,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(DeploymentsStoreImpl::replace(self, ws, d, schedule))
+        Box::pin(NativeDeploymentsStore::replace(self, ws, d, schedule))
     }
     fn list<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         page: &'a Pagination,
     ) -> BoxFuture<'a, Result<Vec<Deployment>, StoreError>> {
-        Box::pin(DeploymentsStoreImpl::list(self, ws, page))
+        Box::pin(NativeDeploymentsStore::list(self, ws, page))
     }
     fn count<'a>(&'a self, ws: &'a WorkspaceId) -> BoxFuture<'a, Result<usize, StoreError>> {
-        Box::pin(DeploymentsStoreImpl::count(self, ws))
+        Box::pin(NativeDeploymentsStore::count(self, ws))
     }
     fn push_run<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         run: DeploymentRun,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(DeploymentsStoreImpl::push_run(self, ws, run))
+        Box::pin(NativeDeploymentsStore::push_run(self, ws, run))
     }
     fn runs<'a>(
         &'a self,
@@ -151,6 +151,6 @@ impl<T: DeploymentsStoreImpl> DeploymentsStore for T {
         deployment: &'a DeploymentId,
         has_error: Option<bool>,
     ) -> BoxFuture<'a, Result<Vec<DeploymentRun>, StoreError>> {
-        Box::pin(DeploymentsStoreImpl::runs(self, ws, deployment, has_error))
+        Box::pin(NativeDeploymentsStore::runs(self, ws, deployment, has_error))
     }
 }

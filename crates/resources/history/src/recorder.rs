@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::BackendError;
 
@@ -32,7 +32,7 @@ fn missing(what: &str) -> HistoryError {
     HistoryError::Unrecordable(what.to_owned())
 }
 
-impl ChangeHandlerImpl for HistoryRecorder {
+impl NativeChangeHandler for HistoryRecorder {
     fn source(&self) -> Source {
         Source::Table(self.table.clone())
     }

@@ -11,10 +11,10 @@ use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
 mod reads;
 
-pub use reads::{Head, SessionEventReads, SessionEventReadsImpl, Tail};
+pub use reads::{Head, NativeSessionEventReads, SessionEventReads, Tail};
 
 mod native;
-pub use native::{SessionEventLogImpl, SessionReplaceImpl, SessionsStoreImpl};
+pub use native::{NativeSessionEventLog, NativeSessionReplace, NativeSessionsStore};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

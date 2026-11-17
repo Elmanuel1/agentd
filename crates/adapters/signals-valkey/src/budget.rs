@@ -4,7 +4,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use engine::model::budget::{Admit, ModelBudgetImpl};
+use engine::model::budget::{Admit, NativeModelBudget};
 use redis::RedisError;
 use shared::BackendError;
 
@@ -52,7 +52,7 @@ fn key(provider: &str, minute: u64, what: &str) -> String {
     format!("agentd:budget:{{{provider}:{minute}}}:{what}")
 }
 
-impl ModelBudgetImpl for ValkeyBudget {
+impl NativeModelBudget for ValkeyBudget {
     async fn admit(&self, provider: &str) -> Result<Admit, BackendError> {
         let (minute, left) = minute();
         let (requests, tokens) = (key(provider, minute, "requests"), key(provider, minute, "tokens"));

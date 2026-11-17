@@ -53,7 +53,7 @@ pub trait ArchivedSessions: Send + Sync {
 }
 
 /// What an adapter implements to provide [`ArchivedSessions`]; the methods are documented there.
-pub trait ArchivedSessionsImpl: Send + Sync {
+pub trait NativeArchivedSessions: Send + Sync {
     fn archived_between(
         &self,
         after: &ArchivedCursor,
@@ -62,14 +62,14 @@ pub trait ArchivedSessionsImpl: Send + Sync {
     ) -> impl Future<Output = Result<Vec<ArchivedSession>, StoreError>> + Send;
 }
 
-impl<T: ArchivedSessionsImpl> ArchivedSessions for T {
+impl<T: NativeArchivedSessions> ArchivedSessions for T {
     fn archived_between<'a>(
         &'a self,
         after: &'a ArchivedCursor,
         to: Timestamp,
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<ArchivedSession>, StoreError>> {
-        Box::pin(ArchivedSessionsImpl::archived_between(self, after, to, limit))
+        Box::pin(NativeArchivedSessions::archived_between(self, after, to, limit))
     }
 }
 
@@ -86,7 +86,7 @@ pub trait RunLock: Send + Sync {
 }
 
 /// What an adapter implements to provide [`RunLock`]; the methods are documented there.
-pub trait RunLockImpl: Send + Sync {
+pub trait NativeRunLock: Send + Sync {
     fn exclusive(
         &self,
         name: &str,
@@ -94,13 +94,13 @@ pub trait RunLockImpl: Send + Sync {
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
-impl<T: RunLockImpl> RunLock for T {
+impl<T: NativeRunLock> RunLock for T {
     fn exclusive<'a>(
         &'a self,
         name: &'a str,
         job: BoxFuture<'a, Result<(), StoreError>>,
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
-        Box::pin(RunLockImpl::exclusive(self, name, job))
+        Box::pin(NativeRunLock::exclusive(self, name, job))
     }
 }
 

@@ -11,7 +11,7 @@ use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
-pub use shared::ports::blobs::{BlobError, BlobStore, BlobStoreImpl};
+pub use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore};
 
 /// Where and how to reach the bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +115,7 @@ impl S3BlobStore {
     }
 }
 
-impl BlobStoreImpl for S3BlobStore {
+impl NativeBlobStore for S3BlobStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), BlobError> {
         self.client
             .put_object()

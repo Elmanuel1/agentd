@@ -119,7 +119,7 @@ pub trait Steps: Send + Sync {
 }
 
 /// What an adapter implements to provide [`Steps`]; the methods are documented there.
-pub trait StepsImpl: Send + Sync {
+pub trait NativeSteps: Send + Sync {
     fn claim(
         &self,
         owner: &str,
@@ -142,14 +142,14 @@ pub trait StepsImpl: Send + Sync {
     fn counts(&self) -> impl Future<Output = Result<StepCounts, StoreError>> + Send;
 }
 
-impl<T: StepsImpl> Steps for T {
+impl<T: NativeSteps> Steps for T {
     fn claim<'a>(
         &'a self,
         owner: &'a str,
         lease: i64,
         per_workspace: i64,
     ) -> BoxFuture<'a, Result<Option<Claim>, StoreError>> {
-        Box::pin(StepsImpl::claim(self, owner, lease, per_workspace))
+        Box::pin(NativeSteps::claim(self, owner, lease, per_workspace))
     }
     fn write<'a>(
         &'a self,
@@ -157,7 +157,7 @@ impl<T: StepsImpl> Steps for T {
         lease: i64,
         write: StepWrite<'a>,
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
-        Box::pin(StepsImpl::write(self, claim, lease, write))
+        Box::pin(NativeSteps::write(self, claim, lease, write))
     }
     fn commit<'a>(
         &'a self,
@@ -165,12 +165,12 @@ impl<T: StepsImpl> Steps for T {
         end: StepEnd,
         write: StepWrite<'a>,
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
-        Box::pin(StepsImpl::commit(self, claim, end, write))
+        Box::pin(NativeSteps::commit(self, claim, end, write))
     }
     fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(StepsImpl::defer(self, claim, seconds))
+        Box::pin(NativeSteps::defer(self, claim, seconds))
     }
     fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>> {
-        Box::pin(StepsImpl::counts(self))
+        Box::pin(NativeSteps::counts(self))
     }
 }

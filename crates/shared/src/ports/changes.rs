@@ -121,7 +121,7 @@ pub trait ChangeHandler: Send + Sync {
 }
 
 /// What an adapter implements to provide [`ChangeHandler`]; the methods are documented there.
-pub trait ChangeHandlerImpl: Send + Sync {
+pub trait NativeChangeHandler: Send + Sync {
     fn source(&self) -> Source;
     fn ordered(&self) -> bool {
         false
@@ -129,15 +129,15 @@ pub trait ChangeHandlerImpl: Send + Sync {
     fn handle(&self, change: &Change) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 
-impl<T: ChangeHandlerImpl> ChangeHandler for T {
+impl<T: NativeChangeHandler> ChangeHandler for T {
     fn source(&self) -> Source {
-        ChangeHandlerImpl::source(self)
+        NativeChangeHandler::source(self)
     }
     fn ordered(&self) -> bool {
-        ChangeHandlerImpl::ordered(self)
+        NativeChangeHandler::ordered(self)
     }
     fn handle<'a>(&'a self, change: &'a Change) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(ChangeHandlerImpl::handle(self, change))
+        Box::pin(NativeChangeHandler::handle(self, change))
     }
 }
 

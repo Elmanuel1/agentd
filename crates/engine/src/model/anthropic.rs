@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 
-use super::{Block, Message, ModelClientImpl, ModelError, ModelRequest, ModelResponse, Role, StopKind};
+use super::{Block, Message, ModelError, ModelRequest, ModelResponse, NativeModelClient, Role, StopKind};
 
 /// The Messages API version header every request sends.
 const API_VERSION: &str = "2023-06-01";
@@ -171,7 +171,7 @@ pub fn parse(v: &Value) -> ModelResponse {
     ModelResponse { content, stop, usage, thought, cost: None }
 }
 
-impl ModelClientImpl for AnthropicModel {
+impl NativeModelClient for AnthropicModel {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         let resp = self
             .http

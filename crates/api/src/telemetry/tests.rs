@@ -13,7 +13,7 @@ use opentelemetry::{KeyValue, Value};
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use shared::ports::blobs::{BlobError, BlobStoreImpl};
+use shared::ports::blobs::{BlobError, NativeBlobStore};
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -167,7 +167,7 @@ async fn an_event_stream_is_open_until_its_body_is_dropped() {
 
 struct Failing;
 
-impl BlobStoreImpl for Failing {
+impl NativeBlobStore for Failing {
     async fn put(&self, key: &str, _bytes: Bytes) -> Result<(), BlobError> {
         Err(BlobError::NotFound(key.to_owned()))
     }

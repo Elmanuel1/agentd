@@ -7,7 +7,7 @@ use std::sync::Arc;
 use test_support::{StaticAdminKeys, StaticKeySource};
 
 use api::edge;
-use api::edge::reach::{Grants, SessionGrantsImpl};
+use api::edge::reach::{Grants, NativeSessionGrants};
 use api::edge::scoped::WorkAccess;
 use axum::body::Body;
 use axum::extract::Extension;
@@ -26,7 +26,7 @@ use shared::{
 use std::time::Duration;
 use tower::ServiceExt;
 use work::store::{Counts, Reach, Scope, StoreError};
-use work::{Work, WorkItem, WorkReadsImpl, WorkState};
+use work::{NativeWorkReads, Work, WorkItem, WorkState};
 
 const KEY: &str = "sk-edge";
 const ADMIN_KEY: &str = "sk-edge-admin";
@@ -79,7 +79,7 @@ fn item(session: &str, queue: &str, state: WorkState) -> WorkItem {
     }
 }
 
-impl WorkReadsImpl for Items {
+impl NativeWorkReads for Items {
     async fn get(&self, _: &WorkspaceId, session: &str, _: &Reach) -> Result<Option<WorkItem>, StoreError> {
         Ok(match session {
             "sesn_1" => Some(item(session, "hosted", WorkState::Active)),
@@ -103,7 +103,7 @@ impl WorkReadsImpl for Items {
 
 struct NoGrants;
 
-impl SessionGrantsImpl for NoGrants {
+impl NativeSessionGrants for NoGrants {
     async fn grants(&self, _: &AuthContext, _: &str) -> Result<Grants, ApiError> {
         Ok(Grants::default())
     }

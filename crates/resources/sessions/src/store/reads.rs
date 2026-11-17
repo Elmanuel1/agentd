@@ -74,7 +74,7 @@ pub trait SessionEventReads: Send + Sync {
 }
 
 /// What an adapter implements to provide [`SessionEventReads`]; the methods are documented there.
-pub trait SessionEventReadsImpl: Send + Sync {
+pub trait NativeSessionEventReads: Send + Sync {
     fn engine_events(
         &self,
         ws: &WorkspaceId,
@@ -111,27 +111,27 @@ pub trait SessionEventReadsImpl: Send + Sync {
         -> impl Future<Output = Result<Head, StoreError>> + Send;
 }
 
-impl<T: SessionEventReadsImpl> SessionEventReads for T {
+impl<T: NativeSessionEventReads> SessionEventReads for T {
     fn engine_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
-        Box::pin(SessionEventReadsImpl::engine_events(self, ws, session))
+        Box::pin(NativeSessionEventReads::engine_events(self, ws, session))
     }
     fn events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Vec<Event>, StoreError>> {
-        Box::pin(SessionEventReadsImpl::events(self, ws, id))
+        Box::pin(NativeSessionEventReads::events(self, ws, id))
     }
     fn unprocessed_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Vec<Event>, StoreError>> {
-        Box::pin(SessionEventReadsImpl::unprocessed_events(self, ws, id))
+        Box::pin(NativeSessionEventReads::unprocessed_events(self, ws, id))
     }
     fn events_page<'a>(
         &'a self,
@@ -140,7 +140,7 @@ impl<T: SessionEventReadsImpl> SessionEventReads for T {
         filter: &'a EventFilter,
         page: &'a Pagination,
     ) -> BoxFuture<'a, Result<Vec<Event>, StoreError>> {
-        Box::pin(SessionEventReadsImpl::events_page(self, ws, id, filter, page))
+        Box::pin(NativeSessionEventReads::events_page(self, ws, id, filter, page))
     }
     fn tail<'a>(
         &'a self,
@@ -150,9 +150,9 @@ impl<T: SessionEventReadsImpl> SessionEventReads for T {
         pending: &'a [i64],
         limit: usize,
     ) -> BoxFuture<'a, Result<Option<Tail>, StoreError>> {
-        Box::pin(SessionEventReadsImpl::tail(self, ws, id, after, pending, limit))
+        Box::pin(NativeSessionEventReads::tail(self, ws, id, after, pending, limit))
     }
     fn head<'a>(&'a self, ws: &'a WorkspaceId, id: &'a SessionId) -> BoxFuture<'a, Result<Head, StoreError>> {
-        Box::pin(SessionEventReadsImpl::head(self, ws, id))
+        Box::pin(NativeSessionEventReads::head(self, ws, id))
     }
 }

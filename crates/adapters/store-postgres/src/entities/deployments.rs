@@ -1,6 +1,6 @@
 //! `DeploymentsStore` on Postgres via Diesel.
 
-use ::deployments::store::{DeploymentsStoreImpl, StoreError};
+use ::deployments::store::{NativeDeploymentsStore, StoreError};
 use ::deployments::types::{Deployment, DeploymentId, DeploymentRun};
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -50,7 +50,7 @@ struct NewDeployment {
     doc: serde_json::Value,
 }
 
-impl DeploymentsStoreImpl for PgDeploymentsStore {
+impl NativeDeploymentsStore for PgDeploymentsStore {
     async fn insert(
         &self,
         ws: &WorkspaceId,

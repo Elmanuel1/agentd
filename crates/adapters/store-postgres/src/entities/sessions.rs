@@ -4,7 +4,7 @@ mod archived;
 mod replace;
 mod terminate;
 
-use ::sessions::store::{Order, SessionFilter, SessionsStoreImpl, StoreError};
+use ::sessions::store::{NativeSessionsStore, Order, SessionFilter, StoreError};
 use ::sessions::types::{Session, SessionId, SessionStatus};
 use ::work::store::Reach;
 use chrono::{DateTime, Utc};
@@ -43,7 +43,7 @@ struct NewSession {
     doc: serde_json::Value,
 }
 
-impl SessionsStoreImpl for PgSessionsStore {
+impl NativeSessionsStore for PgSessionsStore {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         diesel::insert_into(sessions::table)

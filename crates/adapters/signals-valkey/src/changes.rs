@@ -23,7 +23,7 @@ use crate::trim::{self, Keep};
 use crate::valkey::{Conn, Valkey};
 
 mod native;
-pub(crate) use native::ConsumerImpl;
+pub(crate) use native::NativeConsumer;
 
 /// The consumer group every replica reads in.
 const GROUP: &str = "agentd";
@@ -189,7 +189,7 @@ async fn handle(
 /// A table's changes, as Debezium writes them.
 struct Changes(Arc<dyn ChangeHandler>);
 
-impl ConsumerImpl for Changes {
+impl NativeConsumer for Changes {
     fn ordered(&self) -> bool {
         self.0.ordered()
     }

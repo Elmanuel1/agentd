@@ -3,7 +3,7 @@
 use super::*;
 
 /// What an adapter implements to provide [`SessionReplace`]; the methods are documented there.
-pub trait SessionReplaceImpl: Send + Sync {
+pub trait NativeSessionReplace: Send + Sync {
     fn replace(
         &self,
         ws: &WorkspaceId,
@@ -13,7 +13,7 @@ pub trait SessionReplaceImpl: Send + Sync {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
-impl<T: SessionReplaceImpl> SessionReplace for T {
+impl<T: NativeSessionReplace> SessionReplace for T {
     fn replace<'a>(
         &'a self,
         ws: &'a WorkspaceId,
@@ -21,12 +21,12 @@ impl<T: SessionReplaceImpl> SessionReplace for T {
         s: Session,
         deliveries: &'a [webhooks::Delivery],
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(SessionReplaceImpl::replace(self, ws, read, s, deliveries))
+        Box::pin(NativeSessionReplace::replace(self, ws, read, s, deliveries))
     }
 }
 
 /// What an adapter implements to provide [`SessionsStore`]; the methods are documented there.
-pub trait SessionsStoreImpl: SessionReplaceImpl {
+pub trait NativeSessionsStore: NativeSessionReplace {
     fn insert(&self, ws: &WorkspaceId, s: Session) -> impl Future<Output = Result<(), StoreError>> + Send;
     fn get(
         &self,
@@ -46,23 +46,23 @@ pub trait SessionsStoreImpl: SessionReplaceImpl {
     ) -> impl Future<Output = Result<Vec<Session>, StoreError>> + Send;
 }
 
-impl<T: SessionsStoreImpl> SessionsStore for T {
+impl<T: NativeSessionsStore> SessionsStore for T {
     fn insert<'a>(&'a self, ws: &'a WorkspaceId, s: Session) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(SessionsStoreImpl::insert(self, ws, s))
+        Box::pin(NativeSessionsStore::insert(self, ws, s))
     }
     fn get<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Session, StoreError>> {
-        Box::pin(SessionsStoreImpl::get(self, ws, id))
+        Box::pin(NativeSessionsStore::get(self, ws, id))
     }
     fn delete<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
     ) -> BoxFuture<'a, Result<Session, StoreError>> {
-        Box::pin(SessionsStoreImpl::delete(self, ws, id))
+        Box::pin(NativeSessionsStore::delete(self, ws, id))
     }
     fn list<'a>(
         &'a self,
@@ -70,12 +70,12 @@ impl<T: SessionsStoreImpl> SessionsStore for T {
         filter: &'a SessionFilter,
         page: &'a Pagination,
     ) -> BoxFuture<'a, Result<Vec<Session>, StoreError>> {
-        Box::pin(SessionsStoreImpl::list(self, ws, filter, page))
+        Box::pin(NativeSessionsStore::list(self, ws, filter, page))
     }
 }
 
 /// What an adapter implements to provide [`SessionEventLog`]; the methods are documented there.
-pub trait SessionEventLogImpl: SessionEventReadsImpl {
+pub trait NativeSessionEventLog: NativeSessionEventReads {
     fn append_events(
         &self,
         ws: &WorkspaceId,
@@ -105,7 +105,7 @@ pub trait SessionEventLogImpl: SessionEventReadsImpl {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
-impl<T: SessionEventLogImpl> SessionEventLog for T {
+impl<T: NativeSessionEventLog> SessionEventLog for T {
     fn append_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
@@ -113,7 +113,7 @@ impl<T: SessionEventLogImpl> SessionEventLog for T {
         events: &'a [Event],
         wake: Wake,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(SessionEventLogImpl::append_events(self, ws, id, events, wake))
+        Box::pin(NativeSessionEventLog::append_events(self, ws, id, events, wake))
     }
     fn update_processed_at<'a>(
         &'a self,
@@ -122,7 +122,7 @@ impl<T: SessionEventLogImpl> SessionEventLog for T {
         ids: &'a [EventId],
         at: Timestamp,
     ) -> BoxFuture<'a, Result<Vec<Event>, StoreError>> {
-        Box::pin(SessionEventLogImpl::update_processed_at(self, ws, id, ids, at))
+        Box::pin(NativeSessionEventLog::update_processed_at(self, ws, id, ids, at))
     }
     fn append_answers<'a>(
         &'a self,
@@ -133,12 +133,12 @@ impl<T: SessionEventLogImpl> SessionEventLog for T {
         check: &'a AnswerCheck<'a>,
         wake: Wake,
     ) -> BoxFuture<'a, Result<Result<(), ApiError>, StoreError>> {
-        Box::pin(SessionEventLogImpl::append_answers(self, ws, id, calls, events, check, wake))
+        Box::pin(NativeSessionEventLog::append_answers(self, ws, id, calls, events, check, wake))
     }
     fn delete_events_of<'a>(
         &'a self,
         sessions: &'a [(WorkspaceId, SessionId)],
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(SessionEventLogImpl::delete_events_of(self, sessions))
+        Box::pin(NativeSessionEventLog::delete_events_of(self, sessions))
     }
 }

@@ -1,7 +1,7 @@
 //! A lock across replicas: a session-level advisory lock held on one pooled
 //! connection for the length of a job.
 
-use ::sessions::retention::RunLockImpl;
+use ::sessions::retention::NativeRunLock;
 use ::sessions::store::StoreError;
 use diesel::sql_types::{Bool, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
@@ -52,7 +52,7 @@ impl Drop for Held {
     }
 }
 
-impl RunLockImpl for PgRunLock {
+impl NativeRunLock for PgRunLock {
     async fn exclusive(
         &self,
         name: &str,

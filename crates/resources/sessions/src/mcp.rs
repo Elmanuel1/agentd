@@ -40,7 +40,7 @@ pub trait McpConnections: Send + Sync {
 }
 
 /// What an adapter implements to provide [`McpConnections`]; the methods are documented there.
-pub trait McpConnectionsImpl: Send + Sync {
+pub trait NativeMcpConnections: Send + Sync {
     fn connections(
         &self,
         ws: &WorkspaceId,
@@ -54,13 +54,13 @@ pub trait McpConnectionsImpl: Send + Sync {
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
-impl<T: McpConnectionsImpl> McpConnections for T {
+impl<T: NativeMcpConnections> McpConnections for T {
     fn connections<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
     ) -> BoxFuture<'a, Result<Vec<McpConnection>, StoreError>> {
-        Box::pin(McpConnectionsImpl::connections(self, ws, session))
+        Box::pin(NativeMcpConnections::connections(self, ws, session))
     }
     fn save<'a>(
         &'a self,
@@ -68,6 +68,6 @@ impl<T: McpConnectionsImpl> McpConnections for T {
         session: &'a SessionId,
         connection: &'a McpConnection,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(McpConnectionsImpl::save(self, ws, session, connection))
+        Box::pin(NativeMcpConnections::save(self, ws, session, connection))
     }
 }

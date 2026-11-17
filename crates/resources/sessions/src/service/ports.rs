@@ -37,7 +37,7 @@ pub trait SessionDeps: Send + Sync {
 }
 
 /// What an adapter implements to provide [`SessionDeps`]; the methods are documented there.
-pub trait SessionDepsImpl: Send + Sync {
+pub trait NativeSessionDeps: Send + Sync {
     fn resolve_agent(
         &self,
         ctx: &AuthContext,
@@ -56,28 +56,28 @@ pub trait SessionDepsImpl: Send + Sync {
     ) -> impl Future<Output = Result<serde_json::Value, ApiError>> + Send;
 }
 
-impl<T: SessionDepsImpl> SessionDeps for T {
+impl<T: NativeSessionDeps> SessionDeps for T {
     fn resolve_agent<'a>(
         &'a self,
         ctx: &'a AuthContext,
         agent_id: &'a str,
         version: Option<u64>,
     ) -> BoxFuture<'a, Result<AgentSnapshot, ApiError>> {
-        Box::pin(SessionDepsImpl::resolve_agent(self, ctx, agent_id, version))
+        Box::pin(NativeSessionDeps::resolve_agent(self, ctx, agent_id, version))
     }
     fn check_vaults<'a>(
         &'a self,
         ctx: &'a AuthContext,
         vault_ids: &'a [String],
     ) -> BoxFuture<'a, Result<(), ApiError>> {
-        Box::pin(SessionDepsImpl::check_vaults(self, ctx, vault_ids))
+        Box::pin(NativeSessionDeps::check_vaults(self, ctx, vault_ids))
     }
     fn resolve_environment<'a>(
         &'a self,
         ctx: &'a AuthContext,
         env_id: &'a str,
     ) -> BoxFuture<'a, Result<serde_json::Value, ApiError>> {
-        Box::pin(SessionDepsImpl::resolve_environment(self, ctx, env_id))
+        Box::pin(NativeSessionDeps::resolve_environment(self, ctx, env_id))
     }
 }
 
@@ -96,7 +96,7 @@ pub trait SessionWork: Send + Sync {
 }
 
 /// What an adapter implements to provide [`SessionWork`]; the methods are documented there.
-pub trait SessionWorkImpl: Send + Sync {
+pub trait NativeSessionWork: Send + Sync {
     fn queue(
         &self,
         ctx: &AuthContext,
@@ -106,16 +106,16 @@ pub trait SessionWorkImpl: Send + Sync {
     fn end(&self, ws: &WorkspaceId, session: &SessionId) -> impl Future<Output = ()> + Send;
 }
 
-impl<T: SessionWorkImpl> SessionWork for T {
+impl<T: NativeSessionWork> SessionWork for T {
     fn queue<'a>(
         &'a self,
         ctx: &'a AuthContext,
         session: &'a Session,
         environment: &'a serde_json::Value,
     ) -> BoxFuture<'a, Result<(), ApiError>> {
-        Box::pin(SessionWorkImpl::queue(self, ctx, session, environment))
+        Box::pin(NativeSessionWork::queue(self, ctx, session, environment))
     }
     fn end<'a>(&'a self, ws: &'a WorkspaceId, session: &'a SessionId) -> BoxFuture<'a, ()> {
-        Box::pin(SessionWorkImpl::end(self, ws, session))
+        Box::pin(NativeSessionWork::end(self, ws, session))
     }
 }

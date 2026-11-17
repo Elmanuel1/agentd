@@ -61,7 +61,7 @@ pub trait FilesStore: Send + Sync {
 }
 
 /// What an adapter implements to provide [`FilesStore`]; the methods are documented there.
-pub trait FilesStoreImpl: Send + Sync {
+pub trait NativeFilesStore: Send + Sync {
     fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> impl Future<Output = Result<(), StoreError>> + Send;
     fn get(
         &self,
@@ -86,30 +86,30 @@ pub trait FilesStoreImpl: Send + Sync {
     ) -> impl Future<Output = Result<(Vec<StoredFile>, bool), StoreError>> + Send;
 }
 
-impl<T: FilesStoreImpl> FilesStore for T {
+impl<T: NativeFilesStore> FilesStore for T {
     fn insert<'a>(&'a self, ws: &'a WorkspaceId, f: StoredFile) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(FilesStoreImpl::insert(self, ws, f))
+        Box::pin(NativeFilesStore::insert(self, ws, f))
     }
     fn get<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a FileId,
     ) -> BoxFuture<'a, Result<StoredFile, StoreError>> {
-        Box::pin(FilesStoreImpl::get(self, ws, id))
+        Box::pin(NativeFilesStore::get(self, ws, id))
     }
     fn content<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a FileId,
     ) -> BoxFuture<'a, Result<Bytes, StoreError>> {
-        Box::pin(FilesStoreImpl::content(self, ws, id))
+        Box::pin(NativeFilesStore::content(self, ws, id))
     }
     fn delete<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a FileId,
     ) -> BoxFuture<'a, Result<StoredFile, StoreError>> {
-        Box::pin(FilesStoreImpl::delete(self, ws, id))
+        Box::pin(NativeFilesStore::delete(self, ws, id))
     }
     fn list<'a>(
         &'a self,
@@ -117,6 +117,6 @@ impl<T: FilesStoreImpl> FilesStore for T {
         filter: &'a FileFilter,
         cursor: &'a IdCursor,
     ) -> BoxFuture<'a, Result<(Vec<StoredFile>, bool), StoreError>> {
-        Box::pin(FilesStoreImpl::list(self, ws, filter, cursor))
+        Box::pin(NativeFilesStore::list(self, ws, filter, cursor))
     }
 }

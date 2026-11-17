@@ -34,7 +34,7 @@ pub trait SessionVariables: Send + Sync {
 }
 
 /// What an adapter implements to provide [`SessionVariables`]; the methods are documented there.
-pub trait SessionVariablesImpl: Send + Sync {
+pub trait NativeSessionVariables: Send + Sync {
     fn variables(
         &self,
         ctx: &AuthContext,
@@ -42,13 +42,13 @@ pub trait SessionVariablesImpl: Send + Sync {
     ) -> impl Future<Output = Result<Vec<Variable>, ApiError>> + Send;
 }
 
-impl<T: SessionVariablesImpl> SessionVariables for T {
+impl<T: NativeSessionVariables> SessionVariables for T {
     fn variables<'a>(
         &'a self,
         ctx: &'a AuthContext,
         session: &'a str,
     ) -> BoxFuture<'a, Result<Vec<Variable>, ApiError>> {
-        Box::pin(SessionVariablesImpl::variables(self, ctx, session))
+        Box::pin(NativeSessionVariables::variables(self, ctx, session))
     }
 }
 

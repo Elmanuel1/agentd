@@ -20,7 +20,7 @@ use crate::types::{
 };
 
 mod native;
-pub use native::DeploymentDepsImpl;
+pub use native::NativeDeploymentDeps;
 
 /// What deployments need from other entities — resolved via ports so tests
 /// fake them and `api` wires the real services.

@@ -18,15 +18,15 @@ use api::config::Role;
 use axum::http::StatusCode;
 use axum::Router;
 use common::{request, send_to, Auth, Rig, Streaming, KEY};
-use engine::model::budget::{Admit, ModelBudget, ModelBudgetImpl, Unlimited};
+use engine::model::budget::{Admit, ModelBudget, NativeModelBudget, Unlimited};
 use engine::model::retry::Retry;
-use engine::model::{Block, ModelClientImpl, ModelError, ModelRequest, ModelResponse, StopKind};
+use engine::model::{Block, ModelError, ModelRequest, ModelResponse, NativeModelClient, StopKind};
 use engine::worker::{Loop, Models, Settings, Stores as LoopStores};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 use sessions::signals::{LocalSignals, Signals};
-use sessions::store::{SessionFilter, SessionReplaceImpl, SessionsStore, SessionsStoreImpl, StoreError};
+use sessions::store::{NativeSessionReplace, NativeSessionsStore, SessionFilter, SessionsStore, StoreError};
 use sessions::types::{Session, SessionId};
 use shared::Pagination;
 use shared::{BackendError, WorkspaceId};
@@ -68,7 +68,7 @@ impl Scripted {
     }
 }
 
-impl ModelClientImpl for Scripted {
+impl NativeModelClient for Scripted {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         let compacting = req.compact.is_some();
         self.asked.lock().push(req);
@@ -160,7 +160,7 @@ async fn step_of(session: &str) -> Option<Step> {
 /// A budget that admits nothing: it defers each step, or cannot be read.
 struct Closed(Option<i64>);
 
-impl ModelBudgetImpl for Closed {
+impl NativeModelBudget for Closed {
     async fn admit(&self, _: &str) -> Result<Admit, BackendError> {
         self.0.map(Admit::Later).ok_or_else(|| BackendError::new(std::io::Error::other("valkey down")))
     }
@@ -216,7 +216,7 @@ impl Default for Tune {
 /// Session rows whose reads fail, as with the database down.
 struct Unreadable(Arc<dyn SessionsStore>);
 
-impl SessionReplaceImpl for Unreadable {
+impl NativeSessionReplace for Unreadable {
     async fn replace(
         &self,
         ws: &WorkspaceId,
@@ -228,7 +228,7 @@ impl SessionReplaceImpl for Unreadable {
     }
 }
 
-impl SessionsStoreImpl for Unreadable {
+impl NativeSessionsStore for Unreadable {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
         self.0.insert(ws, s).await
     }

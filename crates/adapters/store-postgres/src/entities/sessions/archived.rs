@@ -1,6 +1,6 @@
 //! The archived sessions as event retention walks them.
 
-use ::sessions::retention::{ArchivedCursor, ArchivedSession, ArchivedSessionsImpl};
+use ::sessions::retention::{ArchivedCursor, ArchivedSession, NativeArchivedSessions};
 use ::sessions::store::StoreError;
 use ::sessions::types::SessionId;
 use diesel::sql_types::{BigInt, Text};
@@ -20,7 +20,7 @@ struct Row {
     archived_at: String,
 }
 
-impl ArchivedSessionsImpl for PgSessionsStore {
+impl NativeArchivedSessions for PgSessionsStore {
     async fn archived_between(
         &self,
         after: &ArchivedCursor,

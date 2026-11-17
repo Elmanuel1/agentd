@@ -25,7 +25,7 @@ use common::Rig;
 use diesel_async::RunQueryDsl;
 use kit::{call, cdc_enabled, eventually, summary, Container};
 use serde_json::json;
-use shared::ports::changes::{Change, ChangeHandler, ChangeHandlerImpl, Source};
+use shared::ports::changes::{Change, ChangeHandler, NativeChangeHandler, Source};
 use shared::{BackendError, Timestamp};
 use tokio::sync::Notify;
 
@@ -87,7 +87,7 @@ struct Stall {
     stalled: Arc<Stalled>,
 }
 
-impl ChangeHandlerImpl for Stall {
+impl NativeChangeHandler for Stall {
     fn source(&self) -> Source {
         self.inner.source()
     }

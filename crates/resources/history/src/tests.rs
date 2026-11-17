@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Position, Source};
-use shared::ports::history::{HistoryError, HistoryLogImpl, HistoryOp};
+use shared::ports::history::{HistoryError, HistoryOp, NativeHistoryLog};
 use shared::{BackendError, Timestamp};
 
 use super::*;
@@ -18,7 +18,7 @@ struct Kept {
     failing: Mutex<bool>,
 }
 
-impl HistoryLogImpl for Kept {
+impl NativeHistoryLog for Kept {
     fn tables(&self) -> Vec<String> {
         vec!["memories".into(), "memory_versions".into(), "vaults".into()]
     }
@@ -33,7 +33,7 @@ impl HistoryLogImpl for Kept {
         if *self.failing.lock() {
             return Err(HistoryError::Backend(BackendError::new(std::io::Error::other("down"))));
         }
-        if !HistoryLogImpl::tables(self).iter().any(|t| t == table) {
+        if !NativeHistoryLog::tables(self).iter().any(|t| t == table) {
             return Err(HistoryError::Unrecordable(format!("{table} has no history table")));
         }
         self.recorded.lock().push((table.to_owned(), op, at.lsn, row.clone()));

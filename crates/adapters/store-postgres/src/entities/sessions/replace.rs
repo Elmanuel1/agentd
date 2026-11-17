@@ -2,7 +2,7 @@
 //! writer read, with its webhook deliveries; an archive's also stops the
 //! work item and terminates the session in the same commit.
 
-use ::sessions::store::{SessionReplaceImpl, StoreError};
+use ::sessions::store::{NativeSessionReplace, StoreError};
 use ::sessions::types::Session;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -14,7 +14,7 @@ use super::PgSessionsStore;
 use crate::schema::sessions;
 use crate::{diesel_be, enum_str, pool_be, to_doc};
 
-impl SessionReplaceImpl for PgSessionsStore {
+impl NativeSessionReplace for PgSessionsStore {
     async fn replace(
         &self,
         ws: &WorkspaceId,

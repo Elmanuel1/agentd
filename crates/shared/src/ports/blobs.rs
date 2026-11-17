@@ -28,20 +28,20 @@ pub trait BlobStore: Send + Sync {
 }
 
 /// What an adapter implements to provide [`BlobStore`]; the methods are documented there.
-pub trait BlobStoreImpl: Send + Sync {
+pub trait NativeBlobStore: Send + Sync {
     fn put(&self, key: &str, bytes: Bytes) -> impl Future<Output = Result<(), BlobError>> + Send;
     fn get(&self, key: &str) -> impl Future<Output = Result<Bytes, BlobError>> + Send;
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), BlobError>> + Send;
 }
 
-impl<T: BlobStoreImpl> BlobStore for T {
+impl<T: NativeBlobStore> BlobStore for T {
     fn put<'a>(&'a self, key: &'a str, bytes: Bytes) -> BoxFuture<'a, Result<(), BlobError>> {
-        Box::pin(BlobStoreImpl::put(self, key, bytes))
+        Box::pin(NativeBlobStore::put(self, key, bytes))
     }
     fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Bytes, BlobError>> {
-        Box::pin(BlobStoreImpl::get(self, key))
+        Box::pin(NativeBlobStore::get(self, key))
     }
     fn delete<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), BlobError>> {
-        Box::pin(BlobStoreImpl::delete(self, key))
+        Box::pin(NativeBlobStore::delete(self, key))
     }
 }

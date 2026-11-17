@@ -8,7 +8,7 @@ use std::sync::Arc;
 use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel::QueryableByName;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
-use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::{ScheduleChange, SchedulerPort};
 use shared::BackendError;
 
@@ -58,7 +58,7 @@ impl ScheduleOutbox {
     }
 }
 
-impl ChangeHandlerImpl for ScheduleOutbox {
+impl NativeChangeHandler for ScheduleOutbox {
     fn source(&self) -> Source {
         Source::Table("schedule_outbox".into())
     }

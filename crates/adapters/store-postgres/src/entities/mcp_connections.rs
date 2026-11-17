@@ -1,7 +1,7 @@
 //! [`McpConnections`] on Postgres: the `mcp_connections` rows (V9), keyed by
 //! workspace, session and server URL.
 
-use ::sessions::mcp::{McpConnection, McpConnectionsImpl};
+use ::sessions::mcp::{McpConnection, NativeMcpConnections};
 use ::sessions::store::StoreError;
 use ::sessions::types::SessionId;
 use chrono::{DateTime, Utc};
@@ -50,7 +50,7 @@ pub(crate) async fn forget(
         .map(drop)
 }
 
-impl McpConnectionsImpl for PgMcpConnections {
+impl NativeMcpConnections for PgMcpConnections {
     async fn connections(
         &self,
         ws: &WorkspaceId,

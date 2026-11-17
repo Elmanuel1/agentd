@@ -29,17 +29,17 @@ pub trait Signals: Send + Sync {
 }
 
 /// What an adapter implements to provide [`Signals`]; the methods are documented there.
-pub trait SignalsImpl: Send + Sync {
+pub trait NativeSignals: Send + Sync {
     fn publish(&self, signal: &Signal) -> impl Future<Output = Result<(), BackendError>> + Send;
     fn subscribe(&self) -> broadcast::Receiver<Signal>;
 }
 
-impl<T: SignalsImpl> Signals for T {
+impl<T: NativeSignals> Signals for T {
     fn publish<'a>(&'a self, signal: &'a Signal) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(SignalsImpl::publish(self, signal))
+        Box::pin(NativeSignals::publish(self, signal))
     }
     fn subscribe(&self) -> broadcast::Receiver<Signal> {
-        SignalsImpl::subscribe(self)
+        NativeSignals::subscribe(self)
     }
 }
 
@@ -56,7 +56,7 @@ impl Default for LocalSignals {
 /// Signals a replica holds before a slow reader lags.
 pub const CAPACITY: usize = 4096;
 
-impl SignalsImpl for LocalSignals {
+impl NativeSignals for LocalSignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         // No receiver is not an error: nothing streams that session here.
         let _ = self.0.send(signal.clone());

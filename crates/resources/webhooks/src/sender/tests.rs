@@ -13,7 +13,7 @@ use crate::sign::SigningSecret;
 #[derive(Default)]
 struct Marks(Mutex<Vec<(String, i64)>>);
 
-impl DeliveryMarksImpl for Marks {
+impl NativeDeliveryMarks for Marks {
     async fn delivered(&self, id: &str, _: &str, attempt: i64) -> Result<(), BackendError> {
         self.0.lock().push((format!("delivered {id}"), attempt));
         Ok(())

@@ -39,7 +39,7 @@ pub trait McpEnvironments: Send + Sync {
 }
 
 /// What an adapter implements to provide [`McpEnvironments`]; the methods are documented there.
-pub trait McpEnvironmentsImpl: Send + Sync {
+pub trait NativeMcpEnvironments: Send + Sync {
     fn config(
         &self,
         ws: &WorkspaceId,
@@ -53,21 +53,21 @@ pub trait McpEnvironmentsImpl: Send + Sync {
     ) -> impl Future<Output = Result<OrgId, BackendError>> + Send;
 }
 
-impl<T: McpEnvironmentsImpl> McpEnvironments for T {
+impl<T: NativeMcpEnvironments> McpEnvironments for T {
     fn config<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a str,
         environment_id: &'a str,
     ) -> BoxFuture<'a, Result<EnvironmentConfig, BackendError>> {
-        Box::pin(McpEnvironmentsImpl::config(self, ws, session, environment_id))
+        Box::pin(NativeMcpEnvironments::config(self, ws, session, environment_id))
     }
     fn org<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a str,
     ) -> BoxFuture<'a, Result<OrgId, BackendError>> {
-        Box::pin(McpEnvironmentsImpl::org(self, ws, session))
+        Box::pin(NativeMcpEnvironments::org(self, ws, session))
     }
 }
 

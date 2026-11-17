@@ -10,7 +10,7 @@ use redis::streams::StreamId;
 use shared::ports::fire::{self, FireRegistry};
 use shared::ports::ScheduleSpec;
 
-use crate::changes::ConsumerImpl;
+use crate::changes::NativeConsumer;
 
 /// Runs the fires of the stream.
 pub(crate) struct Fires {
@@ -32,7 +32,7 @@ fn parse(entry: &StreamId) -> Option<(ScheduleSpec, DateTime<Utc>)> {
     Some((spec, at.with_timezone(&Utc)))
 }
 
-impl ConsumerImpl for Fires {
+impl NativeConsumer for Fires {
     fn ordered(&self) -> bool {
         false
     }

@@ -12,7 +12,7 @@ use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 use crate::types::{Work, WorkState};
 
 mod native;
-pub use native::{WorkReadsImpl, WorkStoreImpl};
+pub use native::{NativeWorkReads, NativeWorkStore};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {

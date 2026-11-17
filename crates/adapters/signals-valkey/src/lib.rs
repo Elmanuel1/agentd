@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use redis::{AsyncCommands, RedisError};
-use sessions::signals::{Signal, SignalsImpl, CAPACITY};
+use sessions::signals::{NativeSignals, Signal, CAPACITY};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;
@@ -56,7 +56,7 @@ impl ValkeySignals {
     }
 }
 
-impl SignalsImpl for ValkeySignals {
+impl NativeSignals for ValkeySignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         let payload = format!("{} {}", signal.workspace.as_str(), signal.session);
         let published = tokio::time::timeout(PUBLISH_WAIT, async {

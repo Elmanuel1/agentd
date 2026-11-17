@@ -12,7 +12,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde_json::Value;
 use shared::ports::changes::Position;
-use shared::ports::history::{HistoryError, HistoryLogImpl, HistoryOp};
+use shared::ports::history::{HistoryError, HistoryOp, NativeHistoryLog};
 
 use crate::{diesel_be, pool_be, PgBackend, PgError};
 
@@ -69,7 +69,7 @@ impl PgHistoryLog {
     }
 }
 
-impl HistoryLogImpl for PgHistoryLog {
+impl NativeHistoryLog for PgHistoryLog {
     fn tables(&self) -> Vec<String> {
         self.tables.keys().cloned().collect()
     }

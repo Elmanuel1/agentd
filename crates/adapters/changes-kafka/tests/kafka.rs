@@ -8,7 +8,7 @@ use std::time::Duration;
 use changes_kafka::KafkaChanges;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use shared::ports::changes::{Change, ChangeHandlerImpl, Source};
+use shared::ports::changes::{Change, NativeChangeHandler, Source};
 use shared::BackendError;
 
 fn brokers() -> Option<String> {
@@ -23,7 +23,7 @@ struct Seen {
     seen: Mutex<Vec<i64>>,
 }
 
-impl ChangeHandlerImpl for Seen {
+impl NativeChangeHandler for Seen {
     fn source(&self) -> Source {
         Source::Table(self.table.into())
     }
@@ -72,7 +72,7 @@ async fn a_failed_record_is_retried_before_the_ones_behind_it() {
 /// Records the content of each message it is handed.
 struct Messages(Mutex<Vec<serde_json::Value>>);
 
-impl ChangeHandlerImpl for Messages {
+impl NativeChangeHandler for Messages {
     fn source(&self) -> Source {
         Source::Messages
     }

@@ -25,7 +25,7 @@ pub trait ModelBudget: Send + Sync {
 }
 
 /// What an adapter implements to provide [`ModelBudget`]; the methods are documented there.
-pub trait ModelBudgetImpl: Send + Sync {
+pub trait NativeModelBudget: Send + Sync {
     fn admit(&self, provider: &str) -> impl Future<Output = Result<Admit, BackendError>> + Send;
     fn spend(
         &self,
@@ -34,12 +34,12 @@ pub trait ModelBudgetImpl: Send + Sync {
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 
-impl<T: ModelBudgetImpl> ModelBudget for T {
+impl<T: NativeModelBudget> ModelBudget for T {
     fn admit<'a>(&'a self, provider: &'a str) -> BoxFuture<'a, Result<Admit, BackendError>> {
-        Box::pin(ModelBudgetImpl::admit(self, provider))
+        Box::pin(NativeModelBudget::admit(self, provider))
     }
     fn spend<'a>(&'a self, provider: &'a str, input_tokens: u64) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(ModelBudgetImpl::spend(self, provider, input_tokens))
+        Box::pin(NativeModelBudget::spend(self, provider, input_tokens))
     }
 }
 
@@ -47,7 +47,7 @@ impl<T: ModelBudgetImpl> ModelBudget for T {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Unlimited;
 
-impl ModelBudgetImpl for Unlimited {
+impl NativeModelBudget for Unlimited {
     async fn admit(&self, _: &str) -> Result<Admit, BackendError> {
         Ok(Admit::Yes)
     }

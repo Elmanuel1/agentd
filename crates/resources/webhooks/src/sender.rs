@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::{BackendError, Timestamp};
 
 use super::endpoints::Webhooks;
@@ -44,7 +44,7 @@ pub trait DeliveryMarks: Send + Sync {
 }
 
 /// What an adapter implements to provide [`DeliveryMarks`]; the methods are documented there.
-pub trait DeliveryMarksImpl: Send + Sync {
+pub trait NativeDeliveryMarks: Send + Sync {
     fn delivered(
         &self,
         webhook_id: &str,
@@ -59,14 +59,14 @@ pub trait DeliveryMarksImpl: Send + Sync {
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 
-impl<T: DeliveryMarksImpl> DeliveryMarks for T {
+impl<T: NativeDeliveryMarks> DeliveryMarks for T {
     fn delivered<'a>(
         &'a self,
         webhook_id: &'a str,
         endpoint_key: &'a str,
         attempt: i64,
     ) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(DeliveryMarksImpl::delivered(self, webhook_id, endpoint_key, attempt))
+        Box::pin(NativeDeliveryMarks::delivered(self, webhook_id, endpoint_key, attempt))
     }
     fn dropped<'a>(
         &'a self,
@@ -74,7 +74,7 @@ impl<T: DeliveryMarksImpl> DeliveryMarks for T {
         endpoint_key: &'a str,
         attempt: i64,
     ) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(DeliveryMarksImpl::dropped(self, webhook_id, endpoint_key, attempt))
+        Box::pin(NativeDeliveryMarks::dropped(self, webhook_id, endpoint_key, attempt))
     }
 }
 
@@ -127,7 +127,7 @@ impl WebhookSender {
     }
 }
 
-impl ChangeHandlerImpl for WebhookSender {
+impl NativeChangeHandler for WebhookSender {
     fn source(&self) -> Source {
         Source::Table("webhook_deliveries".into())
     }

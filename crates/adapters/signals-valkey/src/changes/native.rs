@@ -3,16 +3,16 @@
 use super::*;
 
 /// What an adapter implements to provide [`Consumer`]; the methods are documented there.
-pub(crate) trait ConsumerImpl: Send + Sync {
+pub(crate) trait NativeConsumer: Send + Sync {
     fn ordered(&self) -> bool;
     fn consume(&self, entry: &StreamId) -> impl Future<Output = bool> + Send;
 }
 
-impl<T: ConsumerImpl> Consumer for T {
+impl<T: NativeConsumer> Consumer for T {
     fn ordered(&self) -> bool {
-        ConsumerImpl::ordered(self)
+        NativeConsumer::ordered(self)
     }
     fn consume<'a>(&'a self, entry: &'a StreamId) -> BoxFuture<'a, bool> {
-        Box::pin(ConsumerImpl::consume(self, entry))
+        Box::pin(NativeConsumer::consume(self, entry))
     }
 }

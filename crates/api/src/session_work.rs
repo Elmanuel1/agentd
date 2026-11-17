@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use sessions::types::{Session, SessionId};
-use sessions::SessionWorkImpl;
+use sessions::NativeSessionWork;
 use shared::{ApiError, AuthContext, WorkspaceId};
 use work::WorkService;
 
@@ -14,7 +14,7 @@ pub struct WorkQueue {
     pub work: Arc<WorkService>,
 }
 
-impl SessionWorkImpl for WorkQueue {
+impl NativeSessionWork for WorkQueue {
     async fn queue(
         &self,
         ctx: &AuthContext,

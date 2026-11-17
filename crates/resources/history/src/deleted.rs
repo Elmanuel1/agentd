@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use shared::ports::changes::{Change, ChangeHandlerImpl, ChangeOp, Source};
+use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::BackendError;
 
@@ -33,7 +33,7 @@ impl DeletedRecorder {
     }
 }
 
-impl ChangeHandlerImpl for DeletedRecorder {
+impl NativeChangeHandler for DeletedRecorder {
     fn source(&self) -> Source {
         Source::Messages
     }

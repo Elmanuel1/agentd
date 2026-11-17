@@ -4,7 +4,7 @@
 mod reads;
 
 use ::sessions::events::{Event, EventId};
-use ::sessions::store::{AnswerCheck, SessionEventLogImpl, StoreError, Wake};
+use ::sessions::store::{AnswerCheck, NativeSessionEventLog, StoreError, Wake};
 use ::sessions::types::SessionId;
 use diesel::sql_types::{Array, BigInt, Jsonb, Text};
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -27,7 +27,7 @@ impl PgSessionEventLog {
     }
 }
 
-impl SessionEventLogImpl for PgSessionEventLog {
+impl NativeSessionEventLog for PgSessionEventLog {
     async fn append_events(
         &self,
         ws: &WorkspaceId,

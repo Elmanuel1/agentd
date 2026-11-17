@@ -3,7 +3,7 @@
 use super::*;
 
 /// What an adapter implements to provide [`WorkReads`]; the methods are documented there.
-pub trait WorkReadsImpl: Send + Sync {
+pub trait NativeWorkReads: Send + Sync {
     fn get(
         &self,
         ws: &WorkspaceId,
@@ -32,28 +32,28 @@ pub trait WorkReadsImpl: Send + Sync {
     ) -> impl Future<Output = Result<Option<(OrgId, WorkspaceId)>, StoreError>> + Send;
 }
 
-impl<T: WorkReadsImpl> WorkReads for T {
+impl<T: NativeWorkReads> WorkReads for T {
     fn get<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a str,
         reach: &'a Reach,
     ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>> {
-        Box::pin(WorkReadsImpl::get(self, ws, session, reach))
+        Box::pin(NativeWorkReads::get(self, ws, session, reach))
     }
     fn find_on_queue<'a>(
         &'a self,
         queue: &'a str,
         session: &'a str,
     ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>> {
-        Box::pin(WorkReadsImpl::find_on_queue(self, queue, session))
+        Box::pin(NativeWorkReads::find_on_queue(self, queue, session))
     }
     fn list<'a>(
         &'a self,
         scope: &'a Scope,
         page: &'a Pagination,
     ) -> BoxFuture<'a, Result<Vec<WorkItem>, StoreError>> {
-        Box::pin(WorkReadsImpl::list(self, scope, page))
+        Box::pin(NativeWorkReads::list(self, scope, page))
     }
     fn counts<'a>(
         &'a self,
@@ -61,18 +61,18 @@ impl<T: WorkReadsImpl> WorkReads for T {
         reclaim: Duration,
         now: Timestamp,
     ) -> BoxFuture<'a, Result<Counts, StoreError>> {
-        Box::pin(WorkReadsImpl::counts(self, scope, reclaim, now))
+        Box::pin(NativeWorkReads::counts(self, scope, reclaim, now))
     }
     fn runtime_owner<'a>(
         &'a self,
         environment: &'a str,
     ) -> BoxFuture<'a, Result<Option<(OrgId, WorkspaceId)>, StoreError>> {
-        Box::pin(WorkReadsImpl::runtime_owner(self, environment))
+        Box::pin(NativeWorkReads::runtime_owner(self, environment))
     }
 }
 
 /// What an adapter implements to provide [`WorkStore`]; the methods are documented there.
-pub trait WorkStoreImpl: WorkReadsImpl {
+pub trait NativeWorkStore: NativeWorkReads {
     fn queue(&self, item: &WorkItem) -> impl Future<Output = Result<(), StoreError>> + Send;
     fn claim(
         &self,
@@ -113,9 +113,9 @@ pub trait WorkStoreImpl: WorkReadsImpl {
     ) -> impl Future<Output = Result<Option<WorkItem>, StoreError>> + Send;
 }
 
-impl<T: WorkStoreImpl> WorkStore for T {
+impl<T: NativeWorkStore> WorkStore for T {
     fn queue<'a>(&'a self, item: &'a WorkItem) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(WorkStoreImpl::queue(self, item))
+        Box::pin(NativeWorkStore::queue(self, item))
     }
     fn claim<'a>(
         &'a self,
@@ -123,7 +123,7 @@ impl<T: WorkStoreImpl> WorkStore for T {
         reclaim: Duration,
         now: Timestamp,
     ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>> {
-        Box::pin(WorkStoreImpl::claim(self, scope, reclaim, now))
+        Box::pin(NativeWorkStore::claim(self, scope, reclaim, now))
     }
     fn update_metadata<'a>(
         &'a self,
@@ -133,7 +133,7 @@ impl<T: WorkStoreImpl> WorkStore for T {
         set: &'a BTreeMap<String, String>,
         remove: &'a [String],
     ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>> {
-        Box::pin(WorkStoreImpl::update_metadata(self, ws, session, reach, set, remove))
+        Box::pin(NativeWorkStore::update_metadata(self, ws, session, reach, set, remove))
     }
     fn ack<'a>(
         &'a self,
@@ -143,7 +143,7 @@ impl<T: WorkStoreImpl> WorkStore for T {
         now: Timestamp,
         lease_until: Timestamp,
     ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>> {
-        Box::pin(WorkStoreImpl::ack(self, ws, session, reach, now, lease_until))
+        Box::pin(NativeWorkStore::ack(self, ws, session, reach, now, lease_until))
     }
     fn heartbeat<'a>(
         &'a self,
@@ -152,7 +152,7 @@ impl<T: WorkStoreImpl> WorkStore for T {
         reach: &'a Reach,
         beat: &'a Beat,
     ) -> BoxFuture<'a, Result<Option<(WorkItem, bool)>, StoreError>> {
-        Box::pin(WorkStoreImpl::heartbeat(self, ws, session, reach, beat))
+        Box::pin(NativeWorkStore::heartbeat(self, ws, session, reach, beat))
     }
     fn stop<'a>(
         &'a self,
@@ -162,6 +162,6 @@ impl<T: WorkStoreImpl> WorkStore for T {
         force: bool,
         now: Timestamp,
     ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>> {
-        Box::pin(WorkStoreImpl::stop(self, ws, session, reach, force, now))
+        Box::pin(NativeWorkStore::stop(self, ws, session, reach, force, now))
     }
 }

@@ -115,7 +115,7 @@ pub trait SessionGrants: Send + Sync {
 }
 
 /// What an adapter implements to provide [`SessionGrants`]; the methods are documented there.
-pub trait SessionGrantsImpl: Send + Sync {
+pub trait NativeSessionGrants: Send + Sync {
     fn grants(
         &self,
         ctx: &AuthContext,
@@ -123,13 +123,13 @@ pub trait SessionGrantsImpl: Send + Sync {
     ) -> impl Future<Output = Result<Grants, ApiError>> + Send;
 }
 
-impl<T: SessionGrantsImpl> SessionGrants for T {
+impl<T: NativeSessionGrants> SessionGrants for T {
     fn grants<'a>(
         &'a self,
         ctx: &'a AuthContext,
         session: &'a str,
     ) -> BoxFuture<'a, Result<Grants, ApiError>> {
-        Box::pin(SessionGrantsImpl::grants(self, ctx, session))
+        Box::pin(NativeSessionGrants::grants(self, ctx, session))
     }
 }
 

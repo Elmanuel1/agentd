@@ -1,7 +1,7 @@
 //! The session event log's reads.
 
 use ::sessions::events::Event;
-use ::sessions::store::{EventFilter, Head, Order, SessionEventReadsImpl, StoreError, Tail};
+use ::sessions::store::{EventFilter, Head, NativeSessionEventReads, Order, StoreError, Tail};
 use ::sessions::types::SessionId;
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -31,7 +31,7 @@ impl PgSessionEventLog {
     }
 }
 
-impl SessionEventReadsImpl for PgSessionEventLog {
+impl NativeSessionEventReads for PgSessionEventLog {
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         self.require_session(ws, id).await?;
         Ok(self.engine_events(ws, id).await?.into_iter().map(|(e, _)| e).collect())

@@ -46,7 +46,7 @@ pub trait EnvironmentsStore: Send + Sync {
 }
 
 /// What an adapter implements to provide [`EnvironmentsStore`]; the methods are documented there.
-pub trait EnvironmentsStoreImpl: Send + Sync {
+pub trait NativeEnvironmentsStore: Send + Sync {
     fn insert(&self, org: &OrgId, env: Environment) -> impl Future<Output = Result<(), StoreError>> + Send;
     fn get(
         &self,
@@ -67,26 +67,26 @@ pub trait EnvironmentsStoreImpl: Send + Sync {
     ) -> impl Future<Output = Result<Vec<Environment>, StoreError>> + Send;
 }
 
-impl<T: EnvironmentsStoreImpl> EnvironmentsStore for T {
+impl<T: NativeEnvironmentsStore> EnvironmentsStore for T {
     fn insert<'a>(&'a self, org: &'a OrgId, env: Environment) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(EnvironmentsStoreImpl::insert(self, org, env))
+        Box::pin(NativeEnvironmentsStore::insert(self, org, env))
     }
     fn get<'a>(
         &'a self,
         org: &'a OrgId,
         id: &'a EnvironmentId,
     ) -> BoxFuture<'a, Result<Environment, StoreError>> {
-        Box::pin(EnvironmentsStoreImpl::get(self, org, id))
+        Box::pin(NativeEnvironmentsStore::get(self, org, id))
     }
     fn replace<'a>(&'a self, org: &'a OrgId, env: Environment) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(EnvironmentsStoreImpl::replace(self, org, env))
+        Box::pin(NativeEnvironmentsStore::replace(self, org, env))
     }
     fn delete<'a>(
         &'a self,
         org: &'a OrgId,
         id: &'a EnvironmentId,
     ) -> BoxFuture<'a, Result<Environment, StoreError>> {
-        Box::pin(EnvironmentsStoreImpl::delete(self, org, id))
+        Box::pin(NativeEnvironmentsStore::delete(self, org, id))
     }
     fn list<'a>(
         &'a self,
@@ -94,6 +94,6 @@ impl<T: EnvironmentsStoreImpl> EnvironmentsStore for T {
         include_archived: bool,
         page: &'a Pagination,
     ) -> BoxFuture<'a, Result<Vec<Environment>, StoreError>> {
-        Box::pin(EnvironmentsStoreImpl::list(self, org, include_archived, page))
+        Box::pin(NativeEnvironmentsStore::list(self, org, include_archived, page))
     }
 }

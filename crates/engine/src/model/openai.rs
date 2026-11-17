@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 use sessions::events::ModelUsage;
 
-use super::{Block, Message, ModelClientImpl, ModelError, ModelRequest, ModelResponse, Role, StopKind};
+use super::{Block, Message, ModelError, ModelRequest, ModelResponse, NativeModelClient, Role, StopKind};
 
 /// A `ModelClient` over `POST {base_url}/chat/completions`.
 #[derive(Debug, Clone)]
@@ -151,7 +151,7 @@ pub fn parse(v: &Value) -> Result<ModelResponse, ModelError> {
     Ok(ModelResponse { content, stop, usage, thought, cost })
 }
 
-impl ModelClientImpl for OpenAiCompatModel {
+impl NativeModelClient for OpenAiCompatModel {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         let resp = self
             .http

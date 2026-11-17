@@ -165,16 +165,16 @@ pub trait ModelClient: Send + Sync {
 }
 
 /// What an adapter implements to provide [`ModelClient`]; the methods are documented there.
-pub trait ModelClientImpl: Send + Sync {
+pub trait NativeModelClient: Send + Sync {
     fn complete(&self, req: ModelRequest) -> impl Future<Output = Result<ModelResponse, ModelError>> + Send;
     fn window(&self, model: &str) -> impl Future<Output = Result<u64, ModelError>> + Send;
 }
 
-impl<T: ModelClientImpl> ModelClient for T {
+impl<T: NativeModelClient> ModelClient for T {
     fn complete(&self, req: ModelRequest) -> BoxFuture<'_, Result<ModelResponse, ModelError>> {
-        Box::pin(ModelClientImpl::complete(self, req))
+        Box::pin(NativeModelClient::complete(self, req))
     }
     fn window<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Result<u64, ModelError>> {
-        Box::pin(ModelClientImpl::window(self, model))
+        Box::pin(NativeModelClient::window(self, model))
     }
 }
