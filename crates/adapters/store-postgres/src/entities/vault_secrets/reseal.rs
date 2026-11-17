@@ -78,9 +78,12 @@ impl PgSecretStore {
         Ok(Resealed { moved, remaining: remaining.collect() })
     }
 
-    /// 1 when `row` moved to the first key; 0 when it does not open or a put won.
+    /// 1 when `row` moved to the first key; 0 when its ids are not a key, it
+    /// does not open, or a put won.
     async fn reseal_row(&self, conn: &mut PooledConnection, row: Row) -> Result<usize, SecretError> {
-        let key = SecretKey::new(&row.workspace_id, &row.vault_id, &row.credential_id)?;
+        let Ok(key) = SecretKey::new(&row.workspace_id, &row.vault_id, &row.credential_id) else {
+            return Ok(0);
+        };
         let read = row.sealed;
         let key = match read.environment_variable {
             true => key.environment_variable(),

@@ -186,7 +186,7 @@ async fn the_row_holds_no_value_or_key_bytes_and_names_the_first_key() {
 }
 
 #[tokio::test]
-async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_without_overwriting_a_newer_put() {
+async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_past_a_bad_row_and_a_newer_put() {
     let Some(url) = url() else { return };
     let (old, rotated) = (format!("r1:{K1}"), format!("r2:{K2},r1:{K1}"));
     let ws = workspace("reseal");
@@ -197,6 +197,15 @@ async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_without_overwriting
         first.put(k, &secret(v)).await.unwrap();
     }
     store(&url, &format!("z0:{K2}")).await.put(&lost, &secret("v3")).await.unwrap();
+    // Sorted first, with a credential id outside the id charset: no key, so reseal passes over it.
+    run(
+        &url,
+        &format!(
+            "INSERT INTO vault_secrets VALUES ('{ws}', 'vlt_01a', 'cred-0', false, 'r1',
+             decode(repeat('00', 92), 'hex'), decode(repeat('00', 28), 'hex'))"
+        ),
+    )
+    .await;
     let before = stored(&url, &moved).await.unwrap();
 
     let next = store(&url, &rotated).await;
@@ -233,8 +242,8 @@ async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_without_overwriting
     let ours: Vec<_> = report.remaining.iter().filter(|(k, _)| k.starts_with(&ws)).cloned().collect();
     assert_eq!(
         ours,
-        [(lost.to_string(), "z0".to_owned())],
-        "only the row under a key the ring lacks remains"
+        [(format!("{ws}/vlt_01a/cred-0"), "r1".to_owned()), (lost.to_string(), "z0".to_owned())],
+        "only the row that is not a key and the row under a key the ring lacks remain"
     );
     run(&url, &format!("DELETE FROM vault_secrets WHERE workspace_id = '{ws}'")).await;
 }
