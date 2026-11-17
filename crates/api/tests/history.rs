@@ -9,78 +9,20 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
+#[path = "history/kit.rs"]
+mod kit;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::http::StatusCode;
-use changes_kafka::KafkaChanges;
-use common::{request, Auth, Rig, KEY};
+use common::Rig;
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::RunQueryDsl;
-use http_body_util::BodyExt;
+use kit::{call, cdc_enabled, eventually, kept, summary, Container};
 use serde_json::{json, Value};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Position};
 use shared::{with_writer, Timestamp, Writer};
-use signals_valkey::{Valkey, ValkeyChanges};
 use store_postgres::PgHistoryLog;
-use tower::ServiceExt;
-
-fn cdc_enabled() -> bool {
-    std::env::var("AGENTD_CDC_TESTS").as_deref() == Ok("1")
-}
-
-/// Call the rig's app; the status, body and `request-id`.
-async fn call(rig: &Rig, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value, String) {
-    let resp = rig.app.clone().oneshot(request(method, uri, Auth::Key(KEY), body)).await.unwrap();
-    let (status, id) = (resp.status(), resp.headers()["request-id"].to_str().unwrap().to_owned());
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null), id)
-}
-
-#[derive(diesel::QueryableByName)]
-struct Row {
-    #[diesel(sql_type = Jsonb)]
-    row: Value,
-}
-
-/// `table`'s history rows whose `column` is `id`, in lsn order, each as
-/// `{op, actor, request_id, doc}`.
-async fn kept(rig: &Rig, table: &str, column: &str, id: &str) -> Vec<Value> {
-    let mut conn = rig.pg.diesel.get().await.unwrap();
-    let rows: Vec<Row> = diesel::sql_query(format!(
-        "SELECT jsonb_build_object('op', op, 'actor', actor, 'request_id', request_id, 'doc', doc) AS row
-           FROM history.{table} WHERE {column} = $1 ORDER BY lsn"
-    ))
-    .bind::<Text, _>(id)
-    .load(&mut *conn)
-    .await
-    .unwrap();
-    rows.into_iter().map(|r| r.row).collect()
-}
-
-/// `table`'s history of `id` once it holds `n` rows, or after 120 s.
-async fn eventually(rig: &Rig, table: &str, column: &str, id: &str, n: usize) -> Vec<Value> {
-    for _ in 0..240 {
-        let rows = kept(rig, table, column, id).await;
-        if rows.len() >= n {
-            return rows;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    kept(rig, table, column, id).await
-}
-
-fn docker(verb: &str) {
-    let container = std::env::var("AGENTD_DEBEZIUM_CONTAINER").unwrap_or_else(|_| "debezium".into());
-    let status = std::process::Command::new("docker").args([verb, &container]).status().unwrap();
-    assert!(status.success(), "docker {verb} {container}");
-}
-
-fn summary(rows: &[Value]) -> Vec<(String, String, String)> {
-    let field = |r: &Value, k: &str| r[k].as_str().unwrap_or_default().to_owned();
-    rows.iter().map(|r| (field(r, "op"), field(r, "actor"), field(r, "request_id"))).collect()
-}
 
 #[tokio::test]
 async fn every_change_reaches_history_with_its_writer() {
@@ -142,20 +84,7 @@ async fn every_change_reaches_history_with_its_writer() {
     let (st, redacted, _) = call(&rig, "POST", &redact, None).await;
     assert_eq!(st, StatusCode::OK, "{redacted}");
 
-    // Their own pool, so catching up on the feed never starves the rig's reads.
-    let url = std::env::var("DATABASE_URL").unwrap();
-    let log = PgHistoryLog::load(store_postgres::PgBackend::connect(&url).await.unwrap()).await.unwrap();
-    let recorders = history::recorders(Arc::new(log), Arc::new(|_| {}));
-    let tasks = match std::env::var("AGENTD_KAFKA_BROKERS") {
-        Ok(brokers) => KafkaChanges::new(&brokers, "agentd").spawn(recorders),
-        Err(_) => {
-            let url = std::env::var("AGENTD_VALKEY_URL").unwrap();
-            let cluster = std::env::var("AGENTD_VALKEY_CLUSTER").as_deref() == Ok("1");
-            let valkey = Valkey::open(&url, cluster).unwrap();
-            ValkeyChanges::new(&valkey, "agentd", &format!("agentd-test-{}", common::stamp()))
-                .spawn(recorders)
-        }
-    };
+    let tasks = kit::record(&format!("agentd-test-{}", common::stamp())).await;
 
     let rows = eventually(&rig, "vaults", "vault_id", &v, 4).await;
     let writer = |op: &str, id: &str| (op.to_owned(), "apikey_01a".to_owned(), id.to_owned());
@@ -195,10 +124,11 @@ async fn every_change_reaches_history_with_its_writer() {
     let (_, other, _) = call(&rig, "POST", "/v1/vaults", Some(json!({"display_name": "j"}))).await;
     let o = other["id"].as_str().unwrap().to_owned();
     eventually(&rig, "vaults", "vault_id", &o, 1).await;
-    docker("stop");
+    let debezium = Container::named("AGENTD_DEBEZIUM_CONTAINER", "debezium");
+    debezium.docker("stop");
     let (st, _, gone) = call(&rig, "DELETE", &format!("/v1/vaults/{o}"), None).await;
     assert_eq!(st, StatusCode::OK);
-    docker("start");
+    debezium.docker("start");
     let rows = eventually(&rig, "vaults", "vault_id", &o, 2).await;
     assert_eq!(summary(&rows).last(), Some(&writer("delete", &gone)));
 

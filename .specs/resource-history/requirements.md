@@ -20,7 +20,7 @@
 - **Actor, request id:** the writing connection's `agentd.actor` and `agentd.request_id` settings.
 
 **Build order:** spec → the feed's positions and messages (HI-4) → capture, V16 (HI-1 to HI-3) → storage, V17 and the
-port (HI-7, HI-14, HI-15) → the consumer (HI-5 to HI-7, HI-12, HI-13) → redaction (HI-8) → metrics and runbooks
+port (HI-7, HI-14, HI-15) → the consumer (HI-5 to HI-7, HI-12, HI-13, HI-16) → redaction (HI-8) → metrics and runbooks
 (HI-9 to HI-11), one PR (D17).
 
 Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
@@ -44,6 +44,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | HI-7 | The history consumer shall record each change once, however often the feed delivers it. |
 | HI-8 | When a memory version is redacted, the history consumer shall remove that content from the history of the version and of every memory head that held it. |
 | HI-13 | The history consumer shall record every update of a tracked table, the agent loop's included. |
+| HI-16 | If Debezium Server, the feed's broker, an agentd replica or Postgres stops, crashes, hangs or loses its connections, then once it is back the history consumer shall record every change committed before and during the fault, once and in commit order, while the slot is not lost. |
 
 ## Storage and search
 

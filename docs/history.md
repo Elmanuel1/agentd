@@ -146,6 +146,21 @@ On Kafka, the topics' retention must exceed the longest time every replica may b
 history reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up to 1 s of entries on a Valkey crash;
 `appendfsync always` closes that.
 
+### Faults
+
+Each boundary on the way to history recovers on its own, and the changes made during a fault reach history once,
+in order. Only a slot past `max_slot_wal_keep_size` loses changes.
+
+| Fault | What happens |
+|---|---|
+| Debezium Server stops or crashes | the slot keeps what Debezium has not confirmed; once it runs again it reads from its last flushed offset, and history keeps a change sent twice once. It must be restarted when it stops ([configuration.md](configuration.md)) |
+| Kafka or Valkey is down or hangs | Debezium retries its sink; when the sink fails, it restarts its connector (or exits and is restarted) and reads again from the slot. The recorders reconnect |
+| An agentd replica stops mid-batch | what its recorders had not acknowledged (an uncommitted Kafka offset, a pending Valkey entry) is delivered again; a pending Valkey entry waits 60 s before another replica claims it |
+| agentd's connections to Postgres are cut, or Postgres hangs | the history write fails and the change is handled again |
+| Postgres restarts | Debezium reconnects to the slot within about 20 s; each pooled connection fails its first statement, and the change is handled again |
+
+`crates/api/tests/history_faults.rs` makes each of these faults while changes are written, on Kafka and on Valkey.
+
 ## After a lost slot
 
 1. Stop Debezium Server.
