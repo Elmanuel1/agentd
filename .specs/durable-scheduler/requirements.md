@@ -73,7 +73,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 | ID | Requirement |
 |---|---|
-| DS-15 | The scheduler shall delete, every hour, the `fire_claims` rows that are done and whose occurrence is more than 30 days old (D12). |
+| DS-15 | The scheduler shall delete, every hour, the `fire_claims` rows whose occurrence is more than 30 days old and that are done, or that `take` left unfinished with no `due_at` (D12). |
 | DS-16 | The scheduler shall export the fires by outcome (`enqueued`, `ran`, `retried`, `skipped`, `dropped`), the fire lag (a run's start minus its occurrence's due time, worked out from the spec, not from `due_at`) and the count of due fires not done (D10). |
 | DS-17 | Where `AGENTD_SCHEDULER` is `temporal`, agentd shall apply schedule changes to Temporal Schedules, not run its built-in tick, and write each Temporal action's occurrence to `fire_claims` as DS-9 does (D2). |
 
@@ -173,19 +173,22 @@ Opens with probes B33 and B34.
   commits; `changes-kafka` and `signals-valkey/src/fires.rs` call it unchanged.
 - `api/src/backends/postgres.rs`: `FireSources::start` spawns the tick and the worker (every 1 s).
 - `fire_claims/claim.rs`: `take` and its 15-minute and 3-attempt rules are removed, with their `pg_fires` tests.
-- Claims `take` wrote before this PR have no `due_at` and no `spec`. `claim_due`'s condition becomes `NOT done AND
-  (due_at <= now() OR due_at IS NULL) AND claimed_at < now() - interval '120 seconds'`, so such a claim is taken once
-  its old owner's lease has run out, marked done with outcome `dropped` (its spec cannot be read, DS-18) and logged at
-  `WARN`. `enqueue`'s conflict clause becomes `ON CONFLICT (workspace_id, target, scheduled_at) DO UPDATE SET spec =
-  EXCLUDED.spec, due_at = EXCLUDED.due_at WHERE fire_claims.spec IS NULL AND NOT fire_claims.done`, so a redelivered
-  external fire fills in its old claim and runs, as `take` would have run it again. A built-in fire is never delivered
-  twice, and `main` never ran an unfinished built-in claim again, so dropping it loses no fire `main` would have run.
+- Claims `take` wrote before this PR have no `due_at` and no `spec`, and `claim_due` never selects them (`due_at <=
+  now()` is not true for `NULL`). They follow `main`'s rules: `enqueue`'s conflict clause becomes `ON CONFLICT
+  (workspace_id, target, scheduled_at) DO UPDATE SET spec = EXCLUDED.spec, due_at = EXCLUDED.due_at WHERE
+  fire_claims.spec IS NULL AND NOT fire_claims.done`, so a redelivered external fire fills in its unfinished claim
+  and runs, as `take` would have run it again; an unfinished built-in claim is never run again, as on `main`, where
+  the tick never redelivered one. The filled-in claim keeps the `claimed_at` `take` set, so it runs once the
+  2-minute lease of DS-4 has passed, even if an old replica still holds it under `take`'s 15-minute lease. Both runs
+  are then safe: a deployment fire derives its run and session ids from the deployment and the occurrence, so the
+  second run finds the first's session and run and makes none of its own.
 - Tests: `pg_schedules` "a due occurrence fires once across two schedulers" over the queue; "250 due schedules all
   fire in one tick", with 150 older due rows first; "a fire that fails is run again, then done"; "a crash after the
   tick commits loses nothing"; "after downtime only the latest missed occurrence fires"; "a fire not run before its
   following occurrence is skipped"; "an unpaused schedule does not fire the time it missed"; "an unreadable schedule
-  is paused and does not hold the batch"; `pg_fire_queue` "an unfinished claim written by take is dropped once its
-  lease runs out" and "a redelivered external fire fills in its unfinished take claim and runs".
+  is paused and does not hold the batch"; `pg_fire_queue` "a redelivered external fire fills in its unfinished take
+  claim and runs once", "a claim take finished is not run again on redelivery" and "an unfinished built-in take claim
+  is not run and is swept after 30 days".
 
 ### PR 5: an invalid schedule change is passed over
 
@@ -211,7 +214,8 @@ Opens with probes B33 and B34.
   `agentd.scheduler.fire.lag` (s), gauge `agentd.scheduler.fires.due` from 1 `SELECT count(*) FROM fire_claims WHERE
   NOT done AND due_at <= now()` every 30 s per replica.
 - `fire_claims/sweep.rs` (new): hourly, 1 `DELETE FROM fire_claims WHERE done AND scheduled_at < now() - interval
-  '30 days'`.
+  '30 days'` on the `done` index, and 1 `DELETE FROM fire_claims WHERE NOT done AND due_at IS NULL AND scheduled_at <
+  now() - interval '30 days'` on the `due_at` index, for unfinished claims `take` left (PR 4).
 - Docs: `configuration.md` "Scheduled work" describes the queue, the jitter, retries and the window;
   `observability.md` names each signal and its threshold for any backend (due fires above 0 for 5 minutes, lag p99
   over 60 s, any `skipped` or `dropped`); `operations.md` says every role runs the feed handlers; the
