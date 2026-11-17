@@ -124,7 +124,7 @@ agentd reads the slot every 10 s on every replica (take the maximum across repli
 | Signal | Alarm when | What it means, and what to do |
 |---|---|---|
 | `agentd.feed.slot.safe_wal` | below 25% of `max_slot_wal_keep_size` (page) | the feed has stalled long enough to near the limit: bring Debezium and its sink back before the slot is lost |
-| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap only if no change commits before Debezium Server first creates the slot; any earlier change is lost, and the baseline and scrub (steps 5 and 6) recover only the rows that still exist |
+| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap only if no change commits before Debezium Server first creates the slot; any earlier change is lost, and the baseline and scrub (steps 5 and 6, with agentd stopped and after Debezium Server has made the slot) recover only the rows that still exist |
 | `agentd.feed.slot.retained_wal` | growing for 15 minutes (ticket) | Debezium is not confirming: check its health (`GET /q/health`) and logs |
 | `agentd.history.apply_delay` p99 | over 5 minutes (ticket) | history lags its commits: check the feed backlog and the `history:` log lines |
 
@@ -151,8 +151,10 @@ history reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up 
 ### Faults
 
 Each boundary on the way to history recovers on its own: while the feed keeps its records and each change can be
-recorded, the changes made during a fault reach history once, each row's in its commit order (a row's writes take its
-lock in turn, so its `lsn` order is its commit order; across rows `lsn` is the write's place in the WAL).
+recorded, the changes made during a fault reach history once, and a row's history read in `lsn` order gives its
+changes in their commit order: a row's writes take its lock in turn, so its `lsn` order is its commit order, and
+across rows `lsn` is the write's place in the WAL. History is not recorded in that order: a change handled again
+can land after a later one.
 
 | Fault | What happens |
 |---|---|
@@ -229,7 +231,7 @@ commit;
 
 7. Start agentd.
 
-Changes committed after the slot's last confirmed position, before the baseline, are gone: the gap can start before
+Changes committed after the slot's last confirmed position, before the baseline, may be missing from history: the gap can start before
 the loss was seen, since `agentd.feed.slot.lost` bounds when the loss was observed, not when the oldest lost change
 committed. The same baseline and scrub, with agentd stopped, start history on a database that already has rows.
 

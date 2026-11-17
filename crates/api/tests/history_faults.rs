@@ -2,7 +2,8 @@
 //! slot to Debezium Server, Debezium Server to the broker, the broker to the
 //! recorders, and the recorders to Postgres: each side is stopped, crashed,
 //! hung or cut while changes are made, and every change, those made during
-//! the fault included, reaches history exactly once, in order. Gated like `history.rs`, and by
+//! the fault included, reaches history exactly once, and a row's history read in lsn order
+//! gives its changes in their commit order. Gated like `history.rs`, and by
 //! `AGENTD_FAULT_TESTS=1` because it stops shared containers: Postgres
 //! (`AGENTD_POSTGRES_CONTAINER`, `postgres`), Debezium Server
 //! (`AGENTD_DEBEZIUM_CONTAINER`, `debezium`) and the feed's broker
