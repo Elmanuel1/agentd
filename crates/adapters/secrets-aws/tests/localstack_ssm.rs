@@ -112,11 +112,25 @@ async fn connect_refuses_a_disabled_key_or_a_reserved_prefix() {
 
 #[tokio::test]
 async fn a_configured_timeout_reaches_the_clients() {
-    let Some(endpoint) = endpoint() else { return };
-    let mut config = config(&endpoint, kms_key(&endpoint).await);
-    config.attempt_timeout = std::time::Duration::from_millis(1);
-    config.operation_timeout = std::time::Duration::from_millis(1);
+    // Gated with the other tests: the AWS credentials chain needs their static keys.
+    if endpoint().is_none() {
+        return;
+    }
+    // An endpoint that takes the connection and never answers, so only the timeout can end the call.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = silent.local_addr().unwrap();
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((conn, _)) = silent.accept().await {
+            open.push(conn);
+        }
+    });
+    let mut config = config(&format!("http://{address}"), "alias/agentd-timeout".to_owned());
+    config.attempt_timeout = std::time::Duration::from_millis(100);
+    config.operation_timeout = std::time::Duration::from_millis(300);
+    let started = std::time::Instant::now();
     let err = AwsParameterStore::connect(&config).await.unwrap_err().to_string();
-    let want = format!("kms:DescribeKey on {} failed: timeout", config.kms_key_id);
-    assert!(err.ends_with(&want), "{err}");
+    assert!(err.ends_with("kms:DescribeKey on alias/agentd-timeout failed: timeout"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the default 15 s did not apply");
+    held.abort();
 }
