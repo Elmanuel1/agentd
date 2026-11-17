@@ -27,8 +27,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      # clippy.toml's banned macros warn until the #[async_trait] uses are migrated.
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings --force-warn clippy::disallowed_macros
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
     runs-on: ubuntu-latest
