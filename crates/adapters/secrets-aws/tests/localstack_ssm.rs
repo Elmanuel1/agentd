@@ -131,6 +131,6 @@ async fn a_configured_timeout_reaches_the_clients() {
     let started = std::time::Instant::now();
     let err = AwsParameterStore::connect(&config).await.unwrap_err().to_string();
     assert!(err.ends_with("kms:DescribeKey on alias/agentd-timeout failed: timeout"), "{err}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the default 15 s did not apply");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "the configured timeouts did not apply");
     held.abort();
 }
