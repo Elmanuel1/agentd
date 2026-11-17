@@ -29,7 +29,7 @@ Server reading Postgres's WAL, and agentd's consumers of it).
 - **Infra failure:** any other failed fire: the database is unavailable, the handler times out, or the replica stops
   mid-fire.
 
-**Build order:** deployment writes (DS-14) → fire queue columns → fire queue and workers (DS-3 to DS-7, DS-18,
+**Build order:** deployment writes and fired creates (DS-14, DS-20) → fire queue columns → fire queue and workers (DS-3 to DS-7, DS-18,
 DS-19) →
 tick and feed on the queue (DS-1, DS-2, DS-8 to DS-10, DS-12) → schedule changes (DS-11) → Kafka (DS-13) → metrics
 and retention (DS-15, DS-16) → Temporal (DS-17).
@@ -60,6 +60,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | DS-8 | If an occurrence is not run by the time its following occurrence is due, then the scheduler shall mark it done with outcome `skipped` and log it at `WARN`, with no backfill; after downtime, the scheduler shall write only each schedule's latest missed occurrence to `fire_claims` (D1). |
 | DS-18 | When the scheduler marks a fire done, the scheduler shall record its outcome in `fire_claims.outcome`: `ran`, `skipped`, or `dropped` when no handler owns its kind or its spec cannot be read (D3). |
 | DS-9 | When a fire arrives on the change feed's `agentd.fires`, the scheduler shall write it to `fire_claims` as DS-1 and DS-3 do, and acknowledge the delivery once that write commits. |
+| DS-20 | If two creates of a session with the same requested id overlap, then the API shall return the session the first insert made to the create whose insert fails on that id, and leave the session's work item as the first create queued it. |
 | DS-14 | When the API writes a deployment it read earlier (a fire's bookkeeping, a pause, an unpause or an archive), the API shall write only if the deployment has not changed since that read, and otherwise read it again and redo the change. |
 
 ## 3. Schedule changes and the change feed
@@ -92,13 +93,13 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 The code lands as one PR after this spec, built as the ordered commits below, as the resource history PR was. Each
 commit builds and passes the suite on its own; a split the 200-line rule forces happens inside the commit that needs
-it. The PR touches about 55 files, under CodeRabbit's 100-file review limit: about 6 for commit 1, 2 for commit 2,
+it. The PR touches about 58 files, under CodeRabbit's 100-file review limit: about 9 for commit 1, 2 for commit 2,
 10 for commit 3, 7 for commit 4, 2 for commit 5, 3 for commit 6, 10 for commit 7 and 15 for commit 8 (the Temporal
 crate, its workspace and lock entries, the settings and the CI service).
 
 | Commit | What | Requirements |
 |---|---|---|
-| 1 | A deployment write never overwrites a newer one | DS-14 |
+| 1 | A deployment write never overwrites a newer one; an overlapping fired create keeps the first session | DS-14, DS-20 |
 | 2 | Migrations V18 and V19: the fire queue columns and indexes | none (schema for DS-1, DS-15, DS-18) |
 | 3 | The fire queue and its workers, not yet called | DS-3 to DS-7, DS-18, DS-19 |
 | 4 | The tick and the feed on the queue | DS-1, DS-2, DS-8, DS-9, DS-10, DS-12 |
@@ -117,8 +118,14 @@ crate, its workspace and lock entries, the settings and the CI service).
   `service/firing.rs` and the pause, unpause and archive paths in `service.rs` call it; `service.rs` does not grow.
 - Statements for a fire's bookkeeping: 1 `SELECT` of the deployment, 1 guarded `UPDATE`, and the outbox's 2 when a
   schedule change applies; a redo repeats the first two.
+- `store-postgres/src/entities/sessions.rs`: a session insert that fails on its primary key returns
+  `StoreError::Conflict`. `sessions/src/service/lifecycle.rs` (191 lines): on `Conflict` for a create with a requested
+  id, `create_fired` returns the session through `made` and does not call `end_work`, so the losing create never stops
+  the winner's work item (DS-20). Its queue write is the existing upsert, which leaves a work item that is not
+  requeuable as it is. The file stays under 200 lines.
 - Tests: `pg_deployments` "a pause between a fire's read and its write survives the fire"; unit "rewrite redoes on a
-  stale write and gives up after 5".
+  stale write and gives up after 5"; `sessions` "two overlapping fired creates of one occurrence make one session and
+  keep its work item queued".
 
 ### Commit 2: migrations V18 and V19
 
@@ -180,10 +187,8 @@ The PR's build opens with probes B33 and B34.
   (workspace_id, target, scheduled_at) DO UPDATE SET spec = EXCLUDED.spec, due_at = EXCLUDED.due_at WHERE
   fire_claims.spec IS NULL AND NOT fire_claims.done`, so a redelivered external fire fills in its unfinished claim
   and runs, as `take` would have run it again; an unfinished built-in claim is never run again, as on `main`, where
-  the tick never redelivered one. The filled-in claim keeps the `claimed_at` `take` set, so it runs once the
-  2-minute lease of DS-4 has passed, even if an old replica still holds it under `take`'s 15-minute lease. Both runs
-  are then safe: a deployment fire derives its run and session ids from the deployment and the occurrence, so the
-  second run finds the first's session and run and makes none of its own.
+  the tick never redelivered one. The PR deploys only after every replica running `main` has stopped, so no
+  old replica's `take` or key-only `finish` runs beside the new workers, and a filled-in claim is run only by them.
 - Tests: `pg_schedules` "a due occurrence fires once across two schedulers" over the queue; "250 due schedules all
   fire in one tick", with 150 older due rows first; "a fire that fails is run again, then done"; "a crash after the
   tick commits loses nothing"; "after downtime only the latest missed occurrence fires"; "a fire not run before its
