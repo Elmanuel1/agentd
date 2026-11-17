@@ -72,7 +72,7 @@ fn aws(get: &impl Fn(&str) -> Option<String>) -> Result<AwsSecretsConfig, Config
         number(get, var, u64::try_from(default.as_millis()).unwrap_or(u64::MAX)).map(Duration::from_millis)
     };
     let attempt_timeout = ms("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", DEFAULT_ATTEMPT_TIMEOUT)?;
-    let operation_timeout = ms("AGENTD_SECRETS_TIMEOUT_MS", DEFAULT_OPERATION_TIMEOUT)?;
+    let operation_timeout = ms("AGENTD_SECRETS_OPERATION_TIMEOUT_MS", DEFAULT_OPERATION_TIMEOUT)?;
     if attempt_timeout > operation_timeout {
         let reason = format!("{attempt_timeout:?} is longer than the whole call's {operation_timeout:?}");
         return Err(ConfigError { var: "AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", reason });

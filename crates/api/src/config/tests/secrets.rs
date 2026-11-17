@@ -68,7 +68,9 @@ fn the_aws_timeouts_default_to_5_and_15_seconds_and_an_attempt_fits_inside_its_c
     assert_eq!((aws.attempt_timeout, aws.operation_timeout), (attempt, call));
     let longer = config(&[("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "20000")]).unwrap_err();
     assert_eq!(longer.var, "AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS");
-    for (var, bad) in [("AGENTD_SECRETS_TIMEOUT_MS", "0"), ("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "5s")] {
+    for (var, bad) in
+        [("AGENTD_SECRETS_OPERATION_TIMEOUT_MS", "0"), ("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "5s")]
+    {
         assert_eq!(config(&[(var, bad)]).unwrap_err().var, var, "{bad}");
     }
 }

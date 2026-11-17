@@ -109,3 +109,14 @@ async fn connect_refuses_a_disabled_key_or_a_reserved_prefix() {
     let err = AwsParameterStore::connect(&reserved).await.unwrap_err().to_string();
     assert!(err.contains("reserves"), "{err}");
 }
+
+#[tokio::test]
+async fn a_configured_timeout_reaches_the_clients() {
+    let Some(endpoint) = endpoint() else { return };
+    let mut config = config(&endpoint, kms_key(&endpoint).await);
+    config.attempt_timeout = std::time::Duration::from_millis(1);
+    config.operation_timeout = std::time::Duration::from_millis(1);
+    let err = AwsParameterStore::connect(&config).await.unwrap_err().to_string();
+    let want = format!("kms:DescribeKey on {} failed: timeout", config.kms_key_id);
+    assert!(err.ends_with(&want), "{err}");
+}

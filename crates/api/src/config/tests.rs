@@ -157,7 +157,7 @@ fn aws_secret_options_come_from_config() {
         ("AGENTD_SECRETS_ROLE_ARN", "arn:aws:iam::111122223333:role/agentd-secrets"),
         ("AGENTD_SECRETS_RECOVERY_DAYS", "30"),
         ("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "2000"),
-        ("AGENTD_SECRETS_TIMEOUT_MS", "6000"),
+        ("AGENTD_SECRETS_OPERATION_TIMEOUT_MS", "6000"),
     ])
     .unwrap();
     assert_eq!(
