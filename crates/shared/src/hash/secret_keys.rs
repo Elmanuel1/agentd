@@ -1,6 +1,6 @@
 //! The master keys vault secrets are sealed under (`AGENTD_SECRET_KEYS`).
 
-use aws_lc_rs::{aead, hkdf};
+use aws_lc_rs::{aead, constant_time, hkdf};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{entries, KeyRingError};
@@ -11,10 +11,22 @@ const WRAP_INFO: &[u8] = b"agentd/vault-secret/wrap/v1";
 /// Master keys by id, for rotation: the first wraps new data keys, every one
 /// unwraps what it wrapped. No key's bytes leave the ring: it gives out only
 /// keys derived for one wrap.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct SecretKeys {
     keys: Vec<(String, Zeroizing<[u8; 32]>)>,
 }
+
+/// Key bytes compare in constant time.
+impl PartialEq for SecretKeys {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys.len() == other.keys.len()
+            && self.keys.iter().zip(&other.keys).fold(true, |same, ((a, x), (b, y))| {
+                (a == b) & constant_time::verify_slices_are_equal(x.as_slice(), y.as_slice()).is_ok() & same
+            })
+    }
+}
+
+impl Eq for SecretKeys {}
 
 impl std::fmt::Debug for SecretKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,6 +87,9 @@ mod tests {
         assert_ne!(*ring.wrap_key(None, b"other").unwrap().1, *first, "a new salt is a new key");
         assert!(ring.wrap_key(Some("k0"), b"salt").is_none());
         assert_eq!(format!("{ring:?}"), r#"["k2", "k1"]"#);
+        assert_eq!(ring, SecretKeys::parse(&format!("k2:{K2},k1:{K1}")).unwrap());
+        assert_ne!(ring, SecretKeys::parse(&format!("k2:{K1},k1:{K2}")).unwrap(), "same ids, other bytes");
+        assert_ne!(ring, SecretKeys::parse(&format!("k2:{K2}")).unwrap());
     }
 
     #[test]
