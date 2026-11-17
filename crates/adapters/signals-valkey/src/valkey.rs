@@ -5,16 +5,24 @@
 //! pub/sub needs; it follows the slots, reconnects and resubscribes itself.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig, MultiplexedConnection};
-use redis::cluster::{ClusterClient, ClusterClientBuilder};
+use redis::cluster::{ClusterClient, ClusterClientBuilder, ClusterConfig};
 use redis::cluster_async::ClusterConnection;
-use redis::{Client, Cmd, Pipeline, ProtocolVersion, PushKind, RedisError, RedisFuture, RedisResult, Value};
+use redis::{
+    AsyncConnectionConfig, Client, Cmd, Pipeline, ProtocolVersion, PushKind, RedisError, RedisFuture,
+    RedisResult, Value,
+};
 
 mod cluster;
 use cluster::Cluster;
+
+/// How long a blocking read's connection waits for an answer: longer than any
+/// block (a change stream's 5 s), so only a hung Valkey times out, not a quiet stream.
+const READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A standalone Valkey or a cluster.
 #[derive(Clone)]
@@ -50,8 +58,14 @@ impl Valkey {
     /// A connection of its own, for blocking reads.
     pub(crate) async fn connection(&self) -> RedisResult<Conn> {
         match &self.node {
-            Node::Single(client) => client.get_multiplexed_async_connection().await.map(Conn::Single),
-            Node::Cluster(cluster) => cluster.client.get_async_connection().await.map(Conn::Cluster),
+            Node::Single(client) => {
+                let config = AsyncConnectionConfig::new().set_response_timeout(Some(READ_TIMEOUT));
+                client.get_multiplexed_async_connection_with_config(&config).await.map(Conn::Single)
+            }
+            Node::Cluster(cluster) => {
+                let config = ClusterConfig::new().set_response_timeout(READ_TIMEOUT);
+                cluster.client.get_async_connection_with_config(config).await.map(Conn::Cluster)
+            }
         }
     }
 

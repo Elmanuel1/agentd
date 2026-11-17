@@ -15,13 +15,20 @@ mod common;
 #[path = "history/kit.rs"]
 mod kit;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+
+use async_trait::async_trait;
 
 use axum::http::StatusCode;
 use common::Rig;
 use diesel_async::RunQueryDsl;
 use kit::{call, cdc_enabled, eventually, summary, Container};
 use serde_json::json;
+use shared::ports::changes::{Change, ChangeHandler, Source};
+use shared::{BackendError, Timestamp};
+use tokio::sync::Notify;
 
 /// One history row as `summary` gives it.
 type Kept = (String, String, String);
@@ -35,6 +42,11 @@ const OUTAGE: Duration = Duration::from_secs(20);
 
 /// A broker outage long enough that Debezium Server's sink fails.
 const LONG_OUTAGE: Duration = Duration::from_secs(90);
+
+/// What Debezium Server logs when its sink gives up: on Kafka the producer
+/// fails and the connector restarts, or the engine fails and the server stops
+/// (and is started again); the Redis sink cannot reach Valkey and retries.
+const SINK_FAILED: [&str; 3] = ["Going to restart connector", "Engine has failed", "Can't connect to Redis"];
 
 /// The changes made while a side is down.
 const MISSED: usize = 5;
@@ -53,6 +65,50 @@ async fn update(rig: &Rig, v: &str) -> Kept {
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     panic!("vault {v} could not be updated");
+}
+
+/// A recorder that, once armed, stops after it stores a vault change and
+/// before the feed learns it was handled, as a replica that dies between the
+/// two would.
+struct Stall {
+    inner: Arc<dyn ChangeHandler>,
+    armed: Arc<AtomicBool>,
+    stored: Arc<Notify>,
+}
+
+#[async_trait]
+impl ChangeHandler for Stall {
+    fn source(&self) -> Source {
+        self.inner.source()
+    }
+
+    fn ordered(&self) -> bool {
+        self.inner.ordered()
+    }
+
+    async fn handle(&self, change: &Change) -> Result<(), BackendError> {
+        self.inner.handle(change).await?;
+        if change.table == "vaults" && self.armed.swap(false, Ordering::SeqCst) {
+            self.stored.notify_one();
+            std::future::pending::<()>().await;
+        }
+        Ok(())
+    }
+}
+
+/// Wait out a broker outage of at least `LONG_OUTAGE` until Debezium Server
+/// has logged its sink's failure since `since` (Unix seconds), at most 3 minutes.
+async fn sink_failed(debezium: &Container, since: i64) {
+    let started = std::time::Instant::now();
+    loop {
+        let logs = debezium.logs_since(since);
+        let failed = SINK_FAILED.iter().any(|signal| logs.contains(signal));
+        if failed && started.elapsed() >= LONG_OUTAGE {
+            return;
+        }
+        assert!(started.elapsed() < Duration::from_secs(180), "Debezium Server's sink never failed");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
 }
 
 /// `n` updates of vault `v`, the rows they leave.
@@ -105,7 +161,12 @@ async fn every_change_reaches_history_once_through_each_fault() {
     let postgres = Container::named("AGENTD_POSTGRES_CONTAINER", "postgres");
     let debezium = Container::named("AGENTD_DEBEZIUM_CONTAINER", "debezium");
     let broker = Container::named("AGENTD_FEED_CONTAINER", "kafka");
-    let mut tasks = kit::record(CONSUMER).await;
+    let (armed, stored) = (Arc::new(AtomicBool::new(false)), Arc::new(Notify::new()));
+    let stalling = kit::recorders().await.into_iter().map(|inner| {
+        let stall = Stall { inner, armed: armed.clone(), stored: stored.clone() };
+        Arc::new(stall) as Arc<dyn ChangeHandler>
+    });
+    let mut tasks = kit::spawn(CONSUMER, stalling.collect());
 
     let (st, vault, created) = call(&rig, "POST", "/v1/vaults", Some(json!({"display_name": "f"}))).await;
     assert_eq!(st, StatusCode::OK, "{vault}");
@@ -116,39 +177,43 @@ async fn every_change_reaches_history_once_through_each_fault() {
     // Postgres's slot to Debezium Server: Debezium stops, or crashes without flushing its offsets
     // and the platform starts it again. The slot keeps what it has not read, and what it sent since
     // its last flush is sent again.
-    debezium.docker("stop");
+    let fault = debezium.broken("stop", "start");
     expected.extend(updates(&rig, &v, MISSED).await);
-    debezium.docker("start");
+    drop(fault);
     kept_once(&rig, &v, &expected, "Debezium stopped").await;
-    debezium.docker("kill");
+    let fault = debezium.broken("kill", "start");
     expected.extend(updates(&rig, &v, MISSED).await);
-    debezium.docker("start");
+    drop(fault);
     kept_once(&rig, &v, &expected, "Debezium crashed").await;
 
     // Debezium Server to the broker: the broker is down briefly, so Debezium holds what it read; down
     // long enough that Debezium's sink fails and it restarts its connector (or exits, and the
     // platform starts it), reading again from the slot; then hung.
-    broker.docker("stop");
+    let fault = broker.broken("stop", "start");
     expected.extend(updates(&rig, &v, MISSED).await);
     tokio::time::sleep(OUTAGE).await;
-    broker.docker("start");
+    drop(fault);
     kept_once(&rig, &v, &expected, "a short broker outage").await;
-    broker.docker("stop");
+    let since = Timestamp::now().as_datetime().timestamp();
+    let fault = broker.broken("stop", "start");
     expected.extend(updates(&rig, &v, MISSED).await);
-    tokio::time::sleep(LONG_OUTAGE).await;
-    broker.docker("start");
+    sink_failed(&debezium, since).await;
+    drop(fault);
     kept_once(&rig, &v, &expected, "a long broker outage").await;
-    broker.docker("pause");
+    let fault = broker.broken("pause", "unpause");
     expected.extend(updates(&rig, &v, MISSED).await);
     tokio::time::sleep(OUTAGE).await;
-    broker.docker("unpause");
+    drop(fault);
     kept_once(&rig, &v, &expected, "a hung broker").await;
 
-    // The broker to the recorders: agentd stops mid-batch and starts again; what its recorders had
-    // not acknowledged is delivered again.
+    // The broker to the recorders: agentd stops mid-batch, after a recorder stored a change and
+    // before the feed learned it, and starts again; what it had not acknowledged is delivered again.
     let batch = expected.len();
+    armed.store(true, Ordering::SeqCst);
     expected.extend(updates(&rig, &v, 20).await);
-    eventually(&rig, "vaults", "vault_id", &v, batch + 1).await;
+    let stalled = tokio::time::timeout(Duration::from_secs(120), stored.notified()).await;
+    assert!(stalled.is_ok(), "no recorder stored a vault change and stalled");
+    assert!(kit::kept(&rig, "vaults", "vault_id", &v).await.len() > batch, "the stalled change is stored");
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
     tasks = kit::record(CONSUMER).await;
     kept_once(&rig, &v, &expected, "an agentd restart").await;
@@ -159,9 +224,9 @@ async fn every_change_reaches_history_once_through_each_fault() {
     cut_clients(&rig).await;
     kept_once(&rig, &v, &expected, "cut connections").await;
     expected.extend(updates(&rig, &v, MISSED).await);
-    postgres.docker("pause");
+    let fault = postgres.broken("pause", "unpause");
     tokio::time::sleep(OUTAGE).await;
-    postgres.docker("unpause");
+    drop(fault);
     kept_once(&rig, &v, &expected, "a hung Postgres").await;
 
     // Every boundary at once: Postgres restarts, cutting Debezium's slot, the recorders' pool and

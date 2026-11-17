@@ -369,3 +369,45 @@ async fn the_runbook_s_rollbacks_and_baseline_run_as_documented() {
     }
     run(&pg, &fill(block(&blocks, "order by lsn;"), "0/64")).await;
 }
+
+#[tokio::test]
+async fn the_baseline_and_scrub_keep_no_content_of_a_version_redacted_after_its_memory_was_deleted() {
+    if !enabled() {
+        return;
+    }
+    let (pg, _) = log().await;
+    let blocks = runbook();
+    let (memory, version) = (format!("mem_b{}", stamp()), format!("memver_b{}", stamp()));
+    // A soft-deleted head keeps its last version's path and digest; that version is redacted after.
+    run(
+        &pg,
+        &format!(
+            r#"INSERT INTO memory_versions (workspace_id, store_id, memory_id, version_id, has_blob, created_at, doc)
+                    VALUES ('wrkspc_h', 'memstore_b', '{memory}', '{version}', false, now(),
+                            '{{"id": "{version}", "content_sha256": null, "content_size_bytes": null, "path": null,
+                               "redacted_at": "2026-11-17T00:00:00Z"}}');
+               INSERT INTO memories (workspace_id, store_id, memory_id, path, head_version_id, deleted, created_at, doc)
+                    VALUES ('wrkspc_h', 'memstore_b', '{memory}', '/a.md', '{version}', true, now(),
+                            '{{"memory_version_id": "{version}", "content_sha256": "abc", "content_size_bytes": 3,
+                               "path": "/a.md"}}')"#
+        ),
+    )
+    .await;
+    // The other runbook test may run the same baseline at once, so each statement reads every baseline row.
+    const HEADS: &str = "SELECT jsonb_build_object('path', path, 'sha', doc->'content_sha256') AS row
+                           FROM history.memories WHERE memory_id = $1 AND op = 'baseline'";
+    const VERSIONS: &str =
+        "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', doc->'path') AS row
+                              FROM history.memory_versions WHERE version_id = $1 AND op = 'baseline'";
+    run(&pg, &block(&blocks, "do $$")).await;
+    let copied = rows(&pg, HEADS, &memory).await;
+    assert!(
+        !copied.is_empty() && copied.iter().all(|r| r == &json!({"path": "/a.md", "sha": "abc"})),
+        "{copied:?}"
+    );
+    run(&pg, &block(&blocks, "update history.memories h")).await;
+    let heads = rows(&pg, HEADS, &memory).await;
+    assert!(heads.iter().all(|r| r == &json!({"path": null, "sha": null})), "{heads:?}");
+    let versions = rows(&pg, VERSIONS, &version).await;
+    assert!(!versions.is_empty() && versions.iter().all(|r| r == &json!({"sha": null, "path": null})));
+}

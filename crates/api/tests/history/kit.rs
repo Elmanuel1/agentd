@@ -14,6 +14,7 @@ use diesel::sql_types::{Jsonb, Text};
 use diesel_async::RunQueryDsl;
 use http_body_util::BodyExt;
 use serde_json::Value;
+use shared::ports::changes::ChangeHandler;
 use signals_valkey::{Valkey, ValkeyChanges};
 use store_postgres::{PgBackend, PgHistoryLog};
 use tower::ServiceExt;
@@ -71,21 +72,30 @@ pub fn summary(rows: &[Value]) -> Vec<(String, String, String)> {
     rows.iter().map(|r| (field(r, "op"), field(r, "actor"), field(r, "request_id"))).collect()
 }
 
-/// The recorders of every history table, reading the feed as `consumer`, on
-/// a pool of their own so catching up never starves the rig's reads.
-pub async fn record(consumer: &str) -> Vec<tokio::task::JoinHandle<()>> {
+/// The recorders of every history table, on a pool of their own so catching
+/// up on the feed never starves the rig's reads.
+pub async fn recorders() -> Vec<Arc<dyn ChangeHandler>> {
     let url = std::env::var("DATABASE_URL").unwrap();
     let log = PgHistoryLog::load(PgBackend::connect(&url).await.unwrap()).await.unwrap();
-    let recorders = history::recorders(Arc::new(log), Arc::new(|_| {}));
+    history::recorders(Arc::new(log), Arc::new(|_| {}))
+}
+
+/// Read the feed as `consumer` into `handlers`.
+pub fn spawn(consumer: &str, handlers: Vec<Arc<dyn ChangeHandler>>) -> Vec<tokio::task::JoinHandle<()>> {
     match std::env::var("AGENTD_KAFKA_BROKERS") {
-        Ok(brokers) => KafkaChanges::new(&brokers, "agentd").spawn(recorders),
+        Ok(brokers) => KafkaChanges::new(&brokers, "agentd").spawn(handlers),
         Err(_) => {
             let url = std::env::var("AGENTD_VALKEY_URL").unwrap();
             let cluster = std::env::var("AGENTD_VALKEY_CLUSTER").as_deref() == Ok("1");
             let valkey = Valkey::open(&url, cluster).unwrap();
-            ValkeyChanges::new(&valkey, "agentd", consumer).spawn(recorders)
+            ValkeyChanges::new(&valkey, "agentd", consumer).spawn(handlers)
         }
     }
+}
+
+/// The recorders of every history table, reading the feed as `consumer`.
+pub async fn record(consumer: &str) -> Vec<tokio::task::JoinHandle<()>> {
+    spawn(consumer, recorders().await)
 }
 
 /// A Docker container a test breaks, named by the environment variable
@@ -105,5 +115,32 @@ impl Container {
             .status()
             .unwrap();
         assert!(status.success(), "docker {verb} {}", self.0);
+    }
+
+    /// `docker <fault>` it, and `docker <undo>` it when the guard drops, a
+    /// failed assertion's unwinding included, so a test never leaves it broken.
+    pub fn broken(&self, fault: &str, undo: &'static str) -> Undo<'_> {
+        self.docker(fault);
+        Undo(self, undo)
+    }
+
+    /// What it has logged since `since`, in Unix seconds.
+    pub fn logs_since(&self, since: i64) -> String {
+        let out = std::process::Command::new("docker")
+            .args(["logs", "--since", &since.to_string(), &self.0])
+            .output()
+            .unwrap();
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    }
+}
+
+/// A fault to undo, by [`Container::broken`].
+pub struct Undo<'a>(&'a Container, &'static str);
+
+impl Drop for Undo<'_> {
+    fn drop(&mut self) {
+        let undone = std::process::Command::new("docker").args([self.1, &self.0 .0]).output();
+        let done = undone.is_ok_and(|out| out.status.success());
+        assert!(done || std::thread::panicking(), "docker {} {}", self.1, self.0 .0);
     }
 }

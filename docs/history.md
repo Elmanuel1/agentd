@@ -114,8 +114,8 @@ credential's secret are gone.
 
 ## The slot
 
-The change feed's replication slot (`AGENTD_CHANGES_SLOT`, default `agentd_changes`) is the one way to lose
-history. It keeps all the WAL Debezium has not confirmed, of every table, while Debezium, Kafka or Valkey is down.
+The change feed's replication slot (`AGENTD_CHANGES_SLOT`, default `agentd_changes`) holds every change not yet
+on the feed; "Faults" lists the other ways history can lose a change. It keeps all the WAL Debezium has not confirmed, of every table, while Debezium, Kafka or Valkey is down.
 Past `max_slot_wal_keep_size` Postgres invalidates it (`wal_status = 'lost'`), and the changes it held never reach
 history.
 
@@ -124,7 +124,7 @@ agentd reads the slot every 10 s on every replica (take the maximum across repli
 | Signal | Alarm when | What it means, and what to do |
 |---|---|---|
 | `agentd.feed.slot.safe_wal` | below 25% of `max_slot_wal_keep_size` (page) | the feed has stalled long enough to near the limit: bring Debezium and its sink back before the slot is lost |
-| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap unless its database already had rows, and then needs only the baseline (step 5) |
+| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap unless its database already had rows, and then needs only the baseline and scrub (steps 5 and 6) |
 | `agentd.feed.slot.retained_wal` | growing for 15 minutes (ticket) | Debezium is not confirming: check its health (`GET /q/health`) and logs |
 | `agentd.history.apply_delay` p99 | over 5 minutes (ticket) | history lags its commits: check the feed backlog and the `history:` log lines |
 
@@ -150,8 +150,8 @@ history reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up 
 
 ### Faults
 
-Each boundary on the way to history recovers on its own: while the feed keeps its records, the changes made during
-a fault reach history once, in order.
+Each boundary on the way to history recovers on its own: while the feed keeps its records and each change can be
+recorded, the changes made during a fault reach history once, in order.
 
 | Fault | What happens |
 |---|---|
@@ -168,9 +168,9 @@ These lose changes instead:
 | Loss | Signal | Recovery |
 |---|---|---|
 | The slot passes `max_slot_wal_keep_size` | `agentd.feed.slot.lost` | "After a lost slot" |
-| A Kafka record expires before a replica reads it (every replica down longer than the topic's retention) | none from agentd: watch the `agentd.<topic>` consumer groups' lag against the retention | the baseline, "After a lost slot" step 5, with agentd stopped |
-| Valkey crashes under `appendfsync everysec` | none: up to 1 s of entries | the baseline, with agentd stopped |
-| A change cannot be recorded (its table has no history table, or its row is not a row) | the `ERROR` line `history: a change cannot be recorded; passed over`, with the table and lsn | fix the cause, then the baseline, with agentd stopped |
+| A Kafka record expires before a replica reads it (every replica down longer than the topic's retention) | none from agentd: watch the `agentd.<topic>` consumer groups' lag against the retention | the baseline and scrub, "After a lost slot" steps 5 and 6, with agentd stopped |
+| Valkey crashes under `appendfsync everysec` | none: up to 1 s of entries | the baseline and scrub, with agentd stopped |
+| A change cannot be recorded (its table has no history table, or its row is not a row) | the `ERROR` line `history: a change cannot be recorded; passed over`, with the table and lsn | fix the cause, then the baseline and scrub, with agentd stopped |
 
 ## After a lost slot
 
@@ -204,12 +204,30 @@ begin
 end $$;
 ```
 
-6. Start agentd.
+6. Clear the content of every redacted memory version from history, the baseline's rows included. A soft-deleted
+   memory keeps its last version's path and digest, and that version can be redacted after the delete, so the
+   baseline can copy them:
+
+```sql
+begin;
+update history.memory_versions h
+   set doc = h.doc || '{"content_sha256": null, "content_size_bytes": null, "path": null}'
+  from public.memory_versions r
+ where jsonb_typeof(r.doc->'redacted_at') = 'string'
+   and h.workspace_id = r.workspace_id and h.store_id = r.store_id and h.version_id = r.version_id;
+update history.memories h
+   set path = null, doc = h.doc || '{"content_sha256": null, "content_size_bytes": null, "path": null}'
+  from public.memory_versions r
+ where jsonb_typeof(r.doc->'redacted_at') = 'string'
+   and h.workspace_id = r.workspace_id and h.store_id = r.store_id
+   and h.memory_id = r.memory_id and h.head_version_id = r.version_id;
+commit;
+```
+
+7. Start agentd.
 
 The changes between the loss and the baseline are gone; the `agentd.feed.slot.lost` gauge's samples bound the
-window. The same baseline, with agentd stopped, starts history on a database that already has rows. A redacted
-version's live row holds no content and a live memory's current version cannot be redacted, so the baseline copies
-no redacted content.
+window. The same baseline and scrub, with agentd stopped, start history on a database that already has rows.
 
 ## A new column or tracked table
 

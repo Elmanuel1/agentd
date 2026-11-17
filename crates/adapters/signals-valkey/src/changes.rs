@@ -109,16 +109,13 @@ impl ValkeyChanges {
         }
     }
 
-    /// Claim what stopped replicas left, then read new entries; handle each.
+    /// Claim what stopped replicas left and handle it, then read new entries
+    /// and handle those: a failed read never drops what was claimed.
     async fn pass(&self, conn: &mut Conn, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
         let stale = self.claim(conn, stream, RECLAIM_MS).await?;
+        handle(conn, stream, handler, stale).await?;
         let fresh = self.read(conn, stream).await?;
-        for entry in stale.into_iter().chain(fresh) {
-            if handler.consume(&entry).await {
-                let _: usize = conn.xack(stream, GROUP, &[&entry.id]).await?;
-            }
-        }
-        Ok(())
+        handle(conn, stream, handler, fresh).await
     }
 
     /// Under the lease only: every pending entry, then new ones, in order,
@@ -169,6 +166,21 @@ impl ValkeyChanges {
         let reply: StreamReadReply = conn.xread_options(&[stream], &[">"], &options).await?;
         Ok(reply.keys.into_iter().flat_map(|k| k.ids).collect())
     }
+}
+
+/// Handle each of `entries`, acknowledging those that need no more handling.
+async fn handle(
+    conn: &mut Conn,
+    stream: &str,
+    handler: &dyn Consumer,
+    entries: Vec<StreamId>,
+) -> RedisResult<()> {
+    for entry in entries {
+        if handler.consume(&entry).await {
+            let _: usize = conn.xack(stream, GROUP, &[&entry.id]).await?;
+        }
+    }
+    Ok(())
 }
 
 /// A table's changes, as Debezium writes them.
