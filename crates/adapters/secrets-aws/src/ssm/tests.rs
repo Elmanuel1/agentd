@@ -91,6 +91,6 @@ async fn a_tagging_failure_is_the_error_and_keeps_the_value() {
     let tags = name::parameter_tags(&key).unwrap();
     let err = store.overwrite(&name, &SecretString::from("v"), tags).await.unwrap_err();
     assert!(err.to_string().contains("ssm:AddTagsToResource"), "{err}");
-    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "v", "a retry tags it");
+    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "v");
     store.delete(&key).await.unwrap();
 }
