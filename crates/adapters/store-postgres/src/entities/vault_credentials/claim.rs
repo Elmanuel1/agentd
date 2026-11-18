@@ -53,10 +53,11 @@ impl CredentialClaims for PgVaultsStore {
         if let Err(e) = self.put_secret(ws, vault, id, &cred.auth).await {
             // A failed write can still have stored the value (SSM tags after
             // it), so an archive or delete since the claim keeps no secret.
-            if let Err(left) = self.settle(ws, vault, id).await {
-                tracing::error!(workspace = %ws, vault = %vault, credential = %id, error = %left,
-                    "vaults: a failed claimed write could not check its credential; delete its secret by hand if it is gone");
-            }
+            self.settle(ws, vault, id).await.map_or_else(
+                |left| tracing::error!(workspace = %ws, vault = %vault, credential = %id, error = %left,
+                    "vaults: a failed claimed write could not check its credential; delete its secret by hand if it is gone"),
+                drop,
+            );
             return Err(e);
         }
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;

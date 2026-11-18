@@ -1,7 +1,8 @@
 //! A claimed write whose secret write fails after storing the value, as the
-//! SSM store does when tagging fails: the secret of a credential archived
-//! since the claim goes, a live credential's stays, and the write's error is
-//! returned. Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
+//! SSM store does when tagging fails: the secret of a credential whose vault
+//! was archived since the claim goes (VA-3), a live credential's stays, and
+//! the write's own error is returned, also when that cleanup fails. Gated by
+//! `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -15,13 +16,16 @@ use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
 use vaults::store::{CredentialClaims, StoreError, StoredCredential};
-use vaults::VaultsService;
+use vaults::types::Credential;
+use vaults::{VaultId, VaultsService};
 
-/// Stores each put, then fails it while `refuse` is set.
+/// Stores each put, then fails it while `refuse` is set; refuses each delete
+/// while `refuse_delete` is set.
 #[derive(Default)]
 struct StoresThenFails {
     inner: MemorySecretStore,
     refuse: AtomicBool,
+    refuse_delete: AtomicBool,
 }
 
 #[async_trait]
@@ -37,8 +41,31 @@ impl SecretStore for StoresThenFails {
         self.inner.get(key).await
     }
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
-        self.inner.delete(key).await
+        match self.refuse_delete.load(Ordering::SeqCst) {
+            true => Err(SecretError::Backend("ssm:DeleteParameter on k failed: refused".into())),
+            false => self.inner.delete(key).await,
+        }
     }
+}
+
+async fn vault(svc: &VaultsService, ctx: &AuthContext, name: &str) -> String {
+    let req = serde_json::from_value(json!({"display_name": name})).unwrap();
+    svc.create_vault(ctx, req).await.unwrap().id.as_str().to_owned()
+}
+
+async fn credential(svc: &VaultsService, ctx: &AuthContext, vault: &str) -> (VaultId, Credential) {
+    let auth = json!({"type": "static_bearer", "mcp_server_url": "https://mcp.test/mcp", "token": "t"});
+    let req = serde_json::from_value(json!({"display_name": "c", "auth": auth})).unwrap();
+    (VaultId::parse(vault).unwrap(), svc.create_credential(ctx, vault, req).await.unwrap())
+}
+
+/// The claimed write of a new token, which the secret store refuses after storing it.
+async fn refused_write(store: &PgVaultsStore, ws: &WorkspaceId, (vault, cred): &(VaultId, Credential)) {
+    let auth = json!({"type": "static_bearer", "mcp_server_url": "https://mcp.test/mcp", "token": "t2"});
+    let write = StoredCredential { wire: cred.clone(), auth: Some(serde_json::from_value(auth).unwrap()) };
+    let err = store.write_claimed(ws, vault, &write, cred.updated_at).await.unwrap_err();
+    assert!(matches!(err, StoreError::Backend(_)), "{err:?}");
+    assert!(format!("{err:?}").contains("ssm:AddTagsToResource"), "the write's own error: {err:?}");
 }
 
 #[tokio::test]
@@ -54,35 +81,27 @@ async fn a_failed_claimed_write_keeps_no_secret_of_an_archived_credential() {
     let ws = WorkspaceId::new(format!("wrkspc_cf{}", Timestamp::now().as_datetime().timestamp_micros()));
     let ctx =
         AuthContext { org: OrgId::new("org_cf"), workspace: ws.clone(), api_key_id: "apikey_cf".into() };
-    let req = serde_json::from_value(json!({"display_name": "v"})).unwrap();
-    let vault = svc.create_vault(&ctx, req).await.unwrap().id.as_str().to_owned();
-    let vault_id = vaults::VaultId::parse(&vault).unwrap();
-    let secret = |id: &str| secrets.inner.exposed(&SecretKey::new(ws.as_str(), &vault, id).unwrap());
-    let auth = |url: &str, token: &str| {
-        serde_json::from_value(json!({"type": "static_bearer", "mcp_server_url": url, "token": token}))
-            .unwrap()
+    let (open, archived) = (vault(&svc, &ctx, "open").await, vault(&svc, &ctx, "archived").await);
+    let (live, gone) = (credential(&svc, &ctx, &open).await, credential(&svc, &ctx, &archived).await);
+    let secret = |(vault, cred): &(VaultId, Credential)| {
+        secrets.inner.exposed(&SecretKey::new(ws.as_str(), vault.as_str(), cred.id.as_str()).unwrap())
     };
-    let credential = |url: &'static str| {
-        let req = json!({"display_name": "c", "auth": {"type": "static_bearer", "mcp_server_url": url, "token": "t"}});
-        svc.create_credential(&ctx, &vault, serde_json::from_value(req).unwrap())
-    };
-    let (live, gone) = (
-        credential("https://live.test/mcp").await.unwrap(),
-        credential("https://gone.test/mcp").await.unwrap(),
-    );
-    svc.archive_credential(&ctx, &vault, gone.id.as_str()).await.unwrap();
-    assert_eq!(secret(gone.id.as_str()), None);
+    svc.archive_vault(&ctx, &archived).await.unwrap();
+    assert_eq!(secret(&gone), None);
     secrets.refuse.store(true, Ordering::SeqCst);
 
-    for (cred, url) in [(&live, "https://live.test/mcp"), (&gone, "https://gone.test/mcp")] {
-        let write = StoredCredential { wire: cred.clone(), auth: Some(auth(url, "t2")) };
-        let err = store.write_claimed(&ws, &vault_id, &write, cred.updated_at).await.unwrap_err();
-        assert!(matches!(err, StoreError::Backend(_)), "{err:?}");
-        assert!(format!("{err:?}").contains("ssm:AddTagsToResource"), "the write's own error: {err:?}");
-    }
-    let held = secret(live.id.as_str()).unwrap();
+    secrets.refuse_delete.store(true, Ordering::SeqCst);
+    refused_write(&store, &ws, &gone).await;
+    assert!(secret(&gone).is_some(), "the refused delete left it, and the write's error is returned");
+    secrets.refuse_delete.store(false, Ordering::SeqCst);
+
+    refused_write(&store, &ws, &live).await;
+    refused_write(&store, &ws, &gone).await;
+    let held = secret(&live).unwrap();
     assert!(held.contains("\"t2\""), "a live credential keeps the value written: {held}");
-    assert_eq!(secret(gone.id.as_str()), None, "an archived credential keeps no secret");
+    assert_eq!(secret(&gone), None, "an archived vault's credential keeps no secret");
     secrets.refuse.store(false, Ordering::SeqCst);
-    svc.delete_vault(&ctx, &vault).await.unwrap();
+    for vault in [&open, &archived] {
+        svc.delete_vault(&ctx, vault).await.unwrap();
+    }
 }
