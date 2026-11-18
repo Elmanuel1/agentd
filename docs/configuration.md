@@ -246,13 +246,15 @@ With `AGENTD_SECRETS=aws_ssm`, each secret is one SecureString parameter,
 `/<prefix>/<workspace>/<vault>/<credential>`, encrypted under the configured
 KMS key, in the Intelligent-Tiering tier, tagged as Secrets Manager secrets
 are. A write creates the parameter with its tags, or, when it exists,
-overwrites its value with the same type, key and tier (1 or 2
-`PutParameter` calls); when that overwrite creates the parameter (a delete
-came between), it adds the create's tags with one `AddTagsToResource`, and
-deletes the parameter again if tagging fails, so a retry creates it tagged; a read is one `GetParameter` with decryption; a delete
-is one `DeleteParameter`, and a missing parameter is already deleted. A
-parameter has no recovery window, so `AGENTD_SECRETS_RECOVERY_DAYS` is
-refused. SSM reserves names starting `aws` or `ssm` in any letter case and
+overwrites its value with the same type, key and tier and then adds the
+create's tags with one `AddTagsToResource` (1 `PutParameter` call, or 2 and
+the tagging call). SSM takes tags only on a create, and a delete between the
+refused create and the overwrite makes the overwrite a create, so every
+overwrite is tagged; when tagging fails, the write returns the error with the
+new value kept, and a retry tags it again. A read is one `GetParameter` with
+decryption; a delete is one `DeleteParameter`, and a missing parameter is
+already deleted. A parameter has no recovery window, so
+`AGENTD_SECRETS_RECOVERY_DAYS` is refused. SSM reserves names starting `aws` or `ssm` in any letter case and
 allows 15 levels, so the prefix may not start so and has at most 12 segments.
 `agentd vault-secrets tag` and `reseal` change nothing on this store.
 
@@ -263,9 +265,9 @@ Parameter Store's limits, as AWS states them:
   sessions, so a busy deployment needs higher throughput. agentd does not
   change the account setting.
 - `PutParameter` is 3 calls a second by default and 10 with higher throughput.
-  An OAuth refresh overwrites, two calls, once an hour per credential: about
-  3,000 refreshed credentials by default and 10,000 with higher throughput,
-  with headroom.
+  An OAuth refresh overwrites, two calls (and one `AddTagsToResource`), once
+  an hour per credential: about 3,000 refreshed credentials by default and
+  10,000 with higher throughput, with headroom.
 - A value is at most 8 KB (an advanced parameter; Intelligent-Tiering makes a
   parameter advanced only when it needs to be). A larger credential fails its
   write with an error naming the parameter.

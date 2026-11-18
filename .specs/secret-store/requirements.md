@@ -59,7 +59,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | SS-15 | When `AGENTD_SECRETS` is `aws_ssm`, agentd shall keep each credential as one SecureString parameter `/<prefix>/<workspace>/<vault>/<credential>`, encrypted under the customer-managed KMS key `AGENTD_SECRETS_KMS_KEY_ID` (checked at boot as the `aws_sm` store checks it), in the Intelligent-Tiering tier. |
-| SS-16 | When the SSM store puts a new parameter, it shall create it with the tags the `aws_sm` store writes (`credential_type=environment_variable` included); when the parameter exists, it shall overwrite its value with the same `Type`, `KeyId` and `Tier` and no tags, and when that overwrite creates the parameter (a delete came between), it shall add the create's tags, and delete the parameter again when tagging fails. |
+| SS-16 | When the SSM store puts a new parameter, it shall create it with the tags the `aws_sm` store writes (`credential_type=environment_variable` included); when the parameter exists, it shall overwrite its value with the same `Type`, `KeyId` and `Tier` and then add the create's tags to it, and when tagging fails, it shall return the error and keep the value. |
 | SS-17 | The SSM store shall read with decryption, return `NotFound` for a missing parameter, treat deleting a missing one as success, and name only the parameter and the AWS error code in an error. |
 | SS-18 | When `AGENTD_SECRETS` is `aws_ssm`, agentd shall refuse to start when `AGENTD_SECRETS_RECOVERY_DAYS` is set or the prefix starts with `aws` or `ssm` in any letter case, or has more than 12 segments (SSM allows 15 levels; the key adds 3). |
 
