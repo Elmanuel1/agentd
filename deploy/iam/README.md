@@ -57,7 +57,7 @@ region and account is tighter and loses nothing.
     carries no tags, so `PutParameter` takes no tag condition.
   - `AddTagsToResource` on `/PREFIX/` parameters, only with the
     `managed-by=agentd` tag and agentd's tag keys: the tags a parameter gets
-    at create.
+    at create, which the store adds again after every overwrite.
   - `kms:DescribeKey` on the key, for the check at boot.
   - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only
     through Parameter Store (`kms:ViaService`) and only for `/PREFIX/`

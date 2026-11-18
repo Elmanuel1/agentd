@@ -11,7 +11,7 @@ use aws_sdk_ssm::operation::put_parameter::PutParameterError;
 use aws_sdk_ssm::types::{ParameterTier, ParameterType, ResourceTypeForTagging, Tag};
 use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
 
-use crate::failure::{failed, failure};
+use crate::failure::failure;
 use crate::{key, name, AwsSecretsConfig};
 
 /// Secrets as SSM parameters, under one prefix and one KMS key.
@@ -73,33 +73,16 @@ impl AwsParameterStore {
             .tier(ParameterTier::IntelligentTiering)
     }
 
-    /// SSM takes tags only on a create, so an overwrite carries none. Version 1
-    /// means a delete came after the create failed and this write created the
-    /// parameter: it gets the create's tags, or the egress policy cannot reach
-    /// it. When tagging fails the parameter goes, so a retry creates it tagged;
-    /// when that delete fails too, a retry overwrites it untagged (an accepted risk).
-    async fn overwrite(
-        &self,
-        key: &SecretKey,
-        secret: &SecretString,
-        tags: Vec<Tag>,
-    ) -> Result<(), SecretError> {
-        let name = &self.parameter_name(key);
+    /// SSM takes tags only on a create, so every overwrite is then tagged with
+    /// the create's tags: a delete between the create's refusal and this write
+    /// makes the overwrite a create, untagged, out of the egress policy's
+    /// reach. A tagging failure keeps the value and a retry tags it again.
+    async fn overwrite(&self, name: &str, secret: &SecretString, tags: Vec<Tag>) -> Result<(), SecretError> {
         let out = self.write(name, secret).overwrite(true).send().await;
-        let out = out.map_err(|e| failure("ssm:PutParameter", name, &e))?;
-        if out.version != 1 {
-            return Ok(());
-        }
+        out.map_err(|e| failure("ssm:PutParameter", name, &e))?;
         let tagging = self.client.add_tags_to_resource().resource_type(ResourceTypeForTagging::Parameter);
-        let Err(e) = tagging.resource_id(name).set_tags(Some(tags)).send().await else { return Ok(()) };
-        let tagging = failed("ssm:AddTagsToResource", name, &e);
-        match SecretStore::delete(self, key).await {
-            Ok(()) => Err(SecretError::Backend(tagging)),
-            Err(SecretError::Backend(deleted)) => {
-                Err(SecretError::Backend(format!("{tagging}; then {deleted}, so {name} stays untagged")))
-            }
-            Err(other) => Err(other),
-        }
+        let tagged = tagging.resource_id(name).set_tags(Some(tags)).send().await;
+        tagged.map(drop).map_err(|e| failure("ssm:AddTagsToResource", name, &e))
     }
 }
 
@@ -112,7 +95,7 @@ impl SecretStore for AwsParameterStore {
         match created {
             Ok(_) => Ok(()),
             Err(e) if e.as_service_error().is_some_and(PutParameterError::is_parameter_already_exists) => {
-                self.overwrite(key, secret, tags).await
+                self.overwrite(&name, secret, tags).await
             }
             Err(e) => Err(failure("ssm:PutParameter", &name, &e)),
         }
