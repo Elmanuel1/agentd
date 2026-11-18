@@ -77,7 +77,13 @@ impl AwsParameterStore {
     /// means a delete came after the create failed and this write created the
     /// parameter: it gets the create's tags, or the egress policy cannot reach
     /// it. When tagging fails the parameter goes, so a retry creates it tagged.
-    async fn overwrite(&self, name: &str, secret: &SecretString, tags: Vec<Tag>) -> Result<(), SecretError> {
+    async fn overwrite(
+        &self,
+        key: &SecretKey,
+        secret: &SecretString,
+        tags: Vec<Tag>,
+    ) -> Result<(), SecretError> {
+        let name = &self.parameter_name(key);
         let out = self.write(name, secret).overwrite(true).send().await;
         let out = out.map_err(|e| failure("ssm:PutParameter", name, &e))?;
         if out.version != 1 {
@@ -86,12 +92,7 @@ impl AwsParameterStore {
         let tagging = self.client.add_tags_to_resource().resource_type(ResourceTypeForTagging::Parameter);
         let Err(e) = tagging.resource_id(name).set_tags(Some(tags)).send().await else { return Ok(()) };
         let error = failure("ssm:AddTagsToResource", name, &e);
-        self.client
-            .delete_parameter()
-            .name(name)
-            .send()
-            .await
-            .map_err(|e| failure("ssm:DeleteParameter", name, &e))?;
+        SecretStore::delete(self, key).await?;
         Err(error)
     }
 }
@@ -105,7 +106,7 @@ impl SecretStore for AwsParameterStore {
         match created {
             Ok(_) => Ok(()),
             Err(e) if e.as_service_error().is_some_and(PutParameterError::is_parameter_already_exists) => {
-                self.overwrite(&name, secret, tags).await
+                self.overwrite(key, secret, tags).await
             }
             Err(e) => Err(failure("ssm:PutParameter", &name, &e)),
         }
