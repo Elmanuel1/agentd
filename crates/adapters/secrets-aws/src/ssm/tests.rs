@@ -95,7 +95,10 @@ async fn a_delete_that_fails_after_tagging_fails_is_the_error() {
     let Some((store, key)) = on_localstack(&["AddTagsToResource", "DeleteParameter"]).await else { return };
     let tags = name::parameter_tags(&key).unwrap();
     let err = store.overwrite(&key, &SecretString::from("v"), tags).await.unwrap_err();
-    assert!(err.to_string().contains("ssm:DeleteParameter"), "{err}");
+    let shown = err.to_string();
+    for part in ["ssm:AddTagsToResource", "then ssm:DeleteParameter", "stays untagged"] {
+        assert!(shown.contains(part), "{part} in {shown}");
+    }
     let (plain, _) = on_localstack(&[]).await.unwrap();
     plain.delete(&key).await.unwrap();
 }

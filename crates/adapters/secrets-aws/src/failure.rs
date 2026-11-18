@@ -13,7 +13,12 @@ pub(crate) fn failure<E: ProvideErrorMetadata, R>(
     target: &str,
     e: &SdkError<E, R>,
 ) -> SecretError {
-    SecretError::Backend(format!("{action} on {target} failed: {}", code(e)))
+    SecretError::Backend(failed(action, target, e))
+}
+
+/// What [`failure`] says, for an error that names more than one call.
+pub(crate) fn failed<E: ProvideErrorMetadata, R>(action: &str, target: &str, e: &SdkError<E, R>) -> String {
+    format!("{action} on {target} failed: {}", code(e))
 }
 
 fn code<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> &str {
