@@ -22,8 +22,8 @@
 SS-8, SS-13) → selection and the CLI (SS-1, SS-2, SS-10 to SS-12, SS-14) → the SSM adapter (SS-15 to SS-18) → docs,
 stacks and CI, one PR (D14).
 
-Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
-[ADR 0001](adr/0001-postgres-secret-store.md).
+Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision records:
+[ADR 0001](adr/0001-postgres-secret-store.md) and [ADR 0002](adr/0002-salt-only-vault-secrets.md).
 
 ## Selection
 
@@ -59,7 +59,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | SS-15 | When `AGENTD_SECRETS` is `aws_ssm`, agentd shall keep each credential as one SecureString parameter `/<prefix>/<workspace>/<vault>/<credential>`, encrypted under the customer-managed KMS key `AGENTD_SECRETS_KMS_KEY_ID` (checked at boot as the `aws_sm` store checks it), in the Intelligent-Tiering tier. |
-| SS-16 | When the SSM store puts a new parameter, it shall create it with the tags the `aws_sm` store writes (`credential_type=environment_variable` included); when the parameter exists, it shall overwrite its value with the same `Type`, `KeyId` and `Tier` and no tags, and when that overwrite creates the parameter (a delete came between), it shall add the create's tags. |
+| SS-16 | When the SSM store puts a new parameter, it shall create it with the tags the `aws_sm` store writes (`credential_type=environment_variable` included); when the parameter exists, it shall overwrite its value with the same `Type`, `KeyId` and `Tier` and no tags, and when that overwrite creates the parameter (a delete came between), it shall add the create's tags, and delete the parameter again when tagging fails. |
 | SS-17 | The SSM store shall read with decryption, return `NotFound` for a missing parameter, treat deleting a missing one as success, and name only the parameter and the AWS error code in an error. |
 | SS-18 | When `AGENTD_SECRETS` is `aws_ssm`, agentd shall refuse to start when `AGENTD_SECRETS_RECOVERY_DAYS` is set or the prefix starts with `aws` or `ssm` in any letter case, or has more than 12 segments (SSM allows 15 levels; the key adds 3). |
 
@@ -67,10 +67,10 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 | Operation | Statements |
 |---|---|
-| put | 1, on a plain checkout: an `INSERT ... ON CONFLICT (workspace_id, vault_id, credential_id) DO UPDATE` of the kind, key id, sealed key and sealed value |
-| get | 1: a primary-key `SELECT` of the kind, key id, sealed key and sealed value, on the primary so a refresh reads its own write |
+| put | 1, on a plain checkout: an `INSERT ... ON CONFLICT (workspace_id, vault_id, credential_id) DO UPDATE` of the kind, key id, salt and sealed value |
+| get | 1: a primary-key `SELECT` of the kind, key id, salt and sealed value, on the primary so a refresh reads its own write |
 | delete | 1, on a plain checkout: a primary-key `DELETE`; 0 rows is success |
-| reseal | pages of 500 rows not under the first key, by primary key, 1 `SELECT` each; then 1 guarded `UPDATE` per row (matching the key id and sealed key it read, so a put in between wins); then 1 `SELECT` of the rows still under another key |
+| reseal | pages of 500 rows not under the first key, by primary key, 1 `SELECT` each; then 1 guarded `UPDATE` per row (matching the key id and salt it read, so a put in between wins); then 1 `SELECT` of the rows still under another key |
 
 ## Rollout
 

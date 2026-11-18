@@ -75,7 +75,8 @@ impl AwsParameterStore {
 
     /// SSM takes tags only on a create, so an overwrite carries none. Version 1
     /// means a delete came after the create failed and this write created the
-    /// parameter: it gets the create's tags, or the egress policy cannot reach it.
+    /// parameter: it gets the create's tags, or the egress policy cannot reach
+    /// it. When tagging fails the parameter goes, so a retry creates it tagged.
     async fn overwrite(&self, name: &str, secret: &SecretString, tags: Vec<Tag>) -> Result<(), SecretError> {
         let out = self.write(name, secret).overwrite(true).send().await;
         let out = out.map_err(|e| failure("ssm:PutParameter", name, &e))?;
@@ -83,9 +84,15 @@ impl AwsParameterStore {
             return Ok(());
         }
         let tagging = self.client.add_tags_to_resource().resource_type(ResourceTypeForTagging::Parameter);
-        let tagged = tagging.resource_id(name).set_tags(Some(tags)).send().await;
-        tagged.map_err(|e| failure("ssm:AddTagsToResource", name, &e))?;
-        Ok(())
+        let Err(e) = tagging.resource_id(name).set_tags(Some(tags)).send().await else { return Ok(()) };
+        let error = failure("ssm:AddTagsToResource", name, &e);
+        self.client
+            .delete_parameter()
+            .name(name)
+            .send()
+            .await
+            .map_err(|e| failure("ssm:DeleteParameter", name, &e))?;
+        Err(error)
     }
 }
 
@@ -132,52 +139,4 @@ impl SecretStore for AwsParameterStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use aws_sdk_ssm::config::{BehaviorVersion, Region};
-
-    use super::*;
-
-    fn store(client: aws_sdk_ssm::Client, key_arn: &str) -> AwsParameterStore {
-        AwsParameterStore { client, prefix: "agentd_test/ssm".into(), key_arn: key_arn.into() }
-    }
-
-    #[test]
-    fn a_write_is_a_secure_string_under_the_key_in_intelligent_tiering() {
-        let conf = aws_sdk_ssm::Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .build();
-        let store = store(aws_sdk_ssm::Client::from_conf(conf), "arn:aws:kms:us-east-1:111122223333:key/k");
-        let write = store.write("/agentd/w/v/c", &SecretString::from("v"));
-        let input = write.as_input();
-        assert_eq!(input.get_type(), &Some(ParameterType::SecureString));
-        assert_eq!(input.get_key_id().as_deref(), Some(store.key_arn()));
-        assert_eq!(input.get_tier(), &Some(ParameterTier::IntelligentTiering));
-    }
-
-    /// The race a test cannot time: a delete between the create's refusal and
-    /// the overwrite, which then creates the parameter. Runs against LocalStack.
-    #[tokio::test]
-    async fn an_overwrite_that_creates_the_parameter_tags_it() {
-        let Ok(endpoint) = std::env::var("AGENTD_AWS_ENDPOINT") else { return };
-        let shared = aws_common::sdk_config(None, None).await;
-        let conf = aws_sdk_ssm::config::Builder::from(&shared).endpoint_url(&endpoint).build();
-        let store = store(aws_sdk_ssm::Client::from_conf(conf), "alias/aws/ssm");
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        let key =
-            SecretKey::new(&format!("wrkspc_{id}"), "vlt_01a", "cred_01b").unwrap().environment_variable();
-        let name = store.parameter_name(&key);
-        let tags = name::parameter_tags(&key).unwrap();
-        for value in ["first", "second"] {
-            store.overwrite(&name, &SecretString::from(value), tags.clone()).await.unwrap();
-        }
-        let listed = store.client.list_tags_for_resource().resource_type(ResourceTypeForTagging::Parameter);
-        let mut found = listed.resource_id(&name).send().await.unwrap().tag_list.unwrap_or_default();
-        found.sort_by(|a, b| a.key.cmp(&b.key));
-        let mut want = tags;
-        want.sort_by(|a, b| a.key.cmp(&b.key));
-        assert_eq!(found, want);
-        assert_eq!(store.get(&key).await.unwrap().expose_secret(), "second");
-        store.delete(&key).await.unwrap();
-    }
-}
+mod tests;

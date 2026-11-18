@@ -247,7 +247,9 @@ With `AGENTD_SECRETS=aws_ssm`, each secret is one SecureString parameter,
 KMS key, in the Intelligent-Tiering tier, tagged as Secrets Manager secrets
 are. A write creates the parameter with its tags, or, when it exists,
 overwrites its value with the same type, key and tier (1 or 2
-`PutParameter` calls); a read is one `GetParameter` with decryption; a delete
+`PutParameter` calls); when that overwrite creates the parameter (a delete
+came between), it adds the create's tags with one `AddTagsToResource`, and
+deletes the parameter again if tagging fails, so a retry creates it tagged; a read is one `GetParameter` with decryption; a delete
 is one `DeleteParameter`, and a missing parameter is already deleted. A
 parameter has no recovery window, so `AGENTD_SECRETS_RECOVERY_DAYS` is
 refused. SSM reserves names starting `aws` or `ssm` in any letter case and

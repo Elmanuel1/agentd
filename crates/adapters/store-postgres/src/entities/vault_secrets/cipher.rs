@@ -31,9 +31,14 @@ pub(crate) fn seal(keys: &SecretKeys, key: &SecretKey, value: &SecretString) -> 
     let mut salt = vec![0u8; SALT_LEN];
     aws_lc_rs::rand::fill(&mut salt).map_err(|_| failed())?;
     let (key_id, value_key) = keys.value_key(None, &salt).ok_or_else(failed)?;
+    let cipher = RandomizedNonceKey::new(&AES_256_GCM, value_key.as_slice()).map_err(|_| failed())?;
+    // Sized for the tag, so sealing never reallocates and leaves a plaintext copy behind.
     let plain = value.expose_secret().as_bytes();
-    let sealed_value =
-        seal_with(value_key.as_slice(), &aad(key, environment_variable), plain).ok_or_else(failed)?;
+    let mut buf = Zeroizing::new(Vec::with_capacity(plain.len() + TAG_LEN));
+    buf.extend_from_slice(plain);
+    let aad = Aad::from(aad(key, environment_variable));
+    let nonce = cipher.seal_in_place_append_tag(aad, &mut *buf).map_err(|_| failed())?;
+    let sealed_value = [nonce.as_ref().as_slice(), &buf].concat();
     Ok(Sealed { environment_variable, key_id: key_id.to_owned(), salt, sealed_value })
 }
 
@@ -41,9 +46,14 @@ pub(crate) fn seal(keys: &SecretKeys, key: &SecretKey, value: &SecretString) -> 
 /// The kind comes from the row: a reader asks with a plain key.
 pub(crate) fn open(keys: &SecretKeys, key: &SecretKey, row: &Sealed) -> Result<SecretString, SecretError> {
     let fails = || SecretError::Backend(format!("vault secret {key} does not open with key {}", row.key_id));
-    let aad = aad(key, row.environment_variable);
     let (_, value_key) = keys.value_key(Some(&row.key_id), &row.salt).ok_or_else(fails)?;
-    let mut plain = open_with(value_key.as_slice(), &aad, &row.sealed_value).ok_or_else(fails)?;
+    let cipher = RandomizedNonceKey::new(&AES_256_GCM, value_key.as_slice()).map_err(|_| fails())?;
+    let (nonce, body) = row.sealed_value.split_at_checked(NONCE_LEN).ok_or_else(fails)?;
+    let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| fails())?;
+    let mut plain = Zeroizing::new(body.to_vec());
+    let aad = Aad::from(aad(key, row.environment_variable));
+    let len = cipher.open_in_place(nonce, aad, plain.as_mut_slice()).map_err(|_| fails())?.len();
+    plain.truncate(len);
     match String::from_utf8(std::mem::take(&mut *plain)) {
         Ok(text) => Ok(into_secret(text)),
         Err(e) => {
@@ -62,27 +72,6 @@ fn aad(key: &SecretKey, environment_variable: bool) -> Vec<u8> {
         false => "mcp",
     };
     format!("agentd/vault-secret/v1/{key}/{kind}").into_bytes()
-}
-
-/// Nonce, ciphertext and tag of `plain` under `key`. The buffer is sized for
-/// the tag, so sealing never reallocates and leaves a plaintext copy behind.
-fn seal_with(key: &[u8], aad: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
-    let key = RandomizedNonceKey::new(&AES_256_GCM, key).ok()?;
-    let mut buf = Zeroizing::new(Vec::with_capacity(plain.len() + TAG_LEN));
-    buf.extend_from_slice(plain);
-    let nonce = key.seal_in_place_append_tag(Aad::from(aad), &mut *buf).ok()?;
-    Some([nonce.as_ref().as_slice(), &buf].concat())
-}
-
-/// The plaintext of `sealed` (nonce, ciphertext, tag) under `key`.
-fn open_with(key: &[u8], aad: &[u8], sealed: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    let key = RandomizedNonceKey::new(&AES_256_GCM, key).ok()?;
-    let (nonce, body) = sealed.split_at_checked(NONCE_LEN)?;
-    let nonce = Nonce::try_assume_unique_for_key(nonce).ok()?;
-    let mut buf = Zeroizing::new(body.to_vec());
-    let len = key.open_in_place(nonce, Aad::from(aad), buf.as_mut_slice()).ok()?.len();
-    buf.truncate(len);
-    Some(buf)
 }
 
 #[cfg(test)]

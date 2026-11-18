@@ -90,6 +90,7 @@ mod tests {
         assert_eq!(format!("{ring:?}"), r#"["k2", "k1"]"#);
         assert_eq!(ring, SecretKeys::parse(&format!("k2:{K2},k1:{K1}")).unwrap());
         assert_ne!(ring, SecretKeys::parse(&format!("k2:{K1},k1:{K2}")).unwrap(), "same ids, other bytes");
+        assert_ne!(ring, SecretKeys::parse(&format!("k3:{K2},k1:{K1}")).unwrap(), "same bytes, other ids");
         assert_ne!(ring, SecretKeys::parse(&format!("k2:{K2}")).unwrap());
     }
 

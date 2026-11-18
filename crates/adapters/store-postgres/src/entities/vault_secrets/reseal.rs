@@ -35,7 +35,8 @@ struct Row {
 impl PgSecretStore {
     /// Seal every row not under the first key again, under the first key with
     /// a new salt. A put between a row's read and its write wins: the write
-    /// matches the sealed key it read. Rows that do not open stay, and are named.
+    /// matches the key id and salt it read. Rows that do not open, or whose ids
+    /// are not a key, stay and are named.
     pub async fn reseal(&self) -> Result<Resealed, SecretError> {
         let first = self.keys.first_id().to_owned();
         let mut conn = self.conn().await?;
