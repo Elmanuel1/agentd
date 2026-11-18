@@ -193,13 +193,12 @@ runs that swap uses `aws_sm` or `aws_ssm`.
 
 ### Postgres
 
-With `AGENTD_SECRETS=postgres`, each secret is one row of `vault_secrets`,
-sealed by envelope encryption: each write seals the value with AES-256-GCM
-under a fresh random 256-bit data key, and seals the data key with AES-256-GCM
-under a single-use key that HKDF-SHA256 derives from the first master key and
-a fresh 32-byte salt. Both are bound to the workspace, vault, credential and
-kind, so a row copied to another credential, or with its kind changed, does
-not open. The row names the master key's id; the master keys themselves are
+With `AGENTD_SECRETS=postgres`, each secret is one row of `vault_secrets`:
+each write seals the value with AES-256-GCM under a single-use key that
+HKDF-SHA256 derives from the first master key and a fresh 32-byte salt. The
+value is bound to the workspace, vault, credential and kind, so a row copied to
+another credential, or with its kind changed, does not open. The row keeps the
+salt and names the master key's id; the master keys themselves are
 only in `AGENTD_SECRET_KEYS`, never in the database, a log or an error. A put,
 a read and a delete are one statement each, on the primary. A row that does
 not open (its key left the ring, or the row was altered) is an error, logged
@@ -216,7 +215,7 @@ both reads every credential. To rotate a master key:
    replica can open what it will seal.
 2. Move it first on every replica: new writes use it.
 3. Run `agentd vault-secrets reseal`. It seals every row not under the first
-   key again under a new data key and the first key, 500 rows a page, and
+   key again under the first key with a new salt, 500 rows a page, and
    prints how many it moved and each row still under another key, by its ids
    and key id. A write between its read and its write of a row wins. It exits
    with failure while any row remains; run it again once every replica has
@@ -224,8 +223,8 @@ both reads every credential. To rotate a master key:
 4. Drop the old key.
 
 After a suspected master key leak, rotate as above, and have tenants rotate
-their own credentials: a copy of the database may already be out. Data keys
-need no rotation, since every write makes a new one.
+their own credentials: a copy of the database may already be out. Value keys
+need no rotation, since every write derives a new one.
 
 ### Secrets Manager
 
@@ -248,7 +247,9 @@ With `AGENTD_SECRETS=aws_ssm`, each secret is one SecureString parameter,
 KMS key, in the Intelligent-Tiering tier, tagged as Secrets Manager secrets
 are. A write creates the parameter with its tags, or, when it exists,
 overwrites its value with the same type, key and tier (1 or 2
-`PutParameter` calls); a read is one `GetParameter` with decryption; a delete
+`PutParameter` calls); when that overwrite creates the parameter (a delete
+came between), it adds the create's tags with one `AddTagsToResource`, and
+deletes the parameter again if tagging fails, so a retry creates it tagged; a read is one `GetParameter` with decryption; a delete
 is one `DeleteParameter`, and a missing parameter is already deleted. A
 parameter has no recovery window, so `AGENTD_SECRETS_RECOVERY_DAYS` is
 refused. SSM reserves names starting `aws` or `ssm` in any letter case and
@@ -413,8 +414,8 @@ printed once and never stored; lose it and create another.
 
 There is no switch that weakens any of these; each is the only behaviour.
 
-- Vault credentials are sealed: in Postgres under envelope encryption with the
-  master keys only in the environment, or in Secrets Manager or Parameter
+- Vault credentials are sealed: in Postgres under a single-use key per write,
+  derived from master keys held only in the environment, or in Secrets Manager or Parameter
   Store under a customer-managed KMS key. There is no plain store.
 - API keys are peppered digests in Postgres, made by `agentd keys`, `agentd
   environment-keys` and `agentd admin-keys`. No API key is read from the

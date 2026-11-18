@@ -86,6 +86,12 @@ impl Config {
             webhooks,
         })
     }
+
+    /// Whether `cloud` environments may be served (a runtime key is set) on
+    /// the Postgres store, which the cloud egress swap does not read.
+    pub fn cloud_swap_misses_secrets(&self) -> bool {
+        matches!(self.secrets, SecretsConfig::Postgres(_)) && !self.keys.runtime.is_empty()
+    }
 }
 
 /// A positive whole number from `var`, or `default` when it is unset.

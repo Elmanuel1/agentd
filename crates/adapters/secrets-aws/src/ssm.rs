@@ -8,10 +8,10 @@ use aws_sdk_ssm::operation::delete_parameter::DeleteParameterError;
 use aws_sdk_ssm::operation::get_parameter::GetParameterError;
 use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
 use aws_sdk_ssm::operation::put_parameter::PutParameterError;
-use aws_sdk_ssm::types::{ParameterTier, ParameterType};
+use aws_sdk_ssm::types::{ParameterTier, ParameterType, ResourceTypeForTagging, Tag};
 use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
 
-use crate::failure::failure;
+use crate::failure::{failed, failure};
 use crate::{key, name, AwsSecretsConfig};
 
 /// Secrets as SSM parameters, under one prefix and one KMS key.
@@ -72,6 +72,35 @@ impl AwsParameterStore {
             .key_id(&self.key_arn)
             .tier(ParameterTier::IntelligentTiering)
     }
+
+    /// SSM takes tags only on a create, so an overwrite carries none. Version 1
+    /// means a delete came after the create failed and this write created the
+    /// parameter: it gets the create's tags, or the egress policy cannot reach
+    /// it. When tagging fails the parameter goes, so a retry creates it tagged;
+    /// when that delete fails too, a retry overwrites it untagged (an accepted risk).
+    async fn overwrite(
+        &self,
+        key: &SecretKey,
+        secret: &SecretString,
+        tags: Vec<Tag>,
+    ) -> Result<(), SecretError> {
+        let name = &self.parameter_name(key);
+        let out = self.write(name, secret).overwrite(true).send().await;
+        let out = out.map_err(|e| failure("ssm:PutParameter", name, &e))?;
+        if out.version != 1 {
+            return Ok(());
+        }
+        let tagging = self.client.add_tags_to_resource().resource_type(ResourceTypeForTagging::Parameter);
+        let Err(e) = tagging.resource_id(name).set_tags(Some(tags)).send().await else { return Ok(()) };
+        let tagging = failed("ssm:AddTagsToResource", name, &e);
+        match SecretStore::delete(self, key).await {
+            Ok(()) => Err(SecretError::Backend(tagging)),
+            Err(SecretError::Backend(deleted)) => {
+                Err(SecretError::Backend(format!("{tagging}; then {deleted}, so {name} stays untagged")))
+            }
+            Err(other) => Err(other),
+        }
+    }
 }
 
 #[async_trait]
@@ -79,19 +108,14 @@ impl SecretStore for AwsParameterStore {
     async fn put(&self, key: &SecretKey, secret: &SecretString) -> Result<(), SecretError> {
         let name = self.parameter_name(key);
         let tags = name::parameter_tags(key)?;
-        let created = self.write(&name, secret).overwrite(false).set_tags(Some(tags)).send().await;
+        let created = self.write(&name, secret).overwrite(false).set_tags(Some(tags.clone())).send().await;
         match created {
-            Ok(_) => return Ok(()),
-            Err(e) if e.as_service_error().is_some_and(PutParameterError::is_parameter_already_exists) => {}
-            Err(e) => return Err(failure("ssm:PutParameter", &name, &e)),
+            Ok(_) => Ok(()),
+            Err(e) if e.as_service_error().is_some_and(PutParameterError::is_parameter_already_exists) => {
+                self.overwrite(key, secret, tags).await
+            }
+            Err(e) => Err(failure("ssm:PutParameter", &name, &e)),
         }
-        // SSM takes tags only on a create: the overwrite carries none.
-        self.write(&name, secret)
-            .overwrite(true)
-            .send()
-            .await
-            .map_err(|e| failure("ssm:PutParameter", &name, &e))?;
-        Ok(())
     }
 
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
@@ -122,26 +146,4 @@ impl SecretStore for AwsParameterStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use aws_sdk_ssm::config::{BehaviorVersion, Region};
-
-    use super::*;
-
-    #[test]
-    fn a_write_is_a_secure_string_under_the_key_in_intelligent_tiering() {
-        let conf = aws_sdk_ssm::Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .build();
-        let store = AwsParameterStore {
-            client: aws_sdk_ssm::Client::from_conf(conf),
-            prefix: "agentd".into(),
-            key_arn: "arn:aws:kms:us-east-1:111122223333:key/k".into(),
-        };
-        let write = store.write("/agentd/w/v/c", &SecretString::from("v"));
-        let input = write.as_input();
-        assert_eq!(input.get_type(), &Some(ParameterType::SecureString));
-        assert_eq!(input.get_key_id().as_deref(), Some(store.key_arn()));
-        assert_eq!(input.get_tier(), &Some(ParameterTier::IntelligentTiering));
-    }
-}
+mod tests;
