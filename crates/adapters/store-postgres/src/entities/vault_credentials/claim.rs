@@ -55,7 +55,7 @@ impl CredentialClaims for PgVaultsStore {
             // it), so an archive or delete since the claim keeps no secret.
             self.settle(ws, vault, id).await.map_or_else(
                 |left| tracing::error!(workspace = %ws, vault = %vault, credential = %id, error = %left,
-                    "vaults: a failed claimed write could not check its credential; delete its secret by hand if it is gone"),
+                    "vaults: a failed claimed write could not settle its credential; if it is archived or gone, delete its secret by hand"),
                 drop,
             );
             return Err(e);
