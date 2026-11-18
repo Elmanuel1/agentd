@@ -35,5 +35,3 @@ key adds a second key and a second seal per row and protects nothing the derived
 ## Consequences
 
 - One AES-GCM seal per write; the row is 32 bytes of salt plus the sealed value.
-- A row sealed the V20 way does not open under the new cipher, so V21 refuses to run while `vault_secrets` has
-  rows; its error says to delete those vault credentials, migrate, and create them again.

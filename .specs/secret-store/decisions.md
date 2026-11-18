@@ -28,6 +28,5 @@ Secrets Manager and SSM Parameter Store are the external adapters, chosen by a s
 | D12 | `agentd vault-secrets reseal` seals every row not under the first key again under the first key with a new salt, names what remains, and fails while any row remains. The value is encrypted again, so an old backup plus a leaked old key never opens the current value. | User, 2026-11-16 ("reseal") |
 | D13 | No read cache: a Postgres read is one primary-key lookup, and the loop reads once per server per step (runtime-parity D27). | User, 2026-11-17 (plan approved) |
 | D14 | The secret store ships as one agentd PR of seven ordered commits, under 100 files, the spec included. | User, 2026-11-16 (one PR of ordered commits) |
-| D15 | V21 refuses to run while `vault_secrets` has rows: a row sealed the V20 way cannot open under the salt-only row, so the error says to delete those vault credentials, run the migration again, and create them again. Nothing is emptied silently. | User, 2026-11-17 ("refuse") |
 
 Out of scope: [requirements.md](requirements.md#out-of-scope).
