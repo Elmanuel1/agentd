@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 
 use crate::{PgBackend, PooledConnection, diesel_be, pool_be};
 
-/// [`RunLock`] on Postgres advisory locks.
+/// [`RunLock`](::sessions::retention::RunLock) on Postgres advisory locks.
 #[derive(Debug, Clone)]
 pub struct PgRunLock {
     backend: PgBackend,

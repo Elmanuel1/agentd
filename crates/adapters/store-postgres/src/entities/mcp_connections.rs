@@ -1,4 +1,4 @@
-//! [`McpConnections`] on Postgres: the `mcp_connections` rows (V9), keyed by
+//! [`McpConnections`](::sessions::mcp::McpConnections) on Postgres: the `mcp_connections` rows (V9), keyed by
 //! workspace, session and server URL.
 
 use ::sessions::mcp::{McpConnection, NativeMcpConnections};

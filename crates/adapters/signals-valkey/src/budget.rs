@@ -15,7 +15,7 @@ const WAIT: Duration = Duration::from_millis(200);
 /// A minute's counters outlive it, so a late request still finds them.
 const KEEP: i64 = 120;
 
-/// [`ModelBudget`] over Valkey.
+/// [`ModelBudget`](engine::model::budget::ModelBudget) over Valkey.
 #[derive(Clone)]
 pub struct ValkeyBudget {
     conn: Shared,

@@ -32,7 +32,7 @@ const RECONNECT: Duration = Duration::from_secs(1);
 /// and the stream's fallback timer delivers.
 const PUBLISH_WAIT: Duration = Duration::from_millis(200);
 
-/// [`Signals`] over Valkey.
+/// [`Signals`](sessions::signals::Signals) over Valkey.
 #[derive(Clone)]
 pub struct ValkeySignals {
     publisher: valkey::Shared,

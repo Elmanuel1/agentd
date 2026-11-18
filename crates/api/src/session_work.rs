@@ -7,7 +7,7 @@ use sessions::types::{Session, SessionId};
 use shared::{ApiError, AuthContext, WorkspaceId};
 use work::WorkService;
 
-/// [`SessionWork`] over the work service.
+/// [`SessionWork`](sessions::SessionWork) over the work service.
 #[derive(Debug, Clone)]
 pub struct WorkQueue {
     /// The work items.
