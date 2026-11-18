@@ -201,7 +201,8 @@ async fn rotation_reopens_old_rows_and_reseal_moves_the_rest_past_a_bad_row_and_
     run(
         &url,
         &format!(
-            "INSERT INTO vault_secrets VALUES ('{ws}', 'vlt_01a', 'cred-0', false, 'r1',
+            "INSERT INTO vault_secrets (workspace_id, vault_id, credential_id, environment_variable, key_id,
+             salt, sealed_value) VALUES ('{ws}', 'vlt_01a', 'cred-0', false, 'r1',
              decode(repeat('00', 32), 'hex'), decode(repeat('00', 28), 'hex'))"
         ),
     )

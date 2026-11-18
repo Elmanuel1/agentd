@@ -18,7 +18,7 @@
 - **Value key:** the single-use key HKDF-SHA256 derives from a master key and a row's 32-byte salt, which seals one value.
 - **Kind:** `env` for an `environment_variable` credential, `mcp` for every other.
 
-**Build order:** spec → V20 `vault_secrets` (SS-9) → the cipher (SS-3 to SS-5, SS-7) → the store and reseal (SS-6,
+**Build order:** spec → V20 and V21 `vault_secrets` (SS-9) → the cipher (SS-3 to SS-5, SS-7) → the store and reseal (SS-6,
 SS-8, SS-13) → selection and the CLI (SS-1, SS-2, SS-10 to SS-12, SS-14) → the SSM adapter (SS-15 to SS-18) → docs,
 stacks and CI, one PR (D14).
 
@@ -77,7 +77,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 - agentd is not deployed (runtime-parity D45): the PR merges on green CI and a local run against Postgres 16 and
   LocalStack with `ssm`.
 - A deployment that sets `AGENTD_SECRETS_KMS_KEY_ID` stays on Secrets Manager with no change (SS-12). A new
-  deployment sets `AGENTD_SECRET_KEYS` and runs V20.
+  deployment sets `AGENTD_SECRET_KEYS` and runs V20 and V21.
 - Master key rotation: add the new key second on every replica, move it first, run `agentd vault-secrets reseal`
   until it succeeds, then drop the old key (`docs/configuration.md`).
 
