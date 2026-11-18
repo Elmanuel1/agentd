@@ -77,7 +77,7 @@ impl AwsParameterStore {
     /// means a delete came after the create failed and this write created the
     /// parameter: it gets the create's tags, or the egress policy cannot reach
     /// it. When tagging fails the parameter goes, so a retry creates it tagged;
-    /// when that delete fails too, the error names both calls.
+    /// when that delete fails too, a retry overwrites it untagged (an accepted risk).
     async fn overwrite(
         &self,
         key: &SecretKey,
