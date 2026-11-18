@@ -2,13 +2,14 @@
 # logical WAL), Debezium Server reading the WAL into Kafka, Kafka for the
 # change feed, Valkey (a one-node cluster with AOF) for the replicas' signals
 # and the model budget, and LocalStack
-# for S3, Secrets Manager and KMS. Vault credentials are encrypted under a KMS key on the
-# emulator exactly as in production; there is no weaker mode. Every published
+# for S3, with Secrets Manager, SSM and KMS to try the AWS secret stores. Vault credentials
+# are sealed in Postgres under AGENTD_SECRET_KEYS, as on the default store in production;
+# there is no weaker mode. Every published
 # port is bound to 127.0.0.1. Tools run on a worker that polls the session's
 # environment (`ant beta:worker poll`), outside this stack.
 #
 #   export POSTGRES_PASSWORD=$(openssl rand -hex 16)
-#   for v in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS; do
+#   for v in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS AGENTD_SECRET_KEYS; do
 #     export "$v=k1:$(openssl rand -hex 32)"; done
 #   export AGENTD_OPENROUTER_API_KEY=...   # or AGENTD_ANTHROPIC_API_KEY, for the loop
 #   docker compose -f docker/docker-compose.yml up
@@ -22,11 +23,9 @@ x-agentd: &agentd
   environment: &agentd-env
     AGENTD_ADDR: 0.0.0.0:8080
     DATABASE_URL: postgres://agentd:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/agentd
-    # Blobs, secrets and the KMS key on the emulator; drop both endpoints for AWS.
+    # Blobs on the emulator; drop the endpoint for AWS.
     AGENTD_AWS_ENDPOINT: http://localstack:4566
     AGENTD_S3_CREATE_BUCKET: "1"
-    AGENTD_SECRETS_ENDPOINT: http://localstack:4566
-    AGENTD_SECRETS_KMS_KEY_ID: alias/agentd-secrets
     AGENTD_VALKEY_URL: redis://valkey:6379
     AGENTD_VALKEY_CLUSTER: "1"
     AGENTD_KAFKA_BROKERS: kafka:9092
@@ -40,6 +39,8 @@ x-agentd: &agentd
     AGENTD_API_KEY_PEPPERS: ${AGENTD_API_KEY_PEPPERS:?set AGENTD_API_KEY_PEPPERS}
     AGENTD_WORK_TOKEN_KEYS: ${AGENTD_WORK_TOKEN_KEYS:?set AGENTD_WORK_TOKEN_KEYS}
     AGENTD_PLACEHOLDER_KEYS: ${AGENTD_PLACEHOLDER_KEYS:?set AGENTD_PLACEHOLDER_KEYS}
+    # The master keys vault credentials are sealed under, each 32 bytes.
+    AGENTD_SECRET_KEYS: ${AGENTD_SECRET_KEYS:?set AGENTD_SECRET_KEYS}
     # agentd's runtime keys (`sk-ant-oat01-…`, current first) and the model keys.
     AGENTD_RUNTIME_KEYS: ${AGENTD_RUNTIME_KEYS:-}
     AGENTD_ANTHROPIC_API_KEY: ${AGENTD_ANTHROPIC_API_KEY:-}
@@ -74,8 +75,6 @@ services:
         | xargs -r -n1 agentd keys revoke
         && agentd keys create --org org_dev --workspace wrkspc_01dev --name dev
     depends_on:
-      localstack:
-        condition: service_healthy
       flyway:
         condition: service_completed_successfully
 
@@ -190,12 +189,12 @@ services:
       timeout: 10s
       retries: 30
 
-  # S3, Secrets Manager and KMS. Healthy once the init hook has made the KMS
-  # key (docker/localstack/ready.d).
+  # S3, and Secrets Manager, SSM and KMS for the AWS secret stores. Healthy once
+  # the init hook has made the KMS key (docker/localstack/ready.d).
   localstack:
     image: localstack/localstack:3.0
     environment:
-      SERVICES: s3,secretsmanager,kms
+      SERVICES: s3,secretsmanager,ssm,kms
     volumes:
       - ./localstack/ready.d:/etc/localstack/init/ready.d:ro
     ports:

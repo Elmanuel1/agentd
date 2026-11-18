@@ -9,12 +9,12 @@ use sessions::retention::Retention;
 use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
-use shared::ports::secrets::SecretStore;
 use store_postgres::{
     PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
 
 use super::feed::ChangeFeed;
+use super::secrets::Secrets;
 use super::Stores;
 use crate::telemetry::{self, Metrics};
 
@@ -29,10 +29,11 @@ pub(super) struct Postgres {
     pub(super) backend: PgBackend,
 }
 
-/// What the stores keep outside Postgres: bytes and secrets.
+/// What the stores keep outside Postgres: bytes, and secrets unless the
+/// Postgres store keeps them.
 pub(super) struct Outside {
     pub(super) blobs: Arc<dyn BlobStore>,
-    pub(super) secrets: Arc<dyn SecretStore>,
+    pub(super) secrets: Secrets,
 }
 
 /// Connect the pools; the load measure and, with a `retention` period, the
@@ -50,7 +51,7 @@ pub(super) async fn connect(
     let meter = opentelemetry::global::meter("agentd");
     telemetry::db::watch_pool(&meter, pg.diesel.clone());
     let Outside { blobs, secrets } = outside;
-    let mut stores = Stores::postgres(pg.clone(), blobs, secrets);
+    let mut stores = Stores::postgres(pg.clone(), blobs, secrets.on(&pg, metrics));
     if let Some(read_url) = read_url {
         stores = stores.reading_events_from(PgBackend::connect_observed(read_url, pool, observer).await?);
     }

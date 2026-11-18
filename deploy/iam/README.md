@@ -1,11 +1,17 @@
 # Vault credential storage: IAM
 
-agentd keeps each vault credential in AWS Secrets Manager as
-`PREFIX/<workspace>/<vault>/<credential>`, encrypted under one
-customer-managed KMS key and tagged `workspace`, `vault` and
+These policies are for the AWS secret stores, `AGENTD_SECRETS=aws_sm` (Secrets
+Manager) and `AGENTD_SECRETS=aws_ssm` (Parameter Store). The default store,
+`postgres`, keeps credentials sealed in agentd's own database and needs no AWS
+permission.
+
+With `aws_sm`, agentd keeps each vault credential in Secrets Manager as
+`PREFIX/<workspace>/<vault>/<credential>`; with `aws_ssm`, as the SecureString
+parameter `/PREFIX/<workspace>/<vault>/<credential>`. Either is encrypted under
+one customer-managed KMS key and tagged `workspace`, `vault` and
 `managed-by=agentd`. An `environment_variable` credential's secret is also
-tagged `credential_type=environment_variable`. Secrets Manager holds nothing
-else: agentd's own keys come from its environment. Only agentd's role, and an
+tagged `credential_type=environment_variable`. The store holds nothing else:
+agentd's own keys come from its environment. Only agentd's role, and an
 operator running `agentd vault-secrets` as it, can read them. Sandboxes and
 runners cannot read them or use the key.
 
@@ -44,17 +50,31 @@ region and account is tighter and loses nothing.
   - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only
     through Secrets Manager (`kms:ViaService`) and only for `PREFIX/` secrets
     (`kms:EncryptionContext:SecretARN`).
+- `agentd-ssm-policy.json`, on agentd's role in place of the Secrets Manager
+  policy when the store is `aws_ssm`:
+  - `PutParameter`, `GetParameter` and `DeleteParameter` on `/PREFIX/`
+    parameters, scoped by name only for the reason above. An overwrite
+    carries no tags, so `PutParameter` takes no tag condition.
+  - `AddTagsToResource` on `/PREFIX/` parameters, only with the
+    `managed-by=agentd` tag and agentd's tag keys: the tags a parameter gets
+    at create.
+  - `kms:DescribeKey` on the key, for the check at boot.
+  - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only
+    through Parameter Store (`kms:ViaService`) and only for `/PREFIX/`
+    parameters (`kms:EncryptionContext:PARAMETER_ARN`).
 - `kms-key-policy.json`, the key policy. The account administers the key but
   holds no use of it and cannot create grants on it, so no IAM policy or grant
   can give a principal its use; only a change to this key policy can. Only
-  `AGENTD_ROLE_ARN` may use it, through Secrets Manager, for `PREFIX/`
-  secrets. Rotate its material with KMS automatic key rotation: the key stays
+  `AGENTD_ROLE_ARN` may use it, through Secrets Manager for `PREFIX/` secrets
+  or through Parameter Store for `/PREFIX/` parameters; drop the statement of
+  the store you do not run. Rotate its material with KMS automatic key rotation: the key stays
   the same, so existing secrets keep decrypting. A different key id leaves
   every existing secret under the old key, which these policies no longer
   allow.
 - `sandbox-deny-policy.json`, on every sandbox and runner role, or as their
-  permissions boundary: an explicit deny on `PREFIX/` secrets, on listing
-  secrets, and on the key. Grant those roles nothing else for secrets.
+  permissions boundary: an explicit deny on `PREFIX/` secrets, on reading
+  `/PREFIX/` parameters (`ssm:GetParameter*`), on listing secrets, and on the
+  key. Grant those roles nothing else for secrets.
 
 ## What the host must also do
 
@@ -67,5 +87,5 @@ region and account is tighter and loses nothing.
 ## Boot checks
 
 agentd calls `kms:DescribeKey` at boot and does not start unless the key is
-reachable, customer managed, enabled and a symmetric encryption key. The
-`aws/secretsmanager` key is refused.
+reachable, customer managed, enabled and a symmetric encryption key. An AWS
+managed key (`aws/secretsmanager`, `aws/ssm`) is refused.

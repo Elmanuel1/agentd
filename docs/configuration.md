@@ -14,7 +14,7 @@ fakes in test code, never from configuration ([Security](#security)).
 |---|---|---|
 | Record store | `AGENTD_STORE` | `postgres` |
 | Blob store | `AGENTD_BLOBS` | `s3` |
-| Secret store | `AGENTD_SECRETS` | `aws`: one AWS Secrets Manager secret per credential, encrypted with a customer-managed KMS key (see [Vault credentials](#vault-credentials)) |
+| Secret store | `AGENTD_SECRETS` | `postgres`: sealed in Postgres under the master keys `AGENTD_SECRET_KEYS`; `aws_sm`: one AWS Secrets Manager secret per credential; `aws_ssm`: one SSM Parameter Store parameter per credential, both under a customer-managed KMS key. Unset, `aws_sm` when `AGENTD_SECRETS_KMS_KEY_ID` is set, else `postgres` (see [Vault credentials](#vault-credentials)) |
 
 ## Settings
 
@@ -173,34 +173,115 @@ web identity, the ECS task role or the EC2 instance role. This holds with or wit
 
 ## Vault credentials
 
-With `AGENTD_SECRETS=aws`, each credential's secret material is one Secrets
-Manager secret, `<prefix>/<workspace>/<vault>/<credential>`, created under the
-configured KMS key and tagged `workspace`, `vault` and `managed-by=agentd`.
-Each part of the name is checked against the id charset before any call, so
-no input names a secret outside the prefix or in another workspace. A write
-creates the secret, or puts a new value when it exists, with one
-`ClientRequestToken`, so a retry never adds a second version. A secret deleted
-inside its recovery window is restored and written again. Archiving a
-credential deletes its secret with the recovery window. Archiving a vault
-archives its credentials, and deleting one deletes them, in one transaction
-under the vault's row lock; their secrets are deleted right after the commit.
-A create or rotation writes its secret first and takes it back out when the
-vault or credential turns out archived or gone, so no archived credential
-keeps a secret. Reads are not cached.
-An `environment_variable` credential's secret is also tagged
-`credential_type=environment_variable` when it is created, so that a sandbox
-worker's egress swap (`agentd-worker`) is granted those secrets and no others; `agentd vault-secrets
-tag` tags the ones created before (1 Postgres read, then one `TagResource`
-each; tagging one twice changes nothing).
+Each credential's secret material goes to the secret store `AGENTD_SECRETS`
+names: `postgres`, `aws_sm` or `aws_ssm`, the names iron-proxy gives the same
+sources. `aws` also selects the Secrets Manager store. Unset (or blank), it
+is `aws_sm` when `AGENTD_SECRETS_KMS_KEY_ID` is set and `postgres` otherwise,
+so an existing AWS deployment keeps its store with no change. Every store keeps one secret
+per credential, keyed by its workspace, vault and credential ids, each checked
+against the id charset before any call, so no input reaches a secret in
+another workspace. Archiving a credential deletes its secret. Archiving a
+vault archives its credentials, and deleting one deletes them, in one
+transaction under the vault's row lock; their secrets are deleted right after
+the commit. A create or rotation writes its secret first and takes it back
+out when the vault or credential turns out archived or gone, so no archived
+credential keeps a secret. Reads are not cached.
+
+Our `cloud` runtime swaps `environment_variable` values in at egress from
+Secrets Manager or Parameter Store, never from Postgres, so a deployment that
+runs that swap uses `aws_sm` or `aws_ssm`.
+
+### Postgres
+
+With `AGENTD_SECRETS=postgres`, each secret is one row of `vault_secrets`,
+sealed by envelope encryption: each write seals the value with AES-256-GCM
+under a fresh random 256-bit data key, and seals the data key with AES-256-GCM
+under a single-use key that HKDF-SHA256 derives from the first master key and
+a fresh 32-byte salt. Both are bound to the workspace, vault, credential and
+kind, so a row copied to another credential, or with its kind changed, does
+not open. The row names the master key's id; the master keys themselves are
+only in `AGENTD_SECRET_KEYS`, never in the database, a log or an error. A put,
+a read and a delete are one statement each, on the primary. A row that does
+not open (its key left the ring, or the row was altered) is an error, logged
+at `ERROR`. The table is not on the change feed and keeps no history.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_SECRETS_KMS_KEY_ID` | required | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. The `aws/secretsmanager` key is refused |
-| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every secret name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters |
+| `AGENTD_SECRET_KEYS` | required | `<id>:<hex>,…`: the master keys, each exactly 32 bytes (64 hex digits, `openssl rand -hex 32`). The first seals every new write; every one opens what it sealed. A bad entry is named by its position, never its text |
+
+Keep the master keys apart from the database and its backups: whoever holds
+both reads every credential. To rotate a master key:
+
+1. Add the new key second in `AGENTD_SECRET_KEYS` on every replica: every
+   replica can open what it will seal.
+2. Move it first on every replica: new writes use it.
+3. Run `agentd vault-secrets reseal`. It seals every row not under the first
+   key again under a new data key and the first key, 500 rows a page, and
+   prints how many it moved and each row still under another key, by its ids
+   and key id. A write between its read and its write of a row wins. It exits
+   with failure while any row remains; run it again once every replica has
+   the new key first.
+4. Drop the old key.
+
+After a suspected master key leak, rotate as above, and have tenants rotate
+their own credentials: a copy of the database may already be out. Data keys
+need no rotation, since every write makes a new one.
+
+### Secrets Manager
+
+With `AGENTD_SECRETS=aws_sm`, each secret is one Secrets Manager secret,
+`<prefix>/<workspace>/<vault>/<credential>`, created under the configured KMS
+key and tagged `workspace`, `vault` and `managed-by=agentd`. A write creates
+the secret, or puts a new value when it exists, with one
+`ClientRequestToken`, so a retry never adds a second version. A secret deleted
+inside its recovery window is restored and written again; a delete keeps the
+recovery window. An `environment_variable` credential's secret is also tagged
+`credential_type=environment_variable` when it is created, so that a sandbox
+worker's egress swap (`agentd-worker`) is granted those secrets and no others;
+`agentd vault-secrets tag` tags the ones created before (1 Postgres read, then
+one `TagResource` each; tagging one twice changes nothing).
+
+### SSM Parameter Store
+
+With `AGENTD_SECRETS=aws_ssm`, each secret is one SecureString parameter,
+`/<prefix>/<workspace>/<vault>/<credential>`, encrypted under the configured
+KMS key, in the Intelligent-Tiering tier, tagged as Secrets Manager secrets
+are. A write creates the parameter with its tags, or, when it exists,
+overwrites its value with the same type, key and tier (1 or 2
+`PutParameter` calls); a read is one `GetParameter` with decryption; a delete
+is one `DeleteParameter`, and a missing parameter is already deleted. A
+parameter has no recovery window, so `AGENTD_SECRETS_RECOVERY_DAYS` is
+refused. SSM reserves names starting `aws` or `ssm` in any letter case and
+allows 15 levels, so the prefix may not start so and has at most 12 segments.
+`agentd vault-secrets tag` and `reseal` change nothing on this store.
+
+Parameter Store's limits, as AWS states them:
+- `GetParameter` is 40 calls a second per account and region by default,
+  10,000 with higher throughput turned on (billed per call). The loop reads up
+  to one secret per MCP server per step, about 2,000 a second at 10,000
+  sessions, so a busy deployment needs higher throughput. agentd does not
+  change the account setting.
+- `PutParameter` is 3 calls a second by default and 10 with higher throughput.
+  An OAuth refresh overwrites, two calls, once an hour per credential: about
+  3,000 refreshed credentials by default and 10,000 with higher throughput,
+  with headroom.
+- A value is at most 8 KB (an advanced parameter; Intelligent-Tiering makes a
+  parameter advanced only when it needs to be). A larger credential fails its
+  write with an error naming the parameter.
+- A parameter keeps its 100 most recent versions until it is deleted.
+
+### Settings for the AWS stores
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGENTD_SECRETS_KMS_KEY_ID` | required for `aws_sm` and `aws_ssm` | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. An AWS managed key (`aws/secretsmanager`, `aws/ssm`) is refused |
+| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters |
 | `AGENTD_SECRETS_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Region |
-| `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager and KMS (LocalStack), under the same rule as `AGENTD_AWS_ENDPOINT` |
+| `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager or SSM, and KMS (LocalStack), under the same rule as `AGENTD_AWS_ENDPOINT` |
 | `AGENTD_SECRETS_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
-| `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | Days a deleted secret stays recoverable, 7 to 30 |
+| `AGENTD_SECRETS_RECOVERY_DAYS` | `7` | `aws_sm` only: days a deleted secret stays recoverable, 7 to 30 |
+| `AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS` | `5000` | The longest one attempt of a secret store or KMS call waits; at most `AGENTD_SECRETS_OPERATION_TIMEOUT_MS` |
+| `AGENTD_SECRETS_OPERATION_TIMEOUT_MS` | `15000` | The longest a secret store or KMS call takes, its retries included; past it the request it serves fails instead of waiting |
 
 Credentials come from the AWS default chain, as for S3. The least-privilege
 IAM policies for agentd, the key and the workers are in
@@ -217,7 +298,7 @@ dropped from every log whatever `RUST_LOG` says.
 agentd reads its own keys from environment variables; how the deployment fills
 them (a secrets manager, a task definition) is the deployment's concern. Each
 key ring is `<id>:<hex>,…`, ids of letters and digits, keys of at least 16
-bytes:
+bytes (32 exactly for `AGENTD_SECRET_KEYS`, under [Postgres](#postgres)):
 
 | Variable | What it is |
 |---|---|
@@ -227,8 +308,8 @@ bytes:
 | `AGENTD_RUNTIME_KEYS` | agentd's runtime keys, the current one first. The poller of `cloud` environments polls the runtime queue with the first; every one listed reaches it, so a key rotates by putting the new one first and dropping the old one once no poller uses it. Make one with `printf 'sk-ant-oat01-%sAA' "$(openssl rand 64 \| base64 \| tr '+/' '-_' \| tr -d '=\n')"` |
 | `AGENTD_ANTHROPIC_API_KEY`, `AGENTD_OPENROUTER_API_KEY` | The model providers' keys |
 
-Every replica must have the same rings. Secrets Manager holds only tenant vault
-credentials.
+Every replica must have the same rings. The secret store holds only tenant
+vault credentials.
 
 ## Work
 
@@ -316,21 +397,25 @@ agentd environment-keys create --org <org_id> --workspace <workspace_id> --envir
 agentd environment-keys list                                                  # id, org, workspace, environment, status, hint, created, name
 agentd environment-keys revoke <envkey_id>
 agentd vault-secrets tag                                                      # tags existing environment_variable secrets
+agentd vault-secrets reseal                                                   # moves Postgres secrets to the first master key
 ```
 
 The commands read the same configuration as the server, so `DATABASE_URL` is
 required for all of them when `AGENTD_STORE` is unset or `postgres`, and so
 is `AGENTD_API_KEY_PEPPERS`. `agentd keys`, `agentd admin-keys` and `agentd
 environment-keys` use Postgres (migrated); `agentd vault-secrets tag` reads the
-credentials from Postgres and tags their secrets in Secrets Manager. A key is
+credentials from Postgres and tags their secrets in Secrets Manager, and
+`agentd vault-secrets reseal` re-seals the Postgres store's rows
+([Postgres](#postgres)); each does nothing on a store that needs neither. A key is
 printed once and never stored; lose it and create another.
 
 ## Security
 
 There is no switch that weakens any of these; each is the only behaviour.
 
-- Vault credentials are in Secrets Manager under a customer-managed KMS key.
-  There is no plain store.
+- Vault credentials are sealed: in Postgres under envelope encryption with the
+  master keys only in the environment, or in Secrets Manager or Parameter
+  Store under a customer-managed KMS key. There is no plain store.
 - API keys are peppered digests in Postgres, made by `agentd keys`, `agentd
   environment-keys` and `agentd admin-keys`. No API key is read from the
   environment and there is no default key; only agentd's own runtime keys are.

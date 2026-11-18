@@ -8,6 +8,7 @@ use blobs_s3::{BlobError, S3BlobStore};
 
 mod feed;
 mod postgres;
+mod secrets;
 mod stores;
 
 pub use postgres::FireSources;
@@ -16,14 +17,13 @@ pub use stores::Stores;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::{self, Metrics};
 use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
-use secrets_aws::AwsSecretStore;
 use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
 use shared::hash::KeyRing;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
-use shared::ports::secrets::{SecretError, SecretStore};
+use shared::ports::secrets::SecretError;
 use signals_valkey::{Valkey, ValkeySignals};
 use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgHistoryLog, PgScheduler, ScheduleOutbox};
 use webhooks::WebhookSender;
@@ -129,17 +129,16 @@ impl Backends {
             BlobsConfig::S3(s3) => Arc::new(S3BlobStore::connect(s3).await?),
         };
         let blobs: Arc<dyn BlobStore> = Arc::new(Observed::new(blobs, metrics.clone()));
-        let aws = AwsSecretStore::connect(&config.secrets).await?;
+        let secrets = secrets::Secrets::connect(&config.secrets, &metrics).await?;
         let peppers = Arc::new(PepperRing::from_ring(&config.keys.peppers));
         let streams = &config.streams;
         let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster)
             .map_err(|e| BootError::Signals(e.to_string()))?;
-        let secrets: Arc<dyn SecretStore> = Arc::new(Observed::new(Arc::new(aws), metrics.clone()));
         let (stores, load, keys, fires, sources) = match &config.store {
             StoreConfig::Postgres { url, read_url, pool } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
                 let hooks = config.webhooks.clone();
-                let outside = postgres::Outside { blobs, secrets: secrets.clone() };
+                let outside = postgres::Outside { blobs, secrets };
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
                 let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));

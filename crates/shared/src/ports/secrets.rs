@@ -82,6 +82,16 @@ impl std::fmt::Display for SecretKey {
     }
 }
 
+/// A store's plaintext as a [`SecretString`]. The string can have spare
+/// capacity, and turning it into a [`SecretString`] would then reallocate and
+/// free the original unzeroed: copy it once at its exact size and zero the
+/// original.
+pub fn into_secret(mut value: String) -> SecretString {
+    let secret = SecretString::from(value.as_str());
+    zeroize::Zeroize::zeroize(&mut value);
+    secret
+}
+
 /// Secret storage by key.
 #[async_trait]
 pub trait SecretStore: Send + Sync {

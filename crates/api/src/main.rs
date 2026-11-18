@@ -3,7 +3,7 @@
 //! Boot: read [`Config`] from the environment, connect the backends it
 //! selects, assemble the app, and serve. `agentd keys …`, `agentd
 //! admin-keys …` and `agentd environment-keys …` manage keys, and `agentd
-//! vault-secrets tag` tags secrets, instead ([`api::cli`]). Records and blobs live
+//! vault-secrets tag|reseal` maintains vault secrets, instead ([`api::cli`]). Records and blobs live
 //! in Postgres and object storage. Every replica's event streams read the log,
 //! signalled through Valkey (`AGENTD_VALKEY_URL`), and every replica claims
 //! due schedules from Postgres.

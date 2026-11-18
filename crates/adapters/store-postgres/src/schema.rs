@@ -7,10 +7,12 @@
 mod admin_keys_table;
 mod api_keys_table;
 mod environment_keys_table;
+mod vault_secrets_table;
 mod workspaces_table;
 pub use admin_keys_table::admin_keys;
 pub use api_keys_table::api_keys;
 pub use environment_keys_table::environment_keys;
+pub use vault_secrets_table::vault_secrets;
 pub use workspaces_table::workspaces;
 
 diesel::table! {

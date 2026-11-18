@@ -29,7 +29,7 @@ fn defaults_select_postgres_s3_and_aws_secrets() {
     let StoreConfig::Postgres { url, .. } = &c.store;
     assert_eq!(url, URL);
     assert_eq!(c.blobs, BlobsConfig::S3(S3Config::new("agentd-artifacts")));
-    assert_eq!(c.secrets, AwsSecretsConfig::new("agentd", "alias/agentd"));
+    assert_eq!(c.secrets, SecretsConfig::AwsSm(AwsSecretsConfig::new("agentd", "alias/agentd")));
     assert!(c.keys.runtime.is_empty() && c.keys.anthropic.is_none() && c.keys.openrouter.is_none());
     assert_eq!(c.work.api_base_url, "http://agentd:8080");
 }
@@ -140,7 +140,8 @@ fn the_pool_is_sized_by_config_and_rejects_nonsense() {
 #[test]
 fn the_secret_store_needs_a_kms_key() {
     for missing in ["", "  "] {
-        let err = config(&[("AGENTD_SECRETS_KMS_KEY_ID", missing)]).unwrap_err();
+        let err =
+            config(&[("AGENTD_SECRETS", "aws_sm"), ("AGENTD_SECRETS_KMS_KEY_ID", missing)]).unwrap_err();
         assert_eq!(err.var, "AGENTD_SECRETS_KMS_KEY_ID");
     }
 }
@@ -148,25 +149,29 @@ fn the_secret_store_needs_a_kms_key() {
 #[test]
 fn aws_secret_options_come_from_config() {
     let c = config(&[
-        ("AGENTD_SECRETS", "aws"),
+        ("AGENTD_SECRETS", "aws_sm"),
         ("AGENTD_SECRETS_KMS_KEY_ID", "arn:aws:kms:eu-west-1:111122223333:key/k"),
         ("AGENTD_SECRETS_PREFIX", "agentd/prod"),
         ("AGENTD_SECRETS_REGION", "eu-west-1"),
         ("AGENTD_SECRETS_ENDPOINT", "https://secretsmanager.eu-west-1.amazonaws.com"),
         ("AGENTD_SECRETS_ROLE_ARN", "arn:aws:iam::111122223333:role/agentd-secrets"),
         ("AGENTD_SECRETS_RECOVERY_DAYS", "30"),
+        ("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "2000"),
+        ("AGENTD_SECRETS_OPERATION_TIMEOUT_MS", "6000"),
     ])
     .unwrap();
     assert_eq!(
         c.secrets,
-        AwsSecretsConfig {
+        SecretsConfig::AwsSm(AwsSecretsConfig {
             prefix: "agentd/prod".into(),
             kms_key_id: "arn:aws:kms:eu-west-1:111122223333:key/k".into(),
             region: Some("eu-west-1".into()),
             endpoint: Some("https://secretsmanager.eu-west-1.amazonaws.com".into()),
             role_arn: Some("arn:aws:iam::111122223333:role/agentd-secrets".into()),
             recovery_window_days: 30,
-        }
+            attempt_timeout: std::time::Duration::from_millis(2000),
+            operation_timeout: std::time::Duration::from_millis(6000),
+        })
     );
     for days in ["-1", "0", "6", "31"] {
         let err = config(&[("AGENTD_SECRETS_RECOVERY_DAYS", days)]).unwrap_err();
@@ -175,4 +180,5 @@ fn aws_secret_options_come_from_config() {
 }
 
 mod keys;
+mod secrets;
 mod streams;
