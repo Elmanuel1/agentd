@@ -50,7 +50,15 @@ impl CredentialClaims for PgVaultsStore {
         claimed: Timestamp,
     ) -> Result<ClaimedWrite, StoreError> {
         let id = &cred.wire.id;
-        self.put_secret(ws, vault, id, &cred.auth).await?;
+        if let Err(e) = self.put_secret(ws, vault, id, &cred.auth).await {
+            // A failed write can still have stored the value (SSM tags after
+            // it), so an archive or delete since the claim keeps no secret.
+            if let Err(left) = self.settle(ws, vault, id).await {
+                tracing::error!(workspace = %ws, vault = %vault, credential = %id, error = %left,
+                    "vaults: a failed claimed write could not check its credential; delete its secret by hand if it is gone");
+            }
+            return Err(e);
+        }
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let affected = diesel::sql_query(format!(
             "UPDATE credentials SET doc = $5, display_name = $6 WHERE {KEY} AND doc->>'updated_at' = $4 \
@@ -69,8 +77,19 @@ impl CredentialClaims for PgVaultsStore {
         if affected == 1 {
             return Ok(ClaimedWrite::Matched);
         }
-        // An update came between the claim and this write, or the credential
-        // was archived or deleted meanwhile, which takes its secret out.
+        self.settle(ws, vault, id).await
+    }
+}
+
+impl PgVaultsStore {
+    /// An update came between the claim and the write, or the credential was
+    /// archived or deleted meanwhile, which takes its secret out.
+    async fn settle(
+        &self,
+        ws: &WorkspaceId,
+        vault: &VaultId,
+        id: &CredentialId,
+    ) -> Result<ClaimedWrite, StoreError> {
         match self.credential_row(ws, vault, id).await {
             Ok((wire, _)) if wire.archived_at.is_none() => Ok(ClaimedWrite::Changed),
             Ok(_) | Err(StoreError::CredentialNotFound) => {
