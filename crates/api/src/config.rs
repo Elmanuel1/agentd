@@ -3,7 +3,6 @@
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
 use blobs_s3::S3Config;
-use secrets_aws::AwsSecretsConfig;
 
 /// Everything the binary needs to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +14,7 @@ pub struct Config {
     /// Blob store (`AGENTD_BLOBS`).
     pub blobs: BlobsConfig,
     /// Secret store (`AGENTD_SECRETS`).
-    pub secrets: AwsSecretsConfig,
+    pub secrets: SecretsConfig,
     /// The peppers, runtime keys and model keys from the environment.
     pub keys: KeysConfig,
     /// Where logs, traces and metrics go.
@@ -164,6 +163,7 @@ mod work;
 
 pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};
+pub use secrets::SecretsConfig;
 pub use store::StoreConfig;
 pub use streams::StreamsConfig;
 pub use telemetry::TelemetryConfig;

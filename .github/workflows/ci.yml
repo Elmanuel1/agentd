@@ -27,7 +27,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # clippy.toml's banned macros warn until the #[async_trait] uses are migrated.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings --force-warn clippy::disallowed_macros
 
   test:
     runs-on: ubuntu-latest
@@ -45,7 +46,7 @@ jobs:
       localstack:
         image: localstack/localstack:3.0
         env:
-          SERVICES: s3,secretsmanager,kms
+          SERVICES: s3,secretsmanager,kms,ssm
         ports: ["4566:4566"]
         options: >-
           --health-cmd "curl -sf http://localhost:4566/_localstack/health"
@@ -134,8 +135,6 @@ jobs:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
-      # Credentials go to Secrets Manager and KMS on LocalStack, as in production.
-      AGENTD_SECRETS_ENDPOINT: http://localhost:4566
       # Every log line, so the last check shows no secret or key reaches one.
       RUST_LOG: trace
       AGENTD_ADDR: 0.0.0.0:8080
@@ -180,13 +179,10 @@ jobs:
       - name: Start the scripted model
         run: nohup python3 conformance/mock_model.py --port 18766 --model mock/scripted conformance/fixtures/mock-model.json > model.log 2>&1 &
       - run: cargo build --locked -p api
-      - name: Create the secrets KMS key on LocalStack
-        run: |
-          key=$(aws --endpoint-url http://localhost:4566 kms create-key --query KeyMetadata.Arn --output text)
-          echo "AGENTD_SECRETS_KMS_KEY_ID=$key" >> "$GITHUB_ENV"
       - name: Give agentd its keys through the environment
+        # No KMS key is set, so credentials are sealed in Postgres, the default store.
         run: |
-          for var in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS; do
+          for var in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS AGENTD_SECRET_KEYS; do
             ring="k1:$(openssl rand -hex 32)"
             echo "::add-mask::$ring"
             echo "$var=$ring" >> "$GITHUB_ENV"
@@ -226,17 +222,17 @@ jobs:
       - name: Java SDK (com.anthropic:anthropic-java 2.52.0)
         working-directory: conformance/java
         run: ./gradlew test --no-daemon
-      - name: Credentials are in Secrets Manager under the key, and no secret or key is logged
+      - name: Credentials were sealed in Postgres and deleted, none went to Secrets Manager, and no secret or key is logged
         run: |
-          secrets=$(aws --endpoint-url http://localhost:4566 secretsmanager list-secrets --include-planned-deletion \
-            --filters Key=name,Values=agentd/wrkspc_sdk/ --output json)
-          echo "$secrets" | jq -e --arg key "$AGENTD_SECRETS_KMS_KEY_ID" '
-            .SecretList | length >= 2 and all(
-              .KmsKeyId == $key and .DeletedDate != null
-              and ([.Tags[] | select(.Key == "managed-by" and .Value == "agentd")] | length == 1))'
+          sql() { docker exec "${{ job.services.postgres.id }}" psql -U agentd -d agentd -tAc "$1"; }
+          test "$(sql "SELECT n_tup_ins > 0 FROM pg_stat_user_tables WHERE relname = 'vault_secrets'")" = t
+          test "$(sql "SELECT count(*) FROM vault_secrets")" = 0
+          aws --endpoint-url http://localhost:4566 secretsmanager list-secrets --include-planned-deletion --output json \
+            | jq -e '.SecretList | length == 0'
           test -z "$(aws --endpoint-url http://localhost:4566 s3 ls s3://agentd-artifacts/secrets/ --recursive)"
           if grep -qE "sdk-token-|ts-token-|s3cret-|mock-model-key-" agentd.log; then echo "a credential reached a log"; exit 1; fi
           if grep -qF "$AGENTD_TEST_KEY" agentd.log; then echo "the API key reached the log"; exit 1; fi
+          if grep -qF "${AGENTD_SECRET_KEYS#*:}" agentd.log; then echo "a master key reached the log"; exit 1; fi
           ./target/debug/agentd keys list | grep -q "wrkspc_sdk"
       - name: A revoked key is refused on the next request
         run: |

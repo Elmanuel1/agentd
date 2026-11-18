@@ -1,15 +1,37 @@
-//! The KMS key check at connect.
+//! What both stores do at connect: the AWS configuration their clients start
+//! from, and the KMS key check.
 
+use aws_common::SdkConfig;
+use aws_sdk_kms::config::timeout::TimeoutConfig;
 use aws_sdk_kms::types::{KeyManagerType, KeyMetadata, KeySpec, KeyState, KeyUsageType};
 use shared::ports::secrets::SecretError;
 
 use crate::failure::failure;
+use crate::AwsSecretsConfig;
+
+/// The configuration a store's client is built from, with its timeouts, and
+/// the ARN of the store's KMS key once [`customer_key_arn`] accepts it. The
+/// client applies `config.endpoint` itself.
+pub(crate) async fn connect(config: &AwsSecretsConfig) -> Result<(SdkConfig, String), SecretError> {
+    let shared = aws_common::sdk_config(config.region.as_deref(), config.role_arn.as_deref()).await;
+    let timeouts = TimeoutConfig::builder()
+        .operation_attempt_timeout(config.attempt_timeout)
+        .operation_timeout(config.operation_timeout)
+        .build();
+    let shared = shared.into_builder().timeout_config(timeouts).build();
+    let mut kms = aws_sdk_kms::config::Builder::from(&shared);
+    if let Some(endpoint) = &config.endpoint {
+        kms = kms.endpoint_url(endpoint);
+    }
+    let key_arn = customer_key_arn(&aws_sdk_kms::Client::from_conf(kms.build()), &config.kms_key_id).await?;
+    Ok((shared, key_arn))
+}
 
 /// The ARN of `key_id` once `DescribeKey` shows it is a customer-managed,
 /// enabled, symmetric encryption key. Secrets are created under the ARN, so a
 /// policy condition on `secretsmanager:KmsKeyArn` matches whatever form of id
 /// was configured.
-pub(crate) async fn customer_key_arn(kms: &aws_sdk_kms::Client, key_id: &str) -> Result<String, SecretError> {
+async fn customer_key_arn(kms: &aws_sdk_kms::Client, key_id: &str) -> Result<String, SecretError> {
     if key_id.trim().is_empty() {
         return Err(SecretError::Backend("a customer-managed KMS key id is required".into()));
     }
@@ -21,7 +43,7 @@ pub(crate) async fn customer_key_arn(kms: &aws_sdk_kms::Client, key_id: &str) ->
 
 fn check(key_id: &str, meta: &KeyMetadata) -> Result<String, SecretError> {
     if meta.key_manager() != Some(&KeyManagerType::Customer) {
-        return Err(unfit(key_id, "it is not customer managed (the aws/secretsmanager key is not accepted)"));
+        return Err(unfit(key_id, "it is not customer managed (an AWS managed key is not accepted)"));
     }
     if !meta.enabled() || meta.key_state() != Some(&KeyState::Enabled) {
         return Err(unfit(key_id, "it is not enabled"));

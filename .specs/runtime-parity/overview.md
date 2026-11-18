@@ -119,8 +119,8 @@ agentd (one stack, each PR on your go-ahead):
   (2026-11-08).
 - The Cloudflare launcher reads a `cloud` environment's networking with our runtime key, the only key allowed to;
   if it cannot, the sandbox does not start (2026-11-08).
-- One credential store for now, Secrets Manager; envelope encryption when reads pass half of AWS's limit
-  (2026-11-08).
+- Credentials behind the secret store: Postgres under envelope encryption by default, Secrets Manager or SSM
+  Parameter Store as adapters (2026-11-17, secret-store ADR 0001).
 - agentd serves MCP servers from the loop with the session's vault credentials (2026-11-08), read once per loop step
   that uses them, with the MCP session and tool list kept per session in Postgres (2026-11-08).
 - Vaults behave as Anthropic documents them (2026-11-08).
@@ -143,7 +143,7 @@ agentd (one stack, each PR on your go-ahead):
   and a local replay (2026-11-12).
 - Schedules and webhooks go through outboxes read from Postgres's WAL by Debezium into Kafka, or Valkey Streams
   without Kafka; an action's own effects happen in its request (2026-11-11 to 2026-11-15).
-- agentd's keys come from environment variables, with rotation; Secrets Manager holds only tenant credentials
+- agentd's keys come from environment variables, with rotation; the secret store holds only tenant credentials
   (by 2026-11-12).
 - agentd exports metrics only; alarms belong to the infrastructure (2026-11-11). The load test runs by hand
   (2026-11-11).

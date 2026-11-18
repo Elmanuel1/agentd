@@ -1,0 +1,5 @@
+# Banned items. CI's lint step keeps disallowed_macros a warning (--force-warn) until the
+# existing #[async_trait] uses are migrated; then the flag goes and the ban fails the build.
+disallowed-macros = [
+    { path = "async_trait::async_trait", reason = "use native async fn in traits" },
+]
