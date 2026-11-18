@@ -1,9 +1,9 @@
 # Secret store: decisions
 
-agentd keeps each vault credential's secret behind its `SecretStore` port. Postgres is the default store, sealed by
-envelope encryption under master keys from the environment, so a small deployment runs on Postgres alone. AWS
+agentd keeps each vault credential's secret behind its `SecretStore` port. Postgres is the default store, sealed
+under master keys from the environment, so a small deployment runs on Postgres alone. AWS
 Secrets Manager and SSM Parameter Store are the external adapters, chosen by a setting
-([ADR 0001](adr/0001-postgres-secret-store.md)). Each row names who decided and when.
+([ADR 0001](adr/0001-postgres-secret-store.md), the row format in [ADR 0002](adr/0002-salt-only-vault-secrets.md)). Each row names who decided and when.
 
 ## Which store
 
@@ -20,12 +20,12 @@ Secrets Manager and SSM Parameter Store are the external adapters, chosen by a s
 
 | # | Decision | Source |
 |---|---|---|
-| D7 | One table, `vault_secrets` (V20), keyed by workspace, vault and credential, with the kind, the wrapping key's id, the sealed data key and the sealed value. No timestamps, no writer columns, no foreign key: the secret is written before its credential row, as the port requires of every store. | User, 2026-11-17 ("Approve", the columns included) |
-| D8 | Each put seals the value with AES-256-GCM under a fresh random 256-bit data key, and wraps the data key with AES-256-GCM under a single-use key that HKDF-SHA256 derives from the first master key and a fresh 32-byte salt. No key encrypts twice, so the AES-GCM nonce limit never applies. | User, 2026-11-17 (plan approved) |
-| D9 | Both ciphertexts are bound to their workspace, vault, credential and kind through the associated data. The kind is read from the row, never from the caller's key. | User, 2026-11-17 (plan approved) |
-| D10 | The master keys are `AGENTD_SECRET_KEYS`, a key ring `<id>:<hex>,…` of 32-byte keys: the first wraps, every one opens. No key leaves `shared::hash::SecretKeys`, which derives wrap keys only. A bad entry is named by its position, never its text, in every key ring. | User, 2026-11-17 (plan approved) |
+| D7 | One table, `vault_secrets` (V20, V21), keyed by workspace, vault and credential, with the kind, the master key's id, the 32-byte salt and the sealed value. No timestamps, no writer columns, no foreign key: the secret is written before its credential row, as the port requires of every store. | User, 2026-11-17 ("Approve", the columns included; "Drop it" and "New V21 migration" for the salt) |
+| D8 | Each put seals the value with AES-256-GCM under a single-use key that HKDF-SHA256 derives from the first master key and a fresh 32-byte salt, with the info `agentd/vault-secret/value/v1`. No key encrypts twice, so the AES-GCM nonce limit never applies. | User, 2026-11-17 ("Drop it") |
+| D9 | The ciphertext is bound to its workspace, vault, credential and kind through the associated data. The kind is read from the row, never from the caller's key. | User, 2026-11-17 (plan approved) |
+| D10 | The master keys are `AGENTD_SECRET_KEYS`, a key ring `<id>:<hex>,…` of 32-byte keys: the first seals, every one opens. No key leaves `shared::hash::SecretKeys`, which derives value keys only. A bad entry is named by its position, never its text, in every key ring. | User, 2026-11-17 (plan approved) |
 | D11 | `vault_secrets` stays off the change feed and history: it is not in Debezium's include list and has no history trigger. | User, 2026-11-16 (the plan brief) |
-| D12 | `agentd vault-secrets reseal` seals every row not under the first key again under a new data key and the first key, names what remains, and fails while any row remains. It re-seals in full rather than rewrapping, so an old backup plus a leaked old key never opens the current value. | User, 2026-11-16 ("reseal") |
+| D12 | `agentd vault-secrets reseal` seals every row not under the first key again under the first key with a new salt, names what remains, and fails while any row remains. The value is encrypted again, so an old backup plus a leaked old key never opens the current value. | User, 2026-11-16 ("reseal") |
 | D13 | No read cache: a Postgres read is one primary-key lookup, and the loop reads once per server per step (runtime-parity D27). | User, 2026-11-17 (plan approved) |
 | D14 | The secret store ships as one agentd PR of seven ordered commits, under 100 files, the spec included. | User, 2026-11-16 (one PR of ordered commits) |
 

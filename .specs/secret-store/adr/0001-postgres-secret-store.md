@@ -1,6 +1,6 @@
 # ADR 0001: Vault secrets default to Postgres under envelope encryption, with AWS stores as adapters
 
-Status: Accepted
+Status: Accepted; decisions 2 to 4 superseded by [ADR 0002](0002-salt-only-vault-secrets.md)
 Date: 2026-11-17
 Deciders: the user (Elmanuel1)
 Scope: agentd's `SecretStore` port, a new `vault_secrets` table, the `secrets-aws` adapter crate and the

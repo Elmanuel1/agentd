@@ -50,6 +50,12 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if config.cloud_swap_misses_secrets() {
+        tracing::warn!(
+            "AGENTD_SECRETS is postgres and AGENTD_RUNTIME_KEYS is set: the cloud egress swap reads only aws_sm \
+             or aws_ssm, so environment_variable credentials in cloud sessions are not swapped"
+        );
+    }
     let backends = match Backends::from_config(&config).await {
         Ok(b) => b,
         Err(e) => {

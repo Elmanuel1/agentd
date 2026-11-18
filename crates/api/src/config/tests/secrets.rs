@@ -1,6 +1,8 @@
 //! `AGENTD_SECRETS` and its stores' settings.
 
 use shared::hash::SecretKeys;
+use shared::ports::keys::material::{self, KeyKind};
+use shared::ports::secrets::ExposeSecret;
 
 use super::*;
 
@@ -72,5 +74,18 @@ fn the_aws_timeouts_default_to_5_and_15_seconds_and_an_attempt_fits_inside_its_c
         [("AGENTD_SECRETS_OPERATION_TIMEOUT_MS", "0"), ("AGENTD_SECRETS_ATTEMPT_TIMEOUT_MS", "5s")]
     {
         assert_eq!(config(&[(var, bad)]).unwrap_err().var, var, "{bad}");
+    }
+}
+
+#[test]
+fn only_postgres_with_a_runtime_key_misses_the_cloud_egress_swap() {
+    let runtime = material::generate(KeyKind::Environment);
+    let runtime = ("AGENTD_RUNTIME_KEYS", runtime.expose_secret());
+    let postgres = [("AGENTD_SECRETS", "postgres"), ("AGENTD_SECRET_KEYS", &ring())];
+    assert!(config(&[postgres[0], postgres[1], runtime]).unwrap().cloud_swap_misses_secrets());
+    assert!(!config(&postgres).unwrap().cloud_swap_misses_secrets(), "no runtime key, no cloud poller");
+    for aws in ["aws_sm", "aws_ssm"] {
+        let c = config(&[("AGENTD_SECRETS", aws), runtime]).unwrap();
+        assert!(!c.cloud_swap_misses_secrets(), "{aws}");
     }
 }

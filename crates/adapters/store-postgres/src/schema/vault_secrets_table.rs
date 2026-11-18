@@ -1,4 +1,4 @@
-//! `vault_secrets` (V20).
+//! `vault_secrets` (V20, the salt from V21).
 
 diesel::table! {
     vault_secrets (workspace_id, vault_id, credential_id) {
@@ -7,7 +7,7 @@ diesel::table! {
         credential_id -> Text,
         environment_variable -> Bool,
         key_id -> Text,
-        sealed_key -> Bytea,
         sealed_value -> Bytea,
+        salt -> Bytea,
     }
 }
