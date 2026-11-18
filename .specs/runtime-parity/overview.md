@@ -119,7 +119,7 @@ agentd (one stack, each PR on your go-ahead):
   (2026-11-08).
 - The Cloudflare launcher reads a `cloud` environment's networking with our runtime key, the only key allowed to;
   if it cannot, the sandbox does not start (2026-11-08).
-- Credentials behind the secret store: Postgres under envelope encryption by default, Secrets Manager or SSM
+- Credentials behind the secret store: Postgres, sealed under master keys, by default, Secrets Manager or SSM
   Parameter Store as adapters (2026-11-17, secret-store ADR 0001).
 - agentd serves MCP servers from the loop with the session's vault credentials (2026-11-08), read once per loop step
   that uses them, with the MCP session and tool list kept per session in Postgres (2026-11-08).

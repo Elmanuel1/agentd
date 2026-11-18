@@ -11,8 +11,7 @@ use diesel::sql_types::{BigInt, Jsonb, Nullable, Text, Timestamptz};
 
 use shared::{OrgId, Timestamp, WorkspaceId};
 
-pub(super) const COLS: &str =
-    "workspace_id, session_id, org_id, environment_id, queue, state, metadata, created_at, \
+pub(super) const COLS: &str = "workspace_id, session_id, org_id, environment_id, queue, state, metadata, created_at, \
     acknowledged_at, started_at, latest_heartbeat_at, last_heartbeat, lease_until, handed_out_at, \
     stop_requested_at, stopped_at";
 

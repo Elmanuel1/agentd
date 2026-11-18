@@ -108,7 +108,7 @@ pub trait NativeSessionEventReads: Send + Sync {
         limit: usize,
     ) -> impl Future<Output = Result<Option<Tail>, StoreError>> + Send;
     fn head(&self, ws: &WorkspaceId, id: &SessionId)
-        -> impl Future<Output = Result<Head, StoreError>> + Send;
+    -> impl Future<Output = Result<Head, StoreError>> + Send;
 }
 
 impl<T: NativeSessionEventReads> SessionEventReads for T {

@@ -11,18 +11,18 @@ use sessions::steps::{Claim, StepEnd};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
 
+use super::Loop;
 use super::grade::conversation;
 use super::team::Thread;
-use super::turn::{batch, Turn};
+use super::turn::{Turn, batch};
 use super::usage::{charged, spent};
-use super::Loop;
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
 use crate::turn::compact::estimate::estimate;
 use crate::turn::compact::prompt::{cap, clear};
-use crate::turn::compact::{summary, Tier, BYTES_PER_TOKEN};
-use crate::turn::history::{rebuild, thread_events, History, Kept};
+use crate::turn::compact::{BYTES_PER_TOKEN, Tier, summary};
+use crate::turn::history::{History, Kept, rebuild, thread_events};
 
 /// A compaction the step runs instead of its turn.
 pub(super) struct Compacting {

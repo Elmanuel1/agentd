@@ -12,7 +12,7 @@
       "Resource": "arn:aws:ssm:*:*:parameter/PREFIX/*"
     },
     {
-      "Sid": "TagAgentdParametersAtCreate",
+      "Sid": "TagAgentdParameters",
       "Effect": "Allow",
       "Action": "ssm:AddTagsToResource",
       "Resource": "arn:aws:ssm:*:*:parameter/PREFIX/*",

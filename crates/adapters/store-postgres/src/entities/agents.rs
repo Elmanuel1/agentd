@@ -2,9 +2,9 @@
 //! typed schema lives in `crate::schema`; the wire object is kept in the `doc`
 //! jsonb column (fetched as `serde_json::Value`).
 
+use ::agents::Agent;
 use ::agents::store::{AgentFilter, AgentsStore, StoreError};
 use ::agents::types::AgentId;
-use ::agents::Agent;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
@@ -14,7 +14,7 @@ use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::agents;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
+use crate::{DocRow, PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed agents store (Diesel).
 #[derive(Debug, Clone)]

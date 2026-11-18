@@ -1,6 +1,6 @@
 use shared::{ApiError, AuthContext, Page, Pagination};
 
-use super::{map_store, parse_mem_pair, parse_store_id, MemoriesService, View};
+use super::{MemoriesService, View, map_store, parse_mem_pair, parse_store_id};
 use crate::store::{MemoryRecord, VersionSelector};
 use crate::types::{Memory, MemoryListItem, MemoryListPage, MemoryPrefix, MemoryPrefixTag};
 
@@ -27,11 +27,7 @@ impl MemoryOrder {
 /// trailing-slash terminated (live treats `/notes` == `/notes/`).
 fn normalize_prefix(raw: Option<&str>) -> String {
     let p = raw.filter(|s| !s.is_empty()).unwrap_or("/");
-    if p.ends_with('/') {
-        p.to_owned()
-    } else {
-        format!("{p}/")
-    }
+    if p.ends_with('/') { p.to_owned() } else { format!("{p}/") }
 }
 
 fn item_path(item: &MemoryListItem) -> &str {
@@ -127,7 +123,7 @@ impl MemoriesService {
         let mut memories: Vec<Memory> = records.iter().map(|r| project_head(r, View::Basic)).collect();
         match order {
             MemoryOrder::Path => memories.sort_by(|a, b| a.path.cmp(&b.path)),
-            MemoryOrder::CreatedAt => memories.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+            MemoryOrder::CreatedAt => memories.sort_by_key(|a| std::cmp::Reverse(a.created_at)),
         }
 
         let items = match depth {

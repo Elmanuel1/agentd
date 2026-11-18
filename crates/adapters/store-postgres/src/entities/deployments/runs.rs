@@ -8,7 +8,7 @@ use diesel_async::RunQueryDsl;
 use shared::WorkspaceId;
 
 use crate::schema::deployment_runs;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 #[derive(diesel::Insertable)]
 #[diesel(table_name = deployment_runs)]

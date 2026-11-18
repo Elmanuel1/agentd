@@ -10,7 +10,7 @@
 
 use std::process::ExitCode;
 
-use api::{build_router, AppState, Backends, Config};
+use api::{AppState, Backends, Config, build_router};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -28,13 +28,13 @@ async fn main() -> ExitCode {
         None => {}
         Some((cmd, rest)) if cmd == "keys" => return api::cli::keys(&config, rest).await,
         Some((cmd, rest)) if cmd == "admin-keys" => {
-            return api::cli::admin_keys::admin_keys(&config, rest).await
+            return api::cli::admin_keys::admin_keys(&config, rest).await;
         }
         Some((cmd, rest)) if cmd == "environment-keys" => {
-            return api::cli::environment_keys::environment_keys(&config, rest).await
+            return api::cli::environment_keys::environment_keys(&config, rest).await;
         }
         Some((cmd, rest)) if cmd == "vault-secrets" => {
-            return api::cli::vault_secrets::vault_secrets(&config, rest).await
+            return api::cli::vault_secrets::vault_secrets(&config, rest).await;
         }
         Some(_) => {
             let cli = api::cli::USAGE;
@@ -50,6 +50,12 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if config.cloud_swap_misses_secrets() {
+        tracing::warn!(
+            "AGENTD_SECRETS is postgres and AGENTD_RUNTIME_KEYS is set: the cloud egress swap reads only aws_sm \
+             or aws_ssm, so environment_variable credentials in cloud sessions are not swapped"
+        );
+    }
     let backends = match Backends::from_config(&config).await {
         Ok(b) => b,
         Err(e) => {

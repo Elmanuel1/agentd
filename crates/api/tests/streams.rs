@@ -7,21 +7,21 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
-use axum::Router;
-use common::{request, send_to, Auth, Rig, Streaming, KEY};
+use common::{Auth, KEY, Rig, Streaming, request, send_to};
 use diesel::connection::{Instrumentation, InstrumentationEvent};
 use http_body_util::BodyExt;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use sessions::SessionId;
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::DatabaseLoad;
-use sessions::SessionId;
 use shared::{Timestamp, WorkspaceId};
 use signals_valkey::ValkeySignals;
 use store_postgres::{PgBackend, PgObserver, PoolSettings};

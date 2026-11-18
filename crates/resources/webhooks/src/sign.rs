@@ -1,8 +1,8 @@
 //! Standard Webhooks signing: `v1,` and the base64 HMAC-SHA256, keyed with
 //! the decoded part of a `whsec_` secret, over `{id}.{timestamp}.{body}`.
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use hmac::{KeyInit, Mac};
 use sha2::Sha256;
 

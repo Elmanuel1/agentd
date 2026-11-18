@@ -2,7 +2,7 @@
 
 use store_postgres::PoolSettings;
 
-use super::{number, selector, unknown, ConfigError};
+use super::{ConfigError, number, selector, unknown};
 
 /// `AGENTD_STORE`.
 #[derive(Clone, PartialEq, Eq)]

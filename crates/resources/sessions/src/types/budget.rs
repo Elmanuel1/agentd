@@ -63,7 +63,9 @@ impl Session {
         if max <= spent {
             return Err(rejected(
                 "budget_not_raised",
-                &format!("budget: max_list_cost must be above the session's list cost so far ({spent} minor units)"),
+                &format!(
+                    "budget: max_list_cost must be above the session's list cost so far ({spent} minor units)"
+                ),
             ));
         }
         self.budget = Some(budget);

@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use changes_kafka::KafkaChanges;
-use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
-use shared::ports::changes::{Change, NativeChangeHandler, Source};
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use shared::BackendError;
+use shared::ports::changes::{Change, NativeChangeHandler, Source};
 
 fn brokers() -> Option<String> {
     std::env::var("AGENTD_KAFKA_BROKERS").ok()

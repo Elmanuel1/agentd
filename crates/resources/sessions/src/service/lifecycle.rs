@@ -2,9 +2,9 @@ use shared::limits::required;
 use shared::metadata::MetadataPolicy;
 use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
-use super::egress::{check_mcp_egress, FireRefusal};
+use super::egress::{FireRefusal, check_mcp_egress};
 use super::events::validate_sendable;
-use super::{guard_writable, map_store, parse_id, SessionsService};
+use super::{SessionsService, guard_writable, map_store, parse_id};
 use crate::events::{EventPayload, UserEvent};
 use crate::store::{SessionFilter, StoreError};
 use crate::types::{

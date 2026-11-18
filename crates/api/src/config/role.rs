@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::{number, ConfigError};
+use super::{ConfigError, number};
 
 /// `AGENTD_ROLE`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl LoopConfig {
                 return Err(ConfigError {
                     var: "AGENTD_ROLE",
                     reason: format!("expected api, loop or all, got `{other}`"),
-                })
+                });
             }
         };
         let optional = |var| get(var).map(|_| number(get, var, 1_u64)).transpose();

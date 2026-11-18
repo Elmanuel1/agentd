@@ -24,8 +24,8 @@ pub mod types;
 
 use std::sync::Arc;
 
-use shared::beta::BetaGate;
 use shared::Module;
+use shared::beta::BetaGate;
 
 pub use fire::DeploymentFire;
 pub use run_error::RunError;

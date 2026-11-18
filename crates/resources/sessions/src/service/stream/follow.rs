@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rand::Rng;
+use rand::RngExt;
 use shared::{Timestamp, WorkspaceId};
 
-use super::{listed, Tail, Tails};
+use super::{Tail, Tails, listed};
 use crate::events::{Event, SessionEvent};
 use crate::store::{Head, SessionEventLog};
 use crate::types::SessionId;
@@ -34,7 +34,7 @@ impl Follow {
         // Client events not processed yet: each is sent once it is.
         let (mut cursor, mut pending) = (head.seq, head.queued);
         loop {
-            let jitter = Duration::from_millis(rand::thread_rng().gen_range(0..=JITTER_MS));
+            let jitter = Duration::from_millis(rand::rng().random_range(0..=JITTER_MS));
             tokio::select! {
                 () = self.tail.wake.notified() => {}
                 () = tokio::time::sleep(FALLBACK + jitter) => {}

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use sessions::types::{Session, SessionId};
 use sessions::NativeSessionWork;
+use sessions::types::{Session, SessionId};
 use shared::{ApiError, AuthContext, WorkspaceId};
 use work::WorkService;
 

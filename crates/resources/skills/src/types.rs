@@ -3,7 +3,7 @@
 //! (live skills/14, 16, 19, 23, 43).
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::{ApiError, Id, Resource, Timestamp};
 
 /// Marker for `skill_…` ids.

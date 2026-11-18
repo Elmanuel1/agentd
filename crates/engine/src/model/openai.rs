@@ -1,6 +1,6 @@
 //! An OpenAI-compatible chat completions client (OpenRouter and the like).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sessions::events::ModelUsage;
 
 use super::{Block, Message, ModelError, ModelRequest, ModelResponse, NativeModelClient, Role, StopKind};

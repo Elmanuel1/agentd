@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
+use ::files::FileFilter;
 use ::files::store::{NativeFilesStore, StoreError, StoredFile};
 use ::files::types::{FileId, FileMetadata};
-use ::files::FileFilter;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
@@ -15,7 +15,7 @@ use shared::ports::blobs::BlobStore;
 use shared::{IdCursor, WorkspaceId};
 
 use crate::schema::files;
-use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, blob_be, diesel_be, parse_doc, pool_be, to_doc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileDoc {

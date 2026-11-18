@@ -2,10 +2,10 @@
 //! turns report most of it, so a thread compacts within a few turns (CP-4 to
 //! CP-10).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::common::Rig;
-use super::{events_until, message, on_loop, send, session, Block, Say, Scripted};
+use super::{Block, Say, Scripted, events_until, message, on_loop, send, session};
 
 /// A model with a 2,000-token window whose turns report 1,700 tokens.
 fn crowded(script: Vec<Say>) -> std::sync::Arc<Scripted> {

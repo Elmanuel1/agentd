@@ -9,7 +9,7 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{IdCursor, OrgId};
 
 use crate::schema::workspaces;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed workspaces store (Diesel).
 #[derive(Debug, Clone)]

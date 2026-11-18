@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use shared::{ApiError, AuthContext, Pagination, Timestamp};
 
-use crate::bundle::{parse_bundle, UploadFile};
+use crate::bundle::{UploadFile, parse_bundle};
 use crate::store::{SkillVersionsStore, SkillsStore, StoreError};
 use crate::types::{Skill, SkillId, SkillSource, SkillTag, SkillVersion, SkillVersionId, SkillVersionTag};
 

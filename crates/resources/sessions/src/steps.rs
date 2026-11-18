@@ -3,8 +3,8 @@
 //! and commits its events, so a replica holds nothing between steps and a
 //! step cut off by a crash runs again from the log after its lease.
 
-use shared::ports::BoxFuture;
 use shared::WorkspaceId;
+use shared::ports::BoxFuture;
 use std::future::Future;
 
 use crate::events::{Event, EventId};

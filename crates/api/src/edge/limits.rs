@@ -1,10 +1,10 @@
 //! Each module's request body cap.
 
+use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
-use axum::middleware::{from_fn_with_state, Next};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
-use axum::Router;
 use shared::module::BodyLimit;
 use shared::request_too_large_response;
 

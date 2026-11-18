@@ -10,7 +10,7 @@ use diesel::sql_types::Text;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{PgBackend, diesel_be, pool_be};
 
 /// Postgres-backed step queue.
 #[derive(Debug, Clone)]

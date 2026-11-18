@@ -3,8 +3,8 @@
 //! workers' autoscaler follows. Every replica reads the same table, so a
 //! dashboard takes the maximum across replicas, not the sum.
 
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use sessions::steps::Steps;

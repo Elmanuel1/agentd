@@ -14,7 +14,7 @@ use shared::{ApiError, AuthContext, Timestamp};
 
 use webhooks::EventKind;
 
-use crate::service::{map_store, parse_pair, parse_vault_id, VaultsService};
+use crate::service::{VaultsService, map_store, parse_pair, parse_vault_id};
 use crate::store::StoredCredential;
 use crate::types::{
     CreateCredentialRequest, Credential, CredentialAuthInput, CredentialAuthWire, CredentialId, CredentialTag,

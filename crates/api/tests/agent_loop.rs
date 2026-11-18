@@ -15,15 +15,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use api::config::Role;
-use axum::http::StatusCode;
 use axum::Router;
-use common::{request, send_to, Auth, Rig, Streaming, KEY};
+use axum::http::StatusCode;
+use common::{Auth, KEY, Rig, Streaming, request, send_to};
 use engine::model::budget::{Admit, ModelBudget, NativeModelBudget, Unlimited};
 use engine::model::retry::Retry;
 use engine::model::{Block, ModelError, ModelRequest, ModelResponse, NativeModelClient, StopKind};
 use engine::worker::{Loop, Models, Settings, Stores as LoopStores};
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sessions::events::ModelUsage;
 use sessions::signals::{LocalSignals, Signals};
 use sessions::store::{NativeSessionReplace, NativeSessionsStore, SessionFilter, SessionsStore, StoreError};
@@ -418,10 +418,9 @@ async fn a_self_hosted_built_in_call_idles_requires_action_and_its_result_contin
         "live stamps the worker's result on arrival"
     );
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
-    assert!(model.asked.lock()[1].messages.iter().any(|m| m
-        .content
-        .iter()
-        .any(|b| matches!(b, Block::ToolResult { content, .. } if content == "a.txt"))));
+    assert!(model.asked.lock()[1].messages.iter().any(|m| {
+        m.content.iter().any(|b| matches!(b, Block::ToolResult { content, .. } if content == "a.txt"))
+    }));
 }
 
 #[tokio::test]

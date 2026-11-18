@@ -10,7 +10,7 @@ use sessions::types::{OutcomeEvaluation, Session};
 use super::grade::{self, Outcome};
 use super::team::Thread;
 use super::turn::Turn;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::ContentBlock;
 
 use crate::model::{Block, ModelResponse};

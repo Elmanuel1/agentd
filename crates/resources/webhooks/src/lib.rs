@@ -14,4 +14,4 @@ mod sign;
 pub use endpoints::{Endpoint, EndpointsError, Webhooks};
 pub use event::{Delivery, EventKind};
 pub use sender::{DeliveryMarks, NativeDeliveryMarks, WebhookSender};
-pub use sign::{sign, SigningSecret};
+pub use sign::{SigningSecret, sign};

@@ -7,7 +7,7 @@
 use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
 use shared::Timestamp;
-use store_postgres::{read_slot, PgBackend};
+use store_postgres::{PgBackend, read_slot};
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1")

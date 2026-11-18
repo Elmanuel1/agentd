@@ -23,8 +23,8 @@ pub mod types;
 
 use std::sync::Arc;
 
-use shared::beta::BetaGate;
 use shared::Module;
+use shared::beta::BetaGate;
 
 pub use events::{Event, EventId, EventPayload, StopReason};
 pub use service::{

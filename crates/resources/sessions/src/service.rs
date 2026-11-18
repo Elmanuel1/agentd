@@ -11,8 +11,8 @@
 //!   NOT terminal for drain loops.
 use std::sync::Arc;
 
-use shared::limits::ModelCatalog;
 use shared::ApiError;
+use shared::limits::ModelCatalog;
 
 use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
 use crate::types::{Session, SessionId};

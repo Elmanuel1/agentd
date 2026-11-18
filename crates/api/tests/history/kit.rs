@@ -19,7 +19,7 @@ use signals_valkey::{Valkey, ValkeyChanges};
 use store_postgres::{PgBackend, PgHistoryLog};
 use tower::ServiceExt;
 
-use crate::common::{request, Auth, Rig, KEY};
+use crate::common::{Auth, KEY, Rig, request};
 
 pub fn cdc_enabled() -> bool {
     std::env::var("AGENTD_CDC_TESTS").as_deref() == Ok("1")
@@ -139,8 +139,8 @@ pub struct Undo<'a>(&'a Container, &'static str);
 
 impl Drop for Undo<'_> {
     fn drop(&mut self) {
-        let undone = std::process::Command::new("docker").args([self.1, &self.0 .0]).output();
+        let undone = std::process::Command::new("docker").args([self.1, &self.0.0]).output();
         let done = undone.is_ok_and(|out| out.status.success());
-        assert!(done || std::thread::panicking(), "docker {} {}", self.1, self.0 .0);
+        assert!(done || std::thread::panicking(), "docker {} {}", self.1, self.0.0);
     }
 }

@@ -229,10 +229,10 @@ fn parse_value(token: &str, names: &[&str]) -> Result<u32, ScheduleError> {
     if let Ok(n) = token.parse::<u32>() {
         return Ok(n);
     }
-    if !names.is_empty() {
-        if let Some(n) = name_to_num(token, names) {
-            return Ok(n);
-        }
+    if !names.is_empty()
+        && let Some(n) = name_to_num(token, names)
+    {
+        return Ok(n);
     }
     Err(ScheduleError::InvalidCron(format!("bad value `{token}`")))
 }
@@ -263,11 +263,7 @@ fn parse_field(
         } else {
             let v = parse_value(range_part, names)?;
             // A bare value with a step (e.g. `5/15`) means `5-max/15`.
-            if step > 1 {
-                (v, max)
-            } else {
-                (v, v)
-            }
+            if step > 1 { (v, max) } else { (v, v) }
         };
         if lo < min || hi > max || lo > hi {
             return Err(ScheduleError::InvalidCron(format!(
@@ -292,10 +288,10 @@ fn parse_dow(field: &str, set: &mut [bool; 7]) -> Result<(), ScheduleError> {
     for (slot, v) in set.iter_mut().zip(wide.iter()) {
         *slot = *v;
     }
-    if wide.last().copied().unwrap_or(false) {
-        if let Some(sunday) = set.first_mut() {
-            *sunday = true; // 7 == Sunday
-        }
+    if wide.last().copied().unwrap_or(false)
+        && let Some(sunday) = set.first_mut()
+    {
+        *sunday = true; // 7 == Sunday
     }
     Ok(())
 }

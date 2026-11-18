@@ -10,7 +10,6 @@ use ::work::store::Reach;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Pagination, Timestamp, WorkspaceId};
 
@@ -18,7 +17,7 @@ use super::loop_steps::forget;
 use super::session_events::lock;
 use super::work_items::stop::stop;
 use crate::schema::sessions;
-use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, DocRow, PgBackend};
+use crate::{DocRow, PgBackend, diesel_be, enum_str, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed sessions store (Diesel).
 #[derive(Debug, Clone)]
@@ -77,29 +76,25 @@ impl NativeSessionsStore for PgSessionsStore {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let running = enum_str(&SessionStatus::Running);
         let doc = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    // An append in flight commits first; a later one finds no session.
-                    lock(c, id).await?;
-                    let key =
-                        sessions::workspace_id.eq(ws.as_str()).and(sessions::session_id.eq(id.as_str()));
-                    let doc: Option<serde_json::Value> =
-                        diesel::delete(sessions::table.filter(key).filter(sessions::status.ne(running)))
-                            .returning(sessions::doc)
-                            .get_result(c)
-                            .await
-                            .optional()?;
-                    let Some(doc) = doc else {
-                        let status: Option<String> =
-                            sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
-                        return Ok(Err(status.map_or(StoreError::NotFound, |_| StoreError::Conflict)));
-                    };
-                    stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
-                    forget(c, ws, id).await?;
-                    super::mcp_connections::forget(c, ws, id).await?;
-                    Ok(Ok(doc))
-                }
-                .scope_boxed()
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                // An append in flight commits first; a later one finds no session.
+                lock(c, id).await?;
+                let key = sessions::workspace_id.eq(ws.as_str()).and(sessions::session_id.eq(id.as_str()));
+                let doc: Option<serde_json::Value> =
+                    diesel::delete(sessions::table.filter(key).filter(sessions::status.ne(running)))
+                        .returning(sessions::doc)
+                        .get_result(c)
+                        .await
+                        .optional()?;
+                let Some(doc) = doc else {
+                    let status: Option<String> =
+                        sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
+                    return Ok(Err(status.map_or(StoreError::NotFound, |_| StoreError::Conflict)));
+                };
+                stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
+                forget(c, ws, id).await?;
+                super::mcp_connections::forget(c, ws, id).await?;
+                Ok(Ok(doc))
             })
             .await
             .map_err(diesel_be)??;

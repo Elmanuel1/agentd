@@ -10,10 +10,10 @@ use files::FilesService;
 use memory::MemoriesService;
 use organizations::WorkspacesService;
 use sessions::{SessionsService, Streams};
+use shared::Module;
 use shared::limits::ModelCatalog;
 use shared::ports::fire::FireError;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
-use shared::Module;
 use skills::SkillsService;
 use vaults::{McpReach, VaultsService};
 
@@ -22,8 +22,8 @@ use crate::deps::{RealDeploymentDeps, RealSessionDeps, RealWorkspaceKeys};
 use crate::edge::scoped::WorkAccess;
 use crate::session_grants::SessionReach;
 use crate::session_work::WorkQueue;
-use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
+use crate::telemetry::ports::Observed;
 use vaults::variables::VaultCredentials;
 use work::{CloudVariables, Placeholders, WorkService, WorkTokens};
 

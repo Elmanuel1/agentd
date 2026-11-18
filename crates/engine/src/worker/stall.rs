@@ -6,7 +6,7 @@ use serde_json::json;
 use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent};
 use sessions::types::{OutcomeEvaluation, ThreadId};
 
-use super::grade::{verdict, Outcome};
+use super::grade::{Outcome, verdict};
 use super::turn::Turn;
 
 /// Turns a grader may end without its verdict before its round fails.

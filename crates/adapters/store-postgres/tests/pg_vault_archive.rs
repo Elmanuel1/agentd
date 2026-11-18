@@ -12,9 +12,9 @@ use shared::ports::secrets::SecretKey;
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgVaultsStore};
 use test_support::MemorySecretStore;
+use vaults::VaultsService;
 use vaults::store::{CredentialClaims, CredentialWrites, StoreError, StoredCredential};
 use vaults::types::Credential;
-use vaults::VaultsService;
 
 struct Rig {
     secrets: Arc<MemorySecretStore>,

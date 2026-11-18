@@ -2,7 +2,7 @@ use shared::hash::content_sha256;
 use shared::limits::{required, validate_bytes_max, validate_sha256_hex, values};
 use shared::{ApiError, AuthContext, Timestamp};
 
-use super::{map_store, parse_mem_pair, parse_store_id, MemoriesService};
+use super::{MemoriesService, map_store, parse_mem_pair, parse_store_id};
 use crate::store::{MemoryRecord, StoreError, VersionRecord, VersionSelector};
 use crate::types::{
     CreateMemoryRequest, Memory, MemoryId, MemoryStoreId, MemoryTag, MemoryVersion, Precondition,

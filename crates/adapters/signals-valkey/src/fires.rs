@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use redis::streams::StreamId;
-use shared::ports::fire::{self, FireRegistry};
 use shared::ports::ScheduleSpec;
+use shared::ports::fire::{self, FireRegistry};
 
 use crate::changes::NativeConsumer;
 

@@ -3,7 +3,7 @@
 
 use shared::{ApiError, AuthContext, Timestamp};
 
-use super::{guard_writable, map_store, parse_id, SessionsService};
+use super::{SessionsService, guard_writable, map_store, parse_id};
 use crate::types::{Session, SessionResource, SessionResourceId, SessionResourceInput};
 
 impl SessionsService {
@@ -58,7 +58,7 @@ impl SessionsService {
                 _ => {
                     return Err(ApiError::invalid_request(
                         "authorization_token: only github_repository resources take a token",
-                    ))
+                    ));
                 }
             }
             Ok(resource.clone())

@@ -1,8 +1,8 @@
 //! `agentd.retention.last_success`: when this replica last completed an
 //! event retention run, in Unix seconds, so an alarm sees retention stall.
 
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use shared::Timestamp;
 

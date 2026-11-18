@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use super::event::{body, Delivery, EventKind};
+use super::event::{Delivery, EventKind, body};
 use super::sign::SigningSecret;
 
 /// One configured endpoint.

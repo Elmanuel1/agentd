@@ -13,8 +13,8 @@ pub mod types;
 
 use std::sync::Arc;
 
-use shared::module::BodyLimit;
 use shared::Module;
+use shared::module::BodyLimit;
 
 mod service;
 mod session;

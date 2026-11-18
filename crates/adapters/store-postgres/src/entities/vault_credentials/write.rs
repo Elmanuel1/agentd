@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use diesel::dsl::sql;
 use diesel::sql_types::Bool;
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::WorkspaceId;
 use webhooks::Delivery;
@@ -44,29 +43,25 @@ impl CredentialWrites for PgVaultsStore {
         // any cleanup, so no call to the secret store holds one.
         let inserted: Result<(), StoreError> = async {
             let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-            conn.transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let doc: Option<serde_json::Value> = vaults::table
-                        .filter(vaults::workspace_id.eq(ws.as_str()))
-                        .filter(vaults::vault_id.eq(vault.as_str()))
-                        .select(vaults::doc)
-                        .for_share()
-                        .first(c)
-                        .await
-                        .optional()?;
-                    let open =
-                        doc.map(|d| parse_doc::<Vault, StoreError>(d).map(|v| v.archived_at.is_none()));
-                    match open {
-                        None => return Ok(Err(StoreError::VaultNotFound)),
-                        Some(Err(e)) => return Ok(Err(e)),
-                        Some(Ok(false)) => return Ok(Err(StoreError::VaultArchived)),
-                        Some(Ok(true)) => {}
-                    }
-                    diesel::insert_into(credentials::table).values(row).execute(c).await?;
-                    insert_deliveries(c, deliveries).await?;
-                    Ok(Ok(()))
+            conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+                let doc: Option<serde_json::Value> = vaults::table
+                    .filter(vaults::workspace_id.eq(ws.as_str()))
+                    .filter(vaults::vault_id.eq(vault.as_str()))
+                    .select(vaults::doc)
+                    .for_share()
+                    .first(c)
+                    .await
+                    .optional()?;
+                let open = doc.map(|d| parse_doc::<Vault, StoreError>(d).map(|v| v.archived_at.is_none()));
+                match open {
+                    None => return Ok(Err(StoreError::VaultNotFound)),
+                    Some(Err(e)) => return Ok(Err(e)),
+                    Some(Ok(false)) => return Ok(Err(StoreError::VaultArchived)),
+                    Some(Ok(true)) => {}
                 }
-                .scope_boxed()
+                diesel::insert_into(credentials::table).values(row).execute(c).await?;
+                insert_deliveries(c, deliveries).await?;
+                Ok(Ok(()))
             })
             .await
             .map_err(diesel_be)?
@@ -97,23 +92,20 @@ impl CredentialWrites for PgVaultsStore {
         let doc = to_doc(&cred.wire)?;
         let name = &cred.wire.display_name;
         let affected = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let affected = diesel::update(credentials::table.filter(key))
-                        .filter(sql::<Bool>("doc->>'archived_at' IS NULL"))
-                        .set((
-                            credentials::display_name.eq(name),
-                            credentials::has_secret.eq(rotates),
-                            credentials::doc.eq(doc),
-                        ))
-                        .execute(c)
-                        .await?;
-                    if affected == 1 {
-                        insert_deliveries(c, deliveries).await?;
-                    }
-                    Ok(affected)
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let affected = diesel::update(credentials::table.filter(key))
+                    .filter(sql::<Bool>("doc->>'archived_at' IS NULL"))
+                    .set((
+                        credentials::display_name.eq(name),
+                        credentials::has_secret.eq(rotates),
+                        credentials::doc.eq(doc),
+                    ))
+                    .execute(c)
+                    .await?;
+                if affected == 1 {
+                    insert_deliveries(c, deliveries).await?;
                 }
-                .scope_boxed()
+                Ok(affected)
             })
             .await
             .map_err(diesel_be)?;
@@ -148,24 +140,21 @@ impl CredentialWrites for PgVaultsStore {
     ) -> Result<StoredCredential, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let doc: Option<serde_json::Value> = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let doc: Option<serde_json::Value> = diesel::delete(
-                        credentials::table
-                            .filter(credentials::workspace_id.eq(ws.as_str()))
-                            .filter(credentials::vault_id.eq(vault.as_str()))
-                            .filter(credentials::credential_id.eq(id.as_str())),
-                    )
-                    .returning(credentials::doc)
-                    .get_result(c)
-                    .await
-                    .optional()?;
-                    if doc.is_some() {
-                        insert_deliveries(c, deliveries).await?;
-                    }
-                    Ok(doc)
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let doc: Option<serde_json::Value> = diesel::delete(
+                    credentials::table
+                        .filter(credentials::workspace_id.eq(ws.as_str()))
+                        .filter(credentials::vault_id.eq(vault.as_str()))
+                        .filter(credentials::credential_id.eq(id.as_str())),
+                )
+                .returning(credentials::doc)
+                .get_result(c)
+                .await
+                .optional()?;
+                if doc.is_some() {
+                    insert_deliveries(c, deliveries).await?;
                 }
-                .scope_boxed()
+                Ok(doc)
             })
             .await
             .map_err(diesel_be)?;

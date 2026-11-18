@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 use shared::Timestamp;
 
-use super::wire::CredentialAuthWire;
 use super::SecretString;
+use super::wire::CredentialAuthWire;
 
 /// Token-endpoint auth for OAuth refresh.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

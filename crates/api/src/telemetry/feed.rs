@@ -14,11 +14,11 @@
 //! `agentd.history.apply_delay` (s), how long after its commit each change
 //! reached history.
 
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use store_postgres::{read_slot, DieselPgPool, Slot};
+use store_postgres::{DieselPgPool, Slot, read_slot};
 
 /// How often the slot is read.
 const EVERY: Duration = Duration::from_secs(10);

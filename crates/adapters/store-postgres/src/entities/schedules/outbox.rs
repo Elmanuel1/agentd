@@ -3,14 +3,14 @@
 //! keeps the insert. The change feed hands each insert, in commit order, to
 //! [`ScheduleOutbox`], which applies it to the scheduler sink.
 
+use shared::BackendError;
 use std::sync::Arc;
 
-use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel::QueryableByName;
+use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::{ScheduleChange, SchedulerPort};
-use shared::BackendError;
 
 /// Record `change` in the transaction on `c`.
 pub(crate) async fn record(

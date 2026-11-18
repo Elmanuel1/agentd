@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use futures::StreamExt;
 use memory::store::{MemoryStorePersistence, StoreError, StoreFilter};
@@ -68,39 +67,36 @@ impl MemoryStorePersistence for PgMemoryStore {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         // The rows go together; the blobs follow once the connection is back.
         let version_ids = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let version_ids: Vec<String> = memory_versions::table
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let version_ids: Vec<String> = memory_versions::table
+                    .filter(memory_versions::workspace_id.eq(ws.as_str()))
+                    .filter(memory_versions::store_id.eq(id.as_str()))
+                    .filter(memory_versions::has_blob.eq(true))
+                    .select(memory_versions::version_id)
+                    .load(c)
+                    .await?;
+                diesel::delete(
+                    memory_versions::table
                         .filter(memory_versions::workspace_id.eq(ws.as_str()))
-                        .filter(memory_versions::store_id.eq(id.as_str()))
-                        .filter(memory_versions::has_blob.eq(true))
-                        .select(memory_versions::version_id)
-                        .load(c)
-                        .await?;
-                    diesel::delete(
-                        memory_versions::table
-                            .filter(memory_versions::workspace_id.eq(ws.as_str()))
-                            .filter(memory_versions::store_id.eq(id.as_str())),
-                    )
-                    .execute(c)
-                    .await?;
-                    diesel::delete(
-                        memories::table
-                            .filter(memories::workspace_id.eq(ws.as_str()))
-                            .filter(memories::store_id.eq(id.as_str())),
-                    )
-                    .execute(c)
-                    .await?;
-                    diesel::delete(
-                        memory_stores::table
-                            .filter(memory_stores::workspace_id.eq(ws.as_str()))
-                            .filter(memory_stores::store_id.eq(id.as_str())),
-                    )
-                    .execute(c)
-                    .await?;
-                    Ok(version_ids)
-                }
-                .scope_boxed()
+                        .filter(memory_versions::store_id.eq(id.as_str())),
+                )
+                .execute(c)
+                .await?;
+                diesel::delete(
+                    memories::table
+                        .filter(memories::workspace_id.eq(ws.as_str()))
+                        .filter(memories::store_id.eq(id.as_str())),
+                )
+                .execute(c)
+                .await?;
+                diesel::delete(
+                    memory_stores::table
+                        .filter(memory_stores::workspace_id.eq(ws.as_str()))
+                        .filter(memory_stores::store_id.eq(id.as_str())),
+                )
+                .execute(c)
+                .await?;
+                Ok(version_ids)
             })
             .await
             .map_err(diesel_be)?;

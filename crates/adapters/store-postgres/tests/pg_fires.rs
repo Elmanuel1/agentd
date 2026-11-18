@@ -8,6 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use deployments::DeploymentsService;
 use std::sync::Arc;
 
 use agents::Agent;
@@ -17,7 +18,6 @@ use chrono::Utc;
 use deployments::service::NativeDeploymentDeps;
 use deployments::types::DeploymentId;
 use deployments::types::{Deployment, TriggerContext};
-use deployments::DeploymentsService;
 use diesel_async::RunQueryDsl;
 use dreams::types::{Candidate, Dream, DreamId, Verdict};
 use dreams::{DreamsService, Proposer, ReviewGate};

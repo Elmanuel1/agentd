@@ -173,16 +173,18 @@ async fn pg_files_roundtrip() {
         .unwrap()
         .0;
     assert_eq!(scoped.len(), 1);
-    assert!(store
-        .list(
-            &ws,
-            &files::FileFilter { scope_id: Some("sesn_01Z".into()), ids: vec![] },
-            &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()
-        )
-        .await
-        .unwrap()
-        .0
-        .is_empty());
+    assert!(
+        store
+            .list(
+                &ws,
+                &files::FileFilter { scope_id: Some("sesn_01Z".into()), ids: vec![] },
+                &shared::IdCursor::from_params(&std::collections::HashMap::new()).unwrap()
+            )
+            .await
+            .unwrap()
+            .0
+            .is_empty()
+    );
     store.delete(&ws, &id).await.unwrap();
     assert!(store.get(&ws, &id).await.is_err());
 }

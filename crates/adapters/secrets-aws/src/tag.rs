@@ -4,9 +4,9 @@
 use aws_sdk_secretsmanager::types::Tag;
 use shared::ports::secrets::{SecretError, SecretKey};
 
+use crate::AwsSecretStore;
 use crate::failure::failure;
 use crate::name::CREDENTIAL_TYPE;
-use crate::AwsSecretStore;
 
 impl AwsSecretStore {
     /// Tag `key`'s secret `credential_type=environment_variable`; tagging

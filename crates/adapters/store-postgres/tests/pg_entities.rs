@@ -114,9 +114,9 @@ async fn pg_vaults_secret_sealed_to_the_secret_store() {
     if !enabled() {
         return;
     }
+    use vaults::VaultsService;
     use vaults::store::VaultCredentialStore;
     use vaults::types::CredentialAuthInput;
-    use vaults::VaultsService;
     let secrets = Arc::new(MemorySecretStore::default());
     let store = Arc::new(PgVaultsStore::new(backend().await, secrets.clone()));
     let svc = VaultsService::new(store.clone(), store.clone());
@@ -481,9 +481,9 @@ async fn pg_memory_an_update_that_read_before_a_delete_cannot_revive_it() {
     let Some(blobs) = s3("memrevive").await else {
         return;
     };
+    use memory::MemoriesService;
     use memory::store::{MemoryRecordPersistence, StoreError, VersionRecord};
     use memory::types::{MemoryVersion, VersionOperation};
-    use memory::MemoriesService;
     let store = Arc::new(PgMemoryStore::new(backend().await, blobs));
     let svc = MemoriesService::new(store.clone());
     let ctx = ctx_ws(&uniq_ws("memrevive"));

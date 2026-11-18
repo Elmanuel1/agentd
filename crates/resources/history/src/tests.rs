@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Position, Source};
 use shared::ports::history::{HistoryError, HistoryOp, NativeHistoryLog};
 use shared::{BackendError, Timestamp};

@@ -84,9 +84,9 @@ mod tests {
         u.record_list_cost(Some(MonetaryAmount::usd(12))).unwrap();
         u.record_list_cost(Some(MonetaryAmount::usd(6))).unwrap();
         assert_eq!(u.list_cost, Some(MonetaryAmount::usd(12)));
-        assert!(serde_json::to_string(&u)
-            .unwrap()
-            .ends_with(r#""list_cost":{"amount":"12","currency":"USD"}}"#));
+        assert!(
+            serde_json::to_string(&u).unwrap().ends_with(r#""list_cost":{"amount":"12","currency":"USD"}}"#)
+        );
         u.record_list_cost(None).unwrap();
         assert!(u.cost_unmeasured());
     }

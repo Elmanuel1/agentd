@@ -6,10 +6,10 @@
 use std::sync::Arc;
 use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
 
-use api::{build_router, AppState, Backends, Stores};
+use api::{AppState, Backends, Stores, build_router};
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::Router;
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
@@ -111,11 +111,7 @@ async fn call_raw(
 
 /// The beta the official SDK sends for `uri`.
 fn beta_for(uri: &str) -> &'static str {
-    if uri.starts_with("/v1/memory_stores") {
-        "agent-memory-2026-07-22"
-    } else {
-        "managed-agents-2026-04-01"
-    }
+    if uri.starts_with("/v1/memory_stores") { "agent-memory-2026-07-22" } else { "managed-agents-2026-04-01" }
 }
 
 /// Standard authenticated + beta call.

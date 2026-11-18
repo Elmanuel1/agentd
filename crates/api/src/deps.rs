@@ -12,8 +12,8 @@ use deployments::service::NativeDeploymentDeps;
 use deployments::types::{Deployment, InitialEvent};
 use environments::EnvironmentsService;
 use organizations::workspaces::WorkspaceKeys;
-use sessions::service::NativeSessionDeps;
 use sessions::SessionsService;
+use sessions::service::NativeSessionDeps;
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
 use vaults::VaultsService;
 

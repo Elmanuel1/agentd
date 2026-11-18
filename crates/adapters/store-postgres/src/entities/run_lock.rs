@@ -7,7 +7,7 @@ use diesel::sql_types::{Bool, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use futures::future::BoxFuture;
 
-use crate::{diesel_be, pool_be, PgBackend, PooledConnection};
+use crate::{PgBackend, PooledConnection, diesel_be, pool_be};
 
 /// [`RunLock`] on Postgres advisory locks.
 #[derive(Debug, Clone)]

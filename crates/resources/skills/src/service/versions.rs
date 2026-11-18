@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use shared::{ApiError, AuthContext, Pagination};
 
-use super::{map_store, new_version, SkillsService};
+use super::{SkillsService, map_store, new_version};
 use crate::bundle::UploadFile;
 use crate::types::{SkillVersion, SkillVersionId, VersionRef};
 

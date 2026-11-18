@@ -1,15 +1,15 @@
 //! A step's first read of its servers: the environment, the stored
 //! connections and the credentials, in three statements.
 
-use agents::types::McpServer;
 use agents::AgentSnapshot;
+use agents::types::McpServer;
 use sessions::events::{Event, EventPayload, SessionEvent};
 use sessions::types::Session;
 use shared::{BackendError, WorkspaceId};
 
+use super::super::Mcp;
 use super::super::client::Failure;
 use super::super::errors::is_mcp_error;
-use super::super::Mcp;
 use super::{Server, Servers};
 
 impl Mcp {

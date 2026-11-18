@@ -6,13 +6,13 @@
 use async_trait::async_trait;
 use aws_sdk_ssm::operation::delete_parameter::DeleteParameterError;
 use aws_sdk_ssm::operation::get_parameter::GetParameterError;
-use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
 use aws_sdk_ssm::operation::put_parameter::PutParameterError;
-use aws_sdk_ssm::types::{ParameterTier, ParameterType};
-use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
+use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
+use aws_sdk_ssm::types::{ParameterTier, ParameterType, ResourceTypeForTagging, Tag};
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
 
 use crate::failure::failure;
-use crate::{key, name, AwsSecretsConfig};
+use crate::{AwsSecretsConfig, key, name};
 
 /// Secrets as SSM parameters, under one prefix and one KMS key.
 #[derive(Clone)]
@@ -72,6 +72,18 @@ impl AwsParameterStore {
             .key_id(&self.key_arn)
             .tier(ParameterTier::IntelligentTiering)
     }
+
+    /// SSM takes tags only on a create, so every overwrite is then tagged with
+    /// the create's tags: a delete between the create's refusal and this write
+    /// makes the overwrite a create, untagged, out of the egress policy's
+    /// reach. A tagging failure keeps the value and a retry tags it again.
+    async fn overwrite(&self, name: &str, secret: &SecretString, tags: Vec<Tag>) -> Result<(), SecretError> {
+        let out = self.write(name, secret).overwrite(true).send().await;
+        out.map_err(|e| failure("ssm:PutParameter", name, &e))?;
+        let tagging = self.client.add_tags_to_resource().resource_type(ResourceTypeForTagging::Parameter);
+        let tagged = tagging.resource_id(name).set_tags(Some(tags)).send().await;
+        tagged.map(drop).map_err(|e| failure("ssm:AddTagsToResource", name, &e))
+    }
 }
 
 #[async_trait]
@@ -79,19 +91,14 @@ impl SecretStore for AwsParameterStore {
     async fn put(&self, key: &SecretKey, secret: &SecretString) -> Result<(), SecretError> {
         let name = self.parameter_name(key);
         let tags = name::parameter_tags(key)?;
-        let created = self.write(&name, secret).overwrite(false).set_tags(Some(tags)).send().await;
+        let created = self.write(&name, secret).overwrite(false).set_tags(Some(tags.clone())).send().await;
         match created {
-            Ok(_) => return Ok(()),
-            Err(e) if e.as_service_error().is_some_and(PutParameterError::is_parameter_already_exists) => {}
-            Err(e) => return Err(failure("ssm:PutParameter", &name, &e)),
+            Ok(_) => Ok(()),
+            Err(e) if e.as_service_error().is_some_and(PutParameterError::is_parameter_already_exists) => {
+                self.overwrite(&name, secret, tags).await
+            }
+            Err(e) => Err(failure("ssm:PutParameter", &name, &e)),
         }
-        // SSM takes tags only on a create: the overwrite carries none.
-        self.write(&name, secret)
-            .overwrite(true)
-            .send()
-            .await
-            .map_err(|e| failure("ssm:PutParameter", &name, &e))?;
-        Ok(())
     }
 
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError> {
@@ -122,26 +129,4 @@ impl SecretStore for AwsParameterStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use aws_sdk_ssm::config::{BehaviorVersion, Region};
-
-    use super::*;
-
-    #[test]
-    fn a_write_is_a_secure_string_under_the_key_in_intelligent_tiering() {
-        let conf = aws_sdk_ssm::Config::builder()
-            .behavior_version(BehaviorVersion::latest())
-            .region(Region::new("us-east-1"))
-            .build();
-        let store = AwsParameterStore {
-            client: aws_sdk_ssm::Client::from_conf(conf),
-            prefix: "agentd".into(),
-            key_arn: "arn:aws:kms:us-east-1:111122223333:key/k".into(),
-        };
-        let write = store.write("/agentd/w/v/c", &SecretString::from("v"));
-        let input = write.as_input();
-        assert_eq!(input.get_type(), &Some(ParameterType::SecureString));
-        assert_eq!(input.get_key_id().as_deref(), Some(store.key_arn()));
-        assert_eq!(input.get_tier(), &Some(ParameterTier::IntelligentTiering));
-    }
-}
+mod tests;

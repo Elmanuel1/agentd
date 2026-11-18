@@ -1,11 +1,11 @@
 //! A deployment's session reaches only the MCP hosts its environment's
 //! networking allows (MC-18): the fire is refused before the session exists.
 
-use agents::types::McpServer;
 use agents::AgentSnapshot;
+use agents::types::McpServer;
 use environments::types::EnvironmentConfig;
-use shared::net::host_of;
 use shared::ApiError;
+use shared::net::host_of;
 
 /// Live's description of a fire refused for a blocked MCP host (B14).
 pub const MCP_EGRESS_BLOCKED: &str =

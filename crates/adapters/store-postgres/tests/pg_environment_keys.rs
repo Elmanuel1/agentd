@@ -9,9 +9,9 @@ use std::sync::Arc;
 use ::api_keys::EnvironmentKeysService;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
+use shared::Timestamp;
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyPepper, PepperRing};
 use shared::ports::secrets::ExposeSecret;
-use shared::Timestamp;
 use store_postgres::schema::environment_keys;
 use store_postgres::{PgBackend, PgEnvironmentKeysStore};
 

@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use shared::BackendError;
 use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
-use shared::BackendError;
 
-use crate::{redact, settle, Applied};
+use crate::{Applied, redact, settle};
 
 /// Records each insert and update of one table.
 pub struct HistoryRecorder {

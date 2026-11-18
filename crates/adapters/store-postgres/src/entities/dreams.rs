@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use shared::WorkspaceId;
 
 use crate::schema::{dream_runs, dreams};
-use crate::{diesel_be, enum_str, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, enum_str, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed dreams store (Diesel).
 #[derive(Debug, Clone)]

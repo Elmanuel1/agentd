@@ -10,7 +10,7 @@ use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
 use organizations::workspaces::types::{DataResidency, WorkspaceTag};
 use organizations::workspaces::{Workspace, WorkspacesStore};
-use shared::{with_writer, OrgId, Timestamp, Writer};
+use shared::{OrgId, Timestamp, Writer, with_writer};
 use store_postgres::{PgBackend, PgWorkspacesStore, PoolSettings};
 
 fn enabled() -> bool {

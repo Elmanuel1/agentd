@@ -142,7 +142,7 @@ impl VaultsService {
             match found.iter().find(|v| v.id.as_str() == raw) {
                 None => return Err(ApiError::not_found(format!("vault {raw} not found"))),
                 Some(v) if v.archived_at.is_some() => {
-                    return Err(ApiError::invalid_request(format!("vault {raw} is archived")))
+                    return Err(ApiError::invalid_request(format!("vault {raw} is archived")));
                 }
                 Some(_) => {}
             }

@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 
 use crate::error::ApiError;

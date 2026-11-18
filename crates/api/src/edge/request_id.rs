@@ -5,7 +5,7 @@ use axum::extract::Request;
 use axum::http::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
-use shared::{with_request_id, NoRequestId, RequestId};
+use shared::{NoRequestId, RequestId, with_request_id};
 
 /// Mint the request's id, run it, and stamp the id on the response.
 pub async fn request_id(mut req: Request, next: Next) -> Response {
@@ -13,10 +13,10 @@ pub async fn request_id(mut req: Request, next: Next) -> Response {
     req.extensions_mut().insert(id.clone());
     let header = HeaderValue::from_str(id.as_str()).ok();
     let mut response = with_request_id(id, next.run(req)).await;
-    if response.extensions().get::<NoRequestId>().is_none() {
-        if let Some(value) = header {
-            response.headers_mut().insert("request-id", value);
-        }
+    if response.extensions().get::<NoRequestId>().is_none()
+        && let Some(value) = header
+    {
+        response.headers_mut().insert("request-id", value);
     }
     response
 }

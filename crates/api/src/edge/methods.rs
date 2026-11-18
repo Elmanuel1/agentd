@@ -4,7 +4,7 @@ use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use shared::{wire_response, ApiError};
+use shared::{ApiError, wire_response};
 
 /// Live (files/16, files/17, skills/46): a method the path does not serve is
 /// 405 with an envelope and `allow: GET`, even on a route that also serves

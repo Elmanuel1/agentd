@@ -2,10 +2,10 @@
 //! `notifications/initialized`, then `tools/list`), list its tools again, and
 //! call one.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::ContentBlock;
 
-use super::client::{Failure, Rpc, PROTOCOL};
+use super::client::{Failure, PROTOCOL, Rpc};
 
 /// The client the loop names at `initialize`, as live's session-time client does.
 const CLIENT: &str = "claude-ai";

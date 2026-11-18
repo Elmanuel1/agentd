@@ -5,8 +5,8 @@
 
 use std::sync::OnceLock;
 
-use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::KeyValue;
+use opentelemetry::metrics::{Counter, Histogram};
 use sessions::events::{Event, EventPayload, SessionEvent, StopReason};
 
 struct Instruments {

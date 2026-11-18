@@ -5,8 +5,8 @@ use shared::ports::BoxFuture;
 use shared::{IdCursor, WorkspaceId};
 use std::future::Future;
 
-use crate::types::{FileId, FileMetadata};
 use crate::FileFilter;
+use crate::types::{FileId, FileMetadata};
 
 /// Store-level errors.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -43,7 +43,7 @@ pub trait FilesStore: Send + Sync {
     ) -> BoxFuture<'a, Result<StoredFile, StoreError>>;
     /// Fetch the content.
     fn content<'a>(&'a self, ws: &'a WorkspaceId, id: &'a FileId)
-        -> BoxFuture<'a, Result<Bytes, StoreError>>;
+    -> BoxFuture<'a, Result<Bytes, StoreError>>;
     /// Delete.
     fn delete<'a>(
         &'a self,

@@ -20,7 +20,7 @@ mod probe;
 pub mod server;
 mod servers;
 
-pub use errors::{is_mcp_error, CONNECTION_FAILED};
+pub use errors::{CONNECTION_FAILED, is_mcp_error};
 pub use probe::Probe;
 pub use servers::{CallOutcome, McpTool, Servers};
 
@@ -35,7 +35,7 @@ pub trait McpEnvironments: Send + Sync {
     ) -> BoxFuture<'a, Result<EnvironmentConfig, BackendError>>;
     /// The organization of `session` in `ws`.
     fn org<'a>(&'a self, ws: &'a WorkspaceId, session: &'a str)
-        -> BoxFuture<'a, Result<OrgId, BackendError>>;
+    -> BoxFuture<'a, Result<OrgId, BackendError>>;
 }
 
 /// What an adapter implements to provide [`McpEnvironments`]; the methods are documented there.

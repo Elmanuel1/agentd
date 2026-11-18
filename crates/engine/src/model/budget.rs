@@ -2,8 +2,8 @@
 //! provider and minute, shared by every loop worker. A step over it is
 //! deferred to the next minute without calling the model.
 
-use shared::ports::BoxFuture;
 use shared::BackendError;
+use shared::ports::BoxFuture;
 use std::future::Future;
 
 /// Whether a step may call the model now.

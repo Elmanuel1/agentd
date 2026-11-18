@@ -13,13 +13,12 @@ use std::time::Duration;
 
 use ::work::store::{Beat, NativeWorkStore, Reach, Scope, StoreError, WorkItem};
 use diesel::sql_types::{Array, Jsonb, Nullable, Text, Timestamptz};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
-use self::filter::{before, binds, keyed, KEY, REACH, SCOPE};
-use self::row::{first, insert, Row, COLS};
-use crate::{diesel_be, pool_be, PgBackend, PooledConnection};
+use self::filter::{KEY, REACH, SCOPE, before, binds, keyed};
+use self::row::{COLS, Row, first, insert};
+use crate::{PgBackend, PooledConnection, diesel_be, pool_be};
 
 #[derive(Debug, Clone)]
 pub struct PgWorkStore {
@@ -54,30 +53,27 @@ impl NativeWorkStore for PgWorkStore {
         let owned = |v: Option<&str>| v.map(str::to_owned);
         let (ws, env, queue, free_before) = (owned(ws), owned(env), owned(queue), before(now, reclaim));
         let rows: Vec<Row> = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let rows: Vec<Row> = diesel::sql_query(format!(
-                        "SELECT {COLS} FROM work_items WHERE {SCOPE} AND state = 'queued' \
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let rows: Vec<Row> = diesel::sql_query(format!(
+                    "SELECT {COLS} FROM work_items WHERE {SCOPE} AND state = 'queued' \
                          AND (handed_out_at IS NULL OR handed_out_at < $4) \
                          ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
-                    ))
-                    .bind::<Nullable<Text>, _>(ws.as_deref())
-                    .bind::<Nullable<Text>, _>(env.as_deref())
-                    .bind::<Nullable<Text>, _>(queue.as_deref())
-                    .bind::<Timestamptz, _>(free_before)
-                    .load(c)
-                    .await?;
-                    if let Some(r) = <[Row]>::first(&rows) {
-                        diesel::sql_query(format!("UPDATE work_items SET handed_out_at = $3 WHERE {KEY}"))
-                            .bind::<Text, _>(&r.workspace_id)
-                            .bind::<Text, _>(&r.session_id)
-                            .bind::<Timestamptz, _>(now.as_datetime())
-                            .execute(c)
-                            .await?;
-                    }
-                    Ok(rows)
+                ))
+                .bind::<Nullable<Text>, _>(ws.as_deref())
+                .bind::<Nullable<Text>, _>(env.as_deref())
+                .bind::<Nullable<Text>, _>(queue.as_deref())
+                .bind::<Timestamptz, _>(free_before)
+                .load(c)
+                .await?;
+                if let Some(r) = <[Row]>::first(&rows) {
+                    diesel::sql_query(format!("UPDATE work_items SET handed_out_at = $3 WHERE {KEY}"))
+                        .bind::<Text, _>(&r.workspace_id)
+                        .bind::<Text, _>(&r.session_id)
+                        .bind::<Timestamptz, _>(now.as_datetime())
+                        .execute(c)
+                        .await?;
                 }
-                .scope_boxed()
+                Ok(rows)
             })
             .await
             .map_err(diesel_be)?;

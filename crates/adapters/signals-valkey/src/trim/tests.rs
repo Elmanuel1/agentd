@@ -2,10 +2,10 @@
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use redis::streams::{StreamId, StreamRangeReply, StreamReadOptions, StreamReadReply};
 use redis::AsyncCommands;
+use redis::streams::{StreamId, StreamRangeReply, StreamReadOptions, StreamReadReply};
 
-use super::{parse, trim, Keep};
+use super::{Keep, parse, trim};
 use crate::test_valkeys;
 use crate::valkey::{Conn, Valkey};
 

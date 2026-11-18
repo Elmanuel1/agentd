@@ -4,13 +4,13 @@
 //! is one session read; the credentials add one read of the vaults'
 //! credential rows and never a secret.
 
+use agents::types::{Multiagent, RosterMember};
 use std::sync::Arc;
 
-use agents::types::{Multiagent, RosterMember};
 use agents::AgentSnapshot;
 use files::NativeSessionFiles;
-use sessions::types::{MemoryAccess, Session, SessionId, SessionResource};
 use sessions::SessionsStore;
+use sessions::types::{MemoryAccess, Session, SessionId, SessionResource};
 use shared::{ApiError, AuthContext};
 use vaults::variables::VaultCredentials;
 use work::{NativeSessionVariables, Variable};

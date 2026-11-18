@@ -3,15 +3,14 @@
 use ::sessions::steps::Claim;
 use ::sessions::store::StoreError;
 use ::sessions::types::SessionId;
-use diesel::sql_types::{BigInt, Text};
 use diesel::OptionalExtension;
-use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel::sql_types::{BigInt, Text};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
-use super::rows::{Claimed, Counts, Due, Flag};
 use super::KEY;
-use crate::{diesel_be, pool_be, PgBackend};
+use super::rows::{Claimed, Counts, Due, Flag};
+use crate::{PgBackend, diesel_be, pool_be};
 
 /// The oldest due step, held by `owner`; see `Steps::claim`.
 pub(super) async fn claim(
@@ -21,8 +20,7 @@ pub(super) async fn claim(
     per_workspace: i64,
 ) -> Result<Option<Claim>, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
-    conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
+    conn.transaction::<_, diesel::result::Error, _>(async move |c| {
                 let due: Option<Due> = diesel::sql_query(
                     "SELECT workspace_id, session_id FROM loop_steps
                      WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now())
@@ -76,9 +74,7 @@ pub(super) async fn claim(
                     wakes: held.wakes,
                     waited_ms: held.waited_ms,
                 }))
-            }
-            .scope_boxed()
-        })
+            })
         .await
         .map_err(diesel_be)
 }

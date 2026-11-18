@@ -4,13 +4,12 @@ use ::deployments::store::{NativeDeploymentsStore, StoreError};
 use ::deployments::types::{Deployment, DeploymentId, DeploymentRun};
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::ScheduleChange;
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::deployments;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 mod runs;
 
@@ -67,12 +66,9 @@ impl NativeDeploymentsStore for PgDeploymentsStore {
             doc: to_doc(&d)?,
         };
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                diesel::insert_into(deployments::table).values(row).execute(c).await?;
-                outbox::record(c, schedule).await
-            }
-            .scope_boxed()
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            diesel::insert_into(deployments::table).values(row).execute(c).await?;
+            outbox::record(c, schedule).await
         })
         .await
         .map_err(diesel_be)
@@ -100,27 +96,24 @@ impl NativeDeploymentsStore for PgDeploymentsStore {
         let doc = to_doc(&d)?;
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let found = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let affected = diesel::update(
-                        deployments::table
-                            .filter(deployments::workspace_id.eq(ws.as_str()))
-                            .filter(deployments::deployment_id.eq(d.id.as_str())),
-                    )
-                    .set((
-                        deployments::name.eq(&d.name),
-                        deployments::status.eq(status_str(&d)),
-                        deployments::archived_at.eq(d.archived_at.map(|t| t.as_datetime())),
-                        deployments::doc.eq(doc),
-                    ))
-                    .execute(c)
-                    .await?;
-                    if let Some(change) = schedule.filter(|_| affected > 0) {
-                        outbox::record(c, change).await?;
-                    }
-                    Ok(affected > 0)
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let affected = diesel::update(
+                    deployments::table
+                        .filter(deployments::workspace_id.eq(ws.as_str()))
+                        .filter(deployments::deployment_id.eq(d.id.as_str())),
+                )
+                .set((
+                    deployments::name.eq(&d.name),
+                    deployments::status.eq(status_str(&d)),
+                    deployments::archived_at.eq(d.archived_at.map(|t| t.as_datetime())),
+                    deployments::doc.eq(doc),
+                ))
+                .execute(c)
+                .await?;
+                if let Some(change) = schedule.filter(|_| affected > 0) {
+                    outbox::record(c, change).await?;
                 }
-                .scope_boxed()
+                Ok(affected > 0)
             })
             .await
             .map_err(diesel_be)?;

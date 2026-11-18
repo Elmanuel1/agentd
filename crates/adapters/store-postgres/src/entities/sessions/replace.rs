@@ -5,7 +5,6 @@
 use ::sessions::store::{NativeSessionReplace, StoreError};
 use ::sessions::types::Session;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
@@ -27,41 +26,37 @@ impl NativeSessionReplace for PgSessionsStore {
         // The row is locked and compared as a Session, not as raw JSON: a doc
         // written before a field existed re-serializes differently but holds
         // the same session.
-        let outcome = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let stored: Option<serde_json::Value> = sessions::table
-                        .filter(sessions::workspace_id.eq(ws.as_str()))
-                        .filter(sessions::session_id.eq(s.id.as_str()))
-                        .select(sessions::doc)
-                        .for_update()
-                        .first(c)
-                        .await
-                        .optional()?;
-                    let Some(stored) = stored else {
-                        return Ok(Err(StoreError::NotFound));
-                    };
-                    if serde_json::from_value::<Session>(stored).ok().as_ref() != Some(read) {
-                        return Ok(Err(StoreError::Conflict));
-                    }
-                    diesel::update(
-                        sessions::table
-                            .filter(sessions::workspace_id.eq(ws.as_str()))
-                            .filter(sessions::session_id.eq(s.id.as_str())),
-                    )
-                    .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
-                    .execute(c)
-                    .await?;
-                    if read.archived_at.is_none() && s.archived_at.is_some() {
-                        super::terminate::archived(c, ws, read, &s).await?;
-                    }
-                    insert_deliveries(c, deliveries).await?;
-                    Ok(Ok(()))
-                }
-                .scope_boxed()
-            })
-            .await
-            .map_err(diesel_be)?;
-        outcome
+
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            let stored: Option<serde_json::Value> = sessions::table
+                .filter(sessions::workspace_id.eq(ws.as_str()))
+                .filter(sessions::session_id.eq(s.id.as_str()))
+                .select(sessions::doc)
+                .for_update()
+                .first(c)
+                .await
+                .optional()?;
+            let Some(stored) = stored else {
+                return Ok(Err(StoreError::NotFound));
+            };
+            if serde_json::from_value::<Session>(stored).ok().as_ref() != Some(read) {
+                return Ok(Err(StoreError::Conflict));
+            }
+            diesel::update(
+                sessions::table
+                    .filter(sessions::workspace_id.eq(ws.as_str()))
+                    .filter(sessions::session_id.eq(s.id.as_str())),
+            )
+            .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
+            .execute(c)
+            .await?;
+            if read.archived_at.is_none() && s.archived_at.is_some() {
+                super::terminate::archived(c, ws, read, &s).await?;
+            }
+            insert_deliveries(c, deliveries).await?;
+            Ok(Ok(()))
+        })
+        .await
+        .map_err(diesel_be)?
     }
 }

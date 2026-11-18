@@ -10,7 +10,7 @@ use shared::{Pagination, WorkspaceId};
 
 use super::PgSessionEventLog;
 use crate::schema::{session_events, sessions};
-use crate::{diesel_be, parse_doc, pool_be, DocRow};
+use crate::{DocRow, diesel_be, parse_doc, pool_be};
 
 /// A client event the agent has not taken yet.
 const QUEUED: &str =

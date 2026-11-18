@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use shared::{OrgId, Timestamp, WorkspaceId};
 
 use crate::schema::api_keys;
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{PgBackend, diesel_be, pool_be};
 
 /// Postgres-backed workspace API keys (Diesel).
 #[derive(Debug, Clone)]

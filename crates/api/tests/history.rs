@@ -18,10 +18,10 @@ use axum::http::StatusCode;
 use common::Rig;
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::RunQueryDsl;
-use kit::{call, cdc_enabled, eventually, kept, summary, Container};
-use serde_json::{json, Value};
+use kit::{Container, call, cdc_enabled, eventually, kept, summary};
+use serde_json::{Value, json};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Position};
-use shared::{with_writer, Timestamp, Writer};
+use shared::{Timestamp, Writer, with_writer};
 use store_postgres::PgHistoryLog;
 
 #[tokio::test]
