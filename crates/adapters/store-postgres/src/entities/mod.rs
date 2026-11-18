@@ -21,6 +21,7 @@ pub mod sessions;
 pub mod skill_versions;
 pub mod skills;
 pub mod vault_credentials;
+pub mod vault_secrets;
 pub mod vaults;
 pub mod webhook_deliveries;
 pub mod work_items;

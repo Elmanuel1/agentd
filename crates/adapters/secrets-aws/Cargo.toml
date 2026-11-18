@@ -11,9 +11,9 @@ async-trait = { workspace = true }
 aws-common = { workspace = true }
 aws-sdk-kms = { workspace = true }
 aws-sdk-secretsmanager = { workspace = true }
+aws-sdk-ssm = { workspace = true }
 uuid = { workspace = true }
 aws-smithy-types = { workspace = true }
-zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

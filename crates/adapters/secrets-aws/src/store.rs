@@ -5,8 +5,7 @@ use aws_sdk_secretsmanager::operation::create_secret::CreateSecretError;
 use aws_sdk_secretsmanager::operation::delete_secret::DeleteSecretError;
 use aws_sdk_secretsmanager::operation::describe_secret::DescribeSecretError;
 use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError;
-use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
-use zeroize::Zeroize;
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
 
 use crate::failure::failure;
 use crate::{AwsSecretStore, name};
@@ -130,13 +129,4 @@ impl SecretStore for AwsSecretStore {
         let name = self.secret_name(key);
         self.delete_named(&name, &name).await
     }
-}
-
-/// The SDK's string can have spare capacity, and turning it into a
-/// [`SecretString`] would then reallocate and free the original unzeroed: copy
-/// it once at its exact size and zero the original.
-pub(crate) fn into_secret(mut value: String) -> SecretString {
-    let secret = SecretString::from(value.as_str());
-    value.zeroize();
-    secret
 }

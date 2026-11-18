@@ -24,9 +24,11 @@ role run side by side and any one of them can stop at any time.
   model budget.
 - The change feed: Debezium Server, one instance, into Kafka (`AGENTD_KAFKA_BROKERS`) or Valkey Streams, set up
   as `configuration.md`'s change feed section says.
-- S3 for blobs and Secrets Manager with a KMS key for vault credentials.
-- The keys from the environment (`AGENTD_API_KEY_PEPPERS`, `AGENTD_WORK_TOKEN_KEYS`, `AGENTD_PLACEHOLDER_KEYS`),
-  a model provider key, `AGENTD_API_BASE_URL`, and `AGENTD_WEBHOOK_ENDPOINTS` for webhooks.
+- S3 for blobs. Vault credentials are sealed in Postgres under `AGENTD_SECRET_KEYS` by default, or kept in
+  Secrets Manager or SSM Parameter Store under a KMS key (`AGENTD_SECRETS`).
+- The keys from the environment (`AGENTD_API_KEY_PEPPERS`, `AGENTD_WORK_TOKEN_KEYS`, `AGENTD_PLACEHOLDER_KEYS`,
+  `AGENTD_SECRET_KEYS` on the Postgres store), a model provider key, `AGENTD_API_BASE_URL`, and
+  `AGENTD_WEBHOOK_ENDPOINTS` for webhooks.
 - At least two `api` replicas behind the load balancer and two `loop` replicas, or two `all` replicas.
 
 A `self_hosted` environment's tools run on the customer's worker (`ant beta:worker poll` or the SDK's

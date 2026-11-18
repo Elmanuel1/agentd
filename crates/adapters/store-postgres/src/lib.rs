@@ -48,6 +48,7 @@ pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;
 pub use entities::skills::PgSkillsStore;
+pub use entities::vault_secrets::{PgSecretStore, Resealed};
 pub use entities::vaults::PgVaultsStore;
 pub use entities::webhook_deliveries::PgDeliveryMarks;
 pub use entities::work_items::PgWorkStore;

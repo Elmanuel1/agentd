@@ -12,8 +12,10 @@ use aws_config::environment::EnvironmentVariableRegionProvider;
 use aws_config::meta::region::RegionProviderChain;
 use aws_config::profile::ProfileFileRegionProvider;
 use aws_config::sts::AssumeRoleProvider;
-use aws_config::{BehaviorVersion, Region, SdkConfig};
+use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::provider::SharedCredentialsProvider;
+
+pub use aws_config::SdkConfig;
 
 /// The shared configuration in `region` (`None` takes `AWS_REGION`,
 /// `AWS_DEFAULT_REGION` or the profile's, else `us-east-1`), calling as
