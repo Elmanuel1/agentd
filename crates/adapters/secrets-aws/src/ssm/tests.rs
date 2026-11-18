@@ -68,29 +68,40 @@ async fn tags_of(store: &AwsParameterStore, name: &str) -> Vec<Tag> {
     found
 }
 
+fn sorted(mut tags: Vec<Tag>) -> Vec<Tag> {
+    tags.sort_by(|a, b| a.key.cmp(&b.key));
+    tags
+}
+
 /// An untagged parameter stands in for the one a delete between the create's
 /// refusal and the overwrite leaves: the race a test cannot time.
-#[tokio::test]
-async fn an_overwrite_of_an_untagged_parameter_tags_it() {
-    let Some((store, key)) = on_localstack(&[]).await else { return };
-    let name = store.parameter_name(&key);
+async fn untagged(store: &AwsParameterStore, key: &SecretKey) -> String {
+    let name = store.parameter_name(key);
     store.write(&name, &SecretString::from("first")).overwrite(false).send().await.unwrap();
-    assert_eq!(tags_of(&store, &name).await, Vec::new());
-    let mut want = name::parameter_tags(&key).unwrap();
-    store.overwrite(&name, &SecretString::from("second"), want.clone()).await.unwrap();
-    want.sort_by(|a, b| a.key.cmp(&b.key));
-    assert_eq!(tags_of(&store, &name).await, want);
+    assert_eq!(tags_of(store, &name).await, Vec::new());
+    name
+}
+
+#[tokio::test]
+async fn a_put_over_an_untagged_parameter_tags_it() {
+    let Some((store, key)) = on_localstack(&[]).await else { return };
+    let name = untagged(&store, &key).await;
+    store.put(&key, &SecretString::from("second")).await.unwrap();
+    assert_eq!(tags_of(&store, &name).await, sorted(name::parameter_tags(&key).unwrap()));
     assert_eq!(store.get(&key).await.unwrap().expose_secret(), "second");
     store.delete(&key).await.unwrap();
 }
 
 #[tokio::test]
-async fn a_tagging_failure_is_the_error_and_keeps_the_value() {
-    let Some((store, key)) = on_localstack(&["AddTagsToResource"]).await else { return };
-    let name = store.parameter_name(&key);
-    let tags = name::parameter_tags(&key).unwrap();
-    let err = store.overwrite(&name, &SecretString::from("v"), tags).await.unwrap_err();
+async fn a_tagging_failure_is_the_error_keeps_the_value_and_a_retry_tags_it() {
+    let Some((refusing, key)) = on_localstack(&["AddTagsToResource"]).await else { return };
+    let name = untagged(&refusing, &key).await;
+    let err = refusing.put(&key, &SecretString::from("second")).await.unwrap_err();
     assert!(err.to_string().contains("ssm:AddTagsToResource"), "{err}");
-    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "v");
+    assert_eq!(refusing.get(&key).await.unwrap().expose_secret(), "second");
+    let (store, _) = on_localstack(&[]).await.unwrap();
+    store.put(&key, &SecretString::from("third")).await.unwrap();
+    assert_eq!(tags_of(&store, &name).await, sorted(name::parameter_tags(&key).unwrap()));
+    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "third");
     store.delete(&key).await.unwrap();
 }
