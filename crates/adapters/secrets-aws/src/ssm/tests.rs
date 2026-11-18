@@ -1,5 +1,5 @@
-//! `AwsParameterStore`'s writes, and the overwrite that creates a parameter
-//! (against LocalStack, when `AGENTD_AWS_ENDPOINT` names it).
+//! `AwsParameterStore`'s writes, and the tags an overwrite adds (against
+//! LocalStack, when `AGENTD_AWS_ENDPOINT` names it).
 
 use aws_sdk_ssm::config::{BehaviorVersion, Region};
 
@@ -61,44 +61,59 @@ async fn on_localstack(refused: &'static [&'static str]) -> Option<(AwsParameter
     Some((store, key))
 }
 
-/// The race a test cannot time: a delete between the create's refusal and
-/// the overwrite, which then creates the parameter.
-#[tokio::test]
-async fn an_overwrite_that_creates_the_parameter_tags_it() {
-    let Some((store, key)) = on_localstack(&[]).await else { return };
-    let tags = name::parameter_tags(&key).unwrap();
-    for value in ["first", "second"] {
-        store.overwrite(&key, &SecretString::from(value), tags.clone()).await.unwrap();
-    }
+async fn tags_of(store: &AwsParameterStore, name: &str) -> Vec<Tag> {
     let listed = store.client.list_tags_for_resource().resource_type(ResourceTypeForTagging::Parameter);
-    let name = store.parameter_name(&key);
-    let mut found = listed.resource_id(&name).send().await.unwrap().tag_list.unwrap_or_default();
+    let mut found = listed.resource_id(name).send().await.unwrap().tag_list.unwrap_or_default();
     found.sort_by(|a, b| a.key.cmp(&b.key));
-    let mut want = tags;
-    want.sort_by(|a, b| a.key.cmp(&b.key));
-    assert_eq!(found, want);
+    found
+}
+
+fn sorted(mut tags: Vec<Tag>) -> Vec<Tag> {
+    tags.sort_by(|a, b| a.key.cmp(&b.key));
+    tags
+}
+
+/// An untagged parameter stands in for the one a delete between the create's
+/// refusal and the overwrite leaves: the race a test cannot time.
+async fn untagged(store: &AwsParameterStore, key: &SecretKey) -> String {
+    let name = store.parameter_name(key);
+    store.write(&name, &SecretString::from("first")).overwrite(false).send().await.unwrap();
+    assert_eq!(tags_of(store, &name).await, Vec::new());
+    name
+}
+
+#[tokio::test]
+async fn a_put_over_an_untagged_parameter_tags_it() {
+    let Some((store, key)) = on_localstack(&[]).await else { return };
+    let name = untagged(&store, &key).await;
+    store.put(&key, &SecretString::from("second")).await.unwrap();
+    assert_eq!(tags_of(&store, &name).await, sorted(name::parameter_tags(&key).unwrap()));
     assert_eq!(store.get(&key).await.unwrap().expose_secret(), "second");
     store.delete(&key).await.unwrap();
 }
 
+/// The overwrite a delete turned into a create: it stores the value and tags it.
 #[tokio::test]
-async fn a_parameter_the_overwrite_created_goes_when_tagging_fails() {
-    let Some((store, key)) = on_localstack(&["AddTagsToResource"]).await else { return };
+async fn an_overwrite_of_an_absent_parameter_creates_it_tagged() {
+    let Some((store, key)) = on_localstack(&[]).await else { return };
+    let name = store.parameter_name(&key);
     let tags = name::parameter_tags(&key).unwrap();
-    let err = store.overwrite(&key, &SecretString::from("v"), tags).await.unwrap_err();
-    assert!(err.to_string().contains("ssm:AddTagsToResource"), "{err}");
-    assert!(matches!(store.get(&key).await, Err(SecretError::NotFound(_))), "a retry creates it, tagged");
+    store.overwrite(&name, &SecretString::from("v"), tags.clone()).await.unwrap();
+    assert_eq!(tags_of(&store, &name).await, sorted(tags));
+    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "v");
+    store.delete(&key).await.unwrap();
 }
 
 #[tokio::test]
-async fn a_delete_that_fails_after_tagging_fails_is_the_error() {
-    let Some((store, key)) = on_localstack(&["AddTagsToResource", "DeleteParameter"]).await else { return };
-    let tags = name::parameter_tags(&key).unwrap();
-    let err = store.overwrite(&key, &SecretString::from("v"), tags).await.unwrap_err();
-    let shown = err.to_string();
-    for part in ["ssm:AddTagsToResource", "then ssm:DeleteParameter", "stays untagged"] {
-        assert!(shown.contains(part), "{part} in {shown}");
-    }
-    let (plain, _) = on_localstack(&[]).await.unwrap();
-    plain.delete(&key).await.unwrap();
+async fn a_tagging_failure_is_the_error_keeps_the_value_and_a_retry_tags_it() {
+    let Some((refusing, key)) = on_localstack(&["AddTagsToResource"]).await else { return };
+    let name = untagged(&refusing, &key).await;
+    let err = refusing.put(&key, &SecretString::from("second")).await.unwrap_err();
+    assert!(err.to_string().contains("ssm:AddTagsToResource"), "{err}");
+    assert_eq!(refusing.get(&key).await.unwrap().expose_secret(), "second");
+    let (store, _) = on_localstack(&[]).await.unwrap();
+    store.put(&key, &SecretString::from("second")).await.unwrap();
+    assert_eq!(tags_of(&store, &name).await, sorted(name::parameter_tags(&key).unwrap()));
+    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "second");
+    store.delete(&key).await.unwrap();
 }
