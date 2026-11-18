@@ -2,8 +2,8 @@
 //! loop connecting to it from agentd (MC-1 to MC-26).
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -11,13 +11,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sessions::steps::{Claim, StepCounts, StepEnd, StepWrite, Steps};
 use sessions::store::StoreError;
 use shared::net::Guard;
 
-use super::common::{request, send_to, Auth, Rig, KEY};
-use super::{db, events_until, message, send, types, worker, Say, Scripted, Tune};
+use super::common::{Auth, KEY, Rig, request, send_to};
+use super::{Say, Scripted, Tune, db, events_until, message, send, types, worker};
 
 /// One request the server got: its method, session id, bearer, user agent,
 /// `clientInfo`, the call's arguments, and when it came.
@@ -105,7 +105,7 @@ async fn rpc(State(s): State<Arc<Server>>, headers: HeaderMap, Json(body): Json<
             {"name": "hang", "description": "Never answers.", "inputSchema": {"type": "object"}}]}),
         "tools/call" if body["params"]["name"] == "flaky" => return StatusCode::BAD_GATEWAY.into_response(),
         "tools/call" if body["params"]["name"] == "locked" => {
-            return StatusCode::UNAUTHORIZED.into_response()
+            return StatusCode::UNAUTHORIZED.into_response();
         }
         "tools/call" if body["params"]["name"] == "hang" => {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -347,8 +347,7 @@ async fn a_server_that_refuses_authentication_records_an_authentication_error() 
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
     let (bearer, oauth) = (bearer_vault(&rig, &url, "tok-refused").await, oauth_vault(&rig, &url).await);
-    let unstored =
-        "no credential is stored for this server URL \u{2014} check that the agent's MCP server URL \
+    let unstored = "no credential is stored for this server URL \u{2014} check that the agent's MCP server URL \
         matches the URL in the vault";
     let rejected = "server rejected the static bearer token \u{2014} verify the credential value";
     let cases =
@@ -403,8 +402,7 @@ async fn a_call_whose_bearer_is_refused_gets_an_authentication_result_and_no_ses
     let model = Scripted::new(vec![locked(), Say::Text("sorry"), locked(), Say::Text("sorry")]);
     let (app, _worker) = worker(&rig, model, Tune { guard, ..Tune::default() }).await;
     let env = rig.environment("cloud").await;
-    let rejected =
-        "MCP server 'docs' authentication failed: server rejected the static bearer token \u{2014} \
+    let rejected = "MCP server 'docs' authentication failed: server rejected the static bearer token \u{2014} \
         verify the credential value. The tool is unavailable until the server is re-authorized.";
     let cases = [
         (bearer_vault(&rig, &url, "tok-late").await, rejected, "Bearer tok-late"),

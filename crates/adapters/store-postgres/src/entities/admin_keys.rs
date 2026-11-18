@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use shared::{OrgId, Timestamp};
 
 use crate::schema::admin_keys;
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{PgBackend, diesel_be, pool_be};
 
 /// Postgres-backed organization admin keys (Diesel).
 #[derive(Debug, Clone)]

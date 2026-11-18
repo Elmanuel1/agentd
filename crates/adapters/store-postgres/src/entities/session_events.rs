@@ -8,12 +8,11 @@ use ::sessions::store::{AnswerCheck, SessionEventLog, StoreError, Wake};
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
 use diesel::sql_types::{Array, BigInt, Jsonb, Text};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use shared::{ApiError, Timestamp, WorkspaceId};
 
 use super::loop_steps::enqueue;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow, PgBackend};
+use crate::{DocRow, PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed session event log (Diesel).
 #[derive(Debug, Clone)]
@@ -40,15 +39,12 @@ impl SessionEventLog for PgSessionEventLog {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
         let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                lock(c, id).await?;
-                if insert(c, ws, id, &ids, docs).await? != ids.len() {
-                    return Err(diesel::result::Error::NotFound);
-                }
-                enqueue(c, ws, id, wake).await
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            lock(c, id).await?;
+            if insert(c, ws, id, &ids, docs).await? != ids.len() {
+                return Err(diesel::result::Error::NotFound);
             }
-            .scope_boxed()
+            enqueue(c, ws, id, wake).await
         })
         .await
         .map_err(log_be)
@@ -77,36 +73,38 @@ impl SessionEventLog for PgSessionEventLog {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let calls: Vec<&str> = calls.iter().map(EventId::as_str).collect();
         let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                // A second writer answering the same call waits here, then
-                // reads the first one's result.
-                lock(c, id).await?;
-                let rows: Vec<DocRow> = diesel::sql_query(
-                    "SELECT doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND (event_id = \
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            // A second writer answering the same call waits here, then
+            // reads the first one's result.
+            lock(c, id).await?;
+            let rows: Vec<DocRow> = diesel::sql_query(
+                "SELECT doc FROM session_events WHERE workspace_id = $1 AND session_id = $2 AND (event_id = \
                      ANY($3) OR doc->>'tool_use_id' = ANY($3) OR doc->>'custom_tool_use_id' = ANY($3))",
-                )
-                .bind::<Text, _>(ws.as_str())
-                .bind::<Text, _>(id.as_str())
-                .bind::<Array<Text>, _>(&calls)
-                .load(c)
-                .await?;
-                let found = rows.into_iter().map(|r| serde_json::from_value(r.doc)).collect::<Result<Vec<Event>, _>>();
-                let threads = match check(&found.map_err(|e| diesel::result::Error::DeserializationError(e.into()))?) {
+            )
+            .bind::<Text, _>(ws.as_str())
+            .bind::<Text, _>(id.as_str())
+            .bind::<Array<Text>, _>(&calls)
+            .load(c)
+            .await?;
+            let found =
+                rows.into_iter().map(|r| serde_json::from_value(r.doc)).collect::<Result<Vec<Event>, _>>();
+            let threads =
+                match check(&found.map_err(|e| diesel::result::Error::DeserializationError(e.into()))?) {
                     Ok(threads) => threads,
                     Err(refused) => return Ok(Err(refused)),
                 };
-                let answers = events.iter().zip(threads).map(|(e, session_thread_id)| Event { session_thread_id, ..e.clone() });
-                let docs = answers
-                    .map(|e| to_doc(&e))
-                    .collect::<Result<Vec<_>, StoreError>>()
-                    .map_err(|e| diesel::result::Error::SerializationError(e.to_string().into()))?;
-                if insert(c, ws, id, &ids, docs).await? != events.len() {
-                    return Err(diesel::result::Error::NotFound);
-                }
-                enqueue(c, ws, id, wake).await.map(Ok)
+            let answers = events
+                .iter()
+                .zip(threads)
+                .map(|(e, session_thread_id)| Event { session_thread_id, ..e.clone() });
+            let docs = answers
+                .map(|e| to_doc(&e))
+                .collect::<Result<Vec<_>, StoreError>>()
+                .map_err(|e| diesel::result::Error::SerializationError(e.to_string().into()))?;
+            if insert(c, ws, id, &ids, docs).await? != events.len() {
+                return Err(diesel::result::Error::NotFound);
             }
-            .scope_boxed()
+            enqueue(c, ws, id, wake).await.map(Ok)
         })
         .await
         .map_err(log_be)

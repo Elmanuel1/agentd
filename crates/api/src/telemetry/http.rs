@@ -9,11 +9,11 @@ use axum::http::header::CONTENT_TYPE;
 use axum::middleware::Next;
 use axum::response::Response;
 use futures::StreamExt;
-use opentelemetry::propagation::Extractor;
 use opentelemetry::KeyValue;
+use opentelemetry::propagation::Extractor;
 use shared::{ErrorCause, RequestId};
-use tracing::field::Empty;
 use tracing::Instrument;
+use tracing::field::Empty;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use super::Metrics;

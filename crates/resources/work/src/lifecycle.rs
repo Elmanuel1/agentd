@@ -8,7 +8,7 @@ use std::time::Duration;
 use shared::{ApiError, AuthContext, Timestamp, WorkspaceId};
 
 use crate::caller::WorkCaller;
-use crate::service::{backend, not_found, WorkService};
+use crate::service::{WorkService, backend, not_found};
 use crate::store::{Beat, Reach};
 use crate::tokens::WorkClaims;
 use crate::types::{Heartbeat, HeartbeatTag, Work, WorkState};

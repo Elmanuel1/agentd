@@ -108,7 +108,8 @@ fn unzip(bytes: &[u8]) -> Result<Vec<UploadFile>, ApiError> {
         if total > MAX_EXPANDED {
             return Err(too_large());
         }
-        files.push((entry.name().to_owned(), Bytes::from(body)));
+        let name = entry.name().map_err(|_| bad())?.into_owned();
+        files.push((name, Bytes::from(body)));
     }
     Ok(files)
 }
@@ -145,7 +146,7 @@ pub fn unpack(archive: &[u8]) -> Result<Unpacked, ApiError> {
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(bad)?.into_owned();
         let Some((top, rel)) = name.split_once('/') else { continue };
         directory = top.to_owned();
         let mut bytes = Vec::new();

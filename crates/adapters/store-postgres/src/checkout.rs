@@ -1,7 +1,7 @@
 //! Taking a connection from the pool, under one deadline.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use diesel::sql_types::Text;

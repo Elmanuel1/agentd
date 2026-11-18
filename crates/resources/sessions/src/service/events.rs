@@ -1,7 +1,7 @@
 use shared::limits::{validate_range_u32, values};
 use shared::{ApiError, AuthContext, Pagination};
 
-use super::{guard_writable, map_store, parse_id, SessionsService};
+use super::{SessionsService, guard_writable, map_store, parse_id};
 use crate::events::{Event, EventPayload, UserEvent};
 use crate::store::{EventFilter, Wake};
 use crate::types::{OutcomeId, Session, SessionStatus};

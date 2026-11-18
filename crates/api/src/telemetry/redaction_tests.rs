@@ -4,11 +4,12 @@
 //! it, to show what the filter stops.
 
 use std::io::Write;
-use std::sync::{Arc, Mutex, Once};
+use std::process::Command;
+use std::sync::{Arc, Mutex};
 
+use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use bytes::Bytes;
 use secrets_aws::{AwsSecretStore, AwsSecretsConfig};
 use shared::ports::secrets::{SecretKey, SecretStore, SecretString};
@@ -18,7 +19,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use super::ports::Observed;
-use super::{aws_wire_detail, Metrics};
+use super::{Metrics, aws_wire_detail};
 
 const SECRET: &str = "sk-live-known-value-7f3a";
 
@@ -105,16 +106,34 @@ fn capture(filtered: &Captured, raw: &Captured) -> tracing::subscriber::DefaultG
     tracing::subscriber::set_default(tracing_subscriber::registry().with(text).with(json).with(unfiltered))
 }
 
+const CHILD: &str = "AGENTD_REDACTION_CHILD";
+
+/// `true` in the child process that runs `test`'s body. The parent starts it
+/// with static credentials, so the default chain never probes a profile or
+/// IMDS, and with the SDK's own switch for logging secret responses, which an
+/// operator could turn on while debugging. A child, because a test cannot
+/// safely change the environment of a process whose other threads read it.
+fn in_child(test: &str) -> bool {
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let (_, path) = module_path!().split_once("::").unwrap();
+    let name = format!("{path}::{test}");
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args([name.as_str(), "--exact", "--test-threads=1"])
+        .env(CHILD, "1")
+        .env("AWS_ACCESS_KEY_ID", "test")
+        .env("AWS_SECRET_ACCESS_KEY", "test")
+        .env("LOG_SENSITIVE_BODIES", "true")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.contains("test result: ok. 1 passed"), "{name} in its child process:\n{stdout}\n{stderr}");
+    false
+}
+
 async fn store(deny_writes: bool) -> Observed<AwsSecretStore> {
-    static ENV: Once = Once::new();
-    // Static credentials so the default chain never probes a profile or IMDS,
-    // and the SDK's own switch for logging secret responses, which an
-    // operator could turn on while debugging.
-    ENV.call_once(|| {
-        std::env::set_var("AWS_ACCESS_KEY_ID", "test");
-        std::env::set_var("AWS_SECRET_ACCESS_KEY", "test");
-        std::env::set_var("LOG_SENSITIVE_BODIES", "true");
-    });
     let mut config = AwsSecretsConfig::new("agentd", "alias/agentd");
     config.region = Some("us-east-1".into());
     config.endpoint = Some(fake_aws(deny_writes).await);
@@ -128,6 +147,9 @@ fn key() -> SecretKey {
 
 #[tokio::test]
 async fn a_written_and_read_secret_reaches_no_log_line() {
+    if !in_child("a_written_and_read_secret_reaches_no_log_line") {
+        return;
+    }
     let (filtered, raw) = (Captured::default(), Captured::default());
     let _guard = capture(&filtered, &raw);
     let store = store(false).await;
@@ -142,6 +164,9 @@ async fn a_written_and_read_secret_reaches_no_log_line() {
 
 #[tokio::test]
 async fn a_failed_write_names_the_secret_and_code_but_not_the_value() {
+    if !in_child("a_failed_write_names_the_secret_and_code_but_not_the_value") {
+        return;
+    }
     let (filtered, raw) = (Captured::default(), Captured::default());
     let _guard = capture(&filtered, &raw);
     let store = store(true).await;

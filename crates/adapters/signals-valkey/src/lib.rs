@@ -16,7 +16,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::StreamExt;
 use redis::{AsyncCommands, RedisError};
-use sessions::signals::{Signal, Signals, CAPACITY};
+use sessions::signals::{CAPACITY, Signal, Signals};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;

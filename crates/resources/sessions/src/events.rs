@@ -177,10 +177,10 @@ impl Event {
     /// lifecycle events, as live sends them.
     pub fn thread_wire(&self) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or_default();
-        if !matches!(self.payload, EventPayload::Session(_)) {
-            if let Some(map) = v.as_object_mut() {
-                map.remove("session_thread_id");
-            }
+        if !matches!(self.payload, EventPayload::Session(_))
+            && let Some(map) = v.as_object_mut()
+        {
+            map.remove("session_thread_id");
         }
         v
     }

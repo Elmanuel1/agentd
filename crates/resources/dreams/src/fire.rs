@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use shared::ports::fire::{FireError, FireHandler};
-use shared::ports::FireTarget;
 use shared::AuthContext;
+use shared::ports::FireTarget;
+use shared::ports::fire::{FireError, FireHandler};
 
 use crate::service::DreamsService;
 use crate::types::DreamId;

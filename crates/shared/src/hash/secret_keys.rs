@@ -3,7 +3,7 @@
 use aws_lc_rs::{aead, constant_time, hkdf};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{entries, KeyRingError};
+use super::{KeyRingError, entries};
 
 /// The HKDF `info` of a value key: a key derived for anything else never
 /// seals a vault secret's value.

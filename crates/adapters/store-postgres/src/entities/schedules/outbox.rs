@@ -6,12 +6,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel::QueryableByName;
+use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use shared::BackendError;
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Source};
 use shared::ports::{ScheduleChange, SchedulerPort};
-use shared::BackendError;
 
 /// Record `change` in the transaction on `c`.
 pub(crate) async fn record(

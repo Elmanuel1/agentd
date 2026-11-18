@@ -6,13 +6,13 @@
 use async_trait::async_trait;
 use aws_sdk_ssm::operation::delete_parameter::DeleteParameterError;
 use aws_sdk_ssm::operation::get_parameter::GetParameterError;
-use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
 use aws_sdk_ssm::operation::put_parameter::PutParameterError;
+use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
 use aws_sdk_ssm::types::{ParameterTier, ParameterType, ResourceTypeForTagging, Tag};
-use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
 
 use crate::failure::failure;
-use crate::{key, name, AwsSecretsConfig};
+use crate::{AwsSecretsConfig, key, name};
 
 /// Secrets as SSM parameters, under one prefix and one KMS key.
 #[derive(Clone)]

@@ -100,12 +100,13 @@ async fn a_workspace_is_seen_only_by_its_organization() {
     assert_eq!(svc.get(&admin("org_a"), &ws.id).await.unwrap(), ws);
     let err = svc.get(&admin("org_b"), &ws.id).await.unwrap_err();
     assert_eq!(err.status, 404);
-    assert!(svc
-        .list(&admin("org_b"), true, &IdCursor::from_params(&Default::default()).unwrap())
-        .await
-        .unwrap()
-        .0
-        .is_empty());
+    assert!(
+        svc.list(&admin("org_b"), true, &IdCursor::from_params(&Default::default()).unwrap())
+            .await
+            .unwrap()
+            .0
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -179,10 +180,12 @@ async fn an_update_is_checked_like_a_create() {
         assert!(svc.update(&org, &ws.id, update(body.clone())).await.is_err(), "{body}");
     }
     assert_eq!(svc.get(&org, &ws.id).await.unwrap(), ws, "a refused update changes nothing");
-    assert!(serde_json::from_value::<UpdateWorkspaceRequest>(
-        serde_json::json!({"data_residency": {"workspace_geo": "us"}})
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<UpdateWorkspaceRequest>(
+            serde_json::json!({"data_residency": {"workspace_geo": "us"}})
+        )
+        .is_err()
+    );
     assert_eq!(
         svc.update(&admin("org_b"), &ws.id, update(serde_json::json!({}))).await.unwrap_err().status,
         404
@@ -198,10 +201,9 @@ async fn the_external_key_is_set_once() {
         svc.update(&org, &ws.id, update(serde_json::json!({"external_key_id": "ekey_1"}))).await.unwrap();
     assert_eq!(set.external_key_id.as_deref(), Some("ekey_1"));
     assert!(svc.update(&org, &ws.id, update(serde_json::json!({"external_key_id": "ekey_1"}))).await.is_ok());
-    assert!(svc
-        .update(&org, &ws.id, update(serde_json::json!({"external_key_id": "ekey_2"})))
-        .await
-        .is_err());
+    assert!(
+        svc.update(&org, &ws.id, update(serde_json::json!({"external_key_id": "ekey_2"}))).await.is_err()
+    );
 }
 
 #[tokio::test]

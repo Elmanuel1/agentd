@@ -9,9 +9,9 @@ use std::sync::{Arc, Once, Weak};
 use parking_lot::Mutex;
 use shared::{ApiError, AuthContext, ErrorType, WorkspaceId};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{Notify, broadcast};
 
-use super::{map_store, parse_id, SessionsService};
+use super::{SessionsService, map_store, parse_id};
 use crate::events::Event;
 use crate::signals::{LocalSignals, Signal, Signals};
 use crate::store::DatabaseLoad;

@@ -5,10 +5,10 @@ use aws_sdk_secretsmanager::operation::create_secret::CreateSecretError;
 use aws_sdk_secretsmanager::operation::delete_secret::DeleteSecretError;
 use aws_sdk_secretsmanager::operation::describe_secret::DescribeSecretError;
 use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError;
-use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
 
 use crate::failure::failure;
-use crate::{name, AwsSecretStore};
+use crate::{AwsSecretStore, name};
 
 impl AwsSecretStore {
     /// Whether `name` exists and is scheduled for deletion: Secrets Manager

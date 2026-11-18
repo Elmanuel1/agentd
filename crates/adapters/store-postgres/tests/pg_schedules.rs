@@ -10,10 +10,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
+use shared::AuthContext;
 use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::fire::{FireError, FireHandler, FireRegistry};
 use shared::ports::{FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, SchedulerPort, TenantRef};
-use shared::AuthContext;
 use store_postgres::{PgBackend, PgFireClaims, PgScheduler, ScheduleOutbox};
 
 /// A tick claims every due schedule in the database, so the tests that tick

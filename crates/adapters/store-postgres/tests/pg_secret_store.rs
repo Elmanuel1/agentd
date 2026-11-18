@@ -7,13 +7,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use diesel::QueryableByName;
 use diesel::connection::{Instrumentation, InstrumentationEvent};
 use diesel::sql_types::{Bool, Bytea, Text};
-use diesel::QueryableByName;
 use diesel_async::RunQueryDsl;
+use shared::Timestamp;
 use shared::hash::SecretKeys;
 use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
-use shared::Timestamp;
 use store_postgres::{PgBackend, PgObserver, PgSecretStore, PoolSettings};
 
 const K1: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
@@ -98,10 +98,10 @@ impl Instrumentation for Seen {
         let InstrumentationEvent::StartQuery { query, .. } = event else { return };
         let query = query.to_string();
         let mut hook = self.hook.lock().unwrap();
-        if hook.as_ref().is_some_and(|(trigger, _)| query.contains(trigger.as_str())) {
-            if let Some((_, run)) = hook.take() {
-                run();
-            }
+        if hook.as_ref().is_some_and(|(trigger, _)| query.contains(trigger.as_str()))
+            && let Some((_, run)) = hook.take()
+        {
+            run();
         }
         self.statements.lock().unwrap().push(query);
     }

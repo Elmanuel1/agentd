@@ -4,8 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use diesel::sql_types::{BigInt, Bool, Nullable, Text};
@@ -13,7 +13,7 @@ use diesel_async::RunQueryDsl;
 use environments::types::{CreateEnvironmentRequest, UpdateEnvironmentRequest};
 use environments::{Environment, EnvironmentsService, EnvironmentsStore};
 use serde_json::json;
-use shared::{with_writer, AuthContext, OrgId, Pagination, Timestamp, WorkspaceId, Writer};
+use shared::{AuthContext, OrgId, Pagination, Timestamp, WorkspaceId, Writer, with_writer};
 use store_postgres::{PgBackend, PgEnvironmentsStore, PoolSettings};
 
 fn enabled() -> bool {
@@ -195,7 +195,9 @@ async fn the_revisions_table_refuses_changes_except_the_stamps_once() {
         env.id.as_str()
     );
     let update = |set: &str| {
-        format!("UPDATE environment_revisions SET {set} WHERE (org_id, environment_id) IN (SELECT org_id, environment_id {row})")
+        format!(
+            "UPDATE environment_revisions SET {set} WHERE (org_id, environment_id) IN (SELECT org_id, environment_id {row})"
+        )
     };
     let refused = |r: Result<usize, diesel::result::Error>| {
         let msg = r.unwrap_err().to_string();

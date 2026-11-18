@@ -4,9 +4,8 @@
 use ::sessions::steps::{Claim, StepEnd, StepWrite};
 use ::sessions::store::StoreError;
 use ::sessions::types::Session;
-use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel::OptionalExtension;
-use diesel_async::scoped_futures::ScopedFutureExt;
+use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use shared::Timestamp;
 
@@ -15,7 +14,7 @@ use super::super::work_items::stop::requeue;
 use super::rows::Doc;
 use super::{HELD, KEY};
 use crate::entities::webhook_deliveries::status_changed;
-use crate::{diesel_be, enum_str, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, diesel_be, enum_str, pool_be, to_doc};
 
 /// The step's events and session changes, after the held step was checked.
 async fn land(
@@ -111,22 +110,19 @@ pub(super) async fn write(
     write: StepWrite<'_>,
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
-    conn.transaction::<_, diesel::result::Error, _>(|c| {
-        async move {
-            lock(c, &claim.session).await?;
-            let kept = held(
-                format!("UPDATE loop_steps SET lease_until = now() + make_interval(secs => $5) WHERE {HELD}"),
-                claim,
-            )
-            .bind::<BigInt, _>(lease)
-            .execute(c)
-            .await?;
-            if kept == 0 {
-                return Err(diesel::result::Error::RollbackTransaction);
-            }
-            land(c, claim, &write).await.map(|()| true)
+    conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+        lock(c, &claim.session).await?;
+        let kept = held(
+            format!("UPDATE loop_steps SET lease_until = now() + make_interval(secs => $5) WHERE {HELD}"),
+            claim,
+        )
+        .bind::<BigInt, _>(lease)
+        .execute(c)
+        .await?;
+        if kept == 0 {
+            return Err(diesel::result::Error::RollbackTransaction);
         }
-        .scope_boxed()
+        land(c, claim, &write).await.map(|()| true)
     })
     .await
     .or_else(lost)
@@ -140,8 +136,7 @@ pub(super) async fn commit(
     write: StepWrite<'_>,
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
-    conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
+    conn.transaction::<_, diesel::result::Error, _>(async move |c| {
                 lock(c, &claim.session).await?;
                 // Woken while it ran, or asked to go on: the step stays, due at once.
                 let deleted = match end {
@@ -170,9 +165,7 @@ pub(super) async fn commit(
                     requeue(c, &claim.workspace, claim.session.as_str()).await?;
                 }
                 Ok(true)
-            }
-            .scope_boxed()
-        })
+            })
         .await
         .or_else(lost)
 }

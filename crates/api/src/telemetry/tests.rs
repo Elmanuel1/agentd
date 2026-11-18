@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn_with_state;
 use axum::response::sse::{Event, Sse};
 use axum::routing::get;
-use axum::Router;
 use bytes::Bytes;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::trace::TracerProvider as _;
@@ -18,8 +18,8 @@ use shared::ports::blobs::{BlobError, BlobStore};
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
-use super::ports::Observed;
 use super::Metrics;
+use super::ports::Observed;
 
 struct Harness {
     metrics: Arc<Metrics>,
@@ -201,7 +201,7 @@ async fn a_port_operation_is_a_span_and_a_sample_with_its_outcome() {
 
 #[test]
 fn quiet_logs_do_not_switch_tracing_off() {
-    use tracing_subscriber::filter::{filter_fn, LevelFilter};
+    use tracing_subscriber::filter::{LevelFilter, filter_fn};
     use tracing_subscriber::{EnvFilter, Layer};
     let out = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder().with_simple_exporter(out.clone()).build();

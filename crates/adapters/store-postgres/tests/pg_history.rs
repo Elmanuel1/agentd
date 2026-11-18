@@ -7,10 +7,10 @@
 
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::RunQueryDsl;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use shared::Timestamp;
 use shared::ports::changes::Position;
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
-use shared::Timestamp;
 use store_postgres::{PgBackend, PgHistoryLog};
 
 fn enabled() -> bool {

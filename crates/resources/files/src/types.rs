@@ -69,10 +69,8 @@ impl FileMetadata {
     /// The wire object: the beta shape has no `expires_at`.
     pub fn wire(&self, beta: bool) -> serde_json::Value {
         let mut v = serde_json::to_value(self).unwrap_or_default();
-        if beta {
-            if let Some(o) = v.as_object_mut() {
-                o.remove("expires_at");
-            }
+        if beta && let Some(o) = v.as_object_mut() {
+            o.remove("expires_at");
         }
         v
     }

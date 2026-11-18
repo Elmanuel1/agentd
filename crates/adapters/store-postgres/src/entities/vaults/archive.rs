@@ -10,7 +10,6 @@ use ::vaults::types::{CredentialId, Vault, VaultId};
 use async_trait::async_trait;
 use diesel::sql_types::{Jsonb, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, QueryableByName};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
@@ -57,44 +56,41 @@ impl VaultCascade for PgVaultsStore {
             serde_json::to_value(at).map_err(|e| StoreError::Backend(shared::BackendError::new(e)))?;
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let (vault, archived) = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let Some(doc) = locked(c, ws, id).await? else {
-                        return Ok(Err(StoreError::VaultNotFound));
-                    };
-                    let mut vault: Vault = match parse_doc(doc) {
-                        Ok(vault) => vault,
-                        Err(e) => return Ok(Err(e)),
-                    };
-                    if vault.archived_at.is_some() {
-                        return Ok(Ok((vault, Vec::new())));
-                    }
-                    (vault.archived_at, vault.updated_at) = (Some(at), at);
-                    let doc = match to_doc(&vault) {
-                        Ok(doc) => doc,
-                        Err(e) => return Ok(Err(e)),
-                    };
-                    diesel::update(vaults::table.filter(vaults::workspace_id.eq(ws.as_str())))
-                        .filter(vaults::vault_id.eq(id.as_str()))
-                        .set(vaults::doc.eq(doc))
-                        .execute(c)
-                        .await?;
-                    let archived: Vec<Touched> = diesel::sql_query(
-                        "UPDATE credentials SET has_secret = false,
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let Some(doc) = locked(c, ws, id).await? else {
+                    return Ok(Err(StoreError::VaultNotFound));
+                };
+                let mut vault: Vault = match parse_doc(doc) {
+                    Ok(vault) => vault,
+                    Err(e) => return Ok(Err(e)),
+                };
+                if vault.archived_at.is_some() {
+                    return Ok(Ok((vault, Vec::new())));
+                }
+                (vault.archived_at, vault.updated_at) = (Some(at), at);
+                let doc = match to_doc(&vault) {
+                    Ok(doc) => doc,
+                    Err(e) => return Ok(Err(e)),
+                };
+                diesel::update(vaults::table.filter(vaults::workspace_id.eq(ws.as_str())))
+                    .filter(vaults::vault_id.eq(id.as_str()))
+                    .set(vaults::doc.eq(doc))
+                    .execute(c)
+                    .await?;
+                let archived: Vec<Touched> = diesel::sql_query(
+                    "UPDATE credentials SET has_secret = false,
                            doc = jsonb_set(jsonb_set(doc, '{archived_at}', $3), '{updated_at}', $3)
                          WHERE workspace_id = $1 AND vault_id = $2 AND doc->>'archived_at' IS NULL
                          RETURNING credential_id",
-                    )
-                    .bind::<Text, _>(ws.as_str())
-                    .bind::<Text, _>(id.as_str())
-                    .bind::<Jsonb, _>(&stamp)
-                    .load(c)
-                    .await?;
-                    let ids: Vec<String> = archived.iter().map(|t| t.credential_id.clone()).collect();
-                    insert_deliveries(c, &deliveries(&ids)).await?;
-                    Ok(Ok((vault, archived)))
-                }
-                .scope_boxed()
+                )
+                .bind::<Text, _>(ws.as_str())
+                .bind::<Text, _>(id.as_str())
+                .bind::<Jsonb, _>(&stamp)
+                .load(c)
+                .await?;
+                let ids: Vec<String> = archived.iter().map(|t| t.credential_id.clone()).collect();
+                insert_deliveries(c, &deliveries(&ids)).await?;
+                Ok(Ok((vault, archived)))
             })
             .await
             .map_err(diesel_be)??;
@@ -112,27 +108,24 @@ impl VaultCascade for PgVaultsStore {
     ) -> Result<Vault, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let (doc, deleted) = conn
-            .transaction::<_, diesel::result::Error, _>(|c| {
-                async move {
-                    let Some(doc) = locked(c, ws, id).await? else {
-                        return Ok(Err(StoreError::VaultNotFound));
-                    };
-                    let deleted: Vec<String> = diesel::delete(
-                        credentials::table
-                            .filter(credentials::workspace_id.eq(ws.as_str()))
-                            .filter(credentials::vault_id.eq(id.as_str())),
-                    )
-                    .returning(credentials::credential_id)
-                    .get_results(c)
+            .transaction::<_, diesel::result::Error, _>(async move |c| {
+                let Some(doc) = locked(c, ws, id).await? else {
+                    return Ok(Err(StoreError::VaultNotFound));
+                };
+                let deleted: Vec<String> = diesel::delete(
+                    credentials::table
+                        .filter(credentials::workspace_id.eq(ws.as_str()))
+                        .filter(credentials::vault_id.eq(id.as_str())),
+                )
+                .returning(credentials::credential_id)
+                .get_results(c)
+                .await?;
+                diesel::delete(vaults::table.filter(vaults::workspace_id.eq(ws.as_str())))
+                    .filter(vaults::vault_id.eq(id.as_str()))
+                    .execute(c)
                     .await?;
-                    diesel::delete(vaults::table.filter(vaults::workspace_id.eq(ws.as_str())))
-                        .filter(vaults::vault_id.eq(id.as_str()))
-                        .execute(c)
-                        .await?;
-                    insert_deliveries(c, &deliveries(&deleted)).await?;
-                    Ok(Ok((doc, deleted)))
-                }
-                .scope_boxed()
+                insert_deliveries(c, &deliveries(&deleted)).await?;
+                Ok(Ok((doc, deleted)))
             })
             .await
             .map_err(diesel_be)??;

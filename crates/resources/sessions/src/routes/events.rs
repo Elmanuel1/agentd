@@ -17,7 +17,7 @@ use shared::{
 };
 use tokio::sync::broadcast::error::RecvError;
 
-use super::{environment, order, Worker};
+use super::{Worker, environment, order};
 use crate::events::{Event, EventPayload, SessionEvent};
 use crate::service::SessionsService;
 use crate::store::{EventFilter, Order};

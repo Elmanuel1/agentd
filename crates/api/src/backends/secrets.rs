@@ -8,8 +8,8 @@ use shared::ports::secrets::{SecretError, SecretStore};
 use store_postgres::{PgBackend, PgSecretStore};
 
 use crate::config::SecretsConfig;
-use crate::telemetry::ports::Observed;
 use crate::telemetry::Metrics;
+use crate::telemetry::ports::Observed;
 
 /// A secret store, ready or waiting for the record store's pool.
 pub(super) enum Secrets {

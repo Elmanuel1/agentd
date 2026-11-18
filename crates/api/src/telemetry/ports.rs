@@ -16,10 +16,10 @@ use shared::ports::fire::{FireError, FireHandler};
 use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 use shared::{AdminContext, AuthContext};
-use tracing::field::Empty;
 use tracing::Instrument;
+use tracing::field::Empty;
 
-use super::{outcome, Metrics};
+use super::{Metrics, outcome};
 
 /// A port wrapped in its observation.
 #[derive(Debug, Clone)]

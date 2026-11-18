@@ -8,8 +8,8 @@ use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
 use webhooks::EventKind;
 
-use super::turn::Batch;
 use super::Loop;
+use super::turn::Batch;
 
 /// How a step's write lands: the opening, keeping its lease, or the commit.
 enum Landing {

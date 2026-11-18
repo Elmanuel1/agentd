@@ -3,16 +3,15 @@
 
 use diesel::sql_types::{Array, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use memory::store::{StoreError, VersionRecord};
 use memory::types::{Memory, MemoryId, MemoryStoreId, MemoryVersionId};
 use shared::WorkspaceId;
 
-use super::versions::{version_doc, version_row};
 use super::PgMemoryStore;
+use super::versions::{version_doc, version_row};
 use crate::schema::memories;
-use crate::{diesel_be, parse_doc, pool_be, to_doc, DocRow};
+use crate::{DocRow, diesel_be, parse_doc, pool_be, to_doc};
 
 /// Live: a path conflicts with another live memory at the same path, or one
 /// that is its ancestor or descendant (`/notes` and `/notes/a.md`). Ancestors
@@ -80,27 +79,25 @@ impl PgMemoryStore {
         docs: Vec<serde_json::Value>,
     ) -> Result<Outcome, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                let stored_path = match w.expected {
-                    Some(expected) => match locked_path(c, ws, store, &w.head.id, expected).await? {
-                        Some(path) => Some(path),
-                        None => return Ok(Outcome::Moved),
-                    },
-                    None => None,
-                };
-                if w.check && stored_path.as_deref() != Some(w.head.path.as_str()) {
-                    if let Some(row) = overlap(c, ws, store, w.head).await? {
-                        return Ok(Outcome::Conflict(row.doc));
-                    }
-                }
-                head_row(c, ws, store, w, head_doc).await?;
-                for (v, doc) in w.versions.iter().zip(docs) {
-                    version_row(c, ws, store, &w.head.id, v, doc).await?;
-                }
-                Ok(Outcome::Written)
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            let stored_path = match w.expected {
+                Some(expected) => match locked_path(c, ws, store, &w.head.id, expected).await? {
+                    Some(path) => Some(path),
+                    None => return Ok(Outcome::Moved),
+                },
+                None => None,
+            };
+            if w.check
+                && stored_path.as_deref() != Some(w.head.path.as_str())
+                && let Some(row) = overlap(c, ws, store, w.head).await?
+            {
+                return Ok(Outcome::Conflict(row.doc));
             }
-            .scope_boxed()
+            head_row(c, ws, store, w, head_doc).await?;
+            for (v, doc) in w.versions.iter().zip(docs) {
+                version_row(c, ws, store, &w.head.id, v, doc).await?;
+            }
+            Ok(Outcome::Written)
         })
         .await
         .map_err(diesel_be)

@@ -26,7 +26,7 @@ mod slot;
 pub use checkout::{DieselPgPool, PooledConnection};
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
-pub use slot::{read_slot, Slot};
+pub use slot::{Slot, read_slot};
 
 pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;
@@ -42,8 +42,8 @@ pub use entities::loop_steps::PgSteps;
 pub use entities::mcp_connections::PgMcpConnections;
 pub use entities::memory::PgMemoryStore;
 pub use entities::run_lock::PgRunLock;
-pub use entities::schedules::outbox::ScheduleOutbox;
 pub use entities::schedules::PgScheduler;
+pub use entities::schedules::outbox::ScheduleOutbox;
 pub use entities::session_events::PgSessionEventLog;
 pub use entities::sessions::PgSessionsStore;
 pub use entities::skill_versions::PgSkillVersionsStore;

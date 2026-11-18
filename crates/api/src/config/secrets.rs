@@ -9,7 +9,7 @@ use secrets_aws::{
 };
 use shared::hash::SecretKeys;
 
-use super::{endpoint, number, unknown, ConfigError};
+use super::{ConfigError, endpoint, number, unknown};
 
 /// `AGENTD_SECRETS`.
 #[derive(Debug, Clone, PartialEq, Eq)]

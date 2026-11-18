@@ -4,7 +4,7 @@
 use shared::{ApiError, AuthContext, Timestamp};
 use webhooks::{Delivery, EventKind};
 
-use crate::service::{map_store, parse_vault_id, VaultsService};
+use crate::service::{VaultsService, map_store, parse_vault_id};
 use crate::types::{Vault, VaultId};
 
 impl VaultsService {

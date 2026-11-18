@@ -7,10 +7,11 @@
 //! only add cost to every request; the stored digest is HMAC-SHA256 keyed with
 //! a pepper kept in Secrets Manager, so the stored digests alone verify nothing.
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{KeyInit, Mac};
-use rand::RngCore;
+use rand::Rng;
+use rand::rand_core::UnwrapErr;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
@@ -50,7 +51,7 @@ impl KeyKind {
 #[must_use]
 pub fn generate(kind: KeyKind) -> SecretString {
     let mut random = Zeroizing::new([0u8; RANDOM_BYTES]);
-    rand::rngs::OsRng.fill_bytes(random.as_mut());
+    UnwrapErr(rand::rngs::SysRng).fill_bytes(random.as_mut());
     let mut key = Zeroizing::new(String::with_capacity(kind.prefix().len() + BODY_LEN));
     key.push_str(kind.prefix());
     URL_SAFE_NO_PAD.encode_string(random.as_ref(), &mut key);

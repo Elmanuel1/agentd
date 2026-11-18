@@ -1,6 +1,6 @@
 use shared::{ApiError, AuthContext, Pagination};
 
-use super::{map_store, parse_mem_id, parse_mem_pair, parse_store_id, MemoriesService, View};
+use super::{MemoriesService, View, map_store, parse_mem_id, parse_mem_pair, parse_store_id};
 use crate::store::{StoreError, VersionFilter, VersionRecord, VersionSelector};
 use crate::types::{Memory, MemoryId, MemoryStoreId, MemoryVersion, MemoryVersionId};
 

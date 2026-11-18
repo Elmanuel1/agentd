@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use common::Rig;
 use diesel_async::RunQueryDsl;
-use kit::{call, cdc_enabled, eventually, summary, Container};
+use kit::{Container, call, cdc_enabled, eventually, summary};
 use serde_json::json;
 use shared::ports::changes::{Change, ChangeHandler, Source};
 use shared::{BackendError, Timestamp};
@@ -158,10 +158,10 @@ async fn kept_once(rig: &Rig, v: &str, expected: &[Kept], fault: &str) {
 /// Until Postgres answers on a fresh connection.
 async fn postgres_back(rig: &Rig) {
     for _ in 0..120 {
-        if let Ok(mut conn) = rig.pg.diesel.get().await {
-            if diesel::sql_query("SELECT 1").execute(&mut *conn).await.is_ok() {
-                return;
-            }
+        if let Ok(mut conn) = rig.pg.diesel.get().await
+            && diesel::sql_query("SELECT 1").execute(&mut *conn).await.is_ok()
+        {
+            return;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

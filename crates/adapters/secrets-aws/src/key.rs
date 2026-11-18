@@ -6,8 +6,8 @@ use aws_sdk_kms::config::timeout::TimeoutConfig;
 use aws_sdk_kms::types::{KeyManagerType, KeyMetadata, KeySpec, KeyState, KeyUsageType};
 use shared::ports::secrets::SecretError;
 
-use crate::failure::failure;
 use crate::AwsSecretsConfig;
+use crate::failure::failure;
 
 /// The configuration a store's client is built from, with its timeouts, and
 /// the ARN of the store's KMS key once [`customer_key_arn`] accepts it. The

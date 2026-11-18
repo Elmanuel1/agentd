@@ -27,8 +27,8 @@ pub mod variables;
 
 use std::sync::Arc;
 
-use shared::beta::BetaGate;
 use shared::Module;
+use shared::beta::BetaGate;
 
 pub use service::{McpReach, VaultsService};
 pub use store::{VaultCredentialStore, VaultStore};

@@ -15,8 +15,8 @@ use parking_lot::RwLock;
 use shared::net::Guard;
 use shared::{BackendError, OrgId, WorkspaceId};
 use vaults::{McpReach, VaultsService};
-use work::store::Reach;
 use work::WorkReads;
+use work::store::Reach;
 
 use crate::backends::Stores;
 

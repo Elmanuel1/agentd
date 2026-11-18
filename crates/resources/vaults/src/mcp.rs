@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use shared::{BackendError, OrgId, Timestamp, WorkspaceId};
 
-use crate::refresh::{request_token, HttpResponse, Refreshed};
+use crate::refresh::{HttpResponse, Refreshed, request_token};
 use crate::service::VaultsService;
 use crate::store::{ClaimedWrite, StoreError, StoredCredential};
 use crate::types::{

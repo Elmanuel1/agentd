@@ -7,9 +7,9 @@ use diesel_async::RunQueryDsl;
 use shared::ports::secrets::{SecretError, SecretKey};
 
 use super::cipher::{self, Sealed};
-use super::{backend_error, PgSecretStore};
-use crate::schema::vault_secrets as t;
+use super::{PgSecretStore, backend_error};
 use crate::PooledConnection;
+use crate::schema::vault_secrets as t;
 
 /// Rows a reseal reads at a time.
 const PAGE: i64 = 500;

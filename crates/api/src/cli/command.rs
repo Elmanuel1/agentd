@@ -4,7 +4,7 @@
 
 use std::process::ExitCode;
 
-use shared::{with_writer, Writer};
+use shared::{Writer, with_writer};
 
 /// Which key a command makes: the flags its `create` takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,8 +164,10 @@ mod tests {
         for bad in ["create --org o --workspace w", "create --org o --environment e", "create --x y"] {
             assert!(KeysCommand::parse(&args(bad), Kind::Environment).is_err(), "{bad}");
         }
-        assert!(KeysCommand::parse(&args("create --org o --workspace w --environment e"), Kind::Workspace)
-            .is_err());
+        assert!(
+            KeysCommand::parse(&args("create --org o --workspace w --environment e"), Kind::Workspace)
+                .is_err()
+        );
     }
 
     #[test]

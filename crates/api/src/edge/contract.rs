@@ -8,7 +8,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use shared::beta::{ApiVersion, BetaGate, BetaSet};
 use shared::module::BodyLimit;
-use shared::{request_too_large_response, wire_response, ApiError};
+use shared::{ApiError, request_too_large_response, wire_response};
 
 /// Live (auth/05): a request without `anthropic-version` is a 400.
 pub async fn version(mut req: Request, next: Next) -> Response {
@@ -56,12 +56,12 @@ async fn ga_schema(gate: BetaGate, req: Request, next: Next) -> Response {
     let Ok(bytes) = axum::body::to_bytes(body, GATED.bytes()).await else {
         return request_too_large_response(GATED.api, GATED.max_mb);
     };
-    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-        if let Some(unknown) = map.keys().find(|k| !gate.ga_fields.contains(&k.as_str())) {
-            return wire_response(&ApiError::invalid_request(format!(
-                "Failed to parse request body: unknown field \"{unknown}\""
-            )));
-        }
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(unknown) = map.keys().find(|k| !gate.ga_fields.contains(&k.as_str()))
+    {
+        return wire_response(&ApiError::invalid_request(format!(
+            "Failed to parse request body: unknown field \"{unknown}\""
+        )));
     }
     next.run(Request::from_parts(parts, Body::from(bytes))).await
 }

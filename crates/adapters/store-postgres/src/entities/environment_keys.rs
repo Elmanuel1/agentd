@@ -9,7 +9,7 @@ use diesel_async::RunQueryDsl;
 use shared::{OrgId, Timestamp, WorkspaceId};
 
 use crate::schema::environment_keys;
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{PgBackend, diesel_be, pool_be};
 
 #[derive(Debug, Clone)]
 pub struct PgEnvironmentKeysStore {

@@ -9,8 +9,8 @@ mod common;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use common::{Auth, Rig, Streaming, KEY};
-use serde_json::{json, Value};
+use common::{Auth, KEY, Rig, Streaming};
+use serde_json::{Value, json};
 use webhooks::Webhooks;
 
 /// The rig's app, its sessions and vaults sending to one endpoint of the rig's organization.

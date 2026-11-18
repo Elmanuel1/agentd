@@ -13,7 +13,7 @@ mod threads;
 pub use budget::{Budget, MonetaryAmount};
 pub use requests::{AgentOverrides, AgentRefInput, AgentUpdate, CreateSessionRequest, UpdateSessionRequest};
 
-pub use threads::{primary_thread_id, SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag};
+pub use threads::{SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag, primary_thread_id};
 
 pub use outcomes::{OutcomeEvaluation, OutcomeId, OutcomeResource_, OutcomeResult};
 pub use resources::{

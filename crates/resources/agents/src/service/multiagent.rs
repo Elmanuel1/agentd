@@ -5,7 +5,7 @@
 use shared::limits::validate_array_max;
 use shared::{ApiError, AuthContext, Patch};
 
-use super::{map_store, parse_id, AgentsService};
+use super::{AgentsService, map_store, parse_id};
 use crate::types::{
     AdvisorMember, AgentRef, AgentRefParams, Members, MembersParams, Multiagent, MultiagentParams,
     RosterMember, TaggedRefParams, Toggle,
@@ -120,7 +120,7 @@ impl AgentsService {
             AgentRefParams::Tagged(TaggedRefParams::Advisor { .. }) => {
                 return Err(ApiError::invalid_request(
                     "multiagent: an advisor can only be a coordinator roster member",
-                ))
+                ));
             }
         };
         let id = parse_id(&raw)?;

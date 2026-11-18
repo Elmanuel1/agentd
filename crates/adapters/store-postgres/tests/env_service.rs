@@ -5,11 +5,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use environments::types::{CreateEnvironmentRequest, EnvironmentState, UpdateEnvironmentRequest};
 use environments::EnvironmentsService;
+use environments::types::{CreateEnvironmentRequest, EnvironmentState, UpdateEnvironmentRequest};
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgEnvironmentsStore};
 

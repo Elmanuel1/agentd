@@ -10,7 +10,7 @@ use diesel::sql_types::{Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
 
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{PgBackend, diesel_be, pool_be};
 
 /// Postgres-backed MCP connections.
 #[derive(Debug, Clone)]

@@ -24,8 +24,8 @@ pub mod scoped;
 
 use std::sync::Arc;
 
-use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
+use axum::middleware::{from_fn, from_fn_with_state};
 use shared::beta::BetaGate;
 
 use crate::telemetry::{self, Metrics};

@@ -55,11 +55,12 @@ mod tests {
         assert_eq!(MonetaryAmount::usd(0).minor_units("x").unwrap(), 0);
         for bad in ["5.00", "007", "", "-1", "+1", "1e3"] {
             let m = MonetaryAmount { amount: bad.into(), currency: "USD".into() };
-            assert!(m
-                .minor_units("budget.max_list_cost")
-                .unwrap_err()
-                .message
-                .starts_with("budget.max_list_cost.amount"));
+            assert!(
+                m.minor_units("budget.max_list_cost")
+                    .unwrap_err()
+                    .message
+                    .starts_with("budget.max_list_cost.amount")
+            );
         }
         let eur = MonetaryAmount { amount: "1".into(), currency: "EUR".into() };
         assert_eq!(

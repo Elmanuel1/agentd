@@ -3,8 +3,8 @@
 
 use sessions::types::Session;
 
-use super::team::{roster, Thread};
 use super::Loop;
+use super::team::{Thread, roster};
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelRequest};
 use crate::turn::policy::Toolbox;

@@ -2,10 +2,10 @@
 //! single-use key the master key ring derives for a fresh salt
 //! ([`SecretKeys::value_key`]). It runs no statement.
 
-use aws_lc_rs::aead::{Aad, Nonce, RandomizedNonceKey, AES_256_GCM, NONCE_LEN};
+use aws_lc_rs::aead::{AES_256_GCM, Aad, NONCE_LEN, Nonce, RandomizedNonceKey};
 use diesel::{Queryable, QueryableByName, Selectable};
 use shared::hash::SecretKeys;
-use shared::ports::secrets::{into_secret, ExposeSecret, SecretError, SecretKey, SecretString};
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretString, into_secret};
 use zeroize::{Zeroize, Zeroizing};
 
 const SALT_LEN: usize = 32;

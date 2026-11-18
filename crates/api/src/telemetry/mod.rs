@@ -27,11 +27,11 @@ use opentelemetry::metrics::{Histogram, Meter, UpDownCounter};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter};
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use opentelemetry_sdk::Resource;
-use tracing_subscriber::filter::{filter_fn, LevelFilter};
+use tracing_subscriber::filter::{LevelFilter, filter_fn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -180,11 +180,7 @@ pub(crate) fn aws_wire_detail(m: &tracing::Metadata<'_>) -> bool {
 
 /// `ok` or `error`, the attribute every boundary records.
 pub(crate) fn outcome<T, E>(r: &Result<T, E>) -> &'static str {
-    if r.is_ok() {
-        "ok"
-    } else {
-        "error"
-    }
+    if r.is_ok() { "ok" } else { "error" }
 }
 
 #[cfg(test)]

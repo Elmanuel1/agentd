@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use shared::{ApiError, AuthContext, Pagination, WorkspaceId};
 
-use super::{map_store, SessionsService};
+use super::{SessionsService, map_store};
 use crate::events::{Event, EventId, EventPayload, SessionEvent, StopReason};
 use crate::store::{EventFilter, Order, Wake};
 use crate::types::{Session, SessionStatus};

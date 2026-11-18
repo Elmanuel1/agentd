@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Position, Source};
 use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
 use shared::{BackendError, Timestamp};

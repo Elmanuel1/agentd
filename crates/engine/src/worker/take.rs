@@ -10,10 +10,10 @@ use sessions::types::Session;
 use shared::Timestamp;
 
 use super::grade::{active, conversation};
-use super::team::{threads, Thread};
+use super::team::{Thread, threads};
 use super::turn::Turn;
 use crate::turn::compact::checkpoint;
-use crate::turn::history::{rebuild, thread_events, History, Kept, Unanswered};
+use crate::turn::history::{History, Kept, Unanswered, rebuild, thread_events};
 use mcp::{answered, is_mcp, refusal};
 
 mod mcp;

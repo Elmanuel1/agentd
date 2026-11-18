@@ -1,7 +1,7 @@
 //! The Anthropic Messages API client.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sessions::events::ModelUsage;
 
 use super::{Block, Message, ModelClient, ModelError, ModelRequest, ModelResponse, Role, StopKind};

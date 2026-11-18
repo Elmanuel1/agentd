@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use rand::Rng;
+use rand::RngExt;
 use tokio::time::Instant;
 
 use super::{ModelClient, ModelError, ModelRequest, ModelResponse};
@@ -71,7 +71,7 @@ impl Retry {
                 ModelError::RetryAfter(_, after) => *after,
                 _ => Duration::ZERO,
             };
-            let jitter = Duration::from_millis(rand::thread_rng().gen_range(0..=millis(backoff)));
+            let jitter = Duration::from_millis(rand::rng().random_range(0..=millis(backoff)));
             let wait = jitter.max(floor);
             if tried >= self.attempts || Instant::now() + wait >= end {
                 return Err(error);

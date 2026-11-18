@@ -9,10 +9,10 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use common::{send_to, Auth, Rig, EGRESS_KEY, KEY, SCOPE, WORK_KEY};
-use serde_json::{json, Value};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use common::{Auth, EGRESS_KEY, KEY, Rig, SCOPE, WORK_KEY, send_to};
+use serde_json::{Value, json};
 use shared::ports::secrets::SecretKey;
 use work::{Placeholders, WorkTokens};
 

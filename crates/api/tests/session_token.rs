@@ -8,8 +8,8 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{Auth, Rig, KEY};
-use serde_json::{json, Value};
+use common::{Auth, KEY, Rig};
+use serde_json::{Value, json};
 use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent, StopReason};
 use sessions::types::SessionId;
 use shared::{Timestamp, WorkspaceId};

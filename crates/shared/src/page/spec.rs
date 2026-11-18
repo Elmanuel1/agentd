@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use super::{decode_cursor, reject_unknown_params, Pagination, DEFAULT_LIMIT};
+use super::{DEFAULT_LIMIT, Pagination, decode_cursor, reject_unknown_params};
 use crate::error::ApiError;
 
 /// How a list answers a query param it does not read.

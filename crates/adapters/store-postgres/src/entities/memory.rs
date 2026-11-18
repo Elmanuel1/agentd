@@ -7,11 +7,11 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use memory::store::StoreError;
 use memory::types::{MemoryStoreId, MemoryVersionId};
-use shared::ports::blobs::BlobStore;
 use shared::WorkspaceId;
+use shared::ports::blobs::BlobStore;
 
 use crate::schema::memory_stores;
-use crate::{diesel_be, pool_be, PgBackend};
+use crate::{PgBackend, diesel_be, pool_be};
 
 mod heads;
 mod memories;

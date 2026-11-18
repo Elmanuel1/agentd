@@ -1,7 +1,7 @@
 //! The `session.error` bodies and tool results a failed MCP server gets, in
 //! live's words where a capture shows them (`.specs/runtime-parity`, B27).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sessions::events::{Event, EventPayload, SessionEvent};
 use shared::ContentBlock;
 

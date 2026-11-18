@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use ::sessions::types::SessionId;
 use async_trait::async_trait;
-use diesel::sql_types::{Array, BigInt, Text};
 use diesel::OptionalExtension;
+use diesel::sql_types::{Array, BigInt, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{BackendError, WorkspaceId};
 use webhooks::{Delivery, DeliveryMarks};

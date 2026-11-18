@@ -9,9 +9,9 @@ use diesel::sql_types::{Nullable, Text};
 use diesel_async::RunQueryDsl;
 use shared::{Timestamp, WorkspaceId};
 
-use super::row::{first, Row, COLS};
 use super::PgWorkStore;
-use crate::{diesel_be, PooledConnection};
+use super::row::{COLS, Row, first};
+use crate::{PooledConnection, diesel_be};
 
 pub(super) const KEY: &str = "workspace_id = $1 AND session_id = $2";
 /// `$3` an environment id, `$4` a queue; both null reaches any item.

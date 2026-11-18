@@ -9,10 +9,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use shared::{ApiError, AuthContext, SessionCaller};
 
+use crate::FilesService;
 use crate::service::map_store;
 use crate::store::StoreError;
 use crate::types::FileMetadata;
-use crate::FilesService;
 
 /// What the files API asks of sessions.
 #[async_trait]

@@ -9,13 +9,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::blobs::BlobStore;
 use shared::{Pagination, WorkspaceId};
 
 use crate::schema::{skill_versions, skills};
-use crate::{blob_be, diesel_be, parse_doc, pool_be, to_doc, PgBackend};
+use crate::{PgBackend, blob_be, diesel_be, parse_doc, pool_be, to_doc};
 
 /// Postgres + object-storage backed skills store (Diesel).
 #[derive(Clone)]
@@ -95,13 +94,10 @@ impl SkillsStore for PgSkillsStore {
         };
         // A skill and its first version land together or not at all.
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        conn.transaction::<_, diesel::result::Error, _>(|c| {
-            async move {
-                diesel::insert_into(skills::table).values(new_skill).execute(c).await?;
-                diesel::insert_into(skill_versions::table).values(new_version).execute(c).await?;
-                Ok(())
-            }
-            .scope_boxed()
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            diesel::insert_into(skills::table).values(new_skill).execute(c).await?;
+            diesel::insert_into(skill_versions::table).values(new_version).execute(c).await?;
+            Ok(())
         })
         .await
         .map_err(diesel_be)

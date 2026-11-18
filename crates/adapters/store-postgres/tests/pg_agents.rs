@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use agents::AgentsService;
 use agents::store::{AgentFilter, AgentsStore, StoreError};
 use agents::types::{CreateAgentRequest, Multiagent, RosterMember, UpdateAgentRequest};
-use agents::AgentsService;
 use shared::limits::ModelCatalog;
 use shared::{AuthContext, OrgId, Pagination, Timestamp, WorkspaceId};
 use store_postgres::{PgAgentsStore, PgBackend};
