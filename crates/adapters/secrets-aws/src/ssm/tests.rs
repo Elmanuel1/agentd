@@ -92,6 +92,18 @@ async fn a_put_over_an_untagged_parameter_tags_it() {
     store.delete(&key).await.unwrap();
 }
 
+/// The overwrite a delete turned into a create: it stores the value and tags it.
+#[tokio::test]
+async fn an_overwrite_of_an_absent_parameter_creates_it_tagged() {
+    let Some((store, key)) = on_localstack(&[]).await else { return };
+    let name = store.parameter_name(&key);
+    let tags = name::parameter_tags(&key).unwrap();
+    store.overwrite(&name, &SecretString::from("v"), tags.clone()).await.unwrap();
+    assert_eq!(tags_of(&store, &name).await, sorted(tags));
+    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "v");
+    store.delete(&key).await.unwrap();
+}
+
 #[tokio::test]
 async fn a_tagging_failure_is_the_error_keeps_the_value_and_a_retry_tags_it() {
     let Some((refusing, key)) = on_localstack(&["AddTagsToResource"]).await else { return };
@@ -100,8 +112,8 @@ async fn a_tagging_failure_is_the_error_keeps_the_value_and_a_retry_tags_it() {
     assert!(err.to_string().contains("ssm:AddTagsToResource"), "{err}");
     assert_eq!(refusing.get(&key).await.unwrap().expose_secret(), "second");
     let (store, _) = on_localstack(&[]).await.unwrap();
-    store.put(&key, &SecretString::from("third")).await.unwrap();
+    store.put(&key, &SecretString::from("second")).await.unwrap();
     assert_eq!(tags_of(&store, &name).await, sorted(name::parameter_tags(&key).unwrap()));
-    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "third");
+    assert_eq!(store.get(&key).await.unwrap().expose_secret(), "second");
     store.delete(&key).await.unwrap();
 }

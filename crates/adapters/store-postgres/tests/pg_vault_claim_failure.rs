@@ -53,10 +53,22 @@ async fn vault(svc: &VaultsService, ctx: &AuthContext, name: &str) -> String {
     svc.create_vault(ctx, req).await.unwrap().id.as_str().to_owned()
 }
 
-async fn credential(svc: &VaultsService, ctx: &AuthContext, vault: &str) -> (VaultId, Credential) {
+/// A new credential, claimed for a write as the refresh and the update claim it;
+/// its `updated_at` is the claim's.
+async fn claimed(
+    svc: &VaultsService,
+    store: &PgVaultsStore,
+    ctx: &AuthContext,
+    vault: &str,
+) -> (VaultId, Credential) {
     let auth = json!({"type": "static_bearer", "mcp_server_url": "https://mcp.test/mcp", "token": "t"});
     let req = serde_json::from_value(json!({"display_name": "c", "auth": auth})).unwrap();
-    (VaultId::parse(vault).unwrap(), svc.create_credential(ctx, vault, req).await.unwrap())
+    let (vault, mut cred) =
+        (VaultId::parse(vault).unwrap(), svc.create_credential(ctx, vault, req).await.unwrap());
+    let claim = Timestamp::now();
+    assert!(store.claim_credential(&ctx.workspace, &vault, &cred.id, cred.updated_at, claim).await.unwrap());
+    cred.updated_at = claim;
+    (vault, cred)
 }
 
 /// The claimed write of a new token, which the secret store refuses after storing it.
@@ -82,7 +94,8 @@ async fn a_failed_claimed_write_keeps_no_secret_of_an_archived_credential() {
     let ctx =
         AuthContext { org: OrgId::new("org_cf"), workspace: ws.clone(), api_key_id: "apikey_cf".into() };
     let (open, archived) = (vault(&svc, &ctx, "open").await, vault(&svc, &ctx, "archived").await);
-    let (live, gone) = (credential(&svc, &ctx, &open).await, credential(&svc, &ctx, &archived).await);
+    let (live, gone) =
+        (claimed(&svc, &store, &ctx, &open).await, claimed(&svc, &store, &ctx, &archived).await);
     let secret = |(vault, cred): &(VaultId, Credential)| {
         secrets.inner.exposed(&SecretKey::new(ws.as_str(), vault.as_str(), cred.id.as_str()).unwrap())
     };
