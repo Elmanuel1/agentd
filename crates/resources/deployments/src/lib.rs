@@ -5,7 +5,7 @@
 //! tz-correct fire times (`0 0 1 1 *` NY → `2027-01-01T05:00:00Z`),
 //! `paused_reason: {type:"manual"}` after pause.
 //!
-//! Fire contract (the fire inbox, or `/internal/fire`):
+//! Fire contract (the fire queue, or `/internal/fire`):
 //! - a fire of one `(deployment, scheduled_at)` may arrive more than once;
 //!   its run and session ids come from that pair, so a repeat finds what the
 //!   first made instead of making another,

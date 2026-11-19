@@ -8,6 +8,7 @@
 //! - every blob and secret operation is a span and feeds
 //!   `agentd.port.operation.duration` ([`ports`]),
 //! - the change feed's slot and the history apply delay feed `agentd.feed.*` and `agentd.history.*` ([`feed`]),
+//! - the scheduler's fires feed `agentd.scheduler.*` ([`scheduler`]),
 //! - each of these carries `outcome` (`ok` or `error`) or the status code. A
 //!   5xx, a failed statement or a failed connection is logged at `error`, a
 //!   failed port operation at `warn`.
@@ -21,6 +22,7 @@ pub mod feed;
 pub mod http;
 pub mod ports;
 pub mod retention;
+pub mod scheduler;
 pub mod steps;
 
 use opentelemetry::metrics::{Histogram, Meter, UpDownCounter};

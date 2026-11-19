@@ -1,5 +1,6 @@
 //! [`FireClaims`](shared::ports::fire::FireClaims) over `fire_claims`, the
-//! fire queue, whose rows [`queue`] writes, claims and settles.
+//! fire queue, whose rows [`queue`] writes, claims and settles and [`sweep`]
+//! deletes.
 
 use chrono::{DateTime, Utc};
 use shared::ports::fire::{Claimed, Fire, FireError, NativeFireClaims, Outcome};
@@ -7,6 +8,7 @@ use shared::ports::fire::{Claimed, Fire, FireError, NativeFireClaims, Outcome};
 use crate::PgBackend;
 
 pub(crate) mod queue;
+mod sweep;
 
 /// The fire queue on Postgres.
 #[derive(Debug, Clone)]
@@ -18,6 +20,11 @@ impl PgFireClaims {
     /// Over `backend`.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
+    }
+
+    /// The fires due and not done.
+    pub async fn count_due(&self) -> Result<i64, FireError> {
+        queue::count_due(&self.backend).await
     }
 }
 

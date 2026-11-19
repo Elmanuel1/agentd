@@ -154,3 +154,19 @@ pub(super) async fn retry(
     .map_err(unavailable)?;
     Ok(written == 1)
 }
+
+#[derive(QueryableByName)]
+struct Count {
+    #[diesel(sql_type = BigInt)]
+    n: i64,
+}
+
+pub(super) async fn count_due(backend: &PgBackend) -> Result<i64, FireError> {
+    let mut conn = backend.diesel.get().await.map_err(unavailable)?;
+    let count: Count =
+        diesel::sql_query("SELECT count(*) AS n FROM fire_claims WHERE NOT done AND due_at <= now()")
+            .get_result(&mut conn)
+            .await
+            .map_err(unavailable)?;
+    Ok(count.n)
+}

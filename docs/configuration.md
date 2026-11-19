@@ -95,7 +95,7 @@ step's 10 minute deadline.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role ticks the scheduler |
+| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role ticks the scheduler, runs the fire workers and the change feed's handlers |
 | `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
@@ -452,37 +452,55 @@ There is no switch that weakens any of these; each is the only behaviour.
 
 A resource that owns scheduled work (deployments) registers a fire handler
 for its kind. The dreams module is not assembled, so no dream handler is
-registered. The scheduler delivers each tick to the handler of the
-target's kind, which runs it under the tenant that registered the schedule.
-A tick whose kind has no handler fails and is logged as dropped.
+registered. Each fire runs through the handler of its target's kind, under
+the tenant that registered the schedule.
 
 Schedules go through an outbox. Each change (a deployment's create, pause,
 unpause or archive) is written to `schedule_outbox` in the transaction of the
 deployment write that causes it, and removed in the same transaction, so the
 table stays empty and the change lives on in the WAL. Debezium Server reads
 the WAL into `agentd.public.schedule_outbox` of the change feed (below), and
-one replica at a time applies the changes in order to the scheduler sink; a change the sink refuses stops the stream until it
-applies, and a change that does not decode is logged at `ERROR` and passed
-over. The built-in sink is the Postgres scheduler: one `schedules` row per
-target, whose due rows every replica claims every 10 s with
-`FOR UPDATE SKIP LOCKED`, moving each to its next time and firing it after
-the commit. A fire more than a minute late is skipped, so after downtime a
-schedule fires again from its next time, with no backfill. Another sink (a
-Temporal worker, say) reads the same topic and delivers its fires to
-`agentd.fires` of the feed: on Kafka one record per fire, its value
-`{"spec": …, "scheduled_at": …}`; on Valkey Streams one entry per fire with
-the fields `spec` (the schedule's spec as JSON) and `scheduled_at` (RFC 3339).
+one replica at a time applies the changes in order to the scheduler sink. A
+change the sink cannot apply because it is unavailable holds the stream until
+it applies; a change the sink refuses as invalid, or one that does not
+decode, is logged at `ERROR` and passed over. Deployment create refuses a
+schedule with no occurrence in the next year, as live does.
 
-Every fire, from either source, passes the fire inbox, `fire_claims`, before
-its handler runs. A delivery may repeat (a scheduler retry, a stream entry a
-stopped replica left pending), so the first delivery claims the fire by its
-target and time, and the others find it held or done. The owner holds the
-fire for 15 minutes; a fire not done by then is taken over by the next
-delivery, up to 3 runs, after which it is dropped and logged at `ERROR`. A
-deployment fire derives its run and session ids from the deployment and the
-fire time, so a run taken over finds the session and run the first made and
-makes no second one. A stream entry is acknowledged once its fire ran or
-needs no run.
+The built-in sink is the Postgres scheduler: one `schedules` row per target.
+Every replica claims due rows every 10 s with `FOR UPDATE SKIP LOCKED`, in
+batches of 100 until a batch comes back short, and in each batch's
+transaction writes each schedule's latest due occurrence to the fire queue,
+`fire_claims`, and moves the schedule to its next time. Older missed
+occurrences are dropped, so after downtime a schedule fires once and resumes,
+with no backfill. A schedule whose spec cannot be read is paused and logged
+at `ERROR`. Unpause moves a schedule to its next occurrence after the
+unpause, so a time it missed while paused never fires. An external scheduler
+delivers its fires to `agentd.fires` of the feed: on Kafka one record per
+fire, its value `{"spec": …, "scheduled_at": …}`; on Valkey Streams one entry
+per fire with the fields `spec` (the schedule's spec as JSON) and
+`scheduled_at` (RFC 3339). Each is written to the fire queue the same way and
+acknowledged once that write commits.
+
+The fire queue holds one row per occurrence, keyed by its workspace, target
+and time, so a repeated delivery (a scheduler retry, a stream entry a stopped
+replica left pending) finds the row it wrote. An occurrence is due after its
+listed time by live's jitter: up to 15 percent of the interval to the
+schedule's following occurrence, at least 5 s and at most 9 minutes, the same
+for every delivery; `upcoming_runs_at` and the run's `scheduled_at` keep the
+exact time. Every replica runs due fires every second, up to 16 at once, each
+claimed under a 2-minute lease and run within 60 s. A fire that records a run,
+with a session or with an error such as `session_rate_limited`, is done
+(`outcome` `ran`) and never retried. Any other failure (the database, a
+timeout, a replica stopped mid-fire) runs it again after a backoff from 2 s
+doubling to 5 minutes, with jitter. A fire still not run when its schedule's
+following occurrence is due is done with `outcome` `skipped` and logged at
+`WARN`; one whose kind has no handler or whose spec cannot be read is done
+with `outcome` `dropped` and logged at `ERROR`. A claim's attempt count is its
+token: a worker whose lease another took over writes nothing and logs the
+lost lease at `WARN`. A deployment fire derives its run and session ids from
+the deployment and the fire time, so a fire run again finds the session and
+run the first made and makes no second one. Done rows are deleted every hour
+30 days after their occurrence.
 
 ## The change feed
 
@@ -502,8 +520,12 @@ The feed is Kafka when `AGENTD_KAFKA_BROKERS` is set, and Debezium runs with
 its Kafka sink (the default). Each replica reads each topic in the consumer
 group `agentd.<topic>` and commits a record's offset once its handler
 succeeds; a record whose handler fails is retried in place, so nothing behind
-it in its partition overtakes it. An ordered table's topic has one partition,
-which the group gives to one replica at a time. An external scheduler writes
+it in its partition overtakes it. While it retries, the consumer pauses every
+partition it is assigned and keeps polling, so it stays in its group past
+`max.poll.interval.ms` and no second replica reads the partition. The group
+assigns partitions `cooperative-sticky`, so a replica that joins takes no
+partition another holds. An ordered table's topic has one partition, which
+the group gives to one replica at a time. An external scheduler writes
 its fires to the topic `agentd.fires`, each record's value
 `{"spec": …, "scheduled_at": "<RFC 3339>"}`. The topics' retention trims them.
 

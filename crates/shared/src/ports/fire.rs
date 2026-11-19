@@ -51,7 +51,7 @@ pub trait FireHandler: Send + Sync {
     ) -> Result<(), FireError>;
 }
 
-/// The fire handlers by kind, behind the fire inbox. Handlers register after
+/// The fire handlers by kind, behind the fire queue. Handlers register after
 /// the scheduler is built, because the services that own them need the
 /// scheduler first.
 pub struct FireRegistry {

@@ -13,7 +13,7 @@ use shared::ports::fire::{Claimed, Fire, FireClaims, Outcome};
 use shared::ports::{FireTarget, ScheduleSpec, TenantRef};
 use store_postgres::{PgBackend, PgFireClaims};
 
-/// `claim_due` claims due rows of every test, so the tests that claim take turns.
+/// `claim_due` claims due rows of every test and the due count counts them, so the tests take turns.
 static CLAIMS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn enabled() -> bool {
@@ -144,6 +144,7 @@ async fn enqueuing_an_occurrence_twice_keeps_the_first_due_time() {
     if !enabled() {
         return;
     }
+    let _turn = CLAIMS.lock().await;
     let pg = backend().await;
     let q = PgFireClaims::new(pg.clone());
     let first = due_fire(&spec("twice"));
@@ -264,4 +265,69 @@ async fn an_unfinished_built_in_inbox_claim_is_not_run() {
     inbox_claim(&pg, &fire, false).await;
     assert!(claim(&q, &fire).await.is_empty(), "the tick never redelivers it");
     assert_eq!(row(&pg, &fire).await.due_at, None);
+}
+
+async fn exists(pg: &PgBackend, fire: &Fire) -> bool {
+    #[derive(QueryableByName)]
+    struct Found {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        n: i64,
+    }
+    let mut conn = pg.diesel.get().await.unwrap();
+    let found: Found = diesel::sql_query("SELECT count(*) AS n FROM fire_claims WHERE target = $1")
+        .bind::<Text, _>(fire.spec.target.key())
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+    found.n > 0
+}
+
+#[tokio::test]
+async fn done_rows_older_than_30_days_are_swept_newer_and_undone_rows_stay() {
+    if !enabled() {
+        return;
+    }
+    let _turn = CLAIMS.lock().await;
+    let pg = backend().await;
+    let q = PgFireClaims::new(pg.clone());
+    let at = |days: i64| Utc::now().duration_trunc(Duration::hours(1)).unwrap() - Duration::days(days);
+    let fire = |tag: &str, days: i64| {
+        let s = spec(tag);
+        Fire { scheduled_at: at(days), due_at: at(days), spec: s }
+    };
+    let (old_done, new_done, old_undone) = (fire("olddone", 31), fire("newdone", 29), fire("oldundone", 31));
+    let (old_inbox, new_inbox) = (fire("oldinbox", 31), fire("newinbox", 29));
+    q.enqueue(&[old_done.clone(), new_done.clone(), old_undone.clone()]).await.unwrap();
+    for f in [&old_done, &new_done] {
+        sql(&pg, "UPDATE fire_claims SET done = true, outcome = 'ran' WHERE target = $1", f).await;
+    }
+    inbox_claim(&pg, &old_inbox, false).await;
+    inbox_claim(&pg, &new_inbox, false).await;
+
+    assert!(q.sweep().await.unwrap() >= 2);
+
+    assert!(!exists(&pg, &old_done).await, "done and 31 days old");
+    assert!(!exists(&pg, &old_inbox).await, "an unfinished inbox claim no worker runs, 31 days old");
+    assert!(exists(&pg, &new_done).await, "done but 29 days old");
+    assert!(exists(&pg, &new_inbox).await, "an inbox claim 29 days old");
+    assert!(exists(&pg, &old_undone).await, "a queued fire stays until it is done");
+    sql(&pg, "DELETE FROM fire_claims WHERE target = $1", &old_undone).await;
+}
+
+#[tokio::test]
+async fn the_due_count_holds_the_due_fires_not_done() {
+    if !enabled() {
+        return;
+    }
+    let _turn = CLAIMS.lock().await;
+    let pg = backend().await;
+    let q = PgFireClaims::new(pg.clone());
+    let before = q.count_due().await.unwrap();
+    let fire = due_fire(&spec("count"));
+    let later = Fire { due_at: Utc::now() + Duration::hours(1), ..due_fire(&spec("countlater")) };
+    q.enqueue(&[fire.clone(), later]).await.unwrap();
+    assert_eq!(q.count_due().await.unwrap(), before + 1);
+    let claimed = claim(&q, &fire).await.pop().unwrap();
+    assert!(q.finish(&claimed, Outcome::Ran).await.unwrap());
+    assert_eq!(q.count_due().await.unwrap(), before);
 }

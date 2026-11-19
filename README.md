@@ -41,7 +41,7 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
 ```
 
 **Swappable ports:** `SchedulerPort`
-(Temporal/EventBridge/local), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
+(Postgres, whose occurrences every sink writes to the Postgres fire queue), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
 `BlobStore` (S3), `SecretStore`, `KeySource`, `HistoryLog`, storage traits per entity
 (in-memory/Postgres). The binary picks one backend per port from config at
 boot (`Backends::from_config`). A resource crate contributes a `Module`: its

@@ -66,8 +66,8 @@ impl DeploymentsService {
         d: Deployment,
         trigger: TriggerContext,
     ) -> Result<DeploymentRun, ApiError> {
-        // A scheduled fire may run again after a stop (the fire inbox takes
-        // it over), so its run and session ids come from the fire itself: the
+        // A scheduled fire may run again after a stop (the fire queue retries
+        // it), so its run and session ids come from the fire itself: the
         // second attempt finds what the first made.
         let key = match &trigger {
             TriggerContext::Schedule { scheduled_at } => {

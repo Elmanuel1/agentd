@@ -3,10 +3,11 @@
 Chosen because agentd is **dashboard-first**. Everything a UI needs —
 list, filter, sort, search, paginate, count — is plain SQL, with no second
 search copy to build or keep in sync. Records live in Postgres and blobs in
-object storage. Each scheduled fire is claimed in `fire_claims` with one
-`INSERT … ON CONFLICT` before it runs: one replica owns it under a 15-minute
-lease, and a fire not done when the lease runs out is taken over by its next
-delivery, up to 3 runs. Event streams read the log itself: each
+object storage. Each scheduled occurrence is a row of `fire_claims`, the fire
+queue, written once with `INSERT … ON CONFLICT` in the transaction that moves
+its schedule on; workers claim due rows with `FOR UPDATE SKIP LOCKED` under a
+2-minute lease and retry a failed fire with backoff until its following
+occurrence is due. Event streams read the log itself: each
 replica tails every session it streams, woken by a Valkey signal
 (`AGENTD_VALKEY_URL`) or a fallback timer (5 s plus up to 1 s of jitter), so a
 stream on any replica sees every event. A new stream gets 529
@@ -80,10 +81,10 @@ AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
 ```
 
 `dashboard_queries_are_native_sql` proves the list/filter/count value. In
-`pg_fires`, `one_of_many_concurrent_claims_runs_the_fire_and_the_rest_wait`
-races 8 claims of one fire and asserts exactly one runs it, and
-`a_claim_whose_owner_stopped_is_taken_over_until_its_attempts_run_out` moves
-a claim past its lease to prove the takeover and the attempt limit.
+`pg_fire_queue`, `an_enqueued_occurrence_is_claimed_once_across_two_workers`
+races two claims of one fire and asserts exactly one gets it, and
+`a_worker_whose_lease_was_taken_over_cannot_finish_or_retry_the_fire` moves a
+claim past its lease to prove the takeover and the claim token.
 
 ## Coverage
 

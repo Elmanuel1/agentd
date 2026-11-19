@@ -10,12 +10,14 @@ use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::{FireRegistry, FireWorker};
 use store_postgres::{
-    PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
+    PgBackend, PgError, PgFireClaims, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore,
+    PoolSettings,
 };
 
 use super::Stores;
 use super::feed::ChangeFeed;
 use super::secrets::Secrets;
+use crate::telemetry::scheduler::{self, SchedulerMetrics};
 use crate::telemetry::{self, Metrics};
 
 /// How often each replica claims due schedules (cron is minute-grained).
@@ -81,17 +83,23 @@ pub(super) async fn connect(
 pub struct FireSources {
     tick: PgScheduler,
     feed: ChangeFeed,
+    queue: PgFireClaims,
 }
 
 impl FireSources {
-    pub(super) fn new(tick: PgScheduler, feed: ChangeFeed) -> Self {
-        Self { tick, feed }
+    pub(super) fn new(tick: PgScheduler, feed: ChangeFeed, queue: PgFireClaims) -> Self {
+        Self { tick, feed, queue }
     }
 
     /// Start, running the queue through `fires`.
     pub(crate) fn start(self, fires: &Arc<FireRegistry>) {
-        drop(self.tick.spawn(TICK, |_| {}));
+        let meter = opentelemetry::global::meter("agentd");
+        let metrics = SchedulerMetrics::new(&meter);
+        let enqueued = metrics.clone();
+        drop(self.tick.spawn(TICK, move |n| enqueued.enqueued(n)));
         drop(self.feed.spawn_fires(fires.clone()));
-        drop(FireWorker::new(fires.clone(), |_, _| {}).spawn(FIRES));
+        drop(FireWorker::new(fires.clone(), move |ending, lag| metrics.ended(ending, lag)).spawn(FIRES));
+        drop(scheduler::watch_due(&meter, self.queue.clone()));
+        drop(self.queue.spawn_sweep());
     }
 }
