@@ -1,6 +1,6 @@
 //! Two fired creates of one occurrence that overlap (DS-20): both ask for the
 //! same session id, so the second insert fails on it. Each order of their
-//! queue writes and inserts is scripted step by step.
+//! queue writes, inserts and initial event appends is scripted step by step.
 
 #![allow(
     clippy::unwrap_used,
@@ -151,10 +151,13 @@ impl NativeSessionDeps for Deps {
     }
 }
 
-/// An empty log: the creates send no initial events.
-struct NoEvents;
+/// The log the creates' initial events land in, each holding the text of the create that sent it.
+struct Log {
+    script: Arc<Script>,
+    events: Mutex<Vec<Event>>,
+}
 
-impl NativeSessionEventReads for NoEvents {
+impl NativeSessionEventReads for Log {
     async fn events(&self, _: &WorkspaceId, _: &SessionId) -> Result<Vec<Event>, StoreError> {
         Ok(vec![])
     }
@@ -185,7 +188,7 @@ impl NativeSessionEventReads for NoEvents {
     }
 }
 
-impl NativeSessionEventLog for NoEvents {
+impl NativeSessionEventLog for Log {
     async fn append_events(
         &self,
         _: &WorkspaceId,
@@ -194,6 +197,22 @@ impl NativeSessionEventLog for NoEvents {
         _: Wake,
     ) -> Result<(), StoreError> {
         unimplemented!()
+    }
+    async fn append_if_empty(
+        &self,
+        _: &WorkspaceId,
+        _: &SessionId,
+        events: &[Event],
+        _: Wake,
+    ) -> Result<bool, StoreError> {
+        let sender = if text(&events[0]) == "x" { "x" } else { "y" };
+        self.script.turn((sender, "append")).await;
+        let mut log = self.events.lock();
+        if !log.is_empty() {
+            return Ok(false);
+        }
+        log.extend_from_slice(events);
+        Ok(true)
     }
     async fn update_processed_at(
         &self,
@@ -218,6 +237,14 @@ impl NativeSessionEventLog for NoEvents {
     async fn delete_events_of(&self, _: &[(WorkspaceId, SessionId)]) -> Result<(), StoreError> {
         unimplemented!()
     }
+}
+
+fn log(script: &Arc<Script>) -> Arc<Log> {
+    Arc::new(Log { script: script.clone(), events: Mutex::default() })
+}
+
+fn text(e: &Event) -> String {
+    serde_json::to_value(e).unwrap()["content"][0]["text"].as_str().unwrap().to_owned()
 }
 
 fn request(title: &str, id: &SessionId) -> CreateSessionRequest {
@@ -255,7 +282,7 @@ async fn two_overlapping_fired_creates_of_one_occurrence_make_one_session_and_ke
         let self_hosted = serde_json::json!({"config": {"type": "self_hosted"}});
         let deps = Arc::new(Deps { environments: Mutex::new([cloud, self_hosted].into()) });
         let service = Arc::new(
-            SessionsService::new(rows.clone(), Arc::new(NoEvents), deps, ModelCatalog::default_catalog())
+            SessionsService::new(rows.clone(), log(&script), deps, ModelCatalog::default_catalog())
                 .with_work(queue.clone()),
         );
         let ctx = AuthContext {
@@ -285,5 +312,56 @@ async fn two_overlapping_fired_creates_of_one_occurrence_make_one_session_and_ke
         let seen = queue.seen.lock().clone();
         assert_ne!(seen["x"], seen["y"], "the environment changed between the creates");
         assert_eq!(environment, seen[first], "{order:?}: its queue is the one the first queue write chose");
+    }
+}
+
+fn with_message(mut req: CreateSessionRequest) -> CreateSessionRequest {
+    let text = req.title.clone().unwrap();
+    let message = serde_json::json!({"type": "user.message", "content": [{"type": "text", "text": text}]});
+    req.initial_events = vec![serde_json::from_value(message).unwrap()];
+    req
+}
+
+#[tokio::test]
+async fn the_initial_events_of_two_overlapping_creates_are_queued_once_by_whichever_appends_first() {
+    // x inserts first; the losing y appends first in the first order, second in the other.
+    let orders: [[Step; 6]; 2] = [
+        [("x", "queue"), ("y", "queue"), ("x", "insert"), ("y", "insert"), ("y", "append"), ("x", "append")],
+        [("x", "queue"), ("y", "queue"), ("x", "insert"), ("y", "insert"), ("x", "append"), ("y", "append")],
+    ];
+    for order in orders {
+        let script = Arc::new(Script(Mutex::new(order.into())));
+        let rows = Arc::new(Rows { script: script.clone(), rows: Mutex::default() });
+        let queue = Arc::new(Queue {
+            script: script.clone(),
+            item: Mutex::default(),
+            seen: Mutex::default(),
+            ended: Mutex::new(0),
+        });
+        let environment = serde_json::json!({"config": {"type": "cloud"}});
+        let deps = Arc::new(Deps { environments: Mutex::new([environment.clone(), environment].into()) });
+        let log = log(&script);
+        let service = Arc::new(
+            SessionsService::new(rows.clone(), log.clone(), deps, ModelCatalog::default_catalog())
+                .with_work(queue.clone()),
+        );
+        let ctx = AuthContext {
+            org: OrgId::new("org_f"),
+            workspace: WorkspaceId::new("wrkspc_f"),
+            api_key_id: "k".into(),
+        };
+        let id = SessionId::derived("depl_01fired@2026-11-19T05:00:00.000000Z");
+        let (x, y) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(
+                service.create_fired(&ctx, with_message(request("x", &id))),
+                service.create_fired(&ctx, with_message(request("y", &id)))
+            )
+        })
+        .await
+        .expect("both creates finish in their scripted order");
+
+        assert_eq!(x.unwrap(), y.unwrap(), "{order:?}: one session");
+        let texts: Vec<String> = log.events.lock().iter().map(text).collect();
+        assert_eq!(texts, [order[4].0], "{order:?}: the first append queued its initial event, once");
     }
 }

@@ -75,6 +75,15 @@ impl NativeSessionEventLog for Scripted {
     ) -> Result<(), StoreError> {
         unimplemented!()
     }
+    async fn append_if_empty(
+        &self,
+        _: &WorkspaceId,
+        _: &SessionId,
+        _: &[Event],
+        _: Wake,
+    ) -> Result<bool, StoreError> {
+        unimplemented!()
+    }
     async fn update_processed_at(
         &self,
         _: &WorkspaceId,

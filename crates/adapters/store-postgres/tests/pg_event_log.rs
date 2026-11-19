@@ -1,4 +1,4 @@
-//! The session event log over live Postgres: ordered appends, stamps, the
+//! The session event log over live Postgres: ordered appends, appends into an empty log, stamps, the
 //! stream's tail read, the session delete, retention, and the overload gate.
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
 
@@ -122,6 +122,39 @@ async fn concurrent_appends_to_one_session_are_read_in_commit_order_each_once() 
         let logged: Vec<_> = log.events(&ws, &s.id).await.unwrap().into_iter().map(|e| e.id).collect();
         assert_eq!(seen, logged, "in the log's order");
     }
+}
+
+#[tokio::test]
+async fn concurrent_appends_into_an_empty_log_land_once_and_none_into_a_log_with_events() {
+    if !enabled() {
+        return;
+    }
+    let store = PgSessionsStore::new(backend().await);
+    let log = Arc::new(PgSessionEventLog::new(backend().await));
+    let ws = uniq_ws("first");
+    let s = session(&store, &ws, None).await;
+    let writers: Vec<_> = (0..8)
+        .map(|_| {
+            let (log, ws, id) = (log.clone(), ws.clone(), s.id.clone());
+            tokio::spawn(async move {
+                let sent = [message(), message()];
+                (log.append_if_empty(&ws, &id, &sent, Wake::No).await.unwrap(), sent.map(|e| e.id))
+            })
+        })
+        .collect();
+    let mut landed = Vec::new();
+    for w in writers {
+        if let (true, ids) = w.await.unwrap() {
+            landed.push(ids.to_vec());
+        }
+    }
+    assert_eq!(landed.len(), 1, "one append landed");
+    let logged: Vec<_> = log.events(&ws, &s.id).await.unwrap().into_iter().map(|e| e.id).collect();
+    assert_eq!(logged, landed[0], "its events, in order, once");
+    assert!(!log.append_if_empty(&ws, &s.id, &[message()], Wake::No).await.unwrap(), "the log has events");
+    let missing = SessionId::generate();
+    let refused = log.append_if_empty(&ws, &missing, &[message()], Wake::No).await;
+    assert!(matches!(refused, Err(StoreError::NotFound)), "no session, no events: {refused:?}");
 }
 
 #[tokio::test]

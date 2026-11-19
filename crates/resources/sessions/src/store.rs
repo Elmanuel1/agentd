@@ -145,6 +145,14 @@ pub trait SessionEventLog: SessionEventReads {
         events: &'a [Event],
         wake: Wake,
     ) -> BoxFuture<'a, Result<(), StoreError>>;
+    /// [`Self::append_events`], only while the session's log is empty; whether it appended.
+    fn append_if_empty<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a SessionId,
+        events: &'a [Event],
+        wake: Wake,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
     /// Stamp `at` on those of `ids` not processed yet; the events it stamped,
     /// in log order.
     fn update_processed_at<'a>(

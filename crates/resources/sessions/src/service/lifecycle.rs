@@ -83,7 +83,8 @@ impl SessionsService {
             // An overlapping create of the same requested id inserted first:
             // the work item is that session's, so it stays queued (DS-20).
             Err(StoreError::Conflict) if requested => {
-                return self.store.get(&ctx.workspace, &session.id).await.map_err(|e| map_store(e).into());
+                let made = self.made(ctx, Some(&session.id), &initial).await?;
+                return made.ok_or_else(|| map_store(StoreError::NotFound).into());
             }
             Err(e) => {
                 self.end_work(&ctx.workspace, &session.id).await;
@@ -91,14 +92,12 @@ impl SessionsService {
             }
             Ok(()) => {}
         }
-        if !initial.is_empty() {
-            self.send_events(ctx, session.id.as_str(), None, initial).await?;
-        }
+        self.send_initial(ctx, &session.id, &initial).await?;
         Ok(session)
     }
 
     /// The session an earlier create with `id` made, with the `initial`
-    /// events queued when that create stopped before queueing them.
+    /// events queued unless a create queued them first.
     async fn made(
         &self,
         ctx: &AuthContext,
@@ -111,9 +110,7 @@ impl SessionsService {
             Err(StoreError::NotFound) => return Ok(None),
             Err(e) => return Err(map_store(e)),
         };
-        if !initial.is_empty() && self.events.head(&ctx.workspace, id).await.map_err(map_store)?.seq == 0 {
-            self.send_events(ctx, id.as_str(), None, initial.to_vec()).await?;
-        }
+        self.send_initial(ctx, id, initial).await?;
         Ok(Some(session))
     }
 
