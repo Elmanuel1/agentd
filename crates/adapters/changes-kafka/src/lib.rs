@@ -114,7 +114,8 @@ impl KafkaChanges {
             .set("auto.offset.reset", "earliest")
             .set("max.poll.interval.ms", self.max_poll_interval.as_millis().to_string())
             .set("session.timeout.ms", self.max_poll_interval.min(SESSION_TIMEOUT).as_millis().to_string())
-            // A replica joining the group takes no partition another holds, so a retry keeps its partition.
+            // A join moves only the partitions balance needs (a one-partition topic stays with its holder);
+            // a moved partition's attempt ends uncommitted, for its next owner to read.
             .set("partition.assignment.strategy", "cooperative-sticky")
             .create()?;
         consumer.subscribe(&[topic])?;

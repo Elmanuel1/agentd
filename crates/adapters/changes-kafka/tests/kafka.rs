@@ -15,6 +15,25 @@ fn brokers() -> Option<String> {
     std::env::var("AGENTD_KAFKA_BROKERS").ok()
 }
 
+/// Produce the change `n` of `table` to `topic`, on `partition` when given.
+async fn send(producer: &FutureProducer, topic: &str, table: &str, n: i64, partition: Option<i32>) {
+    let value = serde_json::json!({"op": "c", "before": null, "after": {"n": n}, "source": {"table": table}})
+        .to_string();
+    let mut record = FutureRecord::<str, str>::to(topic).key("k").payload(&value);
+    record.partition = partition;
+    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+}
+
+/// Wait until `done`, for at most 30 s.
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..120 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Records the `n` of each change it is handed, failing the first time it sees `fail_once`.
 struct Seen {
     table: &'static str,
@@ -51,20 +70,11 @@ async fn a_failed_record_is_retried_before_the_ones_behind_it() {
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
     let topic = format!("agentdtest.public.{table}");
     for n in 1..=3 {
-        let value =
-            serde_json::json!({"op": "c", "before": null, "after": {"n": n}, "source": {"table": table}})
-                .to_string();
-        let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
-        producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+        send(&producer, &topic, table, n, None).await;
     }
     let seen = Arc::new(Seen { table, fail_once: 2, failed: Mutex::new(false), seen: Mutex::new(vec![]) });
     let tasks = KafkaChanges::new(&brokers, "agentdtest").spawn(vec![seen.clone()]);
-    for _ in 0..120 {
-        if seen.seen.lock().unwrap().len() >= 4 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    until(|| seen.seen.lock().unwrap().len() >= 4).await;
     assert_eq!(*seen.seen.lock().unwrap(), vec![1, 2, 2, 3]);
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
 }
@@ -101,12 +111,7 @@ async fn a_message_handler_reads_the_message_topic() {
     producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
     let seen = Arc::new(Messages(Mutex::new(vec![])));
     let tasks = KafkaChanges::new(&brokers, &prefix).spawn(vec![seen.clone()]);
-    for _ in 0..120 {
-        if !seen.0.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    until(|| !seen.0.lock().unwrap().is_empty()).await;
     assert_eq!(*seen.0.lock().unwrap(), vec![serde_json::json!({"table": "vaults"})]);
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
 }
@@ -159,20 +164,12 @@ async fn a_record_retried_past_max_poll_interval_keeps_one_reader() {
     let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
     let topic = format!("agentdtest.public.{table}");
-    let value = serde_json::json!({"op": "c", "before": null, "after": {"n": 1}, "source": {"table": table}})
-        .to_string();
-    let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
-    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    send(&producer, &topic, table, 1, None).await;
     let poll = Duration::from_secs(10);
     let first = Slow::new(table, poll * 2);
     let feed = KafkaChanges::new(&brokers, "agentdtest").with_max_poll_interval(poll);
     let tasks = feed.spawn(vec![first.clone()]);
-    for _ in 0..120 {
-        if *first.tries.lock().unwrap() > 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    until(|| *first.tries.lock().unwrap() > 0).await;
     let second = Slow::new(table, Duration::ZERO);
     let joined = feed.spawn(vec![second.clone()]);
     tokio::time::sleep(poll * 3).await;
@@ -223,21 +220,13 @@ async fn a_retry_attempt_longer_than_max_poll_interval_keeps_one_reader() {
     let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
     let topic = format!("agentdtest.public.{table}");
-    let value = serde_json::json!({"op": "c", "before": null, "after": {"n": 1}, "source": {"table": table}})
-        .to_string();
-    let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
-    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    send(&producer, &topic, table, 1, None).await;
     let poll = Duration::from_secs(10);
     let hangs = |hang| Arc::new(Hangs { table, hang, tries: Mutex::new(0), applied: Mutex::new(0) });
     let first = hangs(poll + Duration::from_secs(5));
     let feed = KafkaChanges::new(&brokers, "agentdtest").with_max_poll_interval(poll);
     let tasks = feed.spawn(vec![first.clone()]);
-    for _ in 0..120 {
-        if *first.tries.lock().unwrap() > 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    until(|| *first.tries.lock().unwrap() > 1).await;
     let second = hangs(Duration::ZERO);
     let joined = feed.spawn(vec![second.clone()]);
     tokio::time::sleep(poll * 2).await;
@@ -253,10 +242,7 @@ async fn a_first_attempt_longer_than_max_poll_interval_keeps_one_reader() {
     let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
     let topic = format!("agentdtest.public.{table}");
-    let value = serde_json::json!({"op": "c", "before": null, "after": {"n": 1}, "source": {"table": table}})
-        .to_string();
-    let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
-    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    send(&producer, &topic, table, 1, None).await;
     let poll = Duration::from_secs(10);
     // Its first try is the long one: it applies after 15 s.
     let first = Arc::new(Hangs {
@@ -267,12 +253,7 @@ async fn a_first_attempt_longer_than_max_poll_interval_keeps_one_reader() {
     });
     let feed = KafkaChanges::new(&brokers, "agentdtest").with_max_poll_interval(poll);
     let tasks = feed.spawn(vec![first.clone()]);
-    for _ in 0..120 {
-        if *first.tries.lock().unwrap() > 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    until(|| *first.tries.lock().unwrap() > 1).await;
     let second =
         Arc::new(Hangs { table, hang: Duration::ZERO, tries: Mutex::new(0), applied: Mutex::new(0) });
     let joined = feed.spawn(vec![second.clone()]);
@@ -311,15 +292,6 @@ impl NativeChangeHandler for Stuck {
     }
 }
 
-async fn until(done: impl Fn() -> bool) {
-    for _ in 0..120 {
-        if done() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
-
 #[tokio::test]
 async fn a_record_whose_partition_is_revoked_mid_attempt_is_applied_once_by_its_next_owner() {
     use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
@@ -336,14 +308,7 @@ async fn a_record_whose_partition_is_revoked_mid_attempt_is_applied_once_by_its_
         .unwrap();
     created.into_iter().for_each(|r| _ = r.unwrap());
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
-    let send = async |n: i64, partition: i32| {
-        let value =
-            serde_json::json!({"op": "c", "before": null, "after": {"n": n}, "source": {"table": table}})
-                .to_string();
-        let record = FutureRecord::<str, str>::to(&topic).partition(partition).key("k").payload(&value);
-        producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
-    };
-    send(1, 0).await;
+    send(&producer, &topic, table, 1, Some(0)).await;
     let stuck = |stuck_on| {
         Arc::new(Stuck { table, stuck_on, started: Mutex::new(false), applied: Mutex::new(vec![]) })
     };
@@ -354,7 +319,7 @@ async fn a_record_whose_partition_is_revoked_mid_attempt_is_applied_once_by_its_
     let second = stuck(None);
     let joined = feed.spawn(vec![second.clone()]);
     until(|| !second.applied.lock().unwrap().is_empty()).await;
-    send(2, 1).await;
+    send(&producer, &topic, table, 2, Some(1)).await;
     until(|| !first.applied.lock().unwrap().is_empty()).await;
 
     assert_eq!(
