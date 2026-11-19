@@ -101,18 +101,29 @@ fn timer(spec: &ScheduleSpec) -> TemporalSpec {
     TemporalSpec::builder().cron_strings(crons(&spec.cron)).timezone_name(spec.timezone.clone()).build()
 }
 
-/// Occurrences the catch-up window is sized over.
-const WINDOW_SAMPLE: usize = 1000;
+/// Occurrences worked out per step while the catch-up window is sized.
+const WINDOW_CHUNK: usize = 1000;
 
-/// The longest gap between the schedule's coming occurrences, at least
-/// Temporal's 10 s minimum: Temporal measures the window from a missed time,
-/// so every occurrence stays deliverable until its following one is due, and
-/// the fire queue skips any delivered after that.
+/// The longest gap between the schedule's occurrences over the coming year,
+/// at least Temporal's 10 s minimum: Temporal measures the window from a
+/// missed time, so every occurrence stays deliverable until its following one
+/// is due, and the fire queue skips any delivered after that.
 fn catch_up_window(spec: &ScheduleSpec) -> std::time::Duration {
-    let fires = spec.compile().map(|c| c.next_fires(chrono::Utc::now(), WINDOW_SAMPLE)).unwrap_or_default();
-    let longest = fires.windows(2).filter_map(|w| w.get(1).zip(w.first())).map(|(b, a)| *b - *a).max();
-    let window = longest.and_then(|w| w.to_std().ok()).unwrap_or_default();
-    window.max(std::time::Duration::from_secs(10))
+    let floor = std::time::Duration::from_secs(10);
+    let Ok(compiled) = spec.compile() else { return floor };
+    let (now, mut longest, mut last) = (chrono::Utc::now(), chrono::Duration::zero(), None);
+    let end = now + chrono::Duration::days(366);
+    let mut from = now;
+    while last.is_none_or(|t| t < end) {
+        let chunk = compiled.next_fires(from, WINDOW_CHUNK);
+        let Some(&tail) = chunk.last() else { break };
+        for t in chunk {
+            longest = longest.max(last.map_or(chrono::Duration::zero(), |previous| t - previous));
+            last = Some(t);
+        }
+        from = tail;
+    }
+    longest.to_std().unwrap_or_default().max(floor)
 }
 
 /// A create that fails is never [`SchedulerError::Unknown`], which the outbox reads as applied: a missing

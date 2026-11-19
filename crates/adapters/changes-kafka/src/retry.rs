@@ -1,7 +1,8 @@
-//! A failed record is retried in place while the consumer keeps polling, so
-//! it stays in its group and no second replica reads its partition (DS-13).
-//! Every assigned partition is paused meanwhile, so no record behind the
-//! failed one is read, and a revoked partition ends the retry.
+//! Each record is handed to its reader while the consumer keeps polling, so a
+//! long attempt or a retry keeps the consumer in its group and no second
+//! replica reads its partition (DS-13). Every assigned partition is paused
+//! meanwhile, so no record behind it is read, and a revoked partition ends the
+//! attempt with nothing committed.
 
 use rdkafka::Message;
 use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -11,8 +12,8 @@ use rdkafka::{Offset, TopicPartitionList};
 
 use crate::{BACKOFF, Reader};
 
-/// Retry `record` until `reader` takes it: `true` once it does, `false` when
-/// its partition was revoked, so its next owner reads it again.
+/// Hand `record` to `reader` until it takes it: `true` once it does, `false`
+/// when its partition was revoked, so its next owner reads it again.
 pub(crate) async fn until_taken(
     consumer: &StreamConsumer,
     record: &BorrowedMessage<'_>,
@@ -34,29 +35,36 @@ async fn keep_trying(
     let value = record.payload_view::<str>().and_then(Result::ok);
     loop {
         // Polling serves the group's rebalances and keeps max.poll.interval.ms from expiring; a paused
-        // partition delivers nothing, so a record here is from one assigned again during the retry.
-        if let Ok(polled) = tokio::time::timeout(BACKOFF, consumer.recv()).await {
-            hold_back(consumer, record, &polled?)?;
-        }
-        let assigned = consumer.assignment()?;
-        if assigned.find_partition(record.topic(), record.partition()).is_none() {
-            tracing::warn!(%id, "changes: the record's partition was revoked; its next owner retries it");
-            return Ok(false);
-        }
-        // The consumer keeps polling while the attempt runs, so an attempt longer than
-        // max.poll.interval.ms leaves the consumer in its group.
+        // partition delivers nothing, so a record here is from one assigned again meanwhile. A revoked
+        // partition drops the attempt, so its result never reaches the commit.
         let attempt = reader.consume(value, id);
         tokio::pin!(attempt);
+        let mut check = tokio::time::interval(BACKOFF);
         let taken = loop {
             tokio::select! {
                 taken = &mut attempt => break taken,
                 polled = consumer.recv() => hold_back(consumer, record, &polled?)?,
+                _ = check.tick() => if revoked(consumer, record, id)? {
+                    return Ok(false);
+                },
             }
         };
         if taken {
             return Ok(true);
         }
+        if let Ok(polled) = tokio::time::timeout(BACKOFF, consumer.recv()).await {
+            hold_back(consumer, record, &polled?)?;
+        }
     }
+}
+
+/// Whether `record`'s partition is no longer assigned to this consumer.
+fn revoked(consumer: &StreamConsumer, record: &BorrowedMessage<'_>, id: &str) -> KafkaResult<bool> {
+    let gone = consumer.assignment()?.find_partition(record.topic(), record.partition()).is_none();
+    if gone {
+        tracing::warn!(%id, "changes: the record's partition was revoked; its next owner reads it again");
+    }
+    Ok(gone)
 }
 
 /// Pause `other`'s partition and move it back so it is read after the retry:

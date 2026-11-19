@@ -4,8 +4,9 @@
 //! schemas), an external scheduler writes its
 //! fires to `<prefix>.fires`, and the replicas read each topic in the
 //! consumer group `agentd.<topic>`. A record's offset is committed once its
-//! handler succeeds; a failed record is retried in place ([`retry`]), so
-//! nothing behind it in its partition overtakes it. An ordered handler's
+//! handler succeeds; each record is handled, and a failed one retried in
+//! place, while the consumer keeps polling ([`retry`]), so nothing behind it
+//! in its partition overtakes it. An ordered handler's
 //! topic has one partition, which the group gives to one replica at a time.
 //! The topics' retention trims them.
 
@@ -119,10 +120,8 @@ impl KafkaChanges {
         consumer.subscribe(&[topic])?;
         loop {
             let record = consumer.recv().await?;
-            let value = record.payload_view::<str>().and_then(Result::ok);
             let id = format!("{}/{}@{}", record.topic(), record.partition(), record.offset());
-            if reader.consume(value, &id).await || retry::until_taken(&consumer, &record, reader, &id).await?
-            {
+            if retry::until_taken(&consumer, &record, reader, &id).await? {
                 consumer.commit_message(&record, CommitMode::Async)?;
             }
         }

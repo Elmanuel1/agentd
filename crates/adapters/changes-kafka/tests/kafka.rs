@@ -246,3 +246,39 @@ async fn a_retry_attempt_longer_than_max_poll_interval_keeps_one_reader() {
     assert_eq!(*second.tries.lock().unwrap(), 0, "the retrying consumer kept the partition");
     tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
 }
+
+#[tokio::test]
+async fn a_first_attempt_longer_than_max_poll_interval_keeps_one_reader() {
+    let Some(brokers) = brokers() else { return };
+    let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
+    let topic = format!("agentdtest.public.{table}");
+    let value = serde_json::json!({"op": "c", "before": null, "after": {"n": 1}, "source": {"table": table}})
+        .to_string();
+    let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
+    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    let poll = Duration::from_secs(10);
+    // Its first try is the long one: it applies after 15 s.
+    let first = Arc::new(Hangs {
+        table,
+        hang: poll + Duration::from_secs(5),
+        tries: Mutex::new(1),
+        applied: Mutex::new(0),
+    });
+    let feed = KafkaChanges::new(&brokers, "agentdtest").with_max_poll_interval(poll);
+    let tasks = feed.spawn(vec![first.clone()]);
+    for _ in 0..120 {
+        if *first.tries.lock().unwrap() > 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let second =
+        Arc::new(Hangs { table, hang: Duration::ZERO, tries: Mutex::new(0), applied: Mutex::new(0) });
+    let joined = feed.spawn(vec![second.clone()]);
+    tokio::time::sleep(poll * 2).await;
+
+    assert_eq!(*first.applied.lock().unwrap(), 1, "the long first attempt applied");
+    assert_eq!(*second.tries.lock().unwrap(), 0, "the consumer kept the partition");
+    tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
+}

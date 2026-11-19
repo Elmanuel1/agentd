@@ -99,8 +99,17 @@ async fn due(pg: &PgBackend, target: &FireTarget, hours: i64) {
     exec(pg, &statement, target).await;
 }
 
-fn this_hour() -> DateTime<Utc> {
-    Utc::now().duration_trunc(Duration::hours(1)).unwrap()
+/// The hour of PostgreSQL's clock, which the tick reads.
+async fn db_hour(pg: &PgBackend) -> DateTime<Utc> {
+    #[derive(QueryableByName)]
+    struct Hour {
+        #[diesel(sql_type = Timestamptz)]
+        hour: DateTime<Utc>,
+    }
+    let mut conn = pg.diesel.get().await.unwrap();
+    let hour: Hour =
+        diesel::sql_query("SELECT date_trunc('hour', now()) AS hour").get_result(&mut conn).await.unwrap();
+    hour.hour
 }
 
 /// Let `target`'s queued fires run now, whatever their jitter.
@@ -262,9 +271,9 @@ async fn after_downtime_only_the_latest_missed_occurrence_fires() {
     let _turn = TICKS.lock().await;
     let rig = Rig::new().await;
     let s = rig.schedule("downtime", 3).await;
-    let before = this_hour();
+    let before = db_hour(&rig.pg).await;
     rig.sched.tick(&|_| {}).await.unwrap();
-    let after = this_hour();
+    let after = db_hour(&rig.pg).await;
     let rows = queued(&rig.pg, &s.target).await;
     assert_eq!(rows.len(), 1, "no backfill: {rows:?}");
     let latest = rows[0].scheduled_at;
