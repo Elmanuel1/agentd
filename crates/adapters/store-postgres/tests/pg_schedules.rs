@@ -20,6 +20,7 @@ use shared::ports::{
     FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, SchedulerError, SchedulerPort, TenantRef,
 };
 use store_postgres::{PgBackend, PgFireClaims, PgScheduler, ScheduleOutbox};
+use tokio::task::JoinSet;
 
 /// A tick claims every due schedule in the database and a worker every due
 /// fire, so the tests that tick or run fires take turns.
@@ -161,8 +162,10 @@ impl Rig {
 
     /// Run every due fire, as one replica's worker does.
     async fn work(&self) {
-        let worker = FireWorker::new(self.fires.clone(), |_, _| {});
-        while worker.run_due().await.unwrap() > 0 {}
+        let (worker, mut running) = (FireWorker::new(self.fires.clone(), |_, _| {}), JoinSet::new());
+        while worker.fill(&mut running).await > 0 {
+            while running.join_next().await.is_some() {}
+        }
     }
 
     /// An hourly schedule due at its occurrence `hours` before this hour's.
@@ -321,6 +324,20 @@ async fn an_unpaused_schedule_does_not_fire_the_time_it_missed_and_a_paused_one_
     for s in [&unpaused, &paused] {
         rig.sched.delete(&s.target).await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn unpausing_an_active_schedule_keeps_its_due_occurrence() {
+    if !enabled() {
+        return;
+    }
+    let _turn = TICKS.lock().await;
+    let rig = Rig::new().await;
+    let s = rig.schedule("active", 1).await;
+    rig.sched.unpause(&s.target).await.unwrap();
+    rig.sched.tick(&|_| {}).await.unwrap();
+    assert_eq!(queued(&rig.pg, &s.target).await.len(), 1, "the due occurrence still fires");
+    rig.sched.delete(&s.target).await.unwrap();
 }
 
 #[tokio::test]

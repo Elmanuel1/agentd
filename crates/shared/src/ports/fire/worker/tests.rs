@@ -15,6 +15,7 @@ struct Queue {
     due: Mutex<Vec<Claimed>>,
     finished: Mutex<Vec<(String, Outcome)>>,
     retried: Mutex<Vec<(String, DateTime<Utc>)>>,
+    limits: Mutex<Vec<usize>>,
     lost: bool,
     stalled: bool,
 }
@@ -24,6 +25,7 @@ impl NativeFireClaims for Queue {
         Ok(0)
     }
     async fn claim_due(&self, limit: usize) -> Result<Vec<Claimed>, FireError> {
+        self.limits.lock().unwrap().push(limit);
         let mut due = self.due.lock().unwrap();
         let n = due.len().min(limit);
         Ok(due.drain(..n).collect())
@@ -83,6 +85,19 @@ fn worker(queue: Arc<Queue>) -> (FireWorker, Reported) {
     (FireWorker::new(registry, move |ending, lag| sink.lock().unwrap().push((ending, lag))), reported)
 }
 
+/// Run every due fire to its ending; how many it started.
+async fn run_due(worker: &FireWorker) -> usize {
+    let (mut running, mut started) = (JoinSet::new(), 0);
+    loop {
+        let n = worker.fill(&mut running).await;
+        while running.join_next().await.is_some() {}
+        started += n;
+        if n == 0 {
+            return started;
+        }
+    }
+}
+
 /// This hour's occurrence of an hourly schedule: its following one is not due.
 fn hourly_now() -> DateTime<Utc> {
     use chrono::DurationRound;
@@ -106,7 +121,7 @@ async fn each_fire_ends_as_its_run_did() {
     ];
     let (worker, reported) = worker(queue.clone());
 
-    assert_eq!(worker.run_due().await.unwrap(), 7);
+    assert_eq!(run_due(&worker).await, 7);
 
     let mut finished = queue.finished.lock().unwrap().clone();
     finished.sort_by(|a, b| a.0.cmp(&b.0));
@@ -151,7 +166,7 @@ async fn a_worker_whose_lease_was_taken_over_reports_nothing() {
     let queue = Arc::new(Queue { lost: true, ..Queue::default() });
     *queue.due.lock().unwrap() = vec![claimed("deployment", "depl_ok", "0 * * * *", hourly_now())];
     let (worker, reported) = worker(queue.clone());
-    worker.run_due().await.unwrap();
+    run_due(&worker).await;
     assert_eq!(queue.finished.lock().unwrap().len(), 1, "it tried");
     assert!(reported.lock().unwrap().is_empty());
 }
@@ -178,6 +193,7 @@ async fn a_free_slot_is_refilled_while_a_slow_fire_still_runs() {
     serving.abort();
     assert_eq!(queue.finished.lock().unwrap().len(), CONCURRENT + 4, "the fires behind the slow one ran");
     assert!(queue.retried.lock().unwrap().is_empty(), "the slow fire still runs");
+    assert!(!queue.limits.lock().unwrap().contains(&0), "a full worker claims nothing");
 }
 
 #[tokio::test(start_paused = true)]
@@ -185,7 +201,7 @@ async fn a_settlement_write_that_stalls_is_left_for_the_lease() {
     let queue = Arc::new(Queue { stalled: true, ..Queue::default() });
     *queue.due.lock().unwrap() = vec![claimed("deployment", "depl_ok", "0 * * * *", hourly_now())];
     let (worker, reported) = worker(queue.clone());
-    let ran = tokio::time::timeout(SETTLE_LIMIT * 2, worker.run_due()).await;
-    assert_eq!(ran.expect("the write is bounded").unwrap(), 1);
+    let ran = tokio::time::timeout(SETTLE_LIMIT * 2, run_due(&worker)).await;
+    assert_eq!(ran.expect("the write is bounded"), 1);
     assert!(reported.lock().unwrap().is_empty(), "nothing is reported for an unwritten ending");
 }

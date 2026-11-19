@@ -57,16 +57,8 @@ impl FireWorker {
         Self { registry, report: Arc::new(report) }
     }
 
-    /// Claim up to 16 due fires and run them at once; how many it claimed.
-    pub async fn run_due(&self) -> Result<usize, FireError> {
-        let claimed = self.registry.claims.claim_due(CONCURRENT).await?;
-        futures::future::join_all(claimed.iter().map(|c| self.settle(c))).await;
-        Ok(claimed.len())
-    }
-
     /// Run due fires, at most 16 at once: claim as many as there are free
-    /// slots every `interval` and whenever a fire finishes, and again at once
-    /// while a claim fills every free slot.
+    /// slots every `interval` and whenever a fire finishes.
     pub fn spawn(self, interval: Duration) -> JoinHandle<()> {
         tokio::spawn(async move { self.serve(interval).await })
     }
@@ -75,28 +67,35 @@ impl FireWorker {
         let mut ticker = tokio::time::interval(interval);
         let mut running = JoinSet::new();
         loop {
-            while running.try_join_next().is_some() {}
-            let free = CONCURRENT.saturating_sub(running.len());
-            let claimed = match self.registry.claims.claim_due(free).await {
-                Ok(claimed) => claimed,
-                Err(e) => {
-                    tracing::warn!(error = %e, "fires: the fire queue cannot be read");
-                    Vec::new()
-                }
-            };
-            let full = free > 0 && claimed.len() == free;
-            for c in claimed {
-                let worker = self.clone();
-                running.spawn(async move { worker.settle(&c).await });
-            }
-            if full {
-                continue;
-            }
+            self.fill(&mut running).await;
             tokio::select! {
                 Some(_) = running.join_next(), if !running.is_empty() => {}
                 _ = ticker.tick() => {}
             }
         }
+    }
+
+    /// Clear the finished fires out of `running` and start a claimed due fire
+    /// in each free slot; how many it started.
+    pub async fn fill(&self, running: &mut JoinSet<()>) -> usize {
+        while running.try_join_next().is_some() {}
+        let free = CONCURRENT.saturating_sub(running.len());
+        if free == 0 {
+            return 0;
+        }
+        let claimed = match self.registry.claims.claim_due(free).await {
+            Ok(claimed) => claimed,
+            Err(e) => {
+                tracing::warn!(error = %e, "fires: the fire queue cannot be read");
+                return 0;
+            }
+        };
+        let started = claimed.len();
+        for c in claimed {
+            let worker = self.clone();
+            running.spawn(async move { worker.settle(&c).await });
+        }
+        started
     }
 
     /// Run `c` once, unless it can no longer run, and record its ending.

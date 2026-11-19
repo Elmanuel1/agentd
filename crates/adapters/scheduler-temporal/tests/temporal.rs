@@ -14,6 +14,15 @@ use shared::AuthContext;
 use shared::ports::fire::{FireError, FireHandler, FireRegistry, FireWorker};
 use shared::ports::{FireTarget, ScheduleSpec, SchedulerError, SchedulerPort, TenantRef};
 use store_postgres::{PgBackend, PgFireClaims};
+use tokio::task::JoinSet;
+
+/// Run every due fire to its ending, as one replica's worker does.
+async fn drain(worker: &FireWorker) {
+    let mut running = JoinSet::new();
+    while worker.fill(&mut running).await > 0 {
+        while running.join_next().await.is_some() {}
+    }
+}
 
 fn config() -> Option<TemporalConfig> {
     let address = std::env::var("AGENTD_TEMPORAL_ADDRESS").ok()?;
@@ -108,7 +117,7 @@ async fn a_schedule_on_the_temporal_sink_fires_through_the_queue_once() {
     let mut fired = Vec::new();
     for _ in 0..180 {
         // The occurrence is due after its jitter (5 s to 9 s for a minutely schedule).
-        while worker.run_due().await.unwrap() > 0 {}
+        drain(&worker).await;
         fired =
             seen.0.lock().unwrap().iter().filter(|(id, _)| *id == s.target.id).map(|(_, at)| *at).collect();
         if !fired.is_empty() {
@@ -124,7 +133,7 @@ async fn a_schedule_on_the_temporal_sink_fires_through_the_queue_once() {
         at.duration_trunc(chrono::Duration::minutes(1)).unwrap(),
         "the occurrence's exact listed time"
     );
-    while worker.run_due().await.unwrap() > 0 {}
+    drain(&worker).await;
     let again = seen.0.lock().unwrap().iter().filter(|(id, when)| *id == s.target.id && *when == at).count();
     assert_eq!(again, 1, "once");
 }
