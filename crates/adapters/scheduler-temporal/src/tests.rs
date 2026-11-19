@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use shared::ports::TenantRef;
 
 use super::*;
@@ -11,6 +13,11 @@ fn spec(cron: &str) -> ScheduleSpec {
     }
 }
 
+/// The registration time of CodeRabbit's leap-year example.
+fn registered() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339("2026-11-19T00:00:00Z").unwrap().with_timezone(&chrono::Utc)
+}
+
 #[test]
 fn both_day_fields_restricted_is_a_union_and_one_alone_is_kept() {
     assert_eq!(crons("0 9 1 * MON"), ["0 9 1 * *", "0 9 * * MON"]);
@@ -22,11 +29,25 @@ fn both_day_fields_restricted_is_a_union_and_one_alone_is_kept() {
 
 #[test]
 fn the_catch_up_window_is_the_longest_gap_between_occurrences() {
-    assert_eq!(catch_up_window(&spec("0 * * * *")), std::time::Duration::from_secs(3600));
+    assert_eq!(catch_up_window(&spec("0 * * * *"), registered()), std::time::Duration::from_secs(3600));
     let day = std::time::Duration::from_secs(86_400);
-    for (cron, at_least) in [("0 0 1,2 * *", day * 27), ("* * 1 * *", day * 27), ("* * * * 1", day * 6)] {
-        let window = catch_up_window(&spec(cron));
+    let cases = [
+        ("0 0 1,2 * *", day * 27),
+        ("* * 1 * *", day * 27),
+        ("* * * * 1", day * 6),
+        ("* * 28 2 *", day * 365),
+        ("0 0 29 2 *", day * 365 * 4),
+    ];
+    for (cron, at_least) in cases {
+        let window = catch_up_window(&spec(cron), registered());
         assert!(window >= at_least, "{cron}: {window:?}");
     }
-    assert_eq!(catch_up_window(&spec("0 0 31 2 *")), std::time::Duration::from_secs(10));
+    assert_eq!(catch_up_window(&spec("0 0 31 2 *"), registered()), std::time::Duration::from_secs(10));
+}
+
+#[test]
+fn an_every_minute_schedule_sizes_its_window_quickly() {
+    let started = std::time::Instant::now();
+    assert_eq!(catch_up_window(&spec("* * * * *"), registered()), std::time::Duration::from_secs(60));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
 }

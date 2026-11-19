@@ -104,15 +104,16 @@ fn timer(spec: &ScheduleSpec) -> TemporalSpec {
 /// Occurrences worked out per step while the catch-up window is sized.
 const WINDOW_CHUNK: usize = 1000;
 
-/// The longest gap between the schedule's occurrences over the coming year,
-/// at least Temporal's 10 s minimum: Temporal measures the window from a
+/// The longest gap between the schedule's occurrences over the next five
+/// years (the span a cron's day patterns repeat within, Feb 29 included), and
+/// the gap past it, at least Temporal's 10 s minimum: Temporal measures the window from a
 /// missed time, so every occurrence stays deliverable until its following one
 /// is due, and the fire queue skips any delivered after that.
-fn catch_up_window(spec: &ScheduleSpec) -> std::time::Duration {
+fn catch_up_window(spec: &ScheduleSpec, now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
     let floor = std::time::Duration::from_secs(10);
     let Ok(compiled) = spec.compile() else { return floor };
-    let (now, mut longest, mut last) = (chrono::Utc::now(), chrono::Duration::zero(), None);
-    let end = now + chrono::Duration::days(366);
+    let (mut longest, mut last) = (chrono::Duration::zero(), None);
+    let end = now + chrono::Duration::days(366 * 5);
     let mut from = now;
     while last.is_none_or(|t| t < end) {
         let chunk = compiled.next_fires(from, WINDOW_CHUNK);
@@ -140,7 +141,8 @@ impl SchedulerPort for TemporalScheduler {
     async fn upsert(&self, spec: ScheduleSpec) -> Result<(), SchedulerError> {
         spec.compile().map_err(|e| SchedulerError::InvalidSpec(e.to_string()))?;
         let handle = self.client.get_schedule_handle(spec.target.key());
-        let (timer, action, window) = (timer(&spec), self.action(&spec), catch_up_window(&spec));
+        let (timer, action, window) =
+            (timer(&spec), self.action(&spec), catch_up_window(&spec, chrono::Utc::now()));
         let updated = handle
             .update(
                 move |u| {
