@@ -17,8 +17,8 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use sessions::events::{Event, EventId};
 use sessions::store::{
-    AnswerCheck, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads, NativeSessionReplace,
-    NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
+    AnswerCheck, Append, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
+    NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
 };
 use sessions::types::{AgentRefInput, CreateSessionRequest};
 use sessions::{NativeSessionDeps, NativeSessionWork, Session, SessionId, SessionsService};
@@ -193,18 +193,11 @@ impl NativeSessionEventLog for Log {
         &self,
         _: &WorkspaceId,
         _: &SessionId,
-        _: &[Event],
-        _: Wake,
-    ) -> Result<(), StoreError> {
-        unimplemented!()
-    }
-    async fn append_if_empty(
-        &self,
-        _: &WorkspaceId,
-        _: &SessionId,
         events: &[Event],
         _: Wake,
+        append: Append,
     ) -> Result<bool, StoreError> {
+        assert_eq!(append, Append::IfEmpty, "a create appends only into an empty log");
         let sender = if text(&events[0]) == "x" { "x" } else { "y" };
         self.script.turn((sender, "append")).await;
         let mut log = self.events.lock();
@@ -363,5 +356,43 @@ async fn the_initial_events_of_two_overlapping_creates_are_queued_once_by_whiche
         assert_eq!(x.unwrap(), y.unwrap(), "{order:?}: one session");
         let texts: Vec<String> = log.events.lock().iter().map(text).collect();
         assert_eq!(texts, [order[4].0], "{order:?}: the first append queued its initial event, once");
+    }
+}
+
+#[tokio::test]
+async fn a_create_repeated_after_its_session_exists_returns_it_and_appends_only_into_an_empty_log() {
+    let id = SessionId::derived("depl_01fired@2026-11-19T06:00:00.000000Z");
+    let mut stored: Session =
+        serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
+    stored.id = id.clone();
+    stored.title = Some("x".into());
+    let archived = Session { archived_at: Some(Timestamp::now()), ..stored.clone() };
+    // The archived session's create never reaches the log; the other's reaches a log that has an event.
+    for (session, steps) in [(archived, vec![]), (stored, vec![("x", "append")])] {
+        let script = Arc::new(Script(Mutex::new(steps.into())));
+        let rows = Arc::new(Rows {
+            script: script.clone(),
+            rows: Mutex::new([(id.as_str().to_owned(), session.clone())].into()),
+        });
+        let log = log(&script);
+        let earlier =
+            Event::new(serde_json::from_value(serde_json::json!({"type": "user.interrupt"})).unwrap());
+        log.events.lock().push(earlier.clone());
+        let deps = Arc::new(Deps { environments: Mutex::default() });
+        let service = SessionsService::new(rows, log.clone(), deps, ModelCatalog::default_catalog());
+        let ctx = AuthContext {
+            org: OrgId::new("org_f"),
+            workspace: WorkspaceId::new("wrkspc_f"),
+            api_key_id: "k".into(),
+        };
+        let made = tokio::time::timeout(
+            Duration::from_secs(5),
+            service.create_fired(&ctx, with_message(request("x", &id))),
+        )
+        .await
+        .expect("the create finishes");
+
+        assert_eq!(made.unwrap(), session, "the stored session");
+        assert_eq!(*log.events.lock(), [earlier], "no initial event is appended");
     }
 }

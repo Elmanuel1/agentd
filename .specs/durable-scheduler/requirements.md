@@ -58,7 +58,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | DS-6 | If a fire runs longer than 60 s, then the scheduler shall count it as an infra failure (DS-5). |
 | DS-7 | When a fire records a run, with a session or with an error, the scheduler shall mark it done with outcome `ran` and not run it again (D7). |
 | DS-8 | If an occurrence is not run by the time its following occurrence is due, then the scheduler shall mark it done with outcome `skipped` and log it at `WARN`, with no backfill; after downtime, the scheduler shall write only each schedule's latest missed occurrence to `fire_claims` (D1). |
-| DS-18 | When the scheduler marks a fire done, the scheduler shall record its outcome in `fire_claims.outcome`: `ran`, `skipped`, or `dropped` when no handler owns its kind or its spec cannot be read (D3). The column carries no `CHECK`: `Outcome::as_str` is the one list of its values. |
+| DS-18 | When the scheduler marks a fire done, the scheduler shall record its outcome in `fire_claims.outcome`: `ran`, `skipped`, or `dropped` when no handler owns its kind or its spec cannot be read (D3). |
 | DS-9 | When a fire arrives on the change feed's `agentd.fires`, the scheduler shall write it to `fire_claims` as DS-1 and DS-3 do, and acknowledge the delivery once that write commits. |
 | DS-20 | If two creates of a session with the same requested id overlap, then the API shall return the session the first insert made to the create whose insert fails on that id, queue the session's initial events once, from whichever create appends them first, and leave the session's work item as the first queue write made it, matching that session (D15). |
 | DS-14 | When the API writes a deployment it read earlier (a fire's bookkeeping, a pause, an unpause or an archive), the API shall write only if the deployment has not changed since that read, and otherwise read it again and redo the change. |
@@ -119,9 +119,9 @@ it. The PR touches 63 files, under CodeRabbit's 100-file review limit.
 - `store-postgres/src/entities/sessions.rs`: a session insert that fails on its primary key returns
   `StoreError::Conflict`. `sessions/src/service/lifecycle.rs`: on `Conflict` for a create with a requested
   id, `create_fired` returns the session through `made` and does not call `end_work`, so the losing create never stops
-  the winner's work item (DS-20). Both creates queue their initial events through the event log's `append_if_empty`,
-  which appends under the session's append lock only while its log is empty, so the first append lands and the
-  other is a no-op. Its queue write is the existing upsert, which leaves a work item that is not
+  the winner's work item (DS-20). Both creates queue their initial events through the event log's append with
+  `Append::IfEmpty`, which appends under the session's append lock only while its log is empty, so the first append
+  lands and the other is a no-op; a create of a session that is archived or terminated appends nothing. Its queue write is the existing upsert, which leaves a work item that is not
   requeuable as it is. Whichever create queues first and whichever inserts first, the work item matches the winning
   session: both creates fire one occurrence of one deployment, and a deployment's agent and environment are fixed at
   its create (no route updates them). The work item keeps the queue the first queue write chose from the environment
@@ -141,7 +141,8 @@ it. The PR touches 63 files, under CodeRabbit's 100-file review limit.
 
 - The versions follow `main`'s V20 and V21, as Flyway refuses a lower version after a higher one.
 - `V22__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
-  outcome text;`. The columns are nullable and nothing reads them yet; `outcome` is null until a fire is done. agentd
+  outcome text;`, with no `CHECK`: `Outcome::as_str` is the one list of `outcome`'s values. The columns are nullable
+  and nothing reads them yet; `outcome` is null until a fire is done. agentd
   is not in production, so no claim `take` wrote needs a backfill.
 - `V23__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
   fire_claims (due_at) where not done;` and `create index concurrently fire_claims_done_idx on fire_claims

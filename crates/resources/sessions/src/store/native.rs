@@ -82,13 +82,7 @@ pub trait NativeSessionEventLog: NativeSessionEventReads {
         id: &SessionId,
         events: &[Event],
         wake: Wake,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
-    fn append_if_empty(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        events: &[Event],
-        wake: Wake,
+        append: Append,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
     fn update_processed_at(
         &self,
@@ -119,17 +113,9 @@ impl<T: NativeSessionEventLog> SessionEventLog for T {
         id: &'a SessionId,
         events: &'a [Event],
         wake: Wake,
-    ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(NativeSessionEventLog::append_events(self, ws, id, events, wake))
-    }
-    fn append_if_empty<'a>(
-        &'a self,
-        ws: &'a WorkspaceId,
-        id: &'a SessionId,
-        events: &'a [Event],
-        wake: Wake,
+        append: Append,
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
-        Box::pin(NativeSessionEventLog::append_if_empty(self, ws, id, events, wake))
+        Box::pin(NativeSessionEventLog::append_events(self, ws, id, events, wake, append))
     }
     fn update_processed_at<'a>(
         &'a self,

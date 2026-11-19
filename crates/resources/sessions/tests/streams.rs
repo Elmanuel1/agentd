@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, UserEvent};
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
-    AnswerCheck, DatabaseLoad, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
+    AnswerCheck, Append, DatabaseLoad, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
     NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
 };
 use sessions::{NativeSessionDeps, SessionId, SessionsService, Streams, Subscription};
@@ -72,15 +72,7 @@ impl NativeSessionEventLog for Scripted {
         _: &SessionId,
         _: &[Event],
         _: Wake,
-    ) -> Result<(), StoreError> {
-        unimplemented!()
-    }
-    async fn append_if_empty(
-        &self,
-        _: &WorkspaceId,
-        _: &SessionId,
-        _: &[Event],
-        _: Wake,
+        _: Append,
     ) -> Result<bool, StoreError> {
         unimplemented!()
     }

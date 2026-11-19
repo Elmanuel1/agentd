@@ -7,11 +7,11 @@ mod writes;
 pub(crate) use writes::{insert, lock, stamp};
 
 use ::sessions::events::{Event, EventId};
-use ::sessions::store::{AnswerCheck, NativeSessionEventLog, StoreError, Wake};
+use ::sessions::store::{AnswerCheck, Append, NativeSessionEventLog, StoreError, Wake};
 use ::sessions::types::SessionId;
 use diesel::sql_types::{Array, Text};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{ApiError, Timestamp, WorkspaceId};
 
 use super::loop_steps::enqueue;
@@ -29,37 +29,6 @@ impl PgSessionEventLog {
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
-
-    async fn append(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        events: &[Event],
-        wake: Wake,
-        log: Log,
-    ) -> Result<bool, StoreError> {
-        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
-        let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
-        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
-            lock(c, id).await?;
-            if log == Log::Empty && logged(c, ws, id).await? {
-                return Ok(false);
-            }
-            if insert(c, ws, id, &ids, docs).await? != ids.len() {
-                return Err(diesel::result::Error::NotFound);
-            }
-            enqueue(c, ws, id, wake).await.map(|()| true)
-        })
-        .await
-        .map_err(log_be)
-    }
-}
-
-#[derive(PartialEq, Eq)]
-enum Log {
-    Any,
-    Empty,
 }
 
 impl NativeSessionEventLog for PgSessionEventLog {
@@ -69,18 +38,32 @@ impl NativeSessionEventLog for PgSessionEventLog {
         id: &SessionId,
         events: &[Event],
         wake: Wake,
-    ) -> Result<(), StoreError> {
-        self.append(ws, id, events, wake, Log::Any).await.map(drop)
-    }
-
-    async fn append_if_empty(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-        events: &[Event],
-        wake: Wake,
+        append: Append,
     ) -> Result<bool, StoreError> {
-        self.append(ws, id, events, wake, Log::Empty).await
+        let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
+        let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
+        let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            lock(c, id).await?;
+            if append == Append::IfEmpty
+                && session_events::table
+                    .filter(session_events::workspace_id.eq(ws.as_str()))
+                    .filter(session_events::session_id.eq(id.as_str()))
+                    .select(session_events::seq)
+                    .first::<i64>(c)
+                    .await
+                    .optional()?
+                    .is_some()
+            {
+                return Ok(false);
+            }
+            if insert(c, ws, id, &ids, docs).await? != ids.len() {
+                return Err(diesel::result::Error::NotFound);
+            }
+            enqueue(c, ws, id, wake).await.map(|()| true)
+        })
+        .await
+        .map_err(log_be)
     }
 
     async fn update_processed_at(
@@ -158,21 +141,6 @@ impl NativeSessionEventLog for PgSessionEventLog {
         .map_err(diesel_be)?;
         Ok(())
     }
-}
-
-async fn logged(
-    c: &mut AsyncPgConnection,
-    ws: &WorkspaceId,
-    id: &SessionId,
-) -> Result<bool, diesel::result::Error> {
-    let seq: Option<i64> = session_events::table
-        .filter(session_events::workspace_id.eq(ws.as_str()))
-        .filter(session_events::session_id.eq(id.as_str()))
-        .select(session_events::seq)
-        .first(c)
-        .await
-        .optional()?;
-    Ok(seq.is_some())
 }
 
 fn log_be(e: diesel::result::Error) -> StoreError {

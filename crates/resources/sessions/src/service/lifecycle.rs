@@ -92,12 +92,10 @@ impl SessionsService {
             }
             Ok(()) => {}
         }
-        self.send_initial(ctx, &session.id, &initial).await?;
+        self.send_initial(ctx, &session, &initial).await?;
         Ok(session)
     }
 
-    /// The session an earlier create with `id` made, with the `initial`
-    /// events queued unless a create queued them first.
     async fn made(
         &self,
         ctx: &AuthContext,
@@ -110,7 +108,7 @@ impl SessionsService {
             Err(StoreError::NotFound) => return Ok(None),
             Err(e) => return Err(map_store(e)),
         };
-        self.send_initial(ctx, id, initial).await?;
+        self.send_initial(ctx, &session, initial).await?;
         Ok(Some(session))
     }
 

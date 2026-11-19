@@ -3,8 +3,8 @@ use shared::{ApiError, AuthContext, Pagination};
 
 use super::{SessionsService, guard_writable, map_store, parse_id};
 use crate::events::{Event, EventPayload, UserEvent};
-use crate::store::{EventFilter, Wake};
-use crate::types::{OutcomeId, Session, SessionId, SessionStatus};
+use crate::store::{Append, EventFilter, Wake};
+use crate::types::{OutcomeId, Session, SessionStatus};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
@@ -21,25 +21,27 @@ impl SessionsService {
         if out.is_empty() {
             return Ok(out);
         }
-        self.events.append_events(&ctx.workspace, &session.id, &out, Wake::Step).await.map_err(map_store)?;
+        let appended =
+            self.events.append_events(&ctx.workspace, &session.id, &out, Wake::Step, Append::Always);
+        appended.await.map_err(map_store)?;
         self.publish(&ctx.workspace, &session.id).await;
         Ok(out)
     }
 
-    /// Queue `initial` as the session's first input, unless its log already has events.
     pub(super) async fn send_initial(
         &self,
         ctx: &AuthContext,
-        id: &SessionId,
+        session: &Session,
         initial: &[EventPayload],
     ) -> Result<(), ApiError> {
-        if initial.is_empty() {
+        if initial.is_empty() || session.archived_at.is_some() || session.status == SessionStatus::Terminated
+        {
             return Ok(());
         }
-        self.sendable(ctx, id.as_str(), None, initial).await?;
+        let (ws, id) = (&ctx.workspace, &session.id);
         let events = queued(initial.to_vec());
-        if self.events.append_if_empty(&ctx.workspace, id, &events, Wake::Step).await.map_err(map_store)? {
-            self.publish(&ctx.workspace, id).await;
+        if self.events.append_events(ws, id, &events, Wake::Step, Append::IfEmpty).await.map_err(map_store)? {
+            self.publish(ws, id).await;
         }
         Ok(())
     }
@@ -76,8 +78,8 @@ impl SessionsService {
     }
 }
 
-/// The events of `payloads`; a define_outcome gets its server-assigned outcome id on echo.
 fn queued(payloads: Vec<EventPayload>) -> Vec<Event> {
+    // define_outcome gets its server-assigned outcome id on echo.
     let stamped = payloads.into_iter().map(|p| match p {
         EventPayload::User(UserEvent::DefineOutcome {
             description,
