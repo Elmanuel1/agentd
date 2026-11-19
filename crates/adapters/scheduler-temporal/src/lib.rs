@@ -5,7 +5,8 @@
 //! it as they run every fire. A schedule carries no Temporal jitter: the fire
 //! queue applies live's. Its overlap policy is `AllowAll`, since a fire only
 //! writes a row, and its catch-up window outlasts any gap between
-//! occurrences, so Temporal delivers every missed occurrence and the fire
+//! occurrences, so no missed occurrence falls outside it (Temporal's action
+//! buffer still bounds how many it delivers after an outage) and the fire
 //! queue skips one whose following occurrence is due.
 
 use async_trait::async_trait;
@@ -104,8 +105,8 @@ fn timer(spec: &ScheduleSpec) -> TemporalSpec {
 
 /// Temporal's catch-up window: longer than any gap between a cron's
 /// occurrences (a Feb 29 cron across a century year, a local time a
-/// daylight-saving change skips), so Temporal delivers every occurrence it
-/// missed and the fire queue skips any delivered after its following one.
+/// daylight-saving change skips), so no missed occurrence falls outside it;
+/// the fire queue skips any delivered after its following one.
 const CATCH_UP_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 366 * 86_400);
 
 /// A create that fails is never [`SchedulerError::Unknown`], which the outbox reads as applied: a missing

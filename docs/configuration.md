@@ -490,14 +490,16 @@ built-in tick does not run. Each schedule (id: the target, such as
 `deployment/depl_…`) has the deployment's cron and timezone, no Temporal
 jitter (the fire queue applies live's), overlap `AllowAll` and a catch-up
 window of ten years, longer than any gap between a cron's occurrences, so
-Temporal delivers every occurrence it missed and the fire queue skips one
-delivered after its following occurrence. A long Temporal outage therefore
-delivers each missed occurrence, and all but each schedule's latest are
-skipped. Temporal buffers at most 1,000 missed actions per schedule (its
-default) and drops later ones, so a schedule that misses more than 1,000
-occurrences in one Temporal outage, such as a per-minute cron during an
-outage of over 16 hours, loses its latest missed one and fires again at its
-next occurrence. Its action starts the workflow `FireWorkflow` on
+no missed occurrence falls outside the window; the fire queue skips one
+delivered after its following occurrence, so after an outage each schedule's
+latest missed occurrence runs and the older ones are skipped. Temporal
+buffers a bounded number of missed actions per schedule and drops later
+ones: 1,000 by default in the Temporal server's scheduler workflow, a
+setting of the deployment's Temporal server and version. A schedule that misses
+more than that in one Temporal outage, such as a per-minute cron down for
+over 16 hours, loses its latest missed occurrence and fires again at its
+next one. Check the target server's buffer setting before relying on
+recovery from a long outage. Its action starts the workflow `FireWorkflow` on
 `AGENTD_TEMPORAL_TASK_QUEUE`, which agentd's Temporal worker, on every
 replica, runs: one activity writes the action's scheduled time, the
 `TemporalScheduledStartTime` Temporal sets, to the fire queue, and Temporal
