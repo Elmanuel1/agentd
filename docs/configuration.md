@@ -544,12 +544,14 @@ The feed is Kafka when `AGENTD_KAFKA_BROKERS` is set, and Debezium runs with
 its Kafka sink (the default). Each replica reads each topic in the consumer
 group `agentd.<topic>` and commits a record's offset once its handler
 succeeds; a record whose handler fails is retried in place, so nothing behind
-it in its partition overtakes it. While it retries, the consumer pauses every
-partition it is assigned and keeps polling, so it stays in its group past
-`max.poll.interval.ms` and no second replica reads the partition. The group
-assigns partitions `cooperative-sticky`, so a replica that joins takes no
-partition another holds. An ordered table's topic has one partition, which
-the group gives to one replica at a time. An external scheduler writes
+it in its partition overtakes it. While it handles or retries a record, the
+consumer keeps polling, so it stays in its group past `max.poll.interval.ms`,
+and pauses and moves back any partition that delivers a record meanwhile, so
+nothing behind the record is handled first. The group assigns partitions
+`cooperative-sticky`: a join moves only the partitions balance needs, so a
+one-partition topic stays with its holder, and a moved partition's attempt
+ends uncommitted, for its next owner to read. An ordered table's topic has one
+partition, which the group gives to one replica at a time. An external scheduler writes
 its fires to the topic `agentd.fires`, each record's value
 `{"spec": …, "scheduled_at": "<RFC 3339>"}`. The topics' retention trims them.
 
