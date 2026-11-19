@@ -4,9 +4,9 @@
 //! writes the occurrence to agentd's fire queue, where agentd's workers run
 //! it as they run every fire. A schedule carries no Temporal jitter: the fire
 //! queue applies live's. Its overlap policy is `AllowAll`, since a fire only
-//! writes a row, and its catch-up window is at least a year, so a missed
-//! occurrence is delivered while it is runnable and the fire queue skips it
-//! once its following occurrence is due.
+//! writes a row, and its catch-up window outlasts any gap between
+//! occurrences, so Temporal delivers every missed occurrence and the fire
+//! queue skips one whose following occurrence is due.
 
 use async_trait::async_trait;
 use shared::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
@@ -102,32 +102,11 @@ fn timer(spec: &ScheduleSpec) -> TemporalSpec {
     TemporalSpec::builder().cron_strings(crons(&spec.cron)).timezone_name(spec.timezone.clone()).build()
 }
 
-/// Occurrences worked out per step while the catch-up window is sized.
-const WINDOW_CHUNK: usize = 1000;
-
-/// At least a year (Temporal's default), or the longest gap between the
-/// schedule's occurrences over the next five years when that is longer (a
-/// Feb 29 cron). Temporal measures the window from a missed time, and no gap
-/// between two occurrences outside Feb 29 reaches a year, so every occurrence
-/// stays deliverable until its following one is due; the fire queue skips any
-/// delivered after that.
-fn catch_up_window(spec: &ScheduleSpec, now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
-    let floor = std::time::Duration::from_secs(366 * 86_400);
-    let Ok(compiled) = spec.compile() else { return floor };
-    let (mut longest, mut last) = (chrono::Duration::zero(), None);
-    let end = now + chrono::Duration::days(366 * 5);
-    let mut from = now;
-    while last.is_none_or(|t| t < end) {
-        let chunk = compiled.next_fires(from, WINDOW_CHUNK);
-        let Some(&tail) = chunk.last() else { break };
-        for t in chunk {
-            longest = longest.max(last.map_or(chrono::Duration::zero(), |previous| t - previous));
-            last = Some(t);
-        }
-        from = tail;
-    }
-    longest.to_std().unwrap_or_default().max(floor)
-}
+/// Temporal's catch-up window: longer than any gap between a cron's
+/// occurrences (a Feb 29 cron across a century year, a local time a
+/// daylight-saving change skips), so Temporal delivers every occurrence it
+/// missed and the fire queue skips any delivered after its following one.
+const CATCH_UP_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 366 * 86_400);
 
 /// A create that fails is never [`SchedulerError::Unknown`], which the outbox reads as applied: a missing
 /// namespace answers `NOT_FOUND` too.
@@ -143,8 +122,7 @@ impl SchedulerPort for TemporalScheduler {
     async fn upsert(&self, spec: ScheduleSpec) -> Result<(), SchedulerError> {
         spec.compile().map_err(|e| SchedulerError::InvalidSpec(e.to_string()))?;
         let handle = self.client.get_schedule_handle(spec.target.key());
-        let (timer, action, window) =
-            (timer(&spec), self.action(&spec), catch_up_window(&spec, chrono::Utc::now()));
+        let (timer, action, window) = (timer(&spec), self.action(&spec), CATCH_UP_WINDOW);
         let updated = handle
             .update(
                 move |u| {

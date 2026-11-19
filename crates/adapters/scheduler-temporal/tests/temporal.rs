@@ -21,6 +21,14 @@ fn config() -> Option<TemporalConfig> {
     Some(TemporalConfig { address, namespace: "default".into(), task_queue })
 }
 
+/// A Temporal client of its own, to read what the sink stored.
+async fn client() -> temporalio_client::Client {
+    use temporalio_client::{Client, ClientOptions, Connection, ConnectionOptions, Url};
+    let url = Url::parse(&std::env::var("AGENTD_TEMPORAL_ADDRESS").unwrap()).unwrap();
+    let connection = Connection::connect(ConnectionOptions::new(url).build()).await.unwrap();
+    Client::new(connection, ClientOptions::new("default").build()).unwrap()
+}
+
 fn spec(cron: &str) -> ScheduleSpec {
     ScheduleSpec {
         cron: cron.into(),
@@ -41,6 +49,15 @@ async fn pause_and_unpause_reach_the_temporal_schedule() {
     let s = spec("0 3 * * *");
     sink.upsert(s.clone()).await.unwrap();
     assert!(!sink.describe(&s.target).await.unwrap().paused);
+    let described =
+        client().await.get_schedule_handle(s.target.key()).describe(Default::default()).await.unwrap();
+    let window =
+        described.raw().schedule.as_ref().and_then(|s| s.policies.as_ref()).and_then(|p| p.catchup_window);
+    assert_eq!(
+        window.map(|w| w.seconds),
+        Some(10 * 366 * 86_400),
+        "Temporal never drops a missed occurrence"
+    );
     sink.pause(&s.target).await.unwrap();
     assert!(sink.describe(&s.target).await.unwrap().paused);
     sink.unpause(&s.target).await.unwrap();
