@@ -10,18 +10,16 @@ use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::{FireRegistry, FireWorker};
 use store_postgres::{
-    PgBackend, PgError, PgFireClaims, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore,
-    PoolSettings,
+    PgBackend, PgError, PgFireClaims, PgLoad, PgRunLock, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
 
 use super::Stores;
 use super::feed::ChangeFeed;
+use super::scheduler::Sink;
 use super::secrets::Secrets;
 use crate::telemetry::scheduler::{self, SchedulerMetrics};
 use crate::telemetry::{self, Metrics};
 
-/// How often each replica claims due schedules (cron is minute-grained).
-const TICK: Duration = Duration::from_secs(10);
 /// How often each replica runs the due fires of the fire queue.
 const FIRES: Duration = Duration::from_secs(1);
 
@@ -75,20 +73,21 @@ pub(super) async fn connect(
     Ok(Postgres { stores, load: Arc::new(load), backend: pg })
 }
 
-/// What every replica runs: the built-in scheduler's tick, which writes each
-/// due schedule's occurrence to the fire queue, the change feed's consumer of
-/// an external scheduler's fires, which writes them there too, and the fire
-/// workers, which run the queue. They start once the handlers are registered.
+/// What every replica runs: the scheduler sink's side that writes each
+/// occurrence to the fire queue (the built-in tick, or the Temporal worker),
+/// the change feed's consumer of an external scheduler's fires, which writes
+/// them there too, and the fire workers, which run the queue. They start once
+/// the handlers are registered.
 #[derive(Debug)]
 pub struct FireSources {
-    tick: PgScheduler,
+    sink: Sink,
     feed: ChangeFeed,
     queue: PgFireClaims,
 }
 
 impl FireSources {
-    pub(super) fn new(tick: PgScheduler, feed: ChangeFeed, queue: PgFireClaims) -> Self {
-        Self { tick, feed, queue }
+    pub(super) fn new(sink: Sink, feed: ChangeFeed, queue: PgFireClaims) -> Self {
+        Self { sink, feed, queue }
     }
 
     /// Start, running the queue through `fires`.
@@ -96,7 +95,7 @@ impl FireSources {
         let meter = opentelemetry::global::meter("agentd");
         let metrics = SchedulerMetrics::new(&meter);
         let enqueued = metrics.clone();
-        drop(self.tick.spawn(TICK, move |n| enqueued.enqueued(n)));
+        self.sink.start(fires, move |n| enqueued.enqueued(n));
         drop(self.feed.spawn_fires(fires.clone()));
         drop(FireWorker::new(fires.clone(), move |ending, lag| metrics.ended(ending, lag)).spawn(FIRES));
         drop(scheduler::watch_due(&meter, self.queue.clone()));

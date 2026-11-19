@@ -30,6 +30,8 @@ pub struct Config {
     pub agent_loop: LoopConfig,
     /// Each organization's webhook endpoints.
     pub webhooks: std::sync::Arc<::webhooks::Webhooks>,
+    /// The scheduler sink (`AGENTD_SCHEDULER`).
+    pub scheduler: SchedulerConfig,
 }
 
 /// `AGENTD_BLOBS`.
@@ -72,6 +74,7 @@ impl Config {
         let streams = StreamsConfig::from_lookup(&get)?;
         let agent_loop = LoopConfig::from_lookup(&get)?;
         let webhooks = hooks::from_lookup(&get)?;
+        let scheduler = SchedulerConfig::from_lookup(&get)?;
         Ok(Self {
             addr,
             store,
@@ -84,6 +87,7 @@ impl Config {
             streams,
             agent_loop,
             webhooks,
+            scheduler,
         })
     }
 
@@ -161,6 +165,7 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
 mod hooks;
 mod keys;
 mod role;
+mod scheduler;
 mod secrets;
 mod store;
 mod streams;
@@ -169,6 +174,7 @@ mod work;
 
 pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};
+pub use scheduler::SchedulerConfig;
 pub use secrets::SecretsConfig;
 pub use store::StoreConfig;
 pub use streams::StreamsConfig;

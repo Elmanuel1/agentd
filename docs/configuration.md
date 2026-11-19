@@ -96,6 +96,10 @@ step's 10 minute deadline.
 | Variable | Default | Meaning |
 |---|---|---|
 | `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role ticks the scheduler, runs the fire workers and the change feed's handlers |
+| `AGENTD_SCHEDULER` | `postgres` | The scheduler sink: `postgres`, the built-in scheduler whose tick every replica runs, or `temporal`, Temporal Schedules (see Scheduled work) |
+| `AGENTD_TEMPORAL_ADDRESS` | `http://localhost:7233` | With `temporal`: the Temporal frontend |
+| `AGENTD_TEMPORAL_NAMESPACE` | `default` | With `temporal`: the namespace that holds agentd's schedules |
+| `AGENTD_TEMPORAL_TASK_QUEUE` | `agentd` | With `temporal`: the task queue agentd's Temporal worker polls |
 | `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
@@ -480,6 +484,16 @@ fire, its value `{"spec": …, "scheduled_at": …}`; on Valkey Streams one entr
 per fire with the fields `spec` (the schedule's spec as JSON) and
 `scheduled_at` (RFC 3339). Each is written to the fire queue the same way and
 acknowledged once that write commits.
+
+With `AGENTD_SCHEDULER=temporal` the sink is Temporal Schedules, and the
+built-in tick does not run. Each schedule (id: the target, such as
+`deployment/depl_…`) has the deployment's cron and timezone, no Temporal
+jitter (the fire queue applies live's), overlap `AllowAll` and a catch-up
+window of one interval. Its action starts the workflow `FireWorkflow` on
+`AGENTD_TEMPORAL_TASK_QUEUE`, which agentd's Temporal worker, on every
+replica, runs: one activity writes the action's scheduled time, the
+`TemporalScheduledStartTime` Temporal sets, to the fire queue, and Temporal
+retries it until the write commits. agentd's fire workers run it from there.
 
 The fire queue holds one row per occurrence, keyed by its workspace, target
 and time, so a repeated delivery (a scheduler retry, a stream entry a stopped

@@ -2,8 +2,10 @@
 # Debian trixie, so the binary links against the glibc it runs with.
 FROM rust:1.100-slim-trixie AS builder
 WORKDIR /build
-# make and a C++ compiler: the Kafka client builds librdkafka, whose configure needs both.
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config make g++ && rm -rf /var/lib/apt/lists/*
+# make and a C++ compiler: the Kafka client builds librdkafka, whose configure needs both. protoc: the
+# Temporal SDK compiles its protobuf definitions.
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config make g++ protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY conformance ./conformance

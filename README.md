@@ -41,7 +41,7 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
 ```
 
 **Swappable ports:** `SchedulerPort`
-(Postgres, whose occurrences every sink writes to the Postgres fire queue), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
+(Postgres, or Temporal Schedules; every sink writes its occurrences to the Postgres fire queue), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
 `BlobStore` (S3), `SecretStore`, `KeySource`, `HistoryLog`, storage traits per entity
 (in-memory/Postgres). The binary picks one backend per port from config at
 boot (`Backends::from_config`). A resource crate contributes a `Module`: its
@@ -59,8 +59,11 @@ resolving `latest` adopts the promotion — promote-don't-replace.
 ```sh
 POSTGRES_PASSWORD=$(openssl rand -hex 16) docker compose -f docker/docker-compose.yml up   # full stack on LocalStack
 docker compose -f docker/docker-compose.yml logs keys   # the dev API key, made at startup and printed once
-cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, AGENTD_AWS_ENDPOINT the S3, Secrets Manager, SSM and KMS ones
+cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, AGENTD_AWS_ENDPOINT the S3, Secrets Manager, SSM and KMS ones, AGENTD_TEMPORAL_ADDRESS the Temporal ones
 ```
+
+Building needs `protoc` (`brew install protobuf`, or Debian's `protobuf-compiler`): the Temporal SDK compiles its
+protobuf definitions.
 
 There is no development mode: the stack seals vault credentials in Postgres
 under `AGENTD_SECRET_KEYS` as a production deployment on the default store
