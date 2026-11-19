@@ -3,7 +3,7 @@
 //! schedule registered on one replica fires on any, once.
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use diesel::sql_types::{Bool, Jsonb, Text, Timestamptz};
 use diesel::{OptionalExtension, QueryableByName};
 use diesel_async::RunQueryDsl;
@@ -39,7 +39,12 @@ struct Stored {
     spec: serde_json::Value,
     #[diesel(sql_type = Bool)]
     paused: bool,
+    #[diesel(sql_type = Timestamptz)]
+    now: DateTime<Utc>,
 }
+
+/// Unpause's reads and writes before it gives up on a schedule that keeps changing.
+const UNPAUSE_ATTEMPTS: usize = 3;
 
 fn compile(spec: &ScheduleSpec) -> Result<CompiledSchedule, SchedulerError> {
     spec.compile().map_err(|e| SchedulerError::InvalidSpec(e.to_string()))
@@ -91,34 +96,42 @@ impl SchedulerPort for PgScheduler {
         }
     }
 
-    /// Resume from the next occurrence after now. The write applies only while the row is still
-    /// paused with the spec read, so a repeated unpause leaves an active schedule as it is and a
-    /// spec changed meanwhile keeps its own next occurrence.
+    /// Resume from the next occurrence after the database's now, as the tick reads it. The write
+    /// applies only while the row is still paused with the spec read and that occurrence is still
+    /// ahead, so a repeated unpause leaves an active schedule as it is, a spec changed meanwhile
+    /// keeps its own next occurrence, and a write that lands late reads again.
     async fn unpause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
-        let row: Option<Stored> = diesel::sql_query("SELECT spec, paused FROM schedules WHERE target = $1")
+        for _ in 0..UNPAUSE_ATTEMPTS {
+            let row: Option<Stored> =
+                diesel::sql_query("SELECT spec, paused, now() AS now FROM schedules WHERE target = $1")
+                    .bind::<Text, _>(target.key())
+                    .get_result(&mut conn)
+                    .await
+                    .optional()
+                    .map_err(unavailable)?;
+            let row = row.ok_or_else(|| SchedulerError::Unknown(target.key()))?;
+            if !row.paused {
+                return Ok(());
+            }
+            let spec: ScheduleSpec = serde_json::from_value(row.spec.clone()).map_err(unavailable)?;
+            let next = compile(&spec)?.next_fires(row.now, 1).into_iter().next();
+            let next = next.ok_or_else(|| SchedulerError::InvalidSpec("the schedule never fires".into()))?;
+            let written = diesel::sql_query(
+                "UPDATE schedules SET paused = false, next_fire_at = $2
+                 WHERE target = $1 AND paused AND spec = $3 AND $2 > now()",
+            )
             .bind::<Text, _>(target.key())
-            .get_result(&mut conn)
+            .bind::<Timestamptz, _>(next)
+            .bind::<Jsonb, _>(row.spec)
+            .execute(&mut conn)
             .await
-            .optional()
             .map_err(unavailable)?;
-        let row = row.ok_or_else(|| SchedulerError::Unknown(target.key()))?;
-        if !row.paused {
-            return Ok(());
+            if written > 0 {
+                return Ok(());
+            }
         }
-        let spec: ScheduleSpec = serde_json::from_value(row.spec.clone()).map_err(unavailable)?;
-        let next = compile(&spec)?.next_fires(Utc::now(), 1).into_iter().next();
-        let next = next.ok_or_else(|| SchedulerError::InvalidSpec("the schedule never fires".into()))?;
-        diesel::sql_query(
-            "UPDATE schedules SET paused = false, next_fire_at = $2 WHERE target = $1 AND paused AND spec = $3",
-        )
-        .bind::<Text, _>(target.key())
-        .bind::<Timestamptz, _>(next)
-        .bind::<Jsonb, _>(row.spec)
-        .execute(&mut conn)
-        .await
-        .map(drop)
-        .map_err(unavailable)
+        Err(SchedulerError::Unavailable(format!("{}: the schedule kept changing", target.key())))
     }
 
     async fn delete(&self, target: &FireTarget) -> Result<(), SchedulerError> {
