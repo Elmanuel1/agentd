@@ -2,7 +2,7 @@
 
 use shared::ports::BoxFuture;
 use shared::ports::ScheduleChange;
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 use std::future::Future;
 
 use crate::types::{Deployment, DeploymentId, DeploymentRun};
@@ -13,6 +13,9 @@ pub enum StoreError {
     /// No such deployment.
     #[error("deployment not found")]
     NotFound,
+    /// The deployment changed after the caller read it.
+    #[error("deployment changed")]
+    Stale,
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),
@@ -34,13 +37,14 @@ pub trait DeploymentsStore: Send + Sync {
         ws: &'a WorkspaceId,
         id: &'a DeploymentId,
     ) -> BoxFuture<'a, Result<Deployment, StoreError>>;
-    /// Replace.
     /// Replace `d`, with the change to its schedule, when there is one, in
-    /// the same transaction.
+    /// the same transaction, only while the stored deployment's `updated_at`
+    /// is still `read`; else [`StoreError::Stale`].
     fn replace<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         d: Deployment,
+        read: Timestamp,
         schedule: Option<&'a ScheduleChange>,
     ) -> BoxFuture<'a, Result<(), StoreError>>;
     /// List, insertion order.
@@ -83,6 +87,7 @@ pub trait NativeDeploymentsStore: Send + Sync {
         &self,
         ws: &WorkspaceId,
         d: Deployment,
+        read: Timestamp,
         schedule: Option<&ScheduleChange>,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
     fn list(
@@ -124,9 +129,10 @@ impl<T: NativeDeploymentsStore> DeploymentsStore for T {
         &'a self,
         ws: &'a WorkspaceId,
         d: Deployment,
+        read: Timestamp,
         schedule: Option<&'a ScheduleChange>,
     ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(NativeDeploymentsStore::replace(self, ws, d, schedule))
+        Box::pin(NativeDeploymentsStore::replace(self, ws, d, read, schedule))
     }
     fn list<'a>(
         &'a self,

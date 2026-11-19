@@ -3,10 +3,10 @@
 use ::deployments::store::{NativeDeploymentsStore, StoreError};
 use ::deployments::types::{Deployment, DeploymentId, DeploymentRun};
 use chrono::{DateTime, Utc};
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel::{AnyJsonExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::ScheduleChange;
-use shared::{Pagination, WorkspaceId};
+use shared::{Pagination, Timestamp, WorkspaceId};
 
 use crate::schema::deployments;
 use crate::{PgBackend, diesel_be, parse_doc, pool_be, to_doc};
@@ -91,16 +91,18 @@ impl NativeDeploymentsStore for PgDeploymentsStore {
         &self,
         ws: &WorkspaceId,
         d: Deployment,
+        read: Timestamp,
         schedule: Option<&ScheduleChange>,
     ) -> Result<(), StoreError> {
         let doc = to_doc(&d)?;
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        let found = conn
+        let written = conn
             .transaction::<_, diesel::result::Error, _>(async move |c| {
                 let affected = diesel::update(
                     deployments::table
                         .filter(deployments::workspace_id.eq(ws.as_str()))
-                        .filter(deployments::deployment_id.eq(d.id.as_str())),
+                        .filter(deployments::deployment_id.eq(d.id.as_str()))
+                        .filter(deployments::doc.retrieve_as_text("updated_at").eq(read.to_wire())),
                 )
                 .set((
                     deployments::name.eq(&d.name),
@@ -117,7 +119,7 @@ impl NativeDeploymentsStore for PgDeploymentsStore {
             })
             .await
             .map_err(diesel_be)?;
-        found.then_some(()).ok_or(StoreError::NotFound)
+        written.then_some(()).ok_or(StoreError::Stale)
     }
 
     async fn list(&self, ws: &WorkspaceId, page: &Pagination) -> Result<Vec<Deployment>, StoreError> {
