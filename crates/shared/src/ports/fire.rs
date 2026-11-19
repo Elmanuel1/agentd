@@ -1,6 +1,7 @@
 //! Scheduled fires. Each resource that owns scheduled work registers one
-//! [`FireHandler`] for its [`crate::ports::FireTarget::kind`]; the scheduler delivers every
-//! tick to the [`FireRegistry`], which runs it under the schedule's tenant.
+//! [`FireHandler`] for its [`crate::ports::FireTarget::kind`]; the
+//! [`FireRegistry`] runs each fire under the schedule's tenant, and the
+//! [`FireWorker`]s run the fire queue through it.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
@@ -13,8 +14,11 @@ use crate::{AuthContext, OrgId, WorkspaceId, Writer, with_writer};
 
 mod claims;
 mod delivery;
-pub use claims::{Claim, FireClaims};
+pub mod jitter;
+mod worker;
+pub use claims::{Claim, Claimed, Fire, FireClaims, FireKey, NativeFireClaims, Outcome};
 pub use delivery::deliver;
+pub use worker::{Ending, FireWorker};
 
 /// A fire that did not run.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -83,22 +87,41 @@ impl FireRegistry {
     /// the claim it found. A failed fire stays claimed and runs again when
     /// it is delivered again after its lease.
     pub async fn fire(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<Claim, FireError> {
-        let handler = self
-            .handlers
+        self.handler(spec)?;
+        let claim = self.claims.take(spec, scheduled_at).await?;
+        let Claim::Run { token } = claim else {
+            return Ok(claim);
+        };
+        self.run(spec, scheduled_at).await?;
+        let key = FireKey {
+            workspace_id: spec.tenant.workspace_id.clone(),
+            target: spec.target.key(),
+            scheduled_at,
+        };
+        self.claims.finish(&Claimed { key, token, spec: Some(spec.clone()) }, Outcome::Ran).await?;
+        Ok(claim)
+    }
+
+    /// Run the fire of `spec` at `scheduled_at` through its kind's handler,
+    /// as the schedule's key writing a request of its own.
+    pub(crate) async fn run(
+        &self,
+        spec: &ScheduleSpec,
+        scheduled_at: DateTime<Utc>,
+    ) -> Result<(), FireError> {
+        let handler = self.handler(spec)?;
+        let writer = Writer::fresh(&spec.tenant.api_key_id);
+        let tenant = spec.tenant.auth_context();
+        with_writer(writer, handler.fire(&tenant, &spec.target.id, scheduled_at)).await
+    }
+
+    fn handler(&self, spec: &ScheduleSpec) -> Result<Arc<dyn FireHandler>, FireError> {
+        self.handlers
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(spec.target.kind.as_str())
             .cloned()
-            .ok_or_else(|| FireError::NoHandler(spec.target.kind.clone()))?;
-        let claim = self.claims.take(spec, scheduled_at).await?;
-        if claim != Claim::Run {
-            return Ok(claim);
-        }
-        let writer = Writer::fresh(&spec.tenant.api_key_id);
-        let tenant = spec.tenant.auth_context();
-        with_writer(writer, handler.fire(&tenant, &spec.target.id, scheduled_at)).await?;
-        self.claims.finish(spec, scheduled_at).await?;
-        Ok(Claim::Run)
+            .ok_or_else(|| FireError::NoHandler(spec.target.kind.clone()))
     }
 }
 

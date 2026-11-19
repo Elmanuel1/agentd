@@ -20,7 +20,7 @@ base64 = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 secrecy = { workspace = true }
 hmac = { workspace = true }
 zeroize = { workspace = true }
@@ -29,7 +29,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

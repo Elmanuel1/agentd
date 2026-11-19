@@ -9,6 +9,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::schedule::{CompiledSchedule, CronKind, CronSchedule, ScheduleError};
+
 // ─── Scheduler port ────────────────────────────────────────────────────────
 
 /// What a schedule fires: the owning resource's [`super::fire::FireHandler::kind`]
@@ -56,6 +58,18 @@ pub struct ScheduleSpec {
     pub target: FireTarget,
     /// Whose resource this is.
     pub tenant: TenantRef,
+}
+
+impl ScheduleSpec {
+    /// Its cron and timezone, ready to compute fire times.
+    pub fn compile(&self) -> Result<CompiledSchedule, ScheduleError> {
+        let cron = CronSchedule {
+            kind: CronKind::Cron,
+            expression: self.cron.clone(),
+            timezone: self.timezone.clone(),
+        };
+        cron.compile()
+    }
 }
 
 /// Idempotency identity of a single fire: `(target, scheduled_at)`.

@@ -11,7 +11,7 @@ use diesel::{OptionalExtension, QueryableByName};
 use diesel_async::RunQueryDsl;
 use shared::ports::fire::FireRegistry;
 use shared::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
-use shared::schedule::{CompiledSchedule, CronKind, CronSchedule};
+use shared::schedule::CompiledSchedule;
 
 use crate::PgBackend;
 
@@ -38,9 +38,7 @@ struct Paused {
 }
 
 fn compile(spec: &ScheduleSpec) -> Result<CompiledSchedule, SchedulerError> {
-    let cron =
-        CronSchedule { kind: CronKind::Cron, expression: spec.cron.clone(), timezone: spec.timezone.clone() };
-    cron.compile().map_err(|e| SchedulerError::InvalidSpec(e.to_string()))
+    spec.compile().map_err(|e| SchedulerError::InvalidSpec(e.to_string()))
 }
 
 fn unavailable(e: impl std::fmt::Display) -> SchedulerError {

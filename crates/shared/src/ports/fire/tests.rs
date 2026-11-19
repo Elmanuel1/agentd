@@ -9,14 +9,22 @@ struct Claims {
     finished: Mutex<usize>,
 }
 
-#[async_trait]
-impl FireClaims for Claims {
+impl NativeFireClaims for Claims {
     async fn take(&self, _spec: &ScheduleSpec, _at: DateTime<Utc>) -> Result<Claim, FireError> {
         Ok(self.claim)
     }
-    async fn finish(&self, _spec: &ScheduleSpec, _at: DateTime<Utc>) -> Result<(), FireError> {
-        *self.finished.lock().unwrap() += 1;
+    async fn enqueue(&self, _: &[Fire]) -> Result<(), FireError> {
         Ok(())
+    }
+    async fn claim_due(&self, _: usize) -> Result<Vec<Claimed>, FireError> {
+        Ok(vec![])
+    }
+    async fn finish(&self, _: &Claimed, _: Outcome) -> Result<bool, FireError> {
+        *self.finished.lock().unwrap() += 1;
+        Ok(true)
+    }
+    async fn retry(&self, _: &Claimed, _: DateTime<Utc>) -> Result<bool, FireError> {
+        Ok(true)
     }
 }
 
@@ -25,7 +33,7 @@ fn claims(claim: Claim) -> Arc<Claims> {
 }
 
 fn registry() -> FireRegistry {
-    FireRegistry::new(claims(Claim::Run))
+    FireRegistry::new(claims(Claim::Run { token: 1 }))
 }
 
 /// Fails every fire.
@@ -92,7 +100,7 @@ async fn fire_runs_the_kinds_handler_under_the_schedules_tenant_as_its_key() {
 
 #[tokio::test]
 async fn a_fire_runs_and_finishes_only_when_its_claim_says_run() {
-    for (claim, runs) in [(Claim::Run, 1), (Claim::Done, 0), (Claim::Held, 0)] {
+    for (claim, runs) in [(Claim::Run { token: 1 }, 1), (Claim::Done, 0), (Claim::Held, 0)] {
         let c = claims(claim);
         let registry = FireRegistry::new(c.clone());
         let handler = Arc::new(Recording::default());
@@ -105,7 +113,7 @@ async fn a_fire_runs_and_finishes_only_when_its_claim_says_run() {
 
 #[tokio::test]
 async fn a_failed_fire_is_not_finished() {
-    let c = claims(Claim::Run);
+    let c = claims(Claim::Run { token: 1 });
     let registry = FireRegistry::new(c.clone());
     registry.register(Arc::new(Failing)).unwrap();
     assert!(registry.fire(&spec("deployment"), Utc::now()).await.is_err());

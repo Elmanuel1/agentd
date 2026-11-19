@@ -16,7 +16,7 @@ pub async fn deliver(registry: &FireRegistry, fire: Option<(ScheduleSpec, DateTi
         return true;
     };
     match registry.fire(&spec, at).await {
-        Ok(Claim::Run | Claim::Done) => true,
+        Ok(Claim::Run { .. } | Claim::Done) => true,
         Ok(Claim::Held) => false,
         Err(FireError::NoHandler(kind)) => {
             tracing::error!(target = %spec.target.key(), %kind, "fires: no handler for the fire's kind; dropped");

@@ -23,7 +23,7 @@ use dreams::types::{Candidate, Dream, DreamId, Verdict};
 use dreams::{DreamsService, Proposer, ReviewGate};
 use memory::MemoriesService;
 use serde_json::json;
-use shared::ports::fire::{Claim, FireClaims, FireError, FireRegistry};
+use shared::ports::fire::{Claim, Claimed, FireClaims, FireError, FireKey, FireRegistry, Outcome};
 use shared::ports::{FakeScheduler, FireTarget, ScheduleSpec, TenantRef};
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgDeploymentsStore, PgDreamsStore, PgFireClaims, PgMemoryStore};
@@ -104,7 +104,7 @@ async fn deployment_fire_runs_under_the_schedules_tenant() {
     };
 
     let at = Utc::now();
-    assert_eq!(fires.fire(&spec, at).await.unwrap(), Claim::Run);
+    assert_eq!(fires.fire(&spec, at).await.unwrap(), Claim::Run { token: 1 });
     assert_eq!(fires.fire(&spec, at).await.unwrap(), Claim::Done);
     // A fire taken over after a stop runs again and makes no second run.
     let scheduled_at = Timestamp::from_datetime(at);
@@ -225,11 +225,17 @@ async fn one_of_many_concurrent_claims_runs_the_fire_and_the_rest_wait() {
     for t in takes {
         got.push(t.await.unwrap());
     }
-    assert_eq!(got.iter().filter(|c| **c == Claim::Run).count(), 1, "{got:?}");
-    assert!(got.iter().all(|c| matches!(c, Claim::Run | Claim::Held)), "{got:?}");
-    claims.finish(&spec, at).await.unwrap();
+    assert_eq!(got.iter().filter(|c| **c == Claim::Run { token: 1 }).count(), 1, "{got:?}");
+    assert!(got.iter().all(|c| matches!(c, Claim::Run { token: 1 } | Claim::Held)), "{got:?}");
+    let key = FireKey {
+        workspace_id: spec.tenant.workspace_id.clone(),
+        target: spec.target.key(),
+        scheduled_at: at,
+    };
+    let claimed = Claimed { key, token: 1, spec: Some(spec.clone()) };
+    assert!(claims.finish(&claimed, Outcome::Ran).await.unwrap());
     assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Done);
-    assert_eq!(claims.take(&spec, at + chrono::Duration::days(1)).await.unwrap(), Claim::Run);
+    assert_eq!(claims.take(&spec, at + chrono::Duration::days(1)).await.unwrap(), Claim::Run { token: 1 });
 }
 
 #[tokio::test]
@@ -241,11 +247,11 @@ async fn a_claim_whose_owner_stopped_is_taken_over_until_its_attempts_run_out() 
     let claims = PgFireClaims::new(pg.clone());
     let spec = spec(&tenant("lease"));
     let at = Utc::now();
-    assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Run);
+    assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Run { token: 1 });
     assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Held);
-    for _ in 0..2 {
+    for token in 2..=3 {
         expire(&pg, &spec).await;
-        assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Run);
+        assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Run { token });
     }
     expire(&pg, &spec).await;
     assert_eq!(claims.take(&spec, at).await.unwrap(), Claim::Done);
