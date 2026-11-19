@@ -16,6 +16,7 @@ pub use postgres::FireSources;
 pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
+use crate::telemetry::scheduler::SchedulerMetrics;
 use crate::telemetry::{self, Metrics};
 use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
 use sessions::signals::Signals;
@@ -146,13 +147,16 @@ impl Backends {
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
                 let queue = PgFireClaims::new(pg.backend.clone());
-                let (fires, scheduling) = postgres::fire_registry(&queue);
+                let meter = opentelemetry::global::meter("agentd");
+                let scheduling = SchedulerMetrics::new(&meter);
+                let delivered = scheduling.clone();
+                let registry = FireRegistry::new(Arc::new(queue.clone()));
+                let fires = Arc::new(registry.counting_enqueued(move |n| delivered.enqueued(n)));
                 let sink = scheduler::Sink::connect(&config.scheduler, &pg.backend).await?;
                 let feed = feed::ChangeFeed::from_config(streams, &valkey);
                 let sender =
                     WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
                         .map_err(BootError::Signals)?;
-                let meter = opentelemetry::global::meter("agentd");
                 drop(telemetry::feed::watch(&meter, pg.backend.diesel.clone(), &streams.changes_slot));
                 let log = Arc::new(PgHistoryLog::load(pg.backend.clone()).await?);
                 let mut handlers = history::recorders(log, telemetry::feed::apply_delay(&meter));

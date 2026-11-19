@@ -40,7 +40,8 @@ struct Count {
     n: i64,
 }
 
-/// Write `fires` in the transaction on `c`; an occurrence already queued keeps its row. How many rows it added.
+/// Write `fires` in the transaction on `c`; an occurrence already queued keeps its row.
+/// How many rows it added.
 pub(crate) async fn enqueue_in(
     c: &mut AsyncPgConnection,
     fires: &[Fire],
@@ -60,7 +61,8 @@ pub(crate) async fn enqueue_in(
     diesel::sql_query(
         "INSERT INTO fire_claims (workspace_id, target, scheduled_at, spec, due_at, claimed_at, attempts)
          SELECT v.w, v.t, v.s, v.sp, v.d, '-infinity', 0
-         FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::jsonb[], $5::timestamptz[]) AS v(w, t, s, sp, d)
+         FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::jsonb[], $5::timestamptz[])
+           AS v(w, t, s, sp, d)
          ON CONFLICT (workspace_id, target, scheduled_at) DO NOTHING",
     )
     .bind::<Array<Text>, _>(&workspaces)
@@ -100,21 +102,22 @@ impl NativeFireClaims for PgFireClaims {
                 if due.is_empty() {
                     return Ok(Vec::new());
                 }
-            let workspaces: Vec<&str> = due.iter().map(|d| d.workspace_id.as_str()).collect();
-            let targets: Vec<&str> = due.iter().map(|d| d.target.as_str()).collect();
-            let times: Vec<DateTime<Utc>> = due.iter().map(|d| d.scheduled_at).collect();
-            diesel::sql_query(
-                "UPDATE fire_claims SET claimed_at = now(), attempts = fire_claims.attempts + 1
-                 FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS v(w, t, s)
-                 WHERE fire_claims.workspace_id = v.w AND fire_claims.target = v.t AND fire_claims.scheduled_at = v.s
-                 RETURNING fire_claims.workspace_id, fire_claims.target, fire_claims.scheduled_at, fire_claims.spec,
-                   fire_claims.attempts",
-            )
-            .bind::<Array<Text>, _>(&workspaces)
-            .bind::<Array<Text>, _>(&targets)
-            .bind::<Array<Timestamptz>, _>(&times)
-            .load(c)
-            .await
+                let workspaces: Vec<&str> = due.iter().map(|d| d.workspace_id.as_str()).collect();
+                let targets: Vec<&str> = due.iter().map(|d| d.target.as_str()).collect();
+                let times: Vec<DateTime<Utc>> = due.iter().map(|d| d.scheduled_at).collect();
+                diesel::sql_query(
+                    "UPDATE fire_claims SET claimed_at = now(), attempts = fire_claims.attempts + 1
+                     FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS v(w, t, s)
+                     WHERE fire_claims.workspace_id = v.w AND fire_claims.target = v.t
+                       AND fire_claims.scheduled_at = v.s
+                     RETURNING fire_claims.workspace_id, fire_claims.target, fire_claims.scheduled_at,
+                       fire_claims.spec, fire_claims.attempts",
+                )
+                .bind::<Array<Text>, _>(&workspaces)
+                .bind::<Array<Text>, _>(&targets)
+                .bind::<Array<Timestamptz>, _>(&times)
+                .load(c)
+                .await
             })
             .await
             .map_err(unavailable)?;

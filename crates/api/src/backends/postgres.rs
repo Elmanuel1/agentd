@@ -101,12 +101,3 @@ impl FireSources {
         drop(self.queue.spawn_sweep());
     }
 }
-
-/// The fire registry over `queue`, whose writes count into the scheduler's metrics, and those metrics.
-pub(super) fn fire_registry(queue: &PgFireClaims) -> (Arc<FireRegistry>, SchedulerMetrics) {
-    let metrics = SchedulerMetrics::new(&opentelemetry::global::meter("agentd"));
-    let delivered = metrics.clone();
-    let registry =
-        FireRegistry::new(Arc::new(queue.clone())).counting_enqueued(move |n| delivered.enqueued(n));
-    (Arc::new(registry), metrics)
-}
