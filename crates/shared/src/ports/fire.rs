@@ -73,7 +73,7 @@ impl FireRegistry {
         Self { handlers: RwLock::default(), claims, enqueued: OnceLock::new() }
     }
 
-    /// Tell `count` how many occurrences each [`Self::enqueue`] wrote; set once.
+    /// Tell `count` how many rows each [`Self::enqueue`] added; set once.
     pub fn count_enqueued(&self, count: impl Fn(usize) + Send + Sync + 'static) {
         let _ = self.enqueued.set(Box::new(count));
     }
@@ -92,9 +92,9 @@ impl FireRegistry {
     /// due after its jitter; an occurrence already queued keeps its row.
     pub async fn enqueue(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
         let due_at = jitter::due_at(spec, scheduled_at);
-        self.claims.enqueue(&[Fire { spec: spec.clone(), scheduled_at, due_at }]).await?;
+        let added = self.claims.enqueue(&[Fire { spec: spec.clone(), scheduled_at, due_at }]).await?;
         if let Some(count) = self.enqueued.get() {
-            count(1);
+            count(added);
         }
         Ok(())
     }

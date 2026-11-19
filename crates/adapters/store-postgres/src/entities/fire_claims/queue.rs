@@ -40,13 +40,13 @@ struct Count {
     n: i64,
 }
 
-/// Write `fires` in the transaction on `c`; an occurrence already queued keeps its row.
+/// Write `fires` in the transaction on `c`; an occurrence already queued keeps its row. How many rows it added.
 pub(crate) async fn enqueue_in(
     c: &mut AsyncPgConnection,
     fires: &[Fire],
-) -> Result<(), diesel::result::Error> {
+) -> Result<usize, diesel::result::Error> {
     if fires.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let workspaces: Vec<&str> = fires.iter().map(|f| f.spec.tenant.workspace_id.as_str()).collect();
     let targets: Vec<String> = fires.iter().map(|f| f.spec.target.key()).collect();
@@ -70,7 +70,6 @@ pub(crate) async fn enqueue_in(
     .bind::<Array<Timestamptz>, _>(&dues)
     .execute(c)
     .await
-    .map(drop)
 }
 
 /// Lease `due` to this claim; nothing to write when nothing is due.
@@ -102,7 +101,7 @@ fn claimed(t: Taken) -> Claimed {
 }
 
 impl NativeFireClaims for PgFireClaims {
-    async fn enqueue(&self, fires: &[Fire]) -> Result<(), FireError> {
+    async fn enqueue(&self, fires: &[Fire]) -> Result<usize, FireError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
         enqueue_in(&mut conn, fires).await.map_err(unavailable)
     }

@@ -11,12 +11,12 @@ struct Queue {
 }
 
 impl NativeFireClaims for Queue {
-    async fn enqueue(&self, fires: &[Fire]) -> Result<(), FireError> {
+    async fn enqueue(&self, fires: &[Fire]) -> Result<usize, FireError> {
         if self.down {
             return Err(FireError::Unavailable("database down".into()));
         }
         self.queued.lock().unwrap().extend_from_slice(fires);
-        Ok(())
+        Ok(fires.len())
     }
     async fn claim_due(&self, _: usize) -> Result<Vec<Claimed>, FireError> {
         Ok(vec![])

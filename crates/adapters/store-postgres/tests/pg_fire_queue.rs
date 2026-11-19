@@ -148,9 +148,9 @@ async fn enqueuing_an_occurrence_twice_keeps_the_first_due_time() {
     let pg = backend().await;
     let q = PgFireClaims::new(pg.clone());
     let first = due_fire(&spec("twice"));
-    q.enqueue(std::slice::from_ref(&first)).await.unwrap();
+    assert_eq!(q.enqueue(std::slice::from_ref(&first)).await.unwrap(), 1);
     let second = Fire { due_at: first.due_at + Duration::minutes(5), ..first.clone() };
-    q.enqueue(&[second]).await.unwrap();
+    assert_eq!(q.enqueue(&[second]).await.unwrap(), 0, "nothing added");
     let stored = row(&pg, &first).await;
     assert_eq!(stored.due_at.map(|d| d.timestamp_micros()), Some(first.due_at.timestamp_micros()));
     assert_eq!((stored.attempts, stored.done, stored.outcome), (0, false, None));

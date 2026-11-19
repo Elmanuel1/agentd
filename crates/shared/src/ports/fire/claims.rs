@@ -68,8 +68,8 @@ impl Outcome {
 
 /// The fire queue, in durable storage.
 pub trait FireClaims: Send + Sync {
-    /// Add `fires`; an occurrence already queued keeps its row.
-    fn enqueue<'a>(&'a self, fires: &'a [Fire]) -> BoxFuture<'a, Result<(), FireError>>;
+    /// Add `fires`; an occurrence already queued keeps its row. How many rows it added.
+    fn enqueue<'a>(&'a self, fires: &'a [Fire]) -> BoxFuture<'a, Result<usize, FireError>>;
     /// Claim up to `limit` due fires that are not done and whose lease is free.
     fn claim_due(&self, limit: usize) -> BoxFuture<'_, Result<Vec<Claimed>, FireError>>;
     /// Mark the fire done with `outcome`; `false` when another claim took it over.
@@ -80,7 +80,7 @@ pub trait FireClaims: Send + Sync {
 
 /// What an adapter implements to provide [`FireClaims`]; the methods are documented there.
 pub trait NativeFireClaims: Send + Sync {
-    fn enqueue(&self, fires: &[Fire]) -> impl Future<Output = Result<(), FireError>> + Send;
+    fn enqueue(&self, fires: &[Fire]) -> impl Future<Output = Result<usize, FireError>> + Send;
     fn claim_due(&self, limit: usize) -> impl Future<Output = Result<Vec<Claimed>, FireError>> + Send;
     fn finish(
         &self,
@@ -95,7 +95,7 @@ pub trait NativeFireClaims: Send + Sync {
 }
 
 impl<T: NativeFireClaims> FireClaims for T {
-    fn enqueue<'a>(&'a self, fires: &'a [Fire]) -> BoxFuture<'a, Result<(), FireError>> {
+    fn enqueue<'a>(&'a self, fires: &'a [Fire]) -> BoxFuture<'a, Result<usize, FireError>> {
         Box::pin(NativeFireClaims::enqueue(self, fires))
     }
     fn claim_due(&self, limit: usize) -> BoxFuture<'_, Result<Vec<Claimed>, FireError>> {

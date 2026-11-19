@@ -77,7 +77,7 @@ impl PgScheduler {
     }
 }
 
-/// One batch: the rows it claimed, and the occurrences it wrote.
+/// One batch: the schedules it claimed, and the queue rows it added.
 async fn batch(c: &mut AsyncPgConnection) -> Result<(usize, usize), diesel::result::Error> {
     let due: Vec<Due> = diesel::sql_query(
         "SELECT target, spec, next_fire_at, now() AS now FROM schedules
@@ -108,7 +108,7 @@ async fn batch(c: &mut AsyncPgConnection) -> Result<(usize, usize), diesel::resu
         nexts.push(next);
         paused.push(unreadable);
     }
-    queue::enqueue_in(c, &fires).await?;
+    let added = queue::enqueue_in(c, &fires).await?;
     diesel::sql_query(
         "UPDATE schedules SET next_fire_at = coalesce(v.next, schedules.next_fire_at), paused = v.paused
          FROM unnest($1::text[], $2::timestamptz[], $3::bool[]) AS v(target, next, paused)
@@ -125,5 +125,5 @@ async fn batch(c: &mut AsyncPgConnection) -> Result<(usize, usize), diesel::resu
             .execute(c)
             .await?;
     }
-    Ok((due.len(), fires.len()))
+    Ok((due.len(), added))
 }

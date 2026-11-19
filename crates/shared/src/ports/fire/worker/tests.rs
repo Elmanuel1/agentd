@@ -19,8 +19,8 @@ struct Queue {
 }
 
 impl NativeFireClaims for Queue {
-    async fn enqueue(&self, _: &[Fire]) -> Result<(), FireError> {
-        Ok(())
+    async fn enqueue(&self, _: &[Fire]) -> Result<usize, FireError> {
+        Ok(0)
     }
     async fn claim_due(&self, limit: usize) -> Result<Vec<Claimed>, FireError> {
         let mut due = self.due.lock().unwrap();
