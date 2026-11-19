@@ -148,12 +148,18 @@ request the server answers 401 to a credential is sent once more with no
 the turn's next call: `upstream server error (HTTP <code>)` for an error
 status, `upstream server error (HTTP 502)` for a call left unanswered or
 unreached, and `MCP server '<name>' authentication failed: …` when the server
-refuses a `static_bearer` credential. A step's calls run one after another
-under one lease, so about five unanswered calls in one step outlast it and
-another worker sends them again. An
+refuses a `static_bearer` credential. A step's calls run one after another,
+and each call's `agent.mcp_tool_result`, after its `session.error` when it has
+one, is written as soon as the call finishes, before the next call goes out.
+The last result lands in the step's commit, which keeps the session due, so the
+next step calls the model with the results. A step run again after a crash or
+a failed write calls only the tools still unanswered, so at most the call in
+flight is sent again; a write that finds the claim gone stops the step before
+its next call. An
 expired `mcp_oauth` token is refreshed by one worker, claimed on the
-credential's row; a worker that finds the row updated less than 30 s ago runs
-the step again a second later. An allowed call is committed with its step and
+credential's row; a worker that finds the row updated less than 30 s ago keeps
+the results of the calls that ran and runs the step again a second later. An
+allowed call is committed with its step and
 called by the next one, with no model call in between; an asked one idles the
 session `requires_action`. A deployment's fire whose agent names an MCP host
 its environment blocks creates no session: its run records
@@ -553,7 +559,7 @@ The signals to alarm on, with their thresholds:
 |---|---|---|
 | Slot | `agentd.feed.slot.safe_wal`, `agentd.feed.slot.lost` and `agentd.feed.slot.retained_wal` (`docs/history.md`, "The slot") | safe WAL below 25% of `max_slot_wal_keep_size`, lost, or retained WAL growing for 15 minutes |
 | Debezium health | `GET /q/health` | down for 2 minutes |
-| Feed backlog | Kafka: the lag of the group `agentd.agentd.public.<table>`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` | above 0 for 10 minutes |
+| Feed backlog | Kafka: the lag of the groups `agentd.agentd.public.<table>` and `agentd.agentd.message`; Valkey: `lag` and `pending` of the group `agentd` in `XINFO GROUPS agentd.public.<table>` and `XINFO GROUPS agentd.message` | above 0 for 10 minutes |
 
 ## Webhooks
 
