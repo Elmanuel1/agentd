@@ -20,7 +20,7 @@ base64 = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true }
 secrecy = { workspace = true }
 hmac = { workspace = true }
 zeroize = { workspace = true }

@@ -101,8 +101,12 @@ async fn an_enqueued_fire_is_queued_due_after_its_jitter_and_not_run() {
     let registry = FireRegistry::new(queue.clone());
     let handler = Arc::new(Recording::default());
     registry.register(handler.clone()).unwrap();
+    let counted = Arc::new(Mutex::new(0));
+    let into = counted.clone();
+    registry.count_enqueued(move |n| *into.lock().unwrap() += n);
     let at = Utc::now();
     registry.enqueue(&spec("deployment"), at).await.unwrap();
+    assert_eq!(*counted.lock().unwrap(), 1, "counted as enqueued");
     let queued = queue.queued.lock().unwrap().clone();
     let due_at = jitter::due_at(&spec("deployment"), at);
     assert_eq!(queued, vec![Fire { spec: spec("deployment"), scheduled_at: at, due_at }]);

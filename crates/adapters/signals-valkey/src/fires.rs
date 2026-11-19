@@ -1,7 +1,7 @@
 //! Fires an external scheduler (such as a Temporal worker) delivers: each
 //! entry of `<prefix>.fires` has the fields `spec` (the schedule's
 //! [`ScheduleSpec`] as JSON) and `scheduled_at` (RFC 3339), and runs through
-//! the [`FireRegistry`], whose inbox drops a fire delivered twice.
+//! the [`FireRegistry`] into the fire queue, which keeps one row for a fire delivered twice.
 
 use std::sync::Arc;
 

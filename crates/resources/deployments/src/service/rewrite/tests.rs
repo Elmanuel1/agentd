@@ -6,7 +6,7 @@ use shared::{OrgId, Pagination, WorkspaceId};
 use super::*;
 use crate::service::NativeDeploymentDeps;
 use crate::store::NativeDeploymentsStore;
-use crate::types::{DeploymentRun, DeploymentStatus};
+use crate::types::{DeploymentId, DeploymentRun, DeploymentStatus};
 
 /// One deployment whose writes fail as stale `stale` times before one
 /// applies; counts the reads and the writes.

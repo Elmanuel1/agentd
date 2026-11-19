@@ -53,3 +53,6 @@ impl Sink {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

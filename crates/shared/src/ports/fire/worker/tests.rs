@@ -134,8 +134,11 @@ async fn each_fire_ends_as_its_run_did() {
         "a run reports its lag"
     );
     assert!(
-        reported.iter().filter(|(e, _)| *e == Ending::Done(Outcome::Skipped)).all(|(_, lag)| lag.is_none()),
-        "a skipped fire never started"
+        reported
+            .iter()
+            .filter(|(e, _)| matches!(e, Ending::Done(Outcome::Skipped | Outcome::Dropped)))
+            .all(|(_, lag)| lag.is_none()),
+        "a skipped or dropped fire never started"
     );
 }
 
@@ -156,4 +159,16 @@ fn the_backoff_doubles_from_2_s_to_5_minutes() {
         assert!(waits.iter().all(|w| (0..=longest).contains(w)), "attempt {attempt}: {waits:?}");
         assert!(waits.iter().any(|w| *w > longest / 2), "attempt {attempt}: jittered over its range");
     }
+}
+
+#[tokio::test]
+async fn the_worker_claims_again_until_a_claim_comes_back_short() {
+    let queue = Arc::new(Queue::default());
+    *queue.due.lock().unwrap() = (0..CONCURRENT + 4)
+        .map(|i| claimed("deployment", &format!("depl_{i}"), "0 * * * *", hourly_now()))
+        .collect();
+    let (worker, _) = worker(queue.clone());
+    worker.drain().await;
+    assert_eq!(queue.finished.lock().unwrap().len(), CONCURRENT + 4, "a full claim, then a short one");
+    assert!(queue.due.lock().unwrap().is_empty());
 }

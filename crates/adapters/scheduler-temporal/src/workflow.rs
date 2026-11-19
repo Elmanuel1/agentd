@@ -83,7 +83,7 @@ pub fn spawn_worker(
     scheduler: &TemporalScheduler,
     registry: Arc<FireRegistry>,
 ) -> std::thread::JoinHandle<()> {
-    let (client, task_queue) = (scheduler.client().clone(), scheduler.task_queue().to_owned());
+    let (client, task_queue) = (scheduler.client.clone(), scheduler.config.task_queue.clone());
     // The worker's workflows are not Send, so it runs on a thread of its own.
     std::thread::spawn(move || {
         let Ok(tokio) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {

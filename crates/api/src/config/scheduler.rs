@@ -17,15 +17,12 @@ pub enum SchedulerConfig {
 
 impl SchedulerConfig {
     pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        let or = |var: &str, default: &str| {
-            get(var).filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
-        };
         match selector(get, "AGENTD_SCHEDULER", "postgres").as_str() {
             "postgres" => Ok(Self::Postgres),
             "temporal" => Ok(Self::Temporal(TemporalConfig {
-                address: or("AGENTD_TEMPORAL_ADDRESS", "http://localhost:7233"),
-                namespace: or("AGENTD_TEMPORAL_NAMESPACE", "default"),
-                task_queue: or("AGENTD_TEMPORAL_TASK_QUEUE", "agentd"),
+                address: selector(get, "AGENTD_TEMPORAL_ADDRESS", "http://localhost:7233"),
+                namespace: selector(get, "AGENTD_TEMPORAL_NAMESPACE", "default"),
+                task_queue: selector(get, "AGENTD_TEMPORAL_TASK_QUEUE", "agentd"),
             })),
             other => Err(unknown("AGENTD_SCHEDULER", other)),
         }

@@ -114,7 +114,8 @@ impl FireWorker {
                 Ending::Retried
             }
         };
-        self.end(c, ending, Some(lag)).await
+        let started = (ending != Ending::Done(Outcome::Dropped)).then_some(lag);
+        self.end(c, ending, started).await
     }
 
     async fn end(&self, c: &Claimed, ending: Ending, lag: Option<Duration>) {

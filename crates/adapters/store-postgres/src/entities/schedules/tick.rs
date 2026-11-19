@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use diesel::QueryableByName;
-use diesel::sql_types::{Array, BigInt, Jsonb, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use shared::ports::fire::{Fire, jitter};
 use shared::ports::{ScheduleSpec, SchedulerError};
@@ -87,38 +87,43 @@ async fn batch(c: &mut AsyncPgConnection) -> Result<(usize, usize), diesel::resu
     .bind::<BigInt, _>(i64::try_from(BATCH).unwrap_or(i64::MAX))
     .load(c)
     .await?;
-    let (mut fires, mut targets, mut nexts, mut unreadable) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    if due.is_empty() {
+        return Ok((0, 0));
+    }
+    let (mut fires, mut targets, mut nexts, mut paused) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut ended = Vec::new();
     for d in &due {
-        match advance(d) {
+        let (next, unreadable) = match advance(d) {
             Ok((fire, next)) => {
                 fires.push(fire);
-                targets.push(d.target.as_str());
-                nexts.push(next);
+                ended.extend(next.is_none().then_some(d.target.as_str()));
+                (next, false)
             }
             Err(e) => {
                 tracing::error!(target = %d.target, error = %e, "scheduler: a schedule cannot be read; paused");
-                unreadable.push(d.target.as_str());
+                (None, true)
             }
-        }
+        };
+        targets.push(d.target.as_str());
+        nexts.push(next);
+        paused.push(unreadable);
     }
     queue::enqueue_in(c, &fires).await?;
     diesel::sql_query(
-        "UPDATE schedules SET next_fire_at = v.next FROM unnest($1::text[], $2::timestamptz[]) AS v(target, next)
-         WHERE schedules.target = v.target AND v.next IS NOT NULL",
+        "UPDATE schedules SET next_fire_at = coalesce(v.next, schedules.next_fire_at), paused = v.paused
+         FROM unnest($1::text[], $2::timestamptz[], $3::bool[]) AS v(target, next, paused)
+         WHERE schedules.target = v.target AND (v.next IS NOT NULL OR v.paused)",
     )
     .bind::<Array<Text>, _>(&targets)
     .bind::<Array<Nullable<Timestamptz>>, _>(&nexts)
+    .bind::<Array<Bool>, _>(&paused)
     .execute(c)
     .await?;
-    diesel::sql_query("UPDATE schedules SET paused = true WHERE target = ANY($1)")
-        .bind::<Array<Text>, _>(&unreadable)
-        .execute(c)
-        .await?;
-    let ended: Vec<&str> = targets.iter().zip(&nexts).filter(|(_, n)| n.is_none()).map(|(t, _)| *t).collect();
-    diesel::sql_query("DELETE FROM schedules WHERE target = ANY($1)")
-        .bind::<Array<Text>, _>(&ended)
-        .execute(c)
-        .await?;
+    if !ended.is_empty() {
+        diesel::sql_query("DELETE FROM schedules WHERE target = ANY($1)")
+            .bind::<Array<Text>, _>(&ended)
+            .execute(c)
+            .await?;
+    }
     Ok((due.len(), fires.len()))
 }

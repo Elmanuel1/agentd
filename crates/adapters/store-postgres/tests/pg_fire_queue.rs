@@ -199,74 +199,6 @@ async fn a_worker_whose_lease_was_taken_over_cannot_finish_or_retry_the_fire() {
     assert!(q.finish(&current, Outcome::Ran).await.unwrap());
 }
 
-/// A claim of the earlier fire inbox: no spec, no due time, claimed long ago.
-async fn inbox_claim(pg: &PgBackend, fire: &Fire, done: bool) {
-    let mut conn = pg.diesel.write().await.unwrap();
-    diesel::sql_query(
-        "INSERT INTO fire_claims (workspace_id, target, scheduled_at, claimed_at, attempts, done)
-         VALUES ($1, $2, $3, now() - interval '1 hour', 1, $4)",
-    )
-    .bind::<Text, _>(&fire.spec.tenant.workspace_id)
-    .bind::<Text, _>(fire.spec.target.key())
-    .bind::<Timestamptz, _>(fire.scheduled_at)
-    .bind::<diesel::sql_types::Bool, _>(done)
-    .execute(&mut conn)
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn a_redelivered_external_fire_fills_in_its_unfinished_inbox_claim_and_runs_once() {
-    if !enabled() {
-        return;
-    }
-    let _turn = CLAIMS.lock().await;
-    let pg = backend().await;
-    let q = PgFireClaims::new(pg.clone());
-    let fire = due_fire(&spec("inbox"));
-    inbox_claim(&pg, &fire, false).await;
-    q.enqueue(std::slice::from_ref(&fire)).await.unwrap();
-    let claimed = claim(&q, &fire).await;
-    assert_eq!(
-        claimed.iter().map(|c| (c.token, c.spec.as_ref())).collect::<Vec<_>>(),
-        [(2, Some(&fire.spec))]
-    );
-    assert!(q.finish(&claimed[0], Outcome::Ran).await.unwrap());
-    q.enqueue(std::slice::from_ref(&fire)).await.unwrap();
-    sql(&pg, "UPDATE fire_claims SET claimed_at = now() - interval '1 hour' WHERE target = $1", &fire).await;
-    assert!(claim(&q, &fire).await.is_empty(), "once");
-}
-
-#[tokio::test]
-async fn a_claim_the_inbox_finished_is_not_run_again_on_redelivery() {
-    if !enabled() {
-        return;
-    }
-    let _turn = CLAIMS.lock().await;
-    let pg = backend().await;
-    let q = PgFireClaims::new(pg.clone());
-    let fire = due_fire(&spec("inboxdone"));
-    inbox_claim(&pg, &fire, true).await;
-    q.enqueue(std::slice::from_ref(&fire)).await.unwrap();
-    assert!(claim(&q, &fire).await.is_empty());
-    let stored = row(&pg, &fire).await;
-    assert_eq!((stored.due_at, stored.done, stored.outcome), (None, true, None));
-}
-
-#[tokio::test]
-async fn an_unfinished_built_in_inbox_claim_is_not_run() {
-    if !enabled() {
-        return;
-    }
-    let _turn = CLAIMS.lock().await;
-    let pg = backend().await;
-    let q = PgFireClaims::new(pg.clone());
-    let fire = due_fire(&spec("inboxtick"));
-    inbox_claim(&pg, &fire, false).await;
-    assert!(claim(&q, &fire).await.is_empty(), "the tick never redelivers it");
-    assert_eq!(row(&pg, &fire).await.due_at, None);
-}
-
 async fn exists(pg: &PgBackend, fire: &Fire) -> bool {
     #[derive(QueryableByName)]
     struct Found {
@@ -296,20 +228,15 @@ async fn done_rows_older_than_30_days_are_swept_newer_and_undone_rows_stay() {
         Fire { scheduled_at: at(days), due_at: at(days), spec: s }
     };
     let (old_done, new_done, old_undone) = (fire("olddone", 31), fire("newdone", 29), fire("oldundone", 31));
-    let (old_inbox, new_inbox) = (fire("oldinbox", 31), fire("newinbox", 29));
     q.enqueue(&[old_done.clone(), new_done.clone(), old_undone.clone()]).await.unwrap();
     for f in [&old_done, &new_done] {
         sql(&pg, "UPDATE fire_claims SET done = true, outcome = 'ran' WHERE target = $1", f).await;
     }
-    inbox_claim(&pg, &old_inbox, false).await;
-    inbox_claim(&pg, &new_inbox, false).await;
 
-    assert!(q.sweep().await.unwrap() >= 2);
+    assert!(q.sweep().await.unwrap() >= 1);
 
     assert!(!exists(&pg, &old_done).await, "done and 31 days old");
-    assert!(!exists(&pg, &old_inbox).await, "an unfinished inbox claim no worker runs, 31 days old");
     assert!(exists(&pg, &new_done).await, "done but 29 days old");
-    assert!(exists(&pg, &new_inbox).await, "an inbox claim 29 days old");
     assert!(exists(&pg, &old_undone).await, "a queued fire stays until it is done");
     sql(&pg, "DELETE FROM fire_claims WHERE target = $1", &old_undone).await;
 }

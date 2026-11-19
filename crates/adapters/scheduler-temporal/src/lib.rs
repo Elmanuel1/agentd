@@ -72,16 +72,6 @@ impl TemporalScheduler {
         Ok(Self { client, config })
     }
 
-    /// The client, for agentd's worker.
-    pub fn client(&self) -> &Client {
-        &self.client
-    }
-
-    /// The task queue agentd's worker polls.
-    pub fn task_queue(&self) -> &str {
-        &self.config.task_queue
-    }
-
     fn action(&self, spec: &ScheduleSpec) -> ScheduleAction {
         let workflow_id = format!("agentd-fire-{}", spec.target.key());
         ScheduleAction::start_workflow(

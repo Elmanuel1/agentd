@@ -150,7 +150,7 @@ impl DeploymentsService {
 
     /// `POST /v1/deployments/{id}/pause` — reversible; manual runs allowed.
     pub async fn pause(&self, ctx: &AuthContext, raw_id: &str) -> Result<Deployment, ApiError> {
-        self.rewrite(ctx, &parse_id(raw_id)?, |d| {
+        self.rewrite(ctx, self.get(ctx, raw_id).await?, |d| {
             guard_not_archived(d)?;
             d.status = DeploymentStatus::Paused;
             d.paused_reason = Some(PausedReason::Manual);
@@ -162,7 +162,7 @@ impl DeploymentsService {
     /// `POST /v1/deployments/{id}/unpause` — resumes next occurrence; no
     /// backfill.
     pub async fn unpause(&self, ctx: &AuthContext, raw_id: &str) -> Result<Deployment, ApiError> {
-        self.rewrite(ctx, &parse_id(raw_id)?, |d| {
+        self.rewrite(ctx, self.get(ctx, raw_id).await?, |d| {
             guard_not_archived(d)?;
             d.status = DeploymentStatus::Active;
             d.paused_reason = None;
@@ -174,7 +174,7 @@ impl DeploymentsService {
 
     /// `POST /v1/deployments/{id}/archive` — terminal; schedule deleted.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Deployment, ApiError> {
-        self.rewrite(ctx, &parse_id(raw_id)?, |d| {
+        self.rewrite(ctx, self.get(ctx, raw_id).await?, |d| {
             if d.status == DeploymentStatus::Archived {
                 return Ok(None);
             }

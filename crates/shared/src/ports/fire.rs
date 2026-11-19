@@ -4,7 +4,7 @@
 //! [`FireWorker`]s run the fire queue through it.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -57,6 +57,7 @@ pub trait FireHandler: Send + Sync {
 pub struct FireRegistry {
     handlers: RwLock<BTreeMap<&'static str, Arc<dyn FireHandler>>>,
     claims: Arc<dyn FireClaims>,
+    enqueued: OnceLock<Box<dyn Fn(usize) + Send + Sync>>,
 }
 
 impl std::fmt::Debug for FireRegistry {
@@ -69,7 +70,12 @@ impl std::fmt::Debug for FireRegistry {
 impl FireRegistry {
     /// No handlers yet; fires queue in `claims`.
     pub fn new(claims: Arc<dyn FireClaims>) -> Self {
-        Self { handlers: RwLock::default(), claims }
+        Self { handlers: RwLock::default(), claims, enqueued: OnceLock::new() }
+    }
+
+    /// Tell `count` how many occurrences each [`Self::enqueue`] wrote; set once.
+    pub fn count_enqueued(&self, count: impl Fn(usize) + Send + Sync + 'static) {
+        let _ = self.enqueued.set(Box::new(count));
     }
 
     /// Register `handler` for its kind; each kind has one handler.
@@ -86,7 +92,11 @@ impl FireRegistry {
     /// due after its jitter; an occurrence already queued keeps its row.
     pub async fn enqueue(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
         let due_at = jitter::due_at(spec, scheduled_at);
-        self.claims.enqueue(&[Fire { spec: spec.clone(), scheduled_at, due_at }]).await
+        self.claims.enqueue(&[Fire { spec: spec.clone(), scheduled_at, due_at }]).await?;
+        if let Some(count) = self.enqueued.get() {
+            count(1);
+        }
+        Ok(())
     }
 
     /// Run the fire of `spec` at `scheduled_at` through its kind's handler,

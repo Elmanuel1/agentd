@@ -91,7 +91,7 @@ impl DeploymentsService {
             tag: DeploymentRunTag::DeploymentRun,
         };
         self.store.push_run(&ctx.workspace, run.clone()).await.map_err(map_store)?;
-        self.rewrite(ctx, &d.id, |d| {
+        self.rewrite(ctx, d, |d| {
             if d.status == DeploymentStatus::Archived {
                 return Ok(None);
             }

@@ -94,8 +94,9 @@ impl FireSources {
     pub(crate) fn start(self, fires: &Arc<FireRegistry>) {
         let meter = opentelemetry::global::meter("agentd");
         let metrics = SchedulerMetrics::new(&meter);
-        let enqueued = metrics.clone();
-        self.sink.start(fires, move |n| enqueued.enqueued(n));
+        let (ticked, delivered) = (metrics.clone(), metrics.clone());
+        fires.count_enqueued(move |n| delivered.enqueued(n));
+        self.sink.start(fires, move |n| ticked.enqueued(n));
         drop(self.feed.spawn_fires(fires.clone()));
         drop(FireWorker::new(fires.clone(), move |ending, lag| metrics.ended(ending, lag)).spawn(FIRES));
         drop(scheduler::watch_due(&meter, self.queue.clone()));
