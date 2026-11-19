@@ -49,8 +49,10 @@ async fn keep_trying(
                 },
             }
         };
+        // A partition revoked while the attempt ran is the next owner's to commit; the handlers are idempotent,
+        // as the feed delivers at least once.
         if taken {
-            return Ok(true);
+            return Ok(!revoked(consumer, record, id)?);
         }
         if let Ok(polled) = tokio::time::timeout(BACKOFF, consumer.recv()).await {
             hold_back(consumer, record, &polled?)?;
