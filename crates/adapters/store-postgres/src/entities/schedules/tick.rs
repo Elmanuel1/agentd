@@ -45,32 +45,32 @@ fn advance(due: &Due) -> Result<(Fire, Option<DateTime<Utc>>), SchedulerError> {
 
 impl PgScheduler {
     /// Write every due schedule's occurrence to the fire queue, a batch per
-    /// transaction until a batch comes back short; how many it wrote.
-    pub async fn tick(&self) -> Result<usize, SchedulerError> {
+    /// transaction until a batch comes back short; `enqueued` hears the queue
+    /// rows each committed batch added, so a later batch that fails takes
+    /// nothing from the count.
+    pub async fn tick(&self, enqueued: &(impl Fn(usize) + Sync)) -> Result<(), SchedulerError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
-        let mut written = 0;
         loop {
-            let (claimed, fires) = conn.transaction(async |c| batch(c).await).await.map_err(unavailable)?;
-            written += fires;
+            let (claimed, added) = conn.transaction(async |c| batch(c).await).await.map_err(unavailable)?;
+            enqueued(added);
             if claimed < BATCH {
-                return Ok(written);
+                return Ok(());
             }
         }
     }
 
-    /// Tick every `interval`; `enqueued` hears how many occurrences each tick wrote.
+    /// Tick every `interval`; `enqueued` hears the queue rows each batch added.
     pub fn spawn(
         self,
         interval: Duration,
-        enqueued: impl Fn(usize) + Send + 'static,
+        enqueued: impl Fn(usize) + Send + Sync + 'static,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                match self.tick().await {
-                    Ok(written) => enqueued(written),
-                    Err(e) => tracing::warn!(error = %e, "scheduler: the tick failed"),
+                if let Err(e) = self.tick(&enqueued).await {
+                    tracing::warn!(error = %e, "scheduler: the tick failed");
                 }
             }
         })

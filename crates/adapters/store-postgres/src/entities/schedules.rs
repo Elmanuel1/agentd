@@ -3,10 +3,10 @@
 //! schedule registered on one replica fires on any, once.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use diesel::sql_types::{Bool, Jsonb, Nullable, Text, Timestamptz};
+use chrono::Utc;
+use diesel::sql_types::{Bool, Jsonb, Text, Timestamptz};
 use diesel::{OptionalExtension, QueryableByName};
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
 use shared::schedule::CompiledSchedule;
 
@@ -52,44 +52,6 @@ impl PgScheduler {
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }
-
-    /// Set `target` paused or not, moving it to `next` when given.
-    async fn set_paused(
-        &self,
-        target: &FireTarget,
-        paused: bool,
-        next: Option<DateTime<Utc>>,
-    ) -> Result<(), SchedulerError> {
-        let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
-        let changed = diesel::sql_query(
-            "UPDATE schedules SET paused = $2, next_fire_at = coalesce($3, next_fire_at) WHERE target = $1",
-        )
-        .bind::<Text, _>(target.key())
-        .bind::<Bool, _>(paused)
-        .bind::<Nullable<Timestamptz>, _>(next)
-        .execute(&mut conn)
-        .await
-        .map_err(unavailable)?;
-        match changed {
-            0 => Err(SchedulerError::Unknown(target.key())),
-            _ => Ok(()),
-        }
-    }
-
-    /// The next occurrence after now of `target`'s stored spec.
-    async fn next_of(&self, target: &FireTarget) -> Result<DateTime<Utc>, SchedulerError> {
-        let mut conn = self.backend.diesel.get().await.map_err(unavailable)?;
-        let row: Option<Stored> = diesel::sql_query("SELECT spec FROM schedules WHERE target = $1")
-            .bind::<Text, _>(target.key())
-            .get_result(&mut conn)
-            .await
-            .optional()
-            .map_err(unavailable)?;
-        let row = row.ok_or_else(|| SchedulerError::Unknown(target.key()))?;
-        let spec: ScheduleSpec = serde_json::from_value(row.spec).map_err(unavailable)?;
-        let next = compile(&spec)?.next_fires(Utc::now(), 1).into_iter().next();
-        next.ok_or_else(|| SchedulerError::InvalidSpec("the schedule never fires".into()))
-    }
 }
 
 #[async_trait]
@@ -115,13 +77,48 @@ impl SchedulerPort for PgScheduler {
     }
 
     async fn pause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
-        self.set_paused(target, true, None).await
+        let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
+        let changed = diesel::sql_query("UPDATE schedules SET paused = true WHERE target = $1")
+            .bind::<Text, _>(target.key())
+            .execute(&mut conn)
+            .await
+            .map_err(unavailable)?;
+        match changed {
+            0 => Err(SchedulerError::Unknown(target.key())),
+            _ => Ok(()),
+        }
     }
 
-    /// Resume from the next occurrence after now: a time missed while paused never fires.
+    /// Resume from the next occurrence after now, worked out once the row is locked, so a write that
+    /// waited cannot resume at a time missed while paused.
     async fn unpause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
-        let next = self.next_of(target).await?;
-        self.set_paused(target, false, Some(next)).await
+        let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
+        let key = target.key();
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            let row: Option<Stored> =
+                diesel::sql_query("SELECT spec FROM schedules WHERE target = $1 FOR UPDATE")
+                    .bind::<Text, _>(&key)
+                    .get_result(c)
+                    .await
+                    .optional()?;
+            let Some(row) = row else { return Ok(Err(SchedulerError::Unknown(key))) };
+            let spec: Result<ScheduleSpec, _> = serde_json::from_value(row.spec).map_err(unavailable);
+            let next =
+                spec.and_then(|spec| compile(&spec)).map(|c| c.next_fires(Utc::now(), 1).into_iter().next());
+            let next = match next {
+                Ok(Some(next)) => next,
+                Ok(None) => return Ok(Err(SchedulerError::InvalidSpec("the schedule never fires".into()))),
+                Err(e) => return Ok(Err(e)),
+            };
+            diesel::sql_query("UPDATE schedules SET paused = false, next_fire_at = $2 WHERE target = $1")
+                .bind::<Text, _>(&key)
+                .bind::<Timestamptz, _>(next)
+                .execute(c)
+                .await?;
+            Ok(Ok(()))
+        })
+        .await
+        .map_err(unavailable)?
     }
 
     async fn delete(&self, target: &FireTarget) -> Result<(), SchedulerError> {

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use rand::RngExt;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use super::{Claimed, FireError, FireRegistry, Outcome, jitter};
 
@@ -16,6 +16,8 @@ use super::{Claimed, FireError, FireRegistry, Outcome, jitter};
 const CONCURRENT: usize = 16;
 /// A fire still running after this has failed.
 const RUN_LIMIT: Duration = Duration::from_secs(60);
+/// A settlement write still waiting after this is left for the lease to expire.
+const SETTLE_LIMIT: Duration = Duration::from_secs(10);
 /// The first retry's longest backoff, in milliseconds; it doubles per attempt.
 const BACKOFF_FIRST_MS: u64 = 2_000;
 /// The longest backoff, in milliseconds.
@@ -62,26 +64,37 @@ impl FireWorker {
         Ok(claimed.len())
     }
 
-    /// Every `interval`, run due fires until a claim comes back short.
+    /// Run due fires, at most 16 at once: claim as many as there are free
+    /// slots every `interval` and whenever a fire finishes, and again at once
+    /// while a claim fills every free slot.
     pub fn spawn(self, interval: Duration) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            loop {
-                ticker.tick().await;
-                self.drain().await;
-            }
-        })
+        tokio::spawn(async move { self.serve(interval).await })
     }
 
-    async fn drain(&self) {
+    async fn serve(&self, interval: Duration) {
+        let mut ticker = tokio::time::interval(interval);
+        let mut running = JoinSet::new();
         loop {
-            match self.run_due().await {
-                Ok(CONCURRENT) => {}
-                Ok(_) => return,
+            while running.try_join_next().is_some() {}
+            let free = CONCURRENT.saturating_sub(running.len());
+            let claimed = match self.registry.claims.claim_due(free).await {
+                Ok(claimed) => claimed,
                 Err(e) => {
                     tracing::warn!(error = %e, "fires: the fire queue cannot be read");
-                    return;
+                    Vec::new()
                 }
+            };
+            let full = free > 0 && claimed.len() == free;
+            for c in claimed {
+                let worker = self.clone();
+                running.spawn(async move { worker.settle(&c).await });
+            }
+            if full {
+                continue;
+            }
+            tokio::select! {
+                Some(_) = running.join_next(), if !running.is_empty() => {}
+                _ = ticker.tick() => {}
             }
         }
     }
@@ -119,10 +132,13 @@ impl FireWorker {
     }
 
     async fn end(&self, c: &Claimed, ending: Ending, lag: Option<Duration>) {
-        let written = match ending {
-            Ending::Done(outcome) => self.registry.claims.finish(c, outcome).await,
-            Ending::Retried => self.registry.claims.retry(c, Utc::now() + backoff(c.token)).await,
+        let write = match ending {
+            Ending::Done(outcome) => self.registry.claims.finish(c, outcome),
+            Ending::Retried => self.registry.claims.retry(c, Utc::now() + backoff(c.token)),
         };
+        let written = tokio::time::timeout(SETTLE_LIMIT, write)
+            .await
+            .unwrap_or_else(|_| Err(FireError::Unavailable("the write ran past its limit".into())));
         let (target, at) = (&c.key.target, c.key.scheduled_at);
         match written {
             Ok(true) => (self.report)(ending, lag),

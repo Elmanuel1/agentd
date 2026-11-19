@@ -83,18 +83,45 @@ impl TemporalScheduler {
     }
 }
 
-fn timer(spec: &ScheduleSpec) -> TemporalSpec {
-    TemporalSpec::builder().cron_strings(vec![spec.cron.clone()]).timezone_name(spec.timezone.clone()).build()
+/// The schedule's cron as Temporal's cron strings. POSIX fires on either day
+/// field when both are restricted, and Temporal requires both, so that case
+/// is the union of one string per day field.
+fn crons(cron: &str) -> Vec<String> {
+    let fields: Vec<&str> = cron.split_whitespace().collect();
+    let [minute, hour, dom, month, dow] = fields.as_slice() else {
+        return vec![cron.to_owned()];
+    };
+    if *dom == "*" || *dow == "*" {
+        return vec![cron.to_owned()];
+    }
+    vec![format!("{minute} {hour} {dom} {month} *"), format!("{minute} {hour} * {month} {dow}")]
 }
 
-/// The time from the next occurrence to the one after it, at least Temporal's 10 s minimum.
+fn timer(spec: &ScheduleSpec) -> TemporalSpec {
+    TemporalSpec::builder().cron_strings(crons(&spec.cron)).timezone_name(spec.timezone.clone()).build()
+}
+
+/// Occurrences the catch-up window is sized over.
+const WINDOW_SAMPLE: usize = 1000;
+
+/// The longest gap between the schedule's coming occurrences, at least
+/// Temporal's 10 s minimum: Temporal measures the window from a missed time,
+/// so every occurrence stays deliverable until its following one is due, and
+/// the fire queue skips any delivered after that.
 fn catch_up_window(spec: &ScheduleSpec) -> std::time::Duration {
-    let fires = spec.compile().map(|c| c.next_fires(chrono::Utc::now(), 2)).unwrap_or_default();
-    let window = match fires.as_slice() {
-        [first, second] => (*second - *first).to_std().unwrap_or_default(),
-        _ => std::time::Duration::ZERO,
-    };
+    let fires = spec.compile().map(|c| c.next_fires(chrono::Utc::now(), WINDOW_SAMPLE)).unwrap_or_default();
+    let longest = fires.windows(2).filter_map(|w| w.get(1).zip(w.first())).map(|(b, a)| *b - *a).max();
+    let window = longest.and_then(|w| w.to_std().ok()).unwrap_or_default();
     window.max(std::time::Duration::from_secs(10))
+}
+
+/// A create that fails is never [`SchedulerError::Unknown`], which the outbox reads as applied: a missing
+/// namespace answers `NOT_FOUND` too.
+fn not_created(target: &FireTarget, e: ScheduleError) -> SchedulerError {
+    match refused(target, e) {
+        SchedulerError::Unknown(key) => SchedulerError::Unavailable(format!("{key}: not found at create")),
+        other => other,
+    }
 }
 
 #[async_trait]
@@ -122,11 +149,11 @@ impl SchedulerPort for TemporalScheduler {
             .overlap_policy(ScheduleOverlapPolicy::AllowAll)
             .build();
         let created = self.client.create_schedule(spec.target.key(), options).await;
-        let created = created.map_err(|e| refused(&spec.target, e))?;
+        let created = created.map_err(|e| not_created(&spec.target, e))?;
         created
             .update(move |u| _ = u.set_catchup_window(window), RpcOptions::default())
             .await
-            .map_err(|e| refused(&spec.target, e))
+            .map_err(|e| not_created(&spec.target, e))
     }
 
     async fn pause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
@@ -154,3 +181,6 @@ impl SchedulerPort for TemporalScheduler {
         Ok(ScheduleState { paused: described.paused() })
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -46,7 +46,7 @@ impl Sink {
 
     /// Start turning schedules into occurrences of `fires`' queue; `enqueued`
     /// hears how many each built-in tick wrote.
-    pub(super) fn start(self, fires: &Arc<FireRegistry>, enqueued: impl Fn(usize) + Send + 'static) {
+    pub(super) fn start(self, fires: &Arc<FireRegistry>, enqueued: impl Fn(usize) + Send + Sync + 'static) {
         match self {
             Self::Postgres(tick) => drop(tick.spawn(TICK, enqueued)),
             Self::Temporal(temporal) => drop(scheduler_temporal::spawn_worker(&temporal, fires.clone())),

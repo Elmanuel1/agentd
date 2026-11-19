@@ -174,11 +174,11 @@ async fn a_due_occurrence_fires_once_across_two_schedulers_and_moves_to_its_next
     let rig = Rig::new().await;
     let other = PgScheduler::new(rig.pg.clone());
     let s = rig.schedule("twice", 0).await;
-    let (ra, rb) = tokio::join!(rig.sched.tick(), other.tick());
+    let (ra, rb) = tokio::join!(rig.sched.tick(&|_| {}), other.tick(&|_| {}));
     ra.unwrap();
     rb.unwrap();
     assert_eq!(queued(&rig.pg, &s.target).await.len(), 1, "one occurrence in the queue");
-    rig.sched.tick().await.unwrap();
+    rig.sched.tick(&|_| {}).await.unwrap();
     assert_eq!(queued(&rig.pg, &s.target).await.len(), 1, "moved on to its next time");
     run_now(&rig.pg, &s.target).await;
     rig.work().await;
@@ -203,13 +203,16 @@ async fn two_hundred_fifty_due_schedules_all_fire_in_one_tick_behind_older_ones(
     for _ in 0..250 {
         fresh.push(rig.schedule("burst", 0).await);
     }
-    let written = rig.sched.tick().await.unwrap();
+    let written = std::sync::atomic::AtomicUsize::new(0);
+    rig.sched.tick(&|n| _ = written.fetch_add(n, std::sync::atomic::Ordering::Relaxed)).await.unwrap();
+    let written = written.into_inner();
     assert!(written >= 400, "{written}");
     for s in older.iter().chain(&fresh) {
         assert_eq!(queued(&rig.pg, &s.target).await.len(), 1, "{}", s.target.key());
     }
     for s in older.iter().chain(&fresh) {
         rig.sched.delete(&s.target).await.unwrap();
+        exec(&rig.pg, "DELETE FROM fire_claims WHERE target = $1", &s.target).await;
     }
 }
 
@@ -222,7 +225,7 @@ async fn a_fire_that_fails_is_run_again_then_done() {
     let rig = Rig::new().await;
     let s = rig.schedule("flaky", 0).await;
     rig.seen.failing.lock().unwrap().insert(s.target.id.clone(), 1);
-    rig.sched.tick().await.unwrap();
+    rig.sched.tick(&|_| {}).await.unwrap();
     run_now(&rig.pg, &s.target).await;
     rig.work().await;
     let first = queued(&rig.pg, &s.target).await;
@@ -242,7 +245,7 @@ async fn a_crash_after_the_tick_commits_loses_nothing() {
     let _turn = TICKS.lock().await;
     let ticked = Rig::new().await;
     let s = ticked.schedule("crash", 0).await;
-    ticked.sched.tick().await.unwrap();
+    ticked.sched.tick(&|_| {}).await.unwrap();
     drop(ticked);
     let restarted = Rig::new().await;
     run_now(&restarted.pg, &s.target).await;
@@ -259,10 +262,16 @@ async fn after_downtime_only_the_latest_missed_occurrence_fires() {
     let _turn = TICKS.lock().await;
     let rig = Rig::new().await;
     let s = rig.schedule("downtime", 3).await;
-    rig.sched.tick().await.unwrap();
+    let before = this_hour();
+    rig.sched.tick(&|_| {}).await.unwrap();
+    let after = this_hour();
     let rows = queued(&rig.pg, &s.target).await;
     assert_eq!(rows.len(), 1, "no backfill: {rows:?}");
-    assert_eq!(rows[0].scheduled_at, this_hour(), "the latest missed occurrence");
+    let latest = rows[0].scheduled_at;
+    assert!(
+        latest == before || latest == after,
+        "the latest missed occurrence, the hour the tick ran in: {rows:?}"
+    );
     rig.sched.delete(&s.target).await.unwrap();
 }
 
@@ -295,7 +304,7 @@ async fn an_unpaused_schedule_does_not_fire_the_time_it_missed_and_a_paused_one_
         due(&rig.pg, &s.target, 1).await;
     }
     rig.sched.unpause(&unpaused.target).await.unwrap();
-    rig.sched.tick().await.unwrap();
+    rig.sched.tick(&|_| {}).await.unwrap();
     assert!(queued(&rig.pg, &unpaused.target).await.is_empty(), "no backfill on unpause");
     assert!(queued(&rig.pg, &paused.target).await.is_empty(), "paused");
     assert!(!rig.sched.describe(&unpaused.target).await.unwrap().paused);
@@ -314,7 +323,7 @@ async fn an_unreadable_schedule_is_paused_and_does_not_hold_the_batch() {
     let rig = Rig::new().await;
     let (bad, good) = (rig.schedule("unreadable", 0).await, rig.schedule("readable", 0).await);
     exec(&rig.pg, "UPDATE schedules SET spec = '{\"cron\": 7}' WHERE target = $1", &bad.target).await;
-    rig.sched.tick().await.unwrap();
+    rig.sched.tick(&|_| {}).await.unwrap();
     assert!(rig.sched.describe(&bad.target).await.unwrap().paused, "paused");
     assert!(queued(&rig.pg, &bad.target).await.is_empty());
     assert_eq!(queued(&rig.pg, &good.target).await.len(), 1);

@@ -14,8 +14,8 @@ One binary serves three roles, chosen with `AGENTD_ROLE`:
 | `loop` | loop workers only; every route answers 404 | `agentd.loop.steps_due` |
 | `all` | both, for a single replica or a small deployment | either |
 
-Every role ticks the built-in scheduler, runs the fire workers and runs the change feed's handlers (schedules,
-webhooks, history). Replicas hold nothing between requests or steps, so any number of each role run side by side
+Every role runs the fire workers and the change feed's handlers (schedules, webhooks, history), and either ticks
+the built-in scheduler (`AGENTD_SCHEDULER=postgres`) or runs agentd's Temporal worker (`temporal`). Replicas hold nothing between requests or steps, so any number of each role run side by side
 and any one of them can stop at any time.
 
 ## A deployment

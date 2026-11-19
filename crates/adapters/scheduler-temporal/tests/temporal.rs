@@ -111,3 +111,13 @@ async fn a_schedule_on_the_temporal_sink_fires_through_the_queue_once() {
     let again = seen.0.lock().unwrap().iter().filter(|(id, when)| *id == s.target.id && *when == at).count();
     assert_eq!(again, 1, "once");
 }
+
+#[tokio::test]
+async fn a_create_in_a_missing_namespace_is_an_error_not_applied() {
+    let Some(config) = config() else { return };
+    let config =
+        TemporalConfig { namespace: format!("agentd-missing-{}", Utc::now().timestamp_micros()), ..config };
+    let sink = TemporalScheduler::connect(config).await.unwrap();
+    let err = sink.upsert(spec("0 3 * * *")).await.unwrap_err();
+    assert!(matches!(err, SchedulerError::Unavailable(_)), "{err:?}");
+}

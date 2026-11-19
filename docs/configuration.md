@@ -95,7 +95,7 @@ step's 10 minute deadline.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role ticks the scheduler, runs the fire workers and the change feed's handlers |
+| `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role runs the fire workers, the change feed's handlers, and the built-in tick or the Temporal worker (`AGENTD_SCHEDULER`) |
 | `AGENTD_SCHEDULER` | `postgres` | The scheduler sink: `postgres`, the built-in scheduler whose tick every replica runs, or `temporal`, Temporal Schedules (see Scheduled work) |
 | `AGENTD_TEMPORAL_ADDRESS` | `http://localhost:7233` | With `temporal`: the Temporal frontend |
 | `AGENTD_TEMPORAL_NAMESPACE` | `default` | With `temporal`: the namespace that holds agentd's schedules |

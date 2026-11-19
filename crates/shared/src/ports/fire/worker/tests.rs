@@ -16,6 +16,7 @@ struct Queue {
     finished: Mutex<Vec<(String, Outcome)>>,
     retried: Mutex<Vec<(String, DateTime<Utc>)>>,
     lost: bool,
+    stalled: bool,
 }
 
 impl NativeFireClaims for Queue {
@@ -29,6 +30,9 @@ impl NativeFireClaims for Queue {
     }
     async fn finish(&self, c: &Claimed, outcome: Outcome) -> Result<bool, FireError> {
         self.finished.lock().unwrap().push((c.key.target.clone(), outcome));
+        if self.stalled {
+            std::future::pending::<()>().await;
+        }
         Ok(!self.lost)
     }
     async fn retry(&self, c: &Claimed, at: DateTime<Utc>) -> Result<bool, FireError> {
@@ -161,14 +165,27 @@ fn the_backoff_doubles_from_2_s_to_5_minutes() {
     }
 }
 
-#[tokio::test]
-async fn the_worker_claims_again_until_a_claim_comes_back_short() {
+#[tokio::test(start_paused = true)]
+async fn a_free_slot_is_refilled_while_a_slow_fire_still_runs() {
+    let at = hourly_now();
     let queue = Arc::new(Queue::default());
-    *queue.due.lock().unwrap() = (0..CONCURRENT + 4)
-        .map(|i| claimed("deployment", &format!("depl_{i}"), "0 * * * *", hourly_now()))
-        .collect();
+    let mut due = vec![claimed("deployment", "depl_slow", "0 * * * *", at)];
+    due.extend((0..CONCURRENT + 4).map(|i| claimed("deployment", &format!("depl_{i}"), "0 * * * *", at)));
+    *queue.due.lock().unwrap() = due;
     let (worker, _) = worker(queue.clone());
-    worker.drain().await;
-    assert_eq!(queue.finished.lock().unwrap().len(), CONCURRENT + 4, "a full claim, then a short one");
-    assert!(queue.due.lock().unwrap().is_empty());
+    let serving = worker.spawn(Duration::from_secs(1));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    serving.abort();
+    assert_eq!(queue.finished.lock().unwrap().len(), CONCURRENT + 4, "the fires behind the slow one ran");
+    assert!(queue.retried.lock().unwrap().is_empty(), "the slow fire still runs");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_settlement_write_that_stalls_is_left_for_the_lease() {
+    let queue = Arc::new(Queue { stalled: true, ..Queue::default() });
+    *queue.due.lock().unwrap() = vec![claimed("deployment", "depl_ok", "0 * * * *", hourly_now())];
+    let (worker, reported) = worker(queue.clone());
+    let ran = tokio::time::timeout(SETTLE_LIMIT * 2, worker.run_due()).await;
+    assert_eq!(ran.expect("the write is bounded").unwrap(), 1);
+    assert!(reported.lock().unwrap().is_empty(), "nothing is reported for an unwritten ending");
 }

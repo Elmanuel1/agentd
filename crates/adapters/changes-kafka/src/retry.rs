@@ -43,7 +43,17 @@ async fn keep_trying(
             tracing::warn!(%id, "changes: the record's partition was revoked; its next owner retries it");
             return Ok(false);
         }
-        if reader.consume(value, id).await {
+        // The consumer keeps polling while the attempt runs, so an attempt longer than
+        // max.poll.interval.ms leaves the consumer in its group.
+        let attempt = reader.consume(value, id);
+        tokio::pin!(attempt);
+        let taken = loop {
+            tokio::select! {
+                taken = &mut attempt => break taken,
+                polled = consumer.recv() => hold_back(consumer, record, &polled?)?,
+            }
+        };
+        if taken {
             return Ok(true);
         }
     }
