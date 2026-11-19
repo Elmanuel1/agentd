@@ -493,7 +493,11 @@ window of ten years, longer than any gap between a cron's occurrences, so
 Temporal delivers every occurrence it missed and the fire queue skips one
 delivered after its following occurrence. A long Temporal outage therefore
 delivers each missed occurrence, and all but each schedule's latest are
-skipped. Its action starts the workflow `FireWorkflow` on
+skipped. Temporal buffers at most 1,000 missed actions per schedule (its
+default) and drops later ones, so a schedule that misses more than 1,000
+occurrences in one Temporal outage, such as a per-minute cron during an
+outage of over 16 hours, loses its latest missed one and fires again at its
+next occurrence. Its action starts the workflow `FireWorkflow` on
 `AGENTD_TEMPORAL_TASK_QUEUE`, which agentd's Temporal worker, on every
 replica, runs: one activity writes the action's scheduled time, the
 `TemporalScheduledStartTime` Temporal sets, to the fire queue, and Temporal
