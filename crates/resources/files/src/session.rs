@@ -3,9 +3,10 @@
 //! the outputs it saves, scoped to the session. Any other file does not
 //! exist for it.
 
+use shared::ports::BoxFuture;
+use std::future::Future;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use bytes::Bytes;
 use shared::{ApiError, AuthContext, SessionCaller};
 
@@ -15,10 +16,32 @@ use crate::store::StoreError;
 use crate::types::FileMetadata;
 
 /// What the files API asks of sessions.
-#[async_trait]
 pub trait SessionFiles: Send + Sync {
     /// The ids of the files `session` mounts.
-    async fn mounts(&self, ctx: &AuthContext, session: &str) -> Result<Vec<String>, ApiError>;
+    fn mounts<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>, ApiError>>;
+}
+
+/// What an adapter implements to provide [`SessionFiles`]; the methods are documented there.
+pub trait NativeSessionFiles: Send + Sync {
+    fn mounts(
+        &self,
+        ctx: &AuthContext,
+        session: &str,
+    ) -> impl Future<Output = Result<Vec<String>, ApiError>> + Send;
+}
+
+impl<T: NativeSessionFiles> SessionFiles for T {
+    fn mounts<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>, ApiError>> {
+        Box::pin(NativeSessionFiles::mounts(self, ctx, session))
+    }
 }
 
 /// The sessions port, as the files routes hold it.

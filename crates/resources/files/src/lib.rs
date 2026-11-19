@@ -20,7 +20,7 @@ mod service;
 mod session;
 
 pub use service::{FileFilter, FilesService};
-pub use session::{Mounts, SessionFiles};
+pub use session::{Mounts, NativeSessionFiles, SessionFiles};
 
 /// The files module: its routes, with the Files API's 500 MB body cap;
 /// `sessions` says which files a session's work token reaches.

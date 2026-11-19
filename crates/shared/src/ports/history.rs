@@ -2,8 +2,9 @@
 //! from the change feed with where it sits in the log. Each adapter owns its
 //! storage's shape; Postgres keeps one history table per tracked table.
 
-use async_trait::async_trait;
+use crate::ports::BoxFuture;
 use serde_json::Value;
+use std::future::Future;
 
 use super::changes::Position;
 use crate::BackendError;
@@ -43,27 +44,67 @@ pub enum HistoryError {
 }
 
 /// Where history is kept.
-#[async_trait]
 pub trait HistoryLog: Send + Sync {
     /// The tables it keeps a history of.
     fn tables(&self) -> Vec<String>;
     /// Record `row` as `table`'s change at `position`, once however often it
     /// is recorded. An insert's or update's row is as the feed encodes it
     /// (Debezium's JSON); a delete's is Postgres's own `to_jsonb` of the row.
-    async fn record(
+    fn record<'a>(
+        &'a self,
+        table: &'a str,
+        op: HistoryOp,
+        position: &'a Position,
+        row: &'a Value,
+    ) -> BoxFuture<'a, Result<(), HistoryError>>;
+    /// When history records memory version `version` of `store` as redacted,
+    /// remove its content from the version's history and from the history of
+    /// every head of its memory that held it; otherwise change nothing.
+    fn scrub_memory_content<'a>(
+        &'a self,
+        workspace: &'a str,
+        store: &'a str,
+        version: &'a str,
+    ) -> BoxFuture<'a, Result<(), HistoryError>>;
+}
+
+/// What an adapter implements to provide [`HistoryLog`]; the methods are documented there.
+pub trait NativeHistoryLog: Send + Sync {
+    fn tables(&self) -> Vec<String>;
+    fn record(
         &self,
         table: &str,
         op: HistoryOp,
         position: &Position,
         row: &Value,
-    ) -> Result<(), HistoryError>;
-    /// When history records memory version `version` of `store` as redacted,
-    /// remove its content from the version's history and from the history of
-    /// every head of its memory that held it; otherwise change nothing.
-    async fn scrub_memory_content(
+    ) -> impl Future<Output = Result<(), HistoryError>> + Send;
+    fn scrub_memory_content(
         &self,
         workspace: &str,
         store: &str,
         version: &str,
-    ) -> Result<(), HistoryError>;
+    ) -> impl Future<Output = Result<(), HistoryError>> + Send;
+}
+
+impl<T: NativeHistoryLog> HistoryLog for T {
+    fn tables(&self) -> Vec<String> {
+        NativeHistoryLog::tables(self)
+    }
+    fn record<'a>(
+        &'a self,
+        table: &'a str,
+        op: HistoryOp,
+        position: &'a Position,
+        row: &'a Value,
+    ) -> BoxFuture<'a, Result<(), HistoryError>> {
+        Box::pin(NativeHistoryLog::record(self, table, op, position, row))
+    }
+    fn scrub_memory_content<'a>(
+        &'a self,
+        workspace: &'a str,
+        store: &'a str,
+        version: &'a str,
+    ) -> BoxFuture<'a, Result<(), HistoryError>> {
+        Box::pin(NativeHistoryLog::scrub_memory_content(self, workspace, store, version))
+    }
 }

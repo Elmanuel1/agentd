@@ -1,8 +1,7 @@
 //! `DeploymentsStore` on Postgres via Diesel.
 
-use ::deployments::store::{DeploymentsStore, StoreError};
+use ::deployments::store::{NativeDeploymentsStore, StoreError};
 use ::deployments::types::{Deployment, DeploymentId, DeploymentRun};
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -50,8 +49,7 @@ struct NewDeployment {
     doc: serde_json::Value,
 }
 
-#[async_trait]
-impl DeploymentsStore for PgDeploymentsStore {
+impl NativeDeploymentsStore for PgDeploymentsStore {
     async fn insert(
         &self,
         ws: &WorkspaceId,

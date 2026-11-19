@@ -29,8 +29,8 @@ use shared::beta::BetaGate;
 
 pub use fire::DeploymentFire;
 pub use run_error::RunError;
-pub use service::{DeploymentDeps, DeploymentsService};
-pub use store::DeploymentsStore;
+pub use service::{DeploymentDeps, DeploymentsService, NativeDeploymentDeps};
+pub use store::{DeploymentsStore, NativeDeploymentsStore};
 pub use types::{Deployment, DeploymentId, DeploymentRun, DeploymentRunId};
 
 /// The deployments module: its routes, behind the Managed Agents beta, and

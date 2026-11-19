@@ -8,12 +8,12 @@ use agents::types::{Multiagent, RosterMember};
 use agents::{AgentRef, AgentSnapshot, AgentsService};
 use api_keys::ApiKeysStore;
 use async_trait::async_trait;
-use deployments::service::DeploymentDeps;
+use deployments::service::NativeDeploymentDeps;
 use deployments::types::{Deployment, InitialEvent};
 use environments::EnvironmentsService;
 use organizations::workspaces::WorkspaceKeys;
 use sessions::SessionsService;
-use sessions::service::SessionDeps;
+use sessions::service::NativeSessionDeps;
 use shared::{ApiError, AuthContext, OrgId, Timestamp, WorkspaceId};
 use vaults::VaultsService;
 
@@ -33,8 +33,7 @@ impl std::fmt::Debug for RealSessionDeps {
     }
 }
 
-#[async_trait]
-impl SessionDeps for RealSessionDeps {
+impl NativeSessionDeps for RealSessionDeps {
     async fn resolve_agent(
         &self,
         ctx: &AuthContext,
@@ -104,8 +103,7 @@ impl std::fmt::Debug for RealDeploymentDeps {
     }
 }
 
-#[async_trait]
-impl DeploymentDeps for RealDeploymentDeps {
+impl NativeDeploymentDeps for RealDeploymentDeps {
     async fn resolve_agent_ref(
         &self,
         ctx: &AuthContext,

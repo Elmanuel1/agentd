@@ -397,6 +397,19 @@ async fn the_archived_walk_pages_in_archive_order_without_repeating() {
     assert_eq!(walked.len(), 4);
 }
 
+/// Whether `lock` can take `name` within 5 s. A run that fails, panics or is cancelled closes the
+/// connection that holds the lock, and Postgres frees the lock once its backend sees the
+/// close, a moment after the drop.
+async fn frees(lock: &PgRunLock, name: &str) -> bool {
+    for _ in 0..50 {
+        if lock.exclusive(name, Box::pin(async { Ok(()) })).await.unwrap() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 #[tokio::test]
 async fn one_holder_at_a_time_and_a_failed_or_panicked_or_dropped_run_frees_the_lock() {
     // E-2: the run lock across replicas.
@@ -430,18 +443,18 @@ async fn one_holder_at_a_time_and_a_failed_or_panicked_or_dropped_run_frees_the_
 
     let failed = b.exclusive(&name, Box::pin(async { Err(StoreError::NotFound) })).await;
     assert!(matches!(failed, Err(StoreError::NotFound)));
-    assert!(b.exclusive(&name, Box::pin(async { Ok(()) })).await.unwrap(), "free after a failed run");
+    assert!(frees(&b, &name).await, "free after a failed run");
 
     let panicked = {
         let (b, name) = (PgRunLock::new(backend().await), name.clone());
         tokio::spawn(async move { b.exclusive(&name, Box::pin(async { panic!("mid-page") })).await })
     };
     assert!(panicked.await.is_err());
-    assert!(b.exclusive(&name, Box::pin(async { Ok(()) })).await.unwrap(), "free after a panicked run");
+    assert!(frees(&b, &name).await, "free after a panicked run");
 
     let dropped = b.exclusive(&name, Box::pin(std::future::pending()));
     assert!(tokio::time::timeout(Duration::from_millis(300), dropped).await.is_err());
-    assert!(b.exclusive(&name, Box::pin(async { Ok(()) })).await.unwrap(), "free after a cancelled run");
+    assert!(frees(&b, &name).await, "free after a cancelled run");
 }
 
 #[tokio::test]

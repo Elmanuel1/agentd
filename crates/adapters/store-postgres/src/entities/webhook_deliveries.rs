@@ -6,12 +6,11 @@
 use std::sync::Arc;
 
 use ::sessions::types::SessionId;
-use async_trait::async_trait;
 use diesel::OptionalExtension;
 use diesel::sql_types::{Array, BigInt, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::{BackendError, WorkspaceId};
-use webhooks::{Delivery, DeliveryMarks};
+use webhooks::{Delivery, NativeDeliveryMarks};
 
 use crate::PgBackend;
 
@@ -89,8 +88,7 @@ impl PgDeliveryMarks {
     }
 }
 
-#[async_trait]
-impl DeliveryMarks for PgDeliveryMarks {
+impl NativeDeliveryMarks for PgDeliveryMarks {
     async fn delivered(&self, id: &str, key: &str, attempt: i64) -> Result<(), BackendError> {
         self.mark("delivered_at", id, key, attempt).await
     }

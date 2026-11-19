@@ -20,14 +20,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
-
 use axum::http::StatusCode;
 use common::Rig;
 use diesel_async::RunQueryDsl;
 use kit::{Container, call, cdc_enabled, eventually, summary};
 use serde_json::json;
-use shared::ports::changes::{Change, ChangeHandler, Source};
+use shared::ports::changes::{Change, ChangeHandler, NativeChangeHandler, Source};
 use shared::{BackendError, Timestamp};
 use tokio::sync::Notify;
 
@@ -89,8 +87,7 @@ struct Stall {
     stalled: Arc<Stalled>,
 }
 
-#[async_trait]
-impl ChangeHandler for Stall {
+impl NativeChangeHandler for Stall {
     fn source(&self) -> Source {
         self.inner.source()
     }
@@ -153,6 +150,16 @@ async fn updates(rig: &Rig, v: &str, n: usize) -> Vec<Kept> {
 async fn kept_once(rig: &Rig, v: &str, expected: &[Kept], fault: &str) {
     let rows = eventually(rig, "vaults", "vault_id", v, expected.len()).await;
     assert_eq!(summary(&rows), expected, "after {fault}");
+}
+
+/// Stop the recorders as a stopping agentd would: abort each task and wait until it is
+/// gone. A Kafka consumer leaves its group as it drops, blocking the thread until it has,
+/// so a connection opened before the drops finish would time out.
+async fn stop(tasks: Vec<tokio::task::JoinHandle<()>>) {
+    tasks.iter().for_each(tokio::task::JoinHandle::abort);
+    for task in tasks {
+        let _ = task.await;
+    }
 }
 
 /// Until Postgres answers on a fresh connection.
@@ -239,7 +246,7 @@ async fn every_change_reaches_history_once_through_each_fault() {
     let stored = tokio::time::timeout(Duration::from_secs(120), stalled.stored.notified()).await;
     assert!(stored.is_ok(), "no recorder stored a vault change and stalled");
     assert!(kit::kept(&rig, "vaults", "vault_id", &v).await.len() > batch, "the stalled change is stored");
-    tasks.iter().for_each(tokio::task::JoinHandle::abort);
+    stop(tasks).await;
     tasks = kit::spawn(CONSUMER, stalling(&stalled).await);
     let again = tokio::time::timeout(Duration::from_secs(120), stalled.again.notified()).await;
     assert!(again.is_ok(), "the feed did not deliver the stalled change again");
@@ -266,5 +273,5 @@ async fn every_change_reaches_history_once_through_each_fault() {
     let slot = store_postgres::read_slot(&rig.pg.diesel, "agentd_changes").await.unwrap();
     assert!(!slot.lost, "the slot survives a restart: {slot:?}");
 
-    tasks.iter().for_each(tokio::task::JoinHandle::abort);
+    stop(tasks).await;
 }

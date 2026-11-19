@@ -1,10 +1,11 @@
 //! Deployment business logic: lifecycle and schedule changes; the fire path
 //! is in `service/firing.rs`.
 
+use shared::ports::BoxFuture;
+use std::future::Future;
 use std::sync::Arc;
 
 use agents::AgentRef;
-use async_trait::async_trait;
 use chrono::Utc;
 use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
@@ -18,29 +19,35 @@ use crate::types::{
     CreateDeploymentRequest, Deployment, DeploymentId, DeploymentStatus, DeploymentTag, WireSchedule,
 };
 
+mod native;
+pub use native::NativeDeploymentDeps;
+
 /// What deployments need from other entities — resolved via ports so tests
 /// fake them and `api` wires the real services.
-#[async_trait]
 pub trait DeploymentDeps: Send + Sync {
     /// Resolve an agent id (+ pinned version) to a compact ref.
     /// Errors: not found / archived (→ `agent_archived` at fire time).
-    async fn resolve_agent_ref(
-        &self,
-        ctx: &AuthContext,
-        agent_id: &str,
+    fn resolve_agent_ref<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        agent_id: &'a str,
         version: Option<u64>,
-    ) -> Result<AgentRef, ApiError>;
+    ) -> BoxFuture<'a, Result<AgentRef, ApiError>>;
     /// Verify the environment is usable (→ `environment_archived`).
-    async fn check_environment(&self, ctx: &AuthContext, env_id: &str) -> Result<(), ApiError>;
+    fn check_environment<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        env_id: &'a str,
+    ) -> BoxFuture<'a, Result<(), ApiError>>;
     /// Create a session for a fire, with its initial events; returns the
     /// session id. Called again with the same `key`, it returns the session
     /// the first call made.
-    async fn create_session(
-        &self,
-        ctx: &AuthContext,
-        deployment: &Deployment,
-        key: Option<&str>,
-    ) -> Result<String, sessions::service::FireRefusal>;
+    fn create_session<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        deployment: &'a Deployment,
+        key: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<String, sessions::service::FireRefusal>>;
 }
 
 /// Deployment service.

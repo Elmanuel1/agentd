@@ -23,7 +23,7 @@ use shared::Module;
 use shared::beta::BetaGate;
 
 pub use service::EnvironmentsService;
-pub use store::EnvironmentsStore;
+pub use store::{EnvironmentsStore, NativeEnvironmentsStore};
 pub use types::{Environment, EnvironmentConfig, EnvironmentId};
 
 /// The environments module: its routes, behind the Managed Agents beta.

@@ -2,21 +2,19 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use sessions::SessionWork;
+use sessions::NativeSessionWork;
 use sessions::types::{Session, SessionId};
 use shared::{ApiError, AuthContext, WorkspaceId};
 use work::WorkService;
 
-/// [`SessionWork`] over the work service.
+/// [`SessionWork`](sessions::SessionWork) over the work service.
 #[derive(Debug, Clone)]
 pub struct WorkQueue {
     /// The work items.
     pub work: Arc<WorkService>,
 }
 
-#[async_trait]
-impl SessionWork for WorkQueue {
+impl NativeSessionWork for WorkQueue {
     async fn queue(
         &self,
         ctx: &AuthContext,

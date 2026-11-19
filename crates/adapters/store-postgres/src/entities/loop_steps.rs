@@ -3,10 +3,9 @@
 //! session's append lock first, as every append does, so the two never wait
 //! on each other in a cycle.
 
-use ::sessions::steps::{Claim, StepCounts, StepEnd, StepWrite, Steps};
+use ::sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite};
 use ::sessions::store::{StoreError, Wake};
 use ::sessions::types::SessionId;
-use async_trait::async_trait;
 use diesel::sql_types::Text;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::WorkspaceId;
@@ -72,8 +71,7 @@ pub(crate) async fn forget(
         .map(drop)
 }
 
-#[async_trait]
-impl Steps for PgSteps {
+impl NativeSteps for PgSteps {
     async fn claim(&self, owner: &str, lease: i64, per_workspace: i64) -> Result<Option<Claim>, StoreError> {
         claim::claim(&self.backend, owner, lease, per_workspace).await
     }

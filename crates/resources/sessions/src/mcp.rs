@@ -1,8 +1,9 @@
 //! What the loop keeps of a session's MCP servers between steps: each
 //! server's `Mcp-Session-Id` and tool list, per agentd session (MC-13).
 
-use async_trait::async_trait;
+use shared::ports::BoxFuture;
 use shared::{Timestamp, WorkspaceId};
+use std::future::Future;
 
 use crate::store::StoreError;
 use crate::types::SessionId;
@@ -22,19 +23,51 @@ pub struct McpConnection {
 
 /// The `mcp_connections` rows. A session's rows go with its delete, in the
 /// delete's commit (MC-22).
-#[async_trait]
 pub trait McpConnections: Send + Sync {
     /// The session's connections, never another session's (MC-17).
-    async fn connections(
+    fn connections<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a SessionId,
+    ) -> BoxFuture<'a, Result<Vec<McpConnection>, StoreError>>;
+    /// Store `connection` for the session, replacing the server's row.
+    fn save<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a SessionId,
+        connection: &'a McpConnection,
+    ) -> BoxFuture<'a, Result<(), StoreError>>;
+}
+
+/// What an adapter implements to provide [`McpConnections`]; the methods are documented there.
+pub trait NativeMcpConnections: Send + Sync {
+    fn connections(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
-    ) -> Result<Vec<McpConnection>, StoreError>;
-    /// Store `connection` for the session, replacing the server's row.
-    async fn save(
+    ) -> impl Future<Output = Result<Vec<McpConnection>, StoreError>> + Send;
+    fn save(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
         connection: &McpConnection,
-    ) -> Result<(), StoreError>;
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+impl<T: NativeMcpConnections> McpConnections for T {
+    fn connections<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a SessionId,
+    ) -> BoxFuture<'a, Result<Vec<McpConnection>, StoreError>> {
+        Box::pin(NativeMcpConnections::connections(self, ws, session))
+    }
+    fn save<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a SessionId,
+        connection: &'a McpConnection,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(NativeMcpConnections::save(self, ws, session, connection))
+    }
 }

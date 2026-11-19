@@ -2,13 +2,17 @@
 //! session; a queue is a self-hosted environment's id, the runtime queue, or
 //! the hosted queue of sessions whose own sandbox takes their work.
 
+use shared::ports::BoxFuture;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
 
 use crate::types::{Work, WorkState};
+
+mod native;
+pub use native::{NativeWorkReads, NativeWorkStore};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {
@@ -92,76 +96,90 @@ pub struct Counts {
     pub oldest_queued_at: Option<Timestamp>,
 }
 
-#[async_trait]
 pub trait WorkReads: Send + Sync {
     /// `session`'s item, when `reach` reaches it.
-    async fn get(
-        &self,
-        ws: &WorkspaceId,
-        session: &str,
-        reach: &Reach,
-    ) -> Result<Option<WorkItem>, StoreError>;
+    fn get<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a str,
+        reach: &'a Reach,
+    ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>>;
     /// `session`'s item on `queue`, in any workspace.
-    async fn find_on_queue(&self, queue: &str, session: &str) -> Result<Option<WorkItem>, StoreError>;
+    fn find_on_queue<'a>(
+        &'a self,
+        queue: &'a str,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>>;
     /// Newest first.
-    async fn list(&self, scope: &Scope, page: &Pagination) -> Result<Vec<WorkItem>, StoreError>;
-    async fn counts(&self, scope: &Scope, reclaim: Duration, now: Timestamp) -> Result<Counts, StoreError>;
+    fn list<'a>(
+        &'a self,
+        scope: &'a Scope,
+        page: &'a Pagination,
+    ) -> BoxFuture<'a, Result<Vec<WorkItem>, StoreError>>;
+    fn counts<'a>(
+        &'a self,
+        scope: &'a Scope,
+        reclaim: Duration,
+        now: Timestamp,
+    ) -> BoxFuture<'a, Result<Counts, StoreError>>;
     /// The organization and workspace of an item on the runtime queue in
     /// `environment`, if there is one.
-    async fn runtime_owner(&self, environment: &str) -> Result<Option<(OrgId, WorkspaceId)>, StoreError>;
+    fn runtime_owner<'a>(
+        &'a self,
+        environment: &'a str,
+    ) -> BoxFuture<'a, Result<Option<(OrgId, WorkspaceId)>, StoreError>>;
 }
 
 /// Persistence port for work items: its writes, and its reads.
-#[async_trait]
 pub trait WorkStore: WorkReads {
     /// Insert `item`, or queue the session's `stopped` item again as `item`
     /// says (one whose `stopping` lease ran out is `stopped`); a held item is
     /// left as it is.
-    async fn queue(&self, item: &WorkItem) -> Result<(), StoreError>;
+    fn queue<'a>(&'a self, item: &'a WorkItem) -> BoxFuture<'a, Result<(), StoreError>>;
     /// Hand out the oldest queued item of `scope` not handed out within
     /// `reclaim`, marking it handed out at `now`.
-    async fn claim(
-        &self,
-        scope: &Scope,
+    fn claim<'a>(
+        &'a self,
+        scope: &'a Scope,
         reclaim: Duration,
         now: Timestamp,
-    ) -> Result<Option<WorkItem>, StoreError>;
+    ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>>;
     /// Merge `set` into the item's metadata and drop `remove`.
-    async fn update_metadata(
-        &self,
-        ws: &WorkspaceId,
-        session: &str,
-        reach: &Reach,
-        set: &BTreeMap<String, String>,
-        remove: &[String],
-    ) -> Result<Option<WorkItem>, StoreError>;
+    fn update_metadata<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a str,
+        reach: &'a Reach,
+        set: &'a BTreeMap<String, String>,
+        remove: &'a [String],
+    ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>>;
     /// A worker took a queued item: `starting`, leased until `lease_until`.
     /// Any other state is left as it is.
-    async fn ack(
-        &self,
-        ws: &WorkspaceId,
-        session: &str,
-        reach: &Reach,
+    fn ack<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a str,
+        reach: &'a Reach,
         now: Timestamp,
         lease_until: Timestamp,
-    ) -> Result<Option<WorkItem>, StoreError>;
+    ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>>;
     /// Extend the lease of an item not stopping or stopped whose last
     /// heartbeat is `beat.expected`; `true` with the item when it did.
-    async fn heartbeat(
-        &self,
-        ws: &WorkspaceId,
-        session: &str,
-        reach: &Reach,
-        beat: &Beat,
-    ) -> Result<Option<(WorkItem, bool)>, StoreError>;
+    fn heartbeat<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a str,
+        reach: &'a Reach,
+        beat: &'a Beat,
+    ) -> BoxFuture<'a, Result<Option<(WorkItem, bool)>, StoreError>>;
     /// Ask the item to stop: `stopped` when `force` or no worker holds it,
     /// else `stopping`.
-    async fn stop(
-        &self,
-        ws: &WorkspaceId,
-        session: &str,
-        reach: &Reach,
+    fn stop<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a str,
+        reach: &'a Reach,
         force: bool,
         now: Timestamp,
-    ) -> Result<Option<WorkItem>, StoreError>;
+    ) -> BoxFuture<'a, Result<Option<WorkItem>, StoreError>>;
 }

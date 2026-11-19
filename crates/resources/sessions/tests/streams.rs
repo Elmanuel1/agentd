@@ -13,15 +13,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
 use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, UserEvent};
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
-    AnswerCheck, DatabaseLoad, EventFilter, Head, SessionEventLog, SessionEventReads, SessionFilter,
-    SessionReplace, SessionsStore, StoreError, Tail, Wake,
+    AnswerCheck, DatabaseLoad, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
+    NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
 };
-use sessions::{SessionDeps, SessionId, SessionsService, Streams, Subscription};
+use sessions::{NativeSessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
 use shared::{ApiError, AuthContext, BackendError, ErrorType, OrgId, Pagination, Timestamp, WorkspaceId};
 use tokio::sync::broadcast::error::RecvError;
@@ -34,8 +33,7 @@ struct Scripted {
     asked: Mutex<Vec<(i64, Vec<i64>)>>,
 }
 
-#[async_trait]
-impl SessionEventReads for Scripted {
+impl NativeSessionEventReads for Scripted {
     async fn events(&self, _: &WorkspaceId, _: &SessionId) -> Result<Vec<Event>, StoreError> {
         unimplemented!()
     }
@@ -67,8 +65,7 @@ impl SessionEventReads for Scripted {
     }
 }
 
-#[async_trait]
-impl SessionEventLog for Scripted {
+impl NativeSessionEventLog for Scripted {
     async fn append_events(
         &self,
         _: &WorkspaceId,
@@ -106,8 +103,7 @@ impl SessionEventLog for Scripted {
 /// One session, archived or not.
 struct OneSession(sessions::Session);
 
-#[async_trait]
-impl SessionReplace for OneSession {
+impl NativeSessionReplace for OneSession {
     async fn replace(
         &self,
         _: &WorkspaceId,
@@ -119,8 +115,7 @@ impl SessionReplace for OneSession {
     }
 }
 
-#[async_trait]
-impl SessionsStore for OneSession {
+impl NativeSessionsStore for OneSession {
     async fn insert(&self, _: &WorkspaceId, _: sessions::Session) -> Result<(), StoreError> {
         unimplemented!()
     }
@@ -142,8 +137,7 @@ impl SessionsStore for OneSession {
 
 struct NoDeps;
 
-#[async_trait]
-impl SessionDeps for NoDeps {
+impl NativeSessionDeps for NoDeps {
     async fn resolve_agent(
         &self,
         _: &AuthContext,

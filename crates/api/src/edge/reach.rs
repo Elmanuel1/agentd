@@ -5,9 +5,10 @@
 //! which the sessions routes narrow to its environment. Every other route
 //! answers as live does for each.
 
-use async_trait::async_trait;
 use axum::http::Method;
+use shared::ports::BoxFuture;
 use shared::{ApiError, AuthContext, ErrorType};
+use std::future::Future;
 use work::WorkClaims;
 
 /// Live's answer to an environment key on a route it does not reach.
@@ -104,10 +105,32 @@ pub struct Grants {
 }
 
 /// What the edge asks of sessions for a work token.
-#[async_trait]
 pub trait SessionGrants: Send + Sync {
     /// What `session` grants its work token.
-    async fn grants(&self, ctx: &AuthContext, session: &str) -> Result<Grants, ApiError>;
+    fn grants<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Grants, ApiError>>;
+}
+
+/// What an adapter implements to provide [`SessionGrants`]; the methods are documented there.
+pub trait NativeSessionGrants: Send + Sync {
+    fn grants(
+        &self,
+        ctx: &AuthContext,
+        session: &str,
+    ) -> impl Future<Output = Result<Grants, ApiError>> + Send;
+}
+
+impl<T: NativeSessionGrants> SessionGrants for T {
+    fn grants<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        session: &'a str,
+    ) -> BoxFuture<'a, Result<Grants, ApiError>> {
+        Box::pin(NativeSessionGrants::grants(self, ctx, session))
+    }
 }
 
 /// Whether `session`'s grants cover a skill or memory route; other routes

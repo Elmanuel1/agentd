@@ -11,8 +11,7 @@ pub(crate) mod stop;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ::work::store::{Beat, Reach, Scope, StoreError, WorkItem, WorkStore};
-use async_trait::async_trait;
+use ::work::store::{Beat, NativeWorkStore, Reach, Scope, StoreError, WorkItem};
 use diesel::sql_types::{Array, Jsonb, Nullable, Text, Timestamptz};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{Timestamp, WorkspaceId};
@@ -38,8 +37,7 @@ impl PgWorkStore {
     }
 }
 
-#[async_trait]
-impl WorkStore for PgWorkStore {
+impl NativeWorkStore for PgWorkStore {
     async fn queue(&self, i: &WorkItem) -> Result<(), StoreError> {
         insert(i).execute(&mut self.write().await?).await.map(|_| ()).map_err(diesel_be)
     }

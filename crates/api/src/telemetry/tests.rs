@@ -1,7 +1,6 @@
+use axum::Router;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn_with_state;
@@ -14,7 +13,7 @@ use opentelemetry::{KeyValue, Value};
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use shared::ports::blobs::{BlobError, BlobStore};
+use shared::ports::blobs::{BlobError, NativeBlobStore};
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -168,8 +167,7 @@ async fn an_event_stream_is_open_until_its_body_is_dropped() {
 
 struct Failing;
 
-#[async_trait]
-impl BlobStore for Failing {
+impl NativeBlobStore for Failing {
     async fn put(&self, key: &str, _bytes: Bytes) -> Result<(), BlobError> {
         Err(BlobError::NotFound(key.to_owned()))
     }

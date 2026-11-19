@@ -2,8 +2,9 @@
 //! content). Bytes never live in the record database; the record store keeps
 //! only metadata and the blob key.
 
-use async_trait::async_trait;
+use crate::ports::BoxFuture;
 use bytes::Bytes;
+use std::future::Future;
 
 /// Blob-store failure.
 #[derive(Debug, thiserror::Error)]
@@ -17,12 +18,30 @@ pub enum BlobError {
 }
 
 /// Object storage: put/get/delete by key, within one bucket.
-#[async_trait]
 pub trait BlobStore: Send + Sync {
     /// Store bytes at `key` (overwrites).
-    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), BlobError>;
+    fn put<'a>(&'a self, key: &'a str, bytes: Bytes) -> BoxFuture<'a, Result<(), BlobError>>;
     /// Fetch bytes at `key`.
-    async fn get(&self, key: &str) -> Result<Bytes, BlobError>;
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Bytes, BlobError>>;
     /// Delete `key` (idempotent).
-    async fn delete(&self, key: &str) -> Result<(), BlobError>;
+    fn delete<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), BlobError>>;
+}
+
+/// What an adapter implements to provide [`BlobStore`]; the methods are documented there.
+pub trait NativeBlobStore: Send + Sync {
+    fn put(&self, key: &str, bytes: Bytes) -> impl Future<Output = Result<(), BlobError>> + Send;
+    fn get(&self, key: &str) -> impl Future<Output = Result<Bytes, BlobError>> + Send;
+    fn delete(&self, key: &str) -> impl Future<Output = Result<(), BlobError>> + Send;
+}
+
+impl<T: NativeBlobStore> BlobStore for T {
+    fn put<'a>(&'a self, key: &'a str, bytes: Bytes) -> BoxFuture<'a, Result<(), BlobError>> {
+        Box::pin(NativeBlobStore::put(self, key, bytes))
+    }
+    fn get<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<Bytes, BlobError>> {
+        Box::pin(NativeBlobStore::get(self, key))
+    }
+    fn delete<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<(), BlobError>> {
+        Box::pin(NativeBlobStore::delete(self, key))
+    }
 }

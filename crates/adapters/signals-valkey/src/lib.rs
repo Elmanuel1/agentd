@@ -13,10 +13,9 @@ mod valkey;
 
 use std::time::Duration;
 
-use async_trait::async_trait;
 use futures::StreamExt;
 use redis::{AsyncCommands, RedisError};
-use sessions::signals::{CAPACITY, Signal, Signals};
+use sessions::signals::{CAPACITY, NativeSignals, Signal};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast;
@@ -33,7 +32,7 @@ const RECONNECT: Duration = Duration::from_secs(1);
 /// and the stream's fallback timer delivers.
 const PUBLISH_WAIT: Duration = Duration::from_millis(200);
 
-/// [`Signals`] over Valkey.
+/// [`Signals`](sessions::signals::Signals) over Valkey.
 #[derive(Clone)]
 pub struct ValkeySignals {
     publisher: valkey::Shared,
@@ -57,8 +56,7 @@ impl ValkeySignals {
     }
 }
 
-#[async_trait]
-impl Signals for ValkeySignals {
+impl NativeSignals for ValkeySignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         let payload = format!("{} {}", signal.workspace.as_str(), signal.session);
         let published = tokio::time::timeout(PUBLISH_WAIT, async {

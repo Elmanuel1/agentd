@@ -4,8 +4,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use engine::model::budget::{Admit, ModelBudget};
+use engine::model::budget::{Admit, NativeModelBudget};
 use redis::RedisError;
 use shared::BackendError;
 
@@ -16,7 +15,7 @@ const WAIT: Duration = Duration::from_millis(200);
 /// A minute's counters outlive it, so a late request still finds them.
 const KEEP: i64 = 120;
 
-/// [`ModelBudget`] over Valkey.
+/// [`ModelBudget`](engine::model::budget::ModelBudget) over Valkey.
 #[derive(Clone)]
 pub struct ValkeyBudget {
     conn: Shared,
@@ -53,8 +52,7 @@ fn key(provider: &str, minute: u64, what: &str) -> String {
     format!("agentd:budget:{{{provider}:{minute}}}:{what}")
 }
 
-#[async_trait]
-impl ModelBudget for ValkeyBudget {
+impl NativeModelBudget for ValkeyBudget {
     async fn admit(&self, provider: &str) -> Result<Admit, BackendError> {
         let (minute, left) = minute();
         let (requests, tokens) = (key(provider, minute, "requests"), key(provider, minute, "tokens"));

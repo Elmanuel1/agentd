@@ -4,11 +4,9 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-
 use super::anthropic::AnthropicModel;
 use super::openai::OpenAiCompatModel;
-use super::{ModelClient, ModelError, ModelRequest, ModelResponse};
+use super::{ModelClient, ModelError, ModelRequest, ModelResponse, NativeModelClient};
 
 /// The provider a model id routes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,8 +100,7 @@ impl ModelRouter {
     }
 }
 
-#[async_trait]
-impl ModelClient for ModelRouter {
+impl NativeModelClient for ModelRouter {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         self.pick(&req.model)?.complete(req).await
     }

@@ -1,16 +1,15 @@
 //! A lock across replicas: a session-level advisory lock held on one pooled
 //! connection for the length of a job.
 
-use ::sessions::retention::RunLock;
+use ::sessions::retention::NativeRunLock;
 use ::sessions::store::StoreError;
-use async_trait::async_trait;
 use diesel::sql_types::{Bool, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use futures::future::BoxFuture;
 
 use crate::{PgBackend, PooledConnection, diesel_be, pool_be};
 
-/// [`RunLock`] on Postgres advisory locks.
+/// [`RunLock`](::sessions::retention::RunLock) on Postgres advisory locks.
 #[derive(Debug, Clone)]
 pub struct PgRunLock {
     backend: PgBackend,
@@ -53,8 +52,7 @@ impl Drop for Held {
     }
 }
 
-#[async_trait]
-impl RunLock for PgRunLock {
+impl NativeRunLock for PgRunLock {
     async fn exclusive(
         &self,
         name: &str,

@@ -6,13 +6,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use diesel::QueryableByName;
 use diesel::sql_types::{Jsonb, Text};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use serde_json::Value;
 use shared::ports::changes::Position;
-use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
+use shared::ports::history::{HistoryError, HistoryOp, NativeHistoryLog};
 
 use crate::{PgBackend, PgError, diesel_be, pool_be};
 
@@ -69,8 +68,7 @@ impl PgHistoryLog {
     }
 }
 
-#[async_trait]
-impl HistoryLog for PgHistoryLog {
+impl NativeHistoryLog for PgHistoryLog {
     fn tables(&self) -> Vec<String> {
         self.tables.keys().cloned().collect()
     }

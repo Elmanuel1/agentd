@@ -2,8 +2,7 @@
 
 use std::time::Duration;
 
-use ::work::store::{Counts, Reach, Scope, StoreError, WorkItem, WorkReads};
-use async_trait::async_trait;
+use ::work::store::{Counts, NativeWorkReads, Reach, Scope, StoreError, WorkItem};
 use diesel::sql_types::{BigInt, Nullable, Text, Timestamptz};
 use diesel_async::RunQueryDsl;
 use shared::{OrgId, Pagination, Timestamp, WorkspaceId};
@@ -13,8 +12,7 @@ use super::filter::{SCOPE, before, binds};
 use super::row::{COLS, CountsRow, OwnerRow, Row, first, item};
 use crate::{diesel_be, pool_be};
 
-#[async_trait]
-impl WorkReads for PgWorkStore {
+impl NativeWorkReads for PgWorkStore {
     async fn get(
         &self,
         ws: &WorkspaceId,

@@ -1,8 +1,9 @@
 //! File persistence — workspace-scoped blobs.
 
-use async_trait::async_trait;
 use bytes::Bytes;
+use shared::ports::BoxFuture;
 use shared::{IdCursor, WorkspaceId};
+use std::future::Future;
 
 use crate::FileFilter;
 use crate::types::{FileId, FileMetadata};
@@ -31,22 +32,91 @@ pub struct StoredFile {
 }
 
 /// Persistence port.
-#[async_trait]
 pub trait FilesStore: Send + Sync {
     /// Insert.
-    async fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> Result<(), StoreError>;
+    fn insert<'a>(&'a self, ws: &'a WorkspaceId, f: StoredFile) -> BoxFuture<'a, Result<(), StoreError>>;
     /// Fetch the metadata (no content).
-    async fn get(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError>;
+    fn get<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a FileId,
+    ) -> BoxFuture<'a, Result<StoredFile, StoreError>>;
     /// Fetch the content.
-    async fn content(&self, ws: &WorkspaceId, id: &FileId) -> Result<Bytes, StoreError>;
+    fn content<'a>(&'a self, ws: &'a WorkspaceId, id: &'a FileId)
+    -> BoxFuture<'a, Result<Bytes, StoreError>>;
     /// Delete.
-    async fn delete(&self, ws: &WorkspaceId, id: &FileId) -> Result<StoredFile, StoreError>;
+    fn delete<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a FileId,
+    ) -> BoxFuture<'a, Result<StoredFile, StoreError>>;
     /// One page of files (id-cursor), optionally scope-filtered. Returns the
     /// page rows plus whether more remain. Pushed DB-side on the default store.
-    async fn list(
+    fn list<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        filter: &'a FileFilter,
+        cursor: &'a IdCursor,
+    ) -> BoxFuture<'a, Result<(Vec<StoredFile>, bool), StoreError>>;
+}
+
+/// What an adapter implements to provide [`FilesStore`]; the methods are documented there.
+pub trait NativeFilesStore: Send + Sync {
+    fn insert(&self, ws: &WorkspaceId, f: StoredFile) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn get(
+        &self,
+        ws: &WorkspaceId,
+        id: &FileId,
+    ) -> impl Future<Output = Result<StoredFile, StoreError>> + Send;
+    fn content(
+        &self,
+        ws: &WorkspaceId,
+        id: &FileId,
+    ) -> impl Future<Output = Result<Bytes, StoreError>> + Send;
+    fn delete(
+        &self,
+        ws: &WorkspaceId,
+        id: &FileId,
+    ) -> impl Future<Output = Result<StoredFile, StoreError>> + Send;
+    fn list(
         &self,
         ws: &WorkspaceId,
         filter: &FileFilter,
         cursor: &IdCursor,
-    ) -> Result<(Vec<StoredFile>, bool), StoreError>;
+    ) -> impl Future<Output = Result<(Vec<StoredFile>, bool), StoreError>> + Send;
+}
+
+impl<T: NativeFilesStore> FilesStore for T {
+    fn insert<'a>(&'a self, ws: &'a WorkspaceId, f: StoredFile) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(NativeFilesStore::insert(self, ws, f))
+    }
+    fn get<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a FileId,
+    ) -> BoxFuture<'a, Result<StoredFile, StoreError>> {
+        Box::pin(NativeFilesStore::get(self, ws, id))
+    }
+    fn content<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a FileId,
+    ) -> BoxFuture<'a, Result<Bytes, StoreError>> {
+        Box::pin(NativeFilesStore::content(self, ws, id))
+    }
+    fn delete<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        id: &'a FileId,
+    ) -> BoxFuture<'a, Result<StoredFile, StoreError>> {
+        Box::pin(NativeFilesStore::delete(self, ws, id))
+    }
+    fn list<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        filter: &'a FileFilter,
+        cursor: &'a IdCursor,
+    ) -> BoxFuture<'a, Result<(Vec<StoredFile>, bool), StoreError>> {
+        Box::pin(NativeFilesStore::list(self, ws, filter, cursor))
+    }
 }

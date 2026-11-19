@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use opentelemetry::KeyValue;
-use shared::ports::blobs::{BlobError, BlobStore};
+use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore};
 use shared::ports::fire::{FireError, FireHandler};
 use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
@@ -64,8 +64,7 @@ impl<T: ?Sized> Observed<T> {
     }
 }
 
-#[async_trait]
-impl<T: BlobStore + ?Sized> BlobStore for Observed<T> {
+impl<T: BlobStore + ?Sized> NativeBlobStore for Observed<T> {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), BlobError> {
         self.run("blobs", "put", self.inner.put(key, bytes)).await
     }
