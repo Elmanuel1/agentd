@@ -96,12 +96,6 @@ impl SchedulerPort for PgScheduler {
         }
     }
 
-    /// Resume from the next occurrence after the database's now, as the tick reads it. The write
-    /// applies only while the row is still paused with the spec read and that occurrence is still
-    /// ahead when the write runs (`clock_timestamp()`, which Postgres checks again after waiting on
-    /// another write to the row; nothing locks a paused row without writing it), so a repeated
-    /// unpause leaves an active schedule as it is, a spec changed meanwhile keeps its own next
-    /// occurrence, and a write that lands late reads again.
     async fn unpause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
         for _ in 0..UNPAUSE_ATTEMPTS {
@@ -119,6 +113,9 @@ impl SchedulerPort for PgScheduler {
             let spec: ScheduleSpec = serde_json::from_value(row.spec.clone()).map_err(unavailable)?;
             let next = compile(&spec)?.next_fires(row.now, 1).into_iter().next();
             let next = next.ok_or_else(|| SchedulerError::InvalidSpec("the schedule never fires".into()))?;
+            // Precondition: still paused, with the spec read, and the occurrence still ahead when the write
+            // runs (`clock_timestamp()` is checked again after waiting on another write to the row) is the
+            // concurrency gate; 0 rows reads again.
             let written = diesel::sql_query(
                 "UPDATE schedules SET paused = false, next_fire_at = $2
                  WHERE target = $1 AND paused AND spec = $3 AND $2 > clock_timestamp()",

@@ -282,3 +282,90 @@ async fn a_first_attempt_longer_than_max_poll_interval_keeps_one_reader() {
     assert_eq!(*second.tries.lock().unwrap(), 0, "the consumer kept the partition");
     tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
 }
+
+/// Never finishes the change `n = stuck_on`; records the `n` of each other one it applies.
+struct Stuck {
+    table: &'static str,
+    stuck_on: Option<i64>,
+    started: Mutex<bool>,
+    applied: Mutex<Vec<i64>>,
+}
+
+impl NativeChangeHandler for Stuck {
+    fn source(&self) -> Source {
+        Source::Table(self.table.into())
+    }
+
+    fn ordered(&self) -> bool {
+        true
+    }
+
+    async fn handle(&self, change: &Change) -> Result<(), BackendError> {
+        let n = change.after.as_ref().and_then(|r| r["n"].as_i64()).unwrap();
+        *self.started.lock().unwrap() = true;
+        if Some(n) == self.stuck_on {
+            std::future::pending::<()>().await;
+        }
+        self.applied.lock().unwrap().push(n);
+        Ok(())
+    }
+}
+
+async fn until(done: impl Fn() -> bool) {
+    for _ in 0..120 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_record_whose_partition_is_revoked_mid_attempt_is_applied_once_by_its_next_owner() {
+    use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+    use rdkafka::client::DefaultClientContext;
+
+    let Some(brokers) = brokers() else { return };
+    let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
+    let topic = format!("agentdtest.public.{table}");
+    let admin: AdminClient<DefaultClientContext> =
+        ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
+    let created = admin
+        .create_topics(&[NewTopic::new(&topic, 2, TopicReplication::Fixed(1))], &AdminOptions::new())
+        .await
+        .unwrap();
+    created.into_iter().for_each(|r| _ = r.unwrap());
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
+    let send = async |n: i64, partition: i32| {
+        let value =
+            serde_json::json!({"op": "c", "before": null, "after": {"n": n}, "source": {"table": table}})
+                .to_string();
+        let record = FutureRecord::<str, str>::to(&topic).partition(partition).key("k").payload(&value);
+        producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    };
+    send(1, 0).await;
+    let stuck = |stuck_on| {
+        Arc::new(Stuck { table, stuck_on, started: Mutex::new(false), applied: Mutex::new(vec![]) })
+    };
+    let first = stuck(Some(1));
+    let feed = KafkaChanges::new(&brokers, "agentdtest").with_max_poll_interval(Duration::from_secs(10));
+    let tasks = feed.spawn(vec![first.clone()]);
+    until(|| *first.started.lock().unwrap()).await;
+    let second = stuck(None);
+    let joined = feed.spawn(vec![second.clone()]);
+    until(|| !second.applied.lock().unwrap().is_empty()).await;
+    send(2, 1).await;
+    until(|| !first.applied.lock().unwrap().is_empty()).await;
+
+    assert_eq!(
+        *second.applied.lock().unwrap(),
+        vec![1],
+        "its next owner applied it, nothing committed before"
+    );
+    assert_eq!(
+        *first.applied.lock().unwrap(),
+        vec![2],
+        "the revoked attempt ended and its partition moved on"
+    );
+    tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
+}
