@@ -113,6 +113,19 @@ impl Session {
             _ => Ok(self),
         }
     }
+
+    /// `409` when the session is archived or terminated, which take no client events.
+    pub fn takes_events(&self) -> Result<(), shared::ApiError> {
+        if self.archived_at.is_some() {
+            return Err(shared::ApiError::conflict_invalid_request("session is archived and read-only"));
+        }
+        if self.status == SessionStatus::Terminated {
+            return Err(shared::ApiError::conflict_invalid_request(
+                "cannot send events to a terminated session",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

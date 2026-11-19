@@ -20,7 +20,7 @@ use sessions::store::{
     AnswerCheck, Append, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
     NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
 };
-use sessions::types::{AgentRefInput, CreateSessionRequest};
+use sessions::types::{AgentRefInput, CreateSessionRequest, SessionStatus};
 use sessions::{NativeSessionDeps, NativeSessionWork, Session, SessionId, SessionsService};
 use shared::limits::ModelCatalog;
 use shared::{ApiError, AuthContext, OrgId, Pagination, Timestamp, WorkspaceId};
@@ -367,8 +367,10 @@ async fn a_create_repeated_after_its_session_exists_returns_it_and_appends_only_
     stored.id = id.clone();
     stored.title = Some("x".into());
     let archived = Session { archived_at: Some(Timestamp::now()), ..stored.clone() };
-    // The archived session's create never reaches the log; the other's reaches a log that has an event.
-    for (session, steps) in [(archived, vec![]), (stored, vec![("x", "append")])] {
+    let terminated = Session { status: SessionStatus::Terminated, ..stored.clone() };
+    // The archived and terminated sessions' creates never reach the log; the other's reaches a log that has an
+    // event.
+    for (session, steps) in [(archived, vec![]), (terminated, vec![]), (stored, vec![("x", "append")])] {
         let script = Arc::new(Script(Mutex::new(steps.into())));
         let rows = Arc::new(Rows {
             script: script.clone(),

@@ -1,10 +1,10 @@
 use shared::limits::{validate_range_u32, values};
 use shared::{ApiError, AuthContext, Pagination};
 
-use super::{SessionsService, guard_writable, map_store, parse_id};
+use super::{SessionsService, map_store, parse_id};
 use crate::events::{Event, EventPayload, UserEvent};
 use crate::store::{Append, EventFilter, Wake};
-use crate::types::{OutcomeId, Session, SessionStatus};
+use crate::types::{OutcomeId, Session};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
@@ -34,8 +34,7 @@ impl SessionsService {
         session: &Session,
         initial: &[EventPayload],
     ) -> Result<(), ApiError> {
-        if initial.is_empty() || session.archived_at.is_some() || session.status == SessionStatus::Terminated
-        {
+        if initial.is_empty() || session.takes_events().is_err() {
             return Ok(());
         }
         let (ws, id) = (&ctx.workspace, &session.id);
@@ -55,10 +54,7 @@ impl SessionsService {
     ) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
-        guard_writable(&session)?;
-        if session.status == SessionStatus::Terminated {
-            return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
-        }
+        session.takes_events()?;
         validate_sendable("events", payloads)?;
         self.guard_waiting(&ctx.workspace, &session, payloads).await?;
         Ok(session)
