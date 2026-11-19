@@ -4,10 +4,10 @@
 //! schemas), an external scheduler writes its
 //! fires to `<prefix>.fires`, and the replicas read each topic in the
 //! consumer group `agentd.<topic>`. A record's offset is committed once its
-//! handler succeeds; a failed record is retried in place, so nothing behind
-//! it in its partition overtakes it. An ordered handler's topic has one
-//! partition, which the group gives to one replica at a time. The topics'
-//! retention trims them.
+//! handler succeeds; a failed record is retried in place ([`retry`]), so
+//! nothing behind it in its partition overtakes it. An ordered handler's
+//! topic has one partition, which the group gives to one replica at a time.
+//! The topics' retention trims them.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,19 +21,26 @@ use shared::ports::ScheduleSpec;
 use shared::ports::changes::{self, ChangeHandler};
 use shared::ports::fire::{self, FireRegistry};
 
+mod retry;
+
 /// The pause before a failed record, or a failed read, is tried again.
 const BACKOFF: Duration = Duration::from_secs(1);
+/// librdkafka's `max.poll.interval.ms` default: a consumer that polls less often leaves its group.
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(300);
+/// librdkafka's `session.timeout.ms` default, which may not pass `max.poll.interval.ms`.
+const SESSION_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Reads the change topics of one Kafka cluster.
 #[derive(Debug, Clone)]
 pub struct KafkaChanges {
     brokers: String,
     prefix: String,
+    max_poll_interval: Duration,
 }
 
 /// What reads one topic.
 #[derive(Clone)]
-enum Reader {
+pub(crate) enum Reader {
     Changes(Arc<dyn ChangeHandler>),
     Fires(Arc<FireRegistry>),
 }
@@ -46,7 +53,7 @@ struct FireRecord {
 }
 
 impl Reader {
-    async fn consume(&self, value: Option<&str>, id: &str) -> bool {
+    pub(crate) async fn consume(&self, value: Option<&str>, id: &str) -> bool {
         match self {
             Self::Changes(handler) => changes::deliver(handler.as_ref(), value, id).await,
             Self::Fires(registry) => {
@@ -61,7 +68,14 @@ impl KafkaChanges {
     /// The topics of Debezium's `prefix` (its `topic.prefix`) on the Kafka at
     /// `brokers` (`host:port,…`).
     pub fn new(brokers: &str, prefix: &str) -> Self {
-        Self { brokers: brokers.to_owned(), prefix: prefix.to_owned() }
+        Self { brokers: brokers.to_owned(), prefix: prefix.to_owned(), max_poll_interval: MAX_POLL_INTERVAL }
+    }
+
+    /// With librdkafka's `max.poll.interval.ms` at `interval` instead of 300 s.
+    #[must_use]
+    pub fn with_max_poll_interval(mut self, interval: Duration) -> Self {
+        self.max_poll_interval = interval;
+        self
     }
 
     /// Read each handler's topic on a task of its own.
@@ -97,16 +111,20 @@ impl KafkaChanges {
             .set("group.id", format!("agentd.{topic}"))
             .set("enable.auto.commit", "false")
             .set("auto.offset.reset", "earliest")
+            .set("max.poll.interval.ms", self.max_poll_interval.as_millis().to_string())
+            .set("session.timeout.ms", self.max_poll_interval.min(SESSION_TIMEOUT).as_millis().to_string())
+            // A replica joining the group takes no partition another holds, so a retry keeps its partition.
+            .set("partition.assignment.strategy", "cooperative-sticky")
             .create()?;
         consumer.subscribe(&[topic])?;
         loop {
             let record = consumer.recv().await?;
             let value = record.payload_view::<str>().and_then(Result::ok);
             let id = format!("{}/{}@{}", record.topic(), record.partition(), record.offset());
-            while !reader.consume(value, &id).await {
-                tokio::time::sleep(BACKOFF).await;
+            if reader.consume(value, &id).await || retry::until_taken(&consumer, &record, reader, &id).await?
+            {
+                consumer.commit_message(&record, CommitMode::Async)?;
             }
-            consumer.commit_message(&record, CommitMode::Async)?;
         }
     }
 }

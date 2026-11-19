@@ -110,3 +110,77 @@ async fn a_message_handler_reads_the_message_topic() {
     assert_eq!(*seen.0.lock().unwrap(), vec![serde_json::json!({"table": "vaults"})]);
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
 }
+
+/// Fails every record until `failing_for` has passed since its first try;
+/// counts its tries and the records it applied.
+struct Slow {
+    table: &'static str,
+    failing_for: Duration,
+    first: Mutex<Option<std::time::Instant>>,
+    tries: Mutex<usize>,
+    applied: Mutex<usize>,
+}
+
+impl Slow {
+    fn new(table: &'static str, failing_for: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            table,
+            failing_for,
+            first: Mutex::new(None),
+            tries: Mutex::new(0),
+            applied: Mutex::new(0),
+        })
+    }
+}
+
+impl NativeChangeHandler for Slow {
+    fn source(&self) -> Source {
+        Source::Table(self.table.into())
+    }
+
+    fn ordered(&self) -> bool {
+        true
+    }
+
+    async fn handle(&self, _: &Change) -> Result<(), BackendError> {
+        *self.tries.lock().unwrap() += 1;
+        let first = *self.first.lock().unwrap().get_or_insert_with(std::time::Instant::now);
+        if first.elapsed() < self.failing_for {
+            return Err(BackendError::new(std::io::Error::other("still down")));
+        }
+        *self.applied.lock().unwrap() += 1;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_record_retried_past_max_poll_interval_keeps_one_reader() {
+    let Some(brokers) = brokers() else { return };
+    let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
+    let topic = format!("agentdtest.public.{table}");
+    let value = serde_json::json!({"op": "c", "before": null, "after": {"n": 1}, "source": {"table": table}})
+        .to_string();
+    let record = FutureRecord::<str, str>::to(&topic).key("k").payload(&value);
+    producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
+    let poll = Duration::from_secs(10);
+    let first = Slow::new(table, poll * 2);
+    let feed = KafkaChanges::new(&brokers, "agentdtest").with_max_poll_interval(poll);
+    let tasks = feed.spawn(vec![first.clone()]);
+    for _ in 0..120 {
+        if *first.tries.lock().unwrap() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let second = Slow::new(table, Duration::ZERO);
+    let joined = feed.spawn(vec![second.clone()]);
+    tokio::time::sleep(poll * 3).await;
+
+    let applied = *first.applied.lock().unwrap() + *second.applied.lock().unwrap();
+    let tries = (*first.tries.lock().unwrap(), *second.tries.lock().unwrap());
+    assert_eq!(applied, 1, "the record applies once: {tries:?}");
+    assert_eq!(*second.tries.lock().unwrap(), 0, "the retrying consumer kept the partition");
+    assert!(*first.tries.lock().unwrap() > 2, "retried past max.poll.interval.ms");
+    tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
+}
