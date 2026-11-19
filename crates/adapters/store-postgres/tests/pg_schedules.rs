@@ -16,7 +16,9 @@ use diesel_async::RunQueryDsl;
 use shared::AuthContext;
 use shared::ports::changes::{Change, ChangeHandler};
 use shared::ports::fire::{FireError, FireHandler, FireRegistry, FireWorker};
-use shared::ports::{FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, SchedulerPort, TenantRef};
+use shared::ports::{
+    FakeScheduler, FireTarget, ScheduleChange, ScheduleSpec, SchedulerError, SchedulerPort, TenantRef,
+};
 use store_postgres::{PgBackend, PgFireClaims, PgScheduler, ScheduleOutbox};
 
 /// A tick claims every due schedule in the database and a worker every due
@@ -361,4 +363,52 @@ async fn an_outbox_change_that_never_decodes_is_passed_over() {
     let upsert = serde_json::to_value(ScheduleChange::Upsert { spec: s.clone() }).unwrap();
     outbox.handle(&insert(upsert)).await.unwrap();
     assert!(!sink.describe(&s.target).await.unwrap().paused, "the change after it still applies");
+}
+
+/// A sink that cannot be reached.
+struct Down;
+
+#[async_trait]
+impl SchedulerPort for Down {
+    async fn upsert(&self, _: ScheduleSpec) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn pause(&self, _: &FireTarget) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn unpause(&self, _: &FireTarget) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn delete(&self, _: &FireTarget) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn describe(&self, _: &FireTarget) -> Result<shared::ports::ScheduleState, SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+}
+
+fn insert_of(change: &ScheduleChange) -> Change {
+    let row = serde_json::json!({"seq": 1, "target": change.target().key(), "change": serde_json::to_string(change).unwrap()});
+    Change::from_debezium(
+        &serde_json::json!({"op": "c", "before": null, "after": row, "source": {"table": "schedule_outbox"}}),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_invalid_change_is_passed_over_and_the_next_one_applies() {
+    let sink = Arc::new(FakeScheduler::new());
+    let outbox = ScheduleOutbox::new(sink.clone());
+    let invalid = ScheduleSpec { cron: "61 * * * *".into(), ..spec(&uniq("invalid")) };
+    outbox.handle(&insert_of(&ScheduleChange::Upsert { spec: invalid.clone() })).await.unwrap();
+    assert!(sink.describe(&invalid.target).await.is_err(), "never registered");
+    let valid = spec(&uniq("valid"));
+    outbox.handle(&insert_of(&ScheduleChange::Upsert { spec: valid.clone() })).await.unwrap();
+    assert!(!sink.describe(&valid.target).await.unwrap().paused, "the change after it applies");
+
+    let down = ScheduleOutbox::new(Arc::new(Down));
+    assert!(
+        down.handle(&insert_of(&ScheduleChange::Upsert { spec: valid })).await.is_err(),
+        "held for a retry"
+    );
 }

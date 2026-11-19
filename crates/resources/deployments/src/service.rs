@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use agents::AgentRef;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
 use shared::ports::{ScheduleChange, ScheduleSpec, TenantRef};
@@ -49,6 +49,9 @@ pub trait DeploymentDeps: Send + Sync {
         key: Option<&'a str>,
     ) -> BoxFuture<'a, Result<String, sessions::service::FireRefusal>>;
 }
+
+/// Live's answer to a schedule with no occurrence in the next year.
+const NEVER_FIRES: &str = "`schedule.expression` does not produce any occurrences in the next year";
 
 /// Deployment service.
 pub struct DeploymentsService {
@@ -96,7 +99,11 @@ impl DeploymentsService {
             kind: schedule_input.kind,
             upcoming_runs_at: vec![],
         };
-        schedule.refresh_upcoming(Utc::now())?; // also validates cron+tz
+        let after = Utc::now();
+        schedule.refresh_upcoming(after)?; // also validates cron+tz
+        if schedule.upcoming_runs_at.first().is_none_or(|t| t.as_datetime() > after + Duration::days(365)) {
+            return Err(ApiError::invalid_request(NEVER_FIRES));
+        }
 
         let now = Timestamp::now();
         let d = Deployment {

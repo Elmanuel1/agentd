@@ -125,3 +125,35 @@ async fn a_write_against_an_older_read_is_stale_and_changes_nothing() {
     assert_eq!(stale, Err(StoreError::Stale));
     assert_eq!(svc.get(&ctx, read.id.as_str()).await.unwrap(), paused);
 }
+
+#[tokio::test]
+async fn a_schedule_with_no_occurrence_in_the_next_year_is_refused() {
+    if !enabled() {
+        return;
+    }
+    let svc = DeploymentsService::new(
+        Arc::new(PgDeploymentsStore::new(backend().await)),
+        Arc::new(PausingDeps::default()),
+    );
+    let ctx = tenant();
+    for cron in ["0 0 31 2 *", "0 0 30 2 *"] {
+        let req = serde_json::from_value(json!({
+            "name": "never",
+            "agent": "agent_01XdReZgC7eHpg9b9Nvrwdcm",
+            "environment_id": "env_01ok",
+            "initial_events": [{"type": "user.message", "content": [{"type": "text", "text": "run"}]}],
+            "schedule": {"type": "cron", "expression": cron, "timezone": "UTC"}
+        }))
+        .unwrap();
+        let err = svc.create(&ctx, req).await.unwrap_err();
+        assert_eq!(err.status, 400, "{cron}");
+        assert_eq!(err.message, "`schedule.expression` does not produce any occurrences in the next year");
+    }
+    assert!(
+        svc.list(&ctx, &shared::Pagination::from_params(&std::collections::HashMap::new()).unwrap())
+            .await
+            .unwrap()
+            .is_empty(),
+        "nothing was created"
+    );
+}
