@@ -15,7 +15,7 @@ use shared::ApiError;
 use shared::limits::ModelCatalog;
 
 use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
-use crate::types::{Session, SessionId};
+use crate::types::SessionId;
 
 mod egress;
 mod events;
@@ -105,13 +105,6 @@ impl SessionsService {
         self.webhooks = webhooks;
         self
     }
-}
-
-fn guard_writable(s: &Session) -> Result<(), ApiError> {
-    if s.archived_at.is_some() {
-        return Err(ApiError::conflict_invalid_request("session is archived and read-only"));
-    }
-    Ok(())
 }
 
 fn parse_id(raw: &str) -> Result<SessionId, ApiError> {

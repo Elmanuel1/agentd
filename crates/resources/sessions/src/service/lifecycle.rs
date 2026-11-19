@@ -4,7 +4,7 @@ use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
 use super::egress::{FireRefusal, check_mcp_egress};
 use super::events::validate_sendable;
-use super::{SessionsService, guard_writable, map_store, parse_id};
+use super::{SessionsService, map_store, parse_id};
 use crate::events::{EventPayload, UserEvent};
 use crate::store::{SessionFilter, StoreError};
 use crate::types::{
@@ -139,7 +139,7 @@ impl SessionsService {
         let id = parse_id(raw_id)?;
         let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
         let read = s.clone();
-        guard_writable(&s)?;
+        s.writable()?;
         if req.vault_ids.is_some() {
             return Err(ApiError::invalid_request("Updating vault_ids is not yet supported."));
         }
