@@ -24,7 +24,7 @@ async fn send(producer: &FutureProducer, topic: &str, table: &str, n: i64, parti
     producer.send(record, Duration::from_secs(10)).await.map_err(|(e, _)| e).unwrap();
 }
 
-/// Wait until `done`, for at most 30 s.
+/// Wait until `done`; fail when it is still false after 30 s.
 async fn until(done: impl Fn() -> bool) {
     for _ in 0..120 {
         if done() {
@@ -32,6 +32,7 @@ async fn until(done: impl Fn() -> bool) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    assert!(done(), "not met within 30 s");
 }
 
 /// Records the `n` of each change it is handed, failing the first time it sees `fail_once`.
