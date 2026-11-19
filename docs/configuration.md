@@ -489,7 +489,11 @@ With `AGENTD_SCHEDULER=temporal` the sink is Temporal Schedules, and the
 built-in tick does not run. Each schedule (id: the target, such as
 `deployment/depl_…`) has the deployment's cron and timezone, no Temporal
 jitter (the fire queue applies live's), overlap `AllowAll` and a catch-up
-window of one interval. Its action starts the workflow `FireWorkflow` on
+window of at least a year (longer for a Feb 29 cron), so an occurrence
+Temporal missed is still delivered while it is runnable; the fire queue
+skips one delivered after its following occurrence. A long Temporal outage
+therefore delivers each missed occurrence, and all but each schedule's
+latest are skipped. Its action starts the workflow `FireWorkflow` on
 `AGENTD_TEMPORAL_TASK_QUEUE`, which agentd's Temporal worker, on every
 replica, runs: one activity writes the action's scheduled time, the
 `TemporalScheduledStartTime` Temporal sets, to the fire queue, and Temporal

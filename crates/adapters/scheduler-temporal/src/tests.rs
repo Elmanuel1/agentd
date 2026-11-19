@@ -28,26 +28,27 @@ fn both_day_fields_restricted_is_a_union_and_one_alone_is_kept() {
 }
 
 #[test]
-fn the_catch_up_window_is_the_longest_gap_between_occurrences() {
-    assert_eq!(catch_up_window(&spec("0 * * * *"), registered()), std::time::Duration::from_secs(3600));
-    let day = std::time::Duration::from_secs(86_400);
-    let cases = [
-        ("0 0 1,2 * *", day * 27),
-        ("* * 1 * *", day * 27),
-        ("* * * * 1", day * 6),
-        ("* * 28 2 *", day * 365),
-        ("0 0 29 2 *", day * 365 * 4),
-    ];
-    for (cron, at_least) in cases {
-        let window = catch_up_window(&spec(cron), registered());
-        assert!(window >= at_least, "{cron}: {window:?}");
+fn the_catch_up_window_is_a_year_or_the_longest_gap_past_it() {
+    let (day, year) = (std::time::Duration::from_secs(86_400), std::time::Duration::from_secs(366 * 86_400));
+    for cron in [
+        "* * * * *",
+        "0 * * * *",
+        "0 0 1,2 * *",
+        "* * 1 * *",
+        "* * * * 1",
+        "* * 28 2 *",
+        "0 0 23 2 1",
+        "0 0 31 2 *",
+    ] {
+        assert_eq!(catch_up_window(&spec(cron), registered()), year, "{cron}");
     }
-    assert_eq!(catch_up_window(&spec("0 0 31 2 *"), registered()), std::time::Duration::from_secs(10));
+    let leap = catch_up_window(&spec("0 0 29 2 *"), registered());
+    assert!(leap >= day * 365 * 4, "{leap:?}");
 }
 
 #[test]
 fn an_every_minute_schedule_sizes_its_window_quickly() {
     let started = std::time::Instant::now();
-    assert_eq!(catch_up_window(&spec("* * * * *"), registered()), std::time::Duration::from_secs(60));
+    catch_up_window(&spec("* * * * *"), registered());
     assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
 }

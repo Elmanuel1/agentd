@@ -4,8 +4,9 @@
 //! writes the occurrence to agentd's fire queue, where agentd's workers run
 //! it as they run every fire. A schedule carries no Temporal jitter: the fire
 //! queue applies live's. Its overlap policy is `AllowAll`, since a fire only
-//! writes a row, and its catch-up window reaches its following occurrence, as
-//! the fire queue's does.
+//! writes a row, and its catch-up window is at least a year, so a missed
+//! occurrence is delivered while it is runnable and the fire queue skips it
+//! once its following occurrence is due.
 
 use async_trait::async_trait;
 use shared::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
@@ -104,13 +105,14 @@ fn timer(spec: &ScheduleSpec) -> TemporalSpec {
 /// Occurrences worked out per step while the catch-up window is sized.
 const WINDOW_CHUNK: usize = 1000;
 
-/// The longest gap between the schedule's occurrences over the next five
-/// years (the span a cron's day patterns repeat within, Feb 29 included), and
-/// the gap past it, at least Temporal's 10 s minimum: Temporal measures the window from a
-/// missed time, so every occurrence stays deliverable until its following one
-/// is due, and the fire queue skips any delivered after that.
+/// At least a year (Temporal's default), or the longest gap between the
+/// schedule's occurrences over the next five years when that is longer (a
+/// Feb 29 cron). Temporal measures the window from a missed time, and no gap
+/// between two occurrences outside Feb 29 reaches a year, so every occurrence
+/// stays deliverable until its following one is due; the fire queue skips any
+/// delivered after that.
 fn catch_up_window(spec: &ScheduleSpec, now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
-    let floor = std::time::Duration::from_secs(10);
+    let floor = std::time::Duration::from_secs(366 * 86_400);
     let Ok(compiled) = spec.compile() else { return floor };
     let (mut longest, mut last) = (chrono::Duration::zero(), None);
     let end = now + chrono::Duration::days(366 * 5);
