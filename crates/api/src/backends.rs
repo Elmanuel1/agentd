@@ -146,7 +146,7 @@ impl Backends {
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
                 let queue = PgFireClaims::new(pg.backend.clone());
-                let fires = Arc::new(FireRegistry::new(Arc::new(queue.clone())));
+                let (fires, scheduling) = postgres::fire_registry(&queue);
                 let sink = scheduler::Sink::connect(&config.scheduler, &pg.backend).await?;
                 let feed = feed::ChangeFeed::from_config(streams, &valkey);
                 let sender =
@@ -161,7 +161,7 @@ impl Backends {
                 drop(feed.spawn(handlers));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue))
+                (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))
             }
         };
         let signals: Arc<dyn Signals> =

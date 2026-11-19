@@ -98,12 +98,11 @@ async fn fire_runs_the_kinds_handler_under_the_schedules_tenant_as_its_key() {
 #[tokio::test]
 async fn an_enqueued_fire_is_queued_due_after_its_jitter_and_not_run() {
     let queue = Arc::new(Queue::default());
-    let registry = FireRegistry::new(queue.clone());
-    let handler = Arc::new(Recording::default());
-    registry.register(handler.clone()).unwrap();
     let counted = Arc::new(Mutex::new(0));
     let into = counted.clone();
-    registry.count_enqueued(move |n| *into.lock().unwrap() += n);
+    let registry = FireRegistry::new(queue.clone()).counting_enqueued(move |n| *into.lock().unwrap() += n);
+    let handler = Arc::new(Recording::default());
+    registry.register(handler.clone()).unwrap();
     let at = Utc::now();
     registry.enqueue(&spec("deployment"), at).await.unwrap();
     assert_eq!(*counted.lock().unwrap(), 1, "counted as enqueued");

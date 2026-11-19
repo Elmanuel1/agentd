@@ -72,28 +72,6 @@ pub(crate) async fn enqueue_in(
     .await
 }
 
-/// Lease `due` to this claim; nothing to write when nothing is due.
-async fn take_lease(c: &mut AsyncPgConnection, due: &[Due]) -> Result<Vec<Taken>, diesel::result::Error> {
-    if due.is_empty() {
-        return Ok(Vec::new());
-    }
-    let workspaces: Vec<&str> = due.iter().map(|d| d.workspace_id.as_str()).collect();
-    let targets: Vec<&str> = due.iter().map(|d| d.target.as_str()).collect();
-    let times: Vec<DateTime<Utc>> = due.iter().map(|d| d.scheduled_at).collect();
-    diesel::sql_query(
-        "UPDATE fire_claims SET claimed_at = now(), attempts = fire_claims.attempts + 1
-         FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS v(w, t, s)
-         WHERE fire_claims.workspace_id = v.w AND fire_claims.target = v.t AND fire_claims.scheduled_at = v.s
-         RETURNING fire_claims.workspace_id, fire_claims.target, fire_claims.scheduled_at, fire_claims.spec,
-           fire_claims.attempts",
-    )
-    .bind::<Array<Text>, _>(&workspaces)
-    .bind::<Array<Text>, _>(&targets)
-    .bind::<Array<Timestamptz>, _>(&times)
-    .load(c)
-    .await
-}
-
 fn claimed(t: Taken) -> Claimed {
     let spec = t.spec.and_then(|doc| serde_json::from_value(doc).ok());
     let key = FireKey { workspace_id: t.workspace_id, target: t.target, scheduled_at: t.scheduled_at };
@@ -119,7 +97,24 @@ impl NativeFireClaims for PgFireClaims {
                 .bind::<BigInt, _>(limit)
                 .load(c)
                 .await?;
-                take_lease(c, &due).await
+                if due.is_empty() {
+                    return Ok(Vec::new());
+                }
+            let workspaces: Vec<&str> = due.iter().map(|d| d.workspace_id.as_str()).collect();
+            let targets: Vec<&str> = due.iter().map(|d| d.target.as_str()).collect();
+            let times: Vec<DateTime<Utc>> = due.iter().map(|d| d.scheduled_at).collect();
+            diesel::sql_query(
+                "UPDATE fire_claims SET claimed_at = now(), attempts = fire_claims.attempts + 1
+                 FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS v(w, t, s)
+                 WHERE fire_claims.workspace_id = v.w AND fire_claims.target = v.t AND fire_claims.scheduled_at = v.s
+                 RETURNING fire_claims.workspace_id, fire_claims.target, fire_claims.scheduled_at, fire_claims.spec,
+                   fire_claims.attempts",
+            )
+            .bind::<Array<Text>, _>(&workspaces)
+            .bind::<Array<Text>, _>(&targets)
+            .bind::<Array<Timestamptz>, _>(&times)
+            .load(c)
+            .await
             })
             .await
             .map_err(unavailable)?;

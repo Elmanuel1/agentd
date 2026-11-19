@@ -83,23 +83,30 @@ pub struct FireSources {
     sink: Sink,
     feed: ChangeFeed,
     queue: PgFireClaims,
+    metrics: SchedulerMetrics,
 }
 
 impl FireSources {
-    pub(super) fn new(sink: Sink, feed: ChangeFeed, queue: PgFireClaims) -> Self {
-        Self { sink, feed, queue }
+    pub(super) fn new(sink: Sink, feed: ChangeFeed, queue: PgFireClaims, metrics: SchedulerMetrics) -> Self {
+        Self { sink, feed, queue, metrics }
     }
 
     /// Start, running the queue through `fires`.
     pub(crate) fn start(self, fires: &Arc<FireRegistry>) {
-        let meter = opentelemetry::global::meter("agentd");
-        let metrics = SchedulerMetrics::new(&meter);
-        let (ticked, delivered) = (metrics.clone(), metrics.clone());
-        fires.count_enqueued(move |n| delivered.enqueued(n));
+        let (ticked, ended) = (self.metrics.clone(), self.metrics);
         self.sink.start(fires, move |n| ticked.enqueued(n));
         drop(self.feed.spawn_fires(fires.clone()));
-        drop(FireWorker::new(fires.clone(), move |ending, lag| metrics.ended(ending, lag)).spawn(FIRES));
-        drop(scheduler::watch_due(&meter, self.queue.clone()));
+        drop(FireWorker::new(fires.clone(), move |ending, lag| ended.ended(ending, lag)).spawn(FIRES));
+        drop(scheduler::watch_due(&opentelemetry::global::meter("agentd"), self.queue.clone()));
         drop(self.queue.spawn_sweep());
     }
+}
+
+/// The fire registry over `queue`, whose writes count into the scheduler's metrics, and those metrics.
+pub(super) fn fire_registry(queue: &PgFireClaims) -> (Arc<FireRegistry>, SchedulerMetrics) {
+    let metrics = SchedulerMetrics::new(&opentelemetry::global::meter("agentd"));
+    let delivered = metrics.clone();
+    let registry =
+        FireRegistry::new(Arc::new(queue.clone())).counting_enqueued(move |n| delivered.enqueued(n));
+    (Arc::new(registry), metrics)
 }
