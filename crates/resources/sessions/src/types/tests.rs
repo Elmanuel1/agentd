@@ -93,3 +93,28 @@ fn a_budget_is_replaced_only_above_the_cost_so_far_and_never_re_added() {
     fresh.status = SessionStatus::Terminated;
     assert_eq!(fresh.change_budget(Patch::Clear).unwrap_err().status, 409);
 }
+
+fn refusal(
+    r: Result<(), ApiError>,
+) -> Option<(u16, String, String, serde_json::Map<String, serde_json::Value>)> {
+    r.err().map(|e| (e.status, format!("{:?}", e.error_type), e.message, e.extra))
+}
+
+#[test]
+fn an_archived_or_terminated_session_takes_no_events() {
+    let idle: Session = serde_json::from_str(SESSION_FIXTURE).unwrap();
+    let archived = Session { archived_at: Some(shared::Timestamp::now()), ..idle.clone() };
+    let terminated = Session { status: SessionStatus::Terminated, ..idle.clone() };
+    let conflict =
+        |message: &str| Some((409, "InvalidRequest".to_owned(), message.to_owned(), serde_json::Map::new()));
+    assert_eq!(refusal(idle.writable()), None);
+    assert_eq!(refusal(idle.takes_events()), None);
+    assert_eq!(
+        refusal(terminated.writable()),
+        None,
+        "a terminated session can still be archived and updated"
+    );
+    assert_eq!(refusal(archived.writable()), conflict("session is archived and read-only"));
+    assert_eq!(refusal(archived.takes_events()), conflict("session is archived and read-only"));
+    assert_eq!(refusal(terminated.takes_events()), conflict("cannot send events to a terminated session"));
+}

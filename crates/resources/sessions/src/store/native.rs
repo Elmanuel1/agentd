@@ -82,7 +82,8 @@ pub trait NativeSessionEventLog: NativeSessionEventReads {
         id: &SessionId,
         events: &[Event],
         wake: Wake,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+        append: Append,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
     fn update_processed_at(
         &self,
         ws: &WorkspaceId,
@@ -112,8 +113,9 @@ impl<T: NativeSessionEventLog> SessionEventLog for T {
         id: &'a SessionId,
         events: &'a [Event],
         wake: Wake,
-    ) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(NativeSessionEventLog::append_events(self, ws, id, events, wake))
+        append: Append,
+    ) -> BoxFuture<'a, Result<bool, StoreError>> {
+        Box::pin(NativeSessionEventLog::append_events(self, ws, id, events, wake, append))
     }
     fn update_processed_at<'a>(
         &'a self,

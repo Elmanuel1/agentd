@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde_json::json;
 use sessions::events::{AgentEvent, Event, EventPayload, UserEvent};
 use sessions::steps::{Claim, StepEnd, StepWrite, Steps};
-use sessions::store::{SessionEventLog, SessionEventReads, SessionsStore, Wake};
+use sessions::store::{Append, SessionEventLog, SessionEventReads, SessionsStore, Wake};
 use sessions::types::{Session, SessionId, SessionStatus};
 use shared::{OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgSessionEventLog, PgSessionsStore, PgSteps, PgWorkStore};
@@ -71,7 +71,7 @@ impl Rig {
     /// A client event that wakes the session's step.
     async fn wake(&self, ws: &WorkspaceId, id: &SessionId) -> Event {
         let e = Event::new(EventPayload::User(UserEvent::Interrupt {}));
-        self.log.append_events(ws, id, std::slice::from_ref(&e), Wake::Step).await.unwrap();
+        self.log.append_events(ws, id, std::slice::from_ref(&e), Wake::Step, Append::Always).await.unwrap();
         e
     }
 

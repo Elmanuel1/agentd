@@ -12,7 +12,9 @@ decided and when.
 | D1 | A fire stays runnable until its schedule's following occurrence is due; after downtime only each schedule's latest missed occurrence fires, once, with no backfill of older ones. Live documents no window for an outage (L4). | User, 2026-11-16 ("Until next occurrence") |
 | D2 | Temporal is an optional scheduler sink in agentd: a `SchedulerPort` adapter over Temporal Schedules on the Rust SDK, the last commit of the code PR, selected by `AGENTD_SCHEDULER=temporal`, whose actions write occurrences into the fire queue. The adapter crate and the `temporalio-client` and `temporalio-sdk` dependencies are approved. | User, 2026-11-16 ("Yes, as PR 8") |
 | D3 | A done fire records why it finished in `fire_claims.outcome`: `ran`, `skipped` or `dropped`. | User, 2026-11-16 ("yes") |
-| D4 | The spec PR, then one code PR built as ordered commits and kept under 100 changed files, as the resource history PR was; splits the 200-line rule forces happen inside it. The V18 columns (`spec`, `due_at`, `outcome`) and the V19 indexes are approved. | User, 2026-11-16 ("Approve plan"; one PR: "Too much pr. Let it fix the problems") |
+| D4 | The spec PR, then one code PR built as ordered commits and kept under 100 changed files, as the resource history PR was; splits the 200-line rule forces happen inside it. The V22 columns (`spec`, `due_at`, `outcome`) and the V23 indexes are approved; they take the versions after `main`'s V20 and V21. | User, 2026-11-16 ("Approve plan"; one PR: "Too much pr. Let it fix the problems") |
+| D14 | Unpause is a guarded write: it reads the schedule and writes only while the schedule is still paused, with the spec it read, and the occurrence it computed is still ahead; a write that matches no row reads again. No row lock is held. | User, 2026-11-19 ("Yes, guarded write") |
+| D15 | Two overlapping creates of one session queue its initial events once: the event log appends them only while the session's log is empty, under its append lock, so the losing create's success holds even when the winner stops first. | User, 2026-11-19 ("Spec and event-log fix") |
 
 ## Matched to live
 

@@ -113,6 +113,25 @@ impl Session {
             _ => Ok(self),
         }
     }
+
+    /// Returns a `409` when the session is archived.
+    pub fn writable(&self) -> Result<(), shared::ApiError> {
+        if self.archived_at.is_some() {
+            return Err(shared::ApiError::conflict_invalid_request("session is archived and read-only"));
+        }
+        Ok(())
+    }
+
+    /// Returns a `409` when the session is archived or terminated.
+    pub fn takes_events(&self) -> Result<(), shared::ApiError> {
+        self.writable()?;
+        if self.status == SessionStatus::Terminated {
+            return Err(shared::ApiError::conflict_invalid_request(
+                "cannot send events to a terminated session",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -128,6 +128,15 @@ pub enum Wake {
     Step,
 }
 
+/// Which log an append writes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Append {
+    /// Any: the events follow those already logged.
+    Always,
+    /// Only an empty one: a log that has events is left as it is.
+    IfEmpty,
+}
+
 /// Refuses results, given the calls they answer and the results already saved;
 /// accepted, it answers each result's thread, its call's.
 pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, ApiError> + Send + Sync + 'a;
@@ -137,14 +146,15 @@ pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, Api
 /// stream read it on its own.
 pub trait SessionEventLog: SessionEventReads {
     /// Append `events`, in order, to the log of an existing session, under
-    /// the session's append lock.
+    /// the session's append lock, as `append` allows; whether it appended.
     fn append_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
         events: &'a [Event],
         wake: Wake,
-    ) -> BoxFuture<'a, Result<(), StoreError>>;
+        append: Append,
+    ) -> BoxFuture<'a, Result<bool, StoreError>>;
     /// Stamp `at` on those of `ids` not processed yet; the events it stamped,
     /// in log order.
     fn update_processed_at<'a>(

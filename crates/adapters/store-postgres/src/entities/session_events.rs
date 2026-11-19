@@ -2,15 +2,20 @@
 //! (SSE tails `session_events` by `seq`).
 
 mod reads;
+mod writes;
+
+pub(crate) use writes::{insert, lock, stamp};
 
 use ::sessions::events::{Event, EventId};
-use ::sessions::store::{AnswerCheck, NativeSessionEventLog, StoreError, Wake};
+use ::sessions::store::{AnswerCheck, Append, NativeSessionEventLog, StoreError, Wake};
 use ::sessions::types::SessionId;
-use diesel::sql_types::{Array, BigInt, Jsonb, Text};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel::sql_types::{Array, Text};
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
+use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::{ApiError, Timestamp, WorkspaceId};
 
 use super::loop_steps::enqueue;
+use crate::schema::session_events;
 use crate::{DocRow, PgBackend, diesel_be, parse_doc, pool_be, to_doc};
 
 /// Postgres-backed session event log (Diesel).
@@ -33,16 +38,29 @@ impl NativeSessionEventLog for PgSessionEventLog {
         id: &SessionId,
         events: &[Event],
         wake: Wake,
-    ) -> Result<(), StoreError> {
+        append: Append,
+    ) -> Result<bool, StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let ids: Vec<&str> = events.iter().map(|e| e.id.as_str()).collect();
         let docs = events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>()?;
         conn.transaction::<_, diesel::result::Error, _>(async move |c| {
             lock(c, id).await?;
+            if append == Append::IfEmpty
+                && session_events::table
+                    .filter(session_events::workspace_id.eq(ws.as_str()))
+                    .filter(session_events::session_id.eq(id.as_str()))
+                    .select(session_events::seq)
+                    .first::<i64>(c)
+                    .await
+                    .optional()?
+                    .is_some()
+            {
+                return Ok(false);
+            }
             if insert(c, ws, id, &ids, docs).await? != ids.len() {
                 return Err(diesel::result::Error::NotFound);
             }
-            enqueue(c, ws, id, wake).await
+            enqueue(c, ws, id, wake).await.map(|()| true)
         })
         .await
         .map_err(log_be)
@@ -125,77 +143,9 @@ impl NativeSessionEventLog for PgSessionEventLog {
     }
 }
 
-/// The session's append lock, held to the end of the transaction. Two
-/// writers appending to one session at once would otherwise commit out of
-/// `seq` order: T1 takes seq 10, T2 takes 11 and commits first, and a stream
-/// reading after 9 moves its cursor to 11 and never sends 10.
-pub(crate) async fn lock(c: &mut AsyncPgConnection, id: &SessionId) -> Result<(), diesel::result::Error> {
-    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtext($1))")
-        .bind::<Text, _>(id.as_str())
-        .execute(c)
-        .await?;
-    Ok(())
-}
-
 fn log_be(e: diesel::result::Error) -> StoreError {
     match e {
         diesel::result::Error::NotFound => StoreError::NotFound,
         e => diesel_be(e),
     }
-}
-
-/// Stamp `at` on those of `ids` not processed yet; their docs, in log order.
-pub(crate) async fn stamp(
-    c: &mut AsyncPgConnection,
-    ws: &WorkspaceId,
-    id: &SessionId,
-    ids: &[EventId],
-    at: Timestamp,
-) -> Result<Vec<serde_json::Value>, diesel::result::Error> {
-    let ids: Vec<&str> = ids.iter().map(EventId::as_str).collect();
-    let mut rows: Vec<SeqDocRow> = diesel::sql_query(
-        "UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', to_jsonb($4::text))
-         WHERE workspace_id = $1 AND session_id = $2 AND event_id = ANY($3) AND doc->>'processed_at' IS NULL
-         RETURNING seq, doc",
-    )
-    .bind::<Text, _>(ws.as_str())
-    .bind::<Text, _>(id.as_str())
-    .bind::<Array<Text>, _>(&ids)
-    .bind::<Text, _>(at.to_wire())
-    .load(c)
-    .await?;
-    rows.sort_by_key(|r| r.seq);
-    Ok(rows.into_iter().map(|r| r.doc).collect())
-}
-
-/// One event read with its log position.
-#[derive(diesel::QueryableByName)]
-struct SeqDocRow {
-    #[diesel(sql_type = BigInt)]
-    seq: i64,
-    #[diesel(sql_type = Jsonb)]
-    doc: serde_json::Value,
-}
-
-pub(crate) async fn insert(
-    c: &mut AsyncPgConnection,
-    ws: &WorkspaceId,
-    id: &SessionId,
-    events: &[&str],
-    docs: Vec<serde_json::Value>,
-) -> Result<usize, diesel::result::Error> {
-    // One statement: the events land only while their session row exists, so
-    // a delete that removed the session first leaves no orphan behind.
-    diesel::sql_query(
-        "INSERT INTO session_events (workspace_id, session_id, event_id, created_at, doc)
-         SELECT s.workspace_id, s.session_id, e.event_id, now(), e.doc
-         FROM sessions s, unnest($3::text[], $4::jsonb[]) WITH ORDINALITY AS e(event_id, doc, n)
-         WHERE s.workspace_id = $1 AND s.session_id = $2 ORDER BY e.n",
-    )
-    .bind::<Text, _>(ws.as_str())
-    .bind::<Text, _>(id.as_str())
-    .bind::<Array<Text>, _>(events)
-    .bind::<Array<Jsonb>, _>(docs)
-    .execute(c)
-    .await
 }

@@ -1,4 +1,4 @@
-//! The session event log over live Postgres: ordered appends, stamps, the
+//! The session event log over live Postgres: ordered appends, appends into an empty log, stamps, the
 //! stream's tail read, the session delete, retention, and the overload gate.
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
 
@@ -12,8 +12,8 @@ use serde_json::json;
 use sessions::events::{Event, EventPayload, SessionEvent, StopReason, UserEvent};
 use sessions::retention::{ArchivedCursor, ArchivedSessions, Retention, RunLock};
 use sessions::store::{
-    DatabaseLoad, Head, SessionEventLog, SessionEventReads, SessionReplace, SessionsStore, StoreError, Tail,
-    Wake,
+    Append, DatabaseLoad, Head, SessionEventLog, SessionEventReads, SessionReplace, SessionsStore,
+    StoreError, Tail, Wake,
 };
 use sessions::types::{Session, SessionId, SessionStatus};
 use shared::{OrgId, Timestamp, WorkspaceId};
@@ -91,7 +91,9 @@ async fn concurrent_appends_to_one_session_are_read_in_commit_order_each_once() 
                     let mut sent = Vec::new();
                     for _ in 0..20 {
                         let e = message();
-                        log.append_events(&ws, &id, std::slice::from_ref(&e), Wake::No).await.unwrap();
+                        log.append_events(&ws, &id, std::slice::from_ref(&e), Wake::No, Append::Always)
+                            .await
+                            .unwrap();
                         sent.push(e.id);
                     }
                     sent
@@ -125,6 +127,45 @@ async fn concurrent_appends_to_one_session_are_read_in_commit_order_each_once() 
 }
 
 #[tokio::test]
+async fn concurrent_appends_into_an_empty_log_land_once_and_none_into_a_log_with_events() {
+    if !enabled() {
+        return;
+    }
+    let store = PgSessionsStore::new(backend().await);
+    let log = Arc::new(PgSessionEventLog::new(backend().await));
+    let ws = uniq_ws("first");
+    let s = session(&store, &ws, None).await;
+    let writers: Vec<_> = (0..8)
+        .map(|_| {
+            let (log, ws, id) = (log.clone(), ws.clone(), s.id.clone());
+            tokio::spawn(async move {
+                let sent = [message(), message()];
+                (
+                    log.append_events(&ws, &id, &sent, Wake::No, Append::IfEmpty).await.unwrap(),
+                    sent.map(|e| e.id),
+                )
+            })
+        })
+        .collect();
+    let mut landed = Vec::new();
+    for w in writers {
+        if let (true, ids) = w.await.unwrap() {
+            landed.push(ids.to_vec());
+        }
+    }
+    assert_eq!(landed.len(), 1, "one append landed");
+    let logged: Vec<_> = log.events(&ws, &s.id).await.unwrap().into_iter().map(|e| e.id).collect();
+    assert_eq!(logged, landed[0], "its events, in order, once");
+    assert!(
+        !log.append_events(&ws, &s.id, &[message()], Wake::No, Append::IfEmpty).await.unwrap(),
+        "the log has events"
+    );
+    let missing = SessionId::generate();
+    let refused = log.append_events(&ws, &missing, &[message()], Wake::No, Append::IfEmpty).await;
+    assert!(matches!(refused, Err(StoreError::NotFound)), "no session, no events: {refused:?}");
+}
+
+#[tokio::test]
 async fn a_stamp_takes_only_the_unprocessed_events_it_names_once() {
     // F-1: two stamps get disjoint events; an unread event and a status
     // event keep what they had.
@@ -136,9 +177,15 @@ async fn a_stamp_takes_only_the_unprocessed_events_it_names_once() {
     let ws = uniq_ws("stamp");
     let s = session(&store, &ws, None).await;
     let (a, b, unread, status) = (message(), message(), message(), idle());
-    log.append_events(&ws, &s.id, &[a.clone(), b.clone(), status.clone(), unread.clone()], Wake::No)
-        .await
-        .unwrap();
+    log.append_events(
+        &ws,
+        &s.id,
+        &[a.clone(), b.clone(), status.clone(), unread.clone()],
+        Wake::No,
+        Append::Always,
+    )
+    .await
+    .unwrap();
     let named = [a.id.clone(), b.id.clone(), status.id.clone()];
     let (t1, t2) = (now(), ago(-1));
     let (first, second) = tokio::join!(
@@ -174,7 +221,9 @@ async fn the_tail_reads_after_its_cursor_with_its_pending_events_until_the_sessi
         Some(Tail { archived: false, events: vec![] })
     );
     let (a, b, c) = (message(), message(), message());
-    log.append_events(&ws, &s.id, &[a.clone(), b.clone(), c.clone()], Wake::No).await.unwrap();
+    log.append_events(&ws, &s.id, &[a.clone(), b.clone(), c.clone()], Wake::No, Append::Always)
+        .await
+        .unwrap();
     let all = log.tail(&ws, &s.id, 0, &[], 10).await.unwrap().unwrap();
     let seqs: Vec<i64> = all.events.iter().map(|(seq, _)| *seq).collect();
     assert_eq!(
@@ -183,7 +232,7 @@ async fn the_tail_reads_after_its_cursor_with_its_pending_events_until_the_sessi
     );
     assert_eq!(log.head(&ws, &s.id).await.unwrap(), Head { seq: seqs[2], queued: seqs.clone() });
     log.update_processed_at(&ws, &s.id, std::slice::from_ref(&b.id), now()).await.unwrap();
-    log.append_events(&ws, &s.id, &[idle()], Wake::No).await.unwrap();
+    log.append_events(&ws, &s.id, &[idle()], Wake::No, Append::Always).await.unwrap();
     let head = log.head(&ws, &s.id).await.unwrap();
     assert_eq!(head.queued, vec![seqs[0], seqs[2]], "the client events still queued, not a status event");
     assert!(head.seq > seqs[2]);
@@ -301,9 +350,9 @@ async fn deleting_logs_removes_each_named_session_s_events_and_no_other() {
     );
     let e = message();
     for s in [&one, &two, &kept] {
-        log.append_events(&ws, &s.id, &[message()], Wake::No).await.unwrap();
+        log.append_events(&ws, &s.id, &[message()], Wake::No, Append::Always).await.unwrap();
     }
-    log.append_events(&ws, &kept.id, std::slice::from_ref(&e), Wake::No).await.unwrap();
+    log.append_events(&ws, &kept.id, std::slice::from_ref(&e), Wake::No, Append::Always).await.unwrap();
     log.delete_events_of(&[(ws.clone(), one.id.clone()), (ws.clone(), two.id.clone())]).await.unwrap();
     assert_eq!(log.events(&ws, &one.id).await.unwrap(), vec![]);
     assert_eq!(log.events(&ws, &two.id).await.unwrap(), vec![]);
@@ -328,7 +377,10 @@ fn retention(pg: &PgBackend, days: u64) -> Retention {
 async fn archived(pg: &PgBackend, ws: &WorkspaceId, at: Timestamp) -> SessionId {
     let store = PgSessionsStore::new(pg.clone());
     let s = session(&store, ws, Some(at)).await;
-    PgSessionEventLog::new(pg.clone()).append_events(ws, &s.id, &[message()], Wake::No).await.unwrap();
+    PgSessionEventLog::new(pg.clone())
+        .append_events(ws, &s.id, &[message()], Wake::No, Append::Always)
+        .await
+        .unwrap();
     s.id
 }
 

@@ -5,7 +5,7 @@ use shared::{ApiError, AuthContext, Timestamp, Usage};
 
 use super::{SessionsService, map_store, parse_id};
 use crate::events::{Event, EventPayload, SessionEvent, SpanEvent};
-use crate::store::Wake;
+use crate::store::{Append, Wake};
 use crate::types::{
     Session, SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag, primary_thread_id,
 };
@@ -60,7 +60,7 @@ impl SessionsService {
             };
             let (ws, session) = (&ctx.workspace, &thread.session_id);
             self.events
-                .append_events(ws, session, std::slice::from_ref(&ev), Wake::No)
+                .append_events(ws, session, std::slice::from_ref(&ev), Wake::No, Append::Always)
                 .await
                 .map_err(map_store)?;
             self.publish(ws, session).await;

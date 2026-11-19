@@ -1,10 +1,10 @@
 use shared::limits::{validate_range_u32, values};
 use shared::{ApiError, AuthContext, Pagination};
 
-use super::{SessionsService, guard_writable, map_store, parse_id};
+use super::{SessionsService, map_store, parse_id};
 use crate::events::{Event, EventPayload, UserEvent};
-use crate::store::{EventFilter, Wake};
-use crate::types::{OutcomeId, Session, SessionStatus};
+use crate::store::{Append, EventFilter, Wake};
+use crate::types::{OutcomeId, Session};
 
 impl SessionsService {
     /// `POST /v1/sessions/{id}/events` — queue client events in order.
@@ -17,32 +17,32 @@ impl SessionsService {
         payloads: Vec<EventPayload>,
     ) -> Result<Vec<Event>, ApiError> {
         let session = self.sendable(ctx, raw_id, environment, &payloads).await?;
-        let id = session.id.clone();
-        let mut out = Vec::with_capacity(payloads.len());
-        for p in payloads {
-            // define_outcome gets its server-assigned outcome id on echo.
-            let p = match p {
-                EventPayload::User(UserEvent::DefineOutcome {
-                    description,
-                    rubric,
-                    max_iterations,
-                    outcome_id: _,
-                }) => EventPayload::User(UserEvent::DefineOutcome {
-                    description,
-                    rubric,
-                    max_iterations,
-                    outcome_id: Some(OutcomeId::generate()),
-                }),
-                other => other,
-            };
-            out.push(Event::new(p));
-        }
+        let out = queued(payloads);
         if out.is_empty() {
             return Ok(out);
         }
-        self.events.append_events(&ctx.workspace, &id, &out, Wake::Step).await.map_err(map_store)?;
-        self.publish(&ctx.workspace, &id).await;
+        let appended =
+            self.events.append_events(&ctx.workspace, &session.id, &out, Wake::Step, Append::Always);
+        appended.await.map_err(map_store)?;
+        self.publish(&ctx.workspace, &session.id).await;
         Ok(out)
+    }
+
+    pub(super) async fn send_initial(
+        &self,
+        ctx: &AuthContext,
+        session: &Session,
+        initial: &[EventPayload],
+    ) -> Result<(), ApiError> {
+        if initial.is_empty() || session.takes_events().is_err() {
+            return Ok(());
+        }
+        let (ws, id) = (&ctx.workspace, &session.id);
+        let events = queued(initial.to_vec());
+        if self.events.append_events(ws, id, &events, Wake::Step, Append::IfEmpty).await.map_err(map_store)? {
+            self.publish(ws, id).await;
+        }
+        Ok(())
     }
 
     pub(super) async fn sendable(
@@ -54,10 +54,7 @@ impl SessionsService {
     ) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
         let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
-        guard_writable(&session)?;
-        if session.status == SessionStatus::Terminated {
-            return Err(ApiError::conflict_invalid_request("cannot send events to a terminated session"));
-        }
+        session.takes_events()?;
         validate_sendable("events", payloads)?;
         self.guard_waiting(&ctx.workspace, &session, payloads).await?;
         Ok(session)
@@ -75,6 +72,25 @@ impl SessionsService {
         let id = parse_id(raw_id)?;
         self.list_reads.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store)
     }
+}
+
+fn queued(payloads: Vec<EventPayload>) -> Vec<Event> {
+    // define_outcome gets its server-assigned outcome id on echo.
+    let stamped = payloads.into_iter().map(|p| match p {
+        EventPayload::User(UserEvent::DefineOutcome {
+            description,
+            rubric,
+            max_iterations,
+            outcome_id: _,
+        }) => EventPayload::User(UserEvent::DefineOutcome {
+            description,
+            rubric,
+            max_iterations,
+            outcome_id: Some(OutcomeId::generate()),
+        }),
+        other => other,
+    });
+    stamped.map(Event::new).collect()
 }
 
 /// Each payload a client may send, with the live field-path error convention

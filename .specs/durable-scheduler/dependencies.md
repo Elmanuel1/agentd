@@ -13,8 +13,8 @@ Evidence for L1 to L4: platform.claude.com/docs/en/managed-agents/scheduled-depl
 | L2 | Unpause "resumes the schedule from the next scheduled occurrence"; "Missed triggers are not backfilled." Pause suppresses scheduled triggers from that point on. | VERIFIED | the page above |
 | L3 | A rate-limited session creation is recorded at once as a `session_rate_limited_error` run without retry, and the schedule tries again at its next occurrence; other unrecoverable creation errors record a failed run and pause the deployment. | VERIFIED | the page above |
 | L4 | The page says nothing about occurrences missed during an outage, any lateness window, a run overlapping a running session, or a delivery guarantee. | VERIFIED | the page above |
-| B33 | Whether live's jitter only delays a run (starts at or after the listed time) or can also start it early. | OPEN | Closes with a no-model probe: create deployments with a `* * * * *` cron on an archived environment, so each run fails at session creation and calls no model, and compare each run's `created_at` with its `trigger_context.scheduled_at`. |
-| B34 | Whether live's deployment create refuses a cron that parses but never fires (`0 0 31 2 *`). | OPEN | Closes with a no-model probe: create a deployment with that cron and read the answer. |
+| B33 | Whether live's jitter only delays a run (starts at or after the listed time) or can also start it early. agentd only delays a run, as the page reads "start at or shortly after". | OPEN | Closes with a no-model probe: create deployments with a `* * * * *` cron on an archived environment, so each run fails at session creation and calls no model, and compare each run's `created_at` with its `trigger_context.scheduled_at`. |
+| B34 | Live's deployment create refuses a cron that parses but never fires (`0 0 31 2 *`) with 400 `invalid_request_error` "`schedule.expression` does not produce any occurrences in the next year"; agentd answers the same. | VERIFIED | a no-model probe: `POST /v1/deployments` with that cron |
 
 ## Industry and libraries
 

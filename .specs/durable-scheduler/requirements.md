@@ -45,7 +45,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | DS-1 | When the scheduler moves a due schedule to its next time, the scheduler shall write that occurrence to `fire_claims`, with the schedule's spec and the occurrence's due time, in the same transaction. |
 | DS-2 | The scheduler shall claim due schedules in batches of 100, each batch in its own transaction, until a batch finds fewer than 100. |
 | DS-3 | The scheduler shall set an occurrence's due time to its listed time plus a delay of up to 15 percent of the time to its following occurrence, at least 5 s and at most 9 minutes, the same for every delivery of that occurrence (D5). |
-| DS-10 | When a schedule is unpaused, the scheduler shall move it to its next occurrence after the unpause (D6). |
+| DS-10 | When a schedule is unpaused, the scheduler shall move it to its next occurrence after the unpause (D6, D14). |
 | DS-12 | If a due schedule's spec cannot be read, then the scheduler shall pause it and log its target at `ERROR`. |
 
 ## 2. Running fires
@@ -60,7 +60,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | DS-8 | If an occurrence is not run by the time its following occurrence is due, then the scheduler shall mark it done with outcome `skipped` and log it at `WARN`, with no backfill; after downtime, the scheduler shall write only each schedule's latest missed occurrence to `fire_claims` (D1). |
 | DS-18 | When the scheduler marks a fire done, the scheduler shall record its outcome in `fire_claims.outcome`: `ran`, `skipped`, or `dropped` when no handler owns its kind or its spec cannot be read (D3). |
 | DS-9 | When a fire arrives on the change feed's `agentd.fires`, the scheduler shall write it to `fire_claims` as DS-1 and DS-3 do, and acknowledge the delivery once that write commits. |
-| DS-20 | If two creates of a session with the same requested id overlap, then the API shall return the session the first insert made to the create whose insert fails on that id, and leave the session's work item as the first queue write made it, matching that session. |
+| DS-20 | If two creates of a session with the same requested id overlap, then the API shall return the session the first insert made to the create whose insert fails on that id, queue the session's initial events once, from whichever create appends them first, and leave the session's work item as the first queue write made it, matching that session (D15). |
 | DS-14 | When the API writes a deployment it read earlier (a fire's bookkeeping, a pause, an unpause or an archive), the API shall write only if the deployment has not changed since that read, and otherwise read it again and redo the change. |
 
 ## 3. Schedule changes and the change feed
@@ -68,15 +68,15 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | DS-11 | If the scheduler sink refuses a schedule change as invalid, then the change feed shall log it at `ERROR` and pass over it; a change the sink cannot apply because it is unavailable still holds the stream. |
-| DS-13 | While the Kafka change feed retries a record, the change feed shall pause every partition its consumer is assigned and keep polling, so that the consumer stays in the group, no second replica reads the partition, and no record behind the failed one is read. |
+| DS-13 | While the Kafka change feed handles or retries a record, the change feed shall keep polling, and pause and move back any partition that delivers a record meanwhile, so that the consumer stays in the group, no second replica reads the partition, and no record behind it is handled first. |
 
 ## 4. Operations
 
 | ID | Requirement |
 |---|---|
-| DS-15 | The scheduler shall delete, every hour, the `fire_claims` rows whose occurrence is more than 30 days old and that are done, or that `take` left unfinished with no `due_at` (D12). |
+| DS-15 | The scheduler shall delete, every hour, the `fire_claims` rows whose occurrence is more than 30 days old and that are done (D12). |
 | DS-16 | The scheduler shall export the fires by outcome (`enqueued`, `ran`, `retried`, `skipped`, `dropped`), the fire lag (a run's start minus its occurrence's due time, worked out from the spec, not from `due_at`) and the count of due fires not done (D10). |
-| DS-17 | Where `AGENTD_SCHEDULER` is `temporal`, agentd shall apply schedule changes to Temporal Schedules, not run its built-in tick, and write each Temporal action's occurrence to `fire_claims` as DS-9 does (D2). |
+| DS-17 | Where `AGENTD_SCHEDULER` is `temporal`, agentd shall apply schedule changes to Temporal Schedules, not run its built-in tick, and write each Temporal action's occurrence to `fire_claims` as DS-9 does, with a catch-up window of ten years, longer than any gap between a cron's occurrences (D2). |
 
 ## Industry practice
 
@@ -87,20 +87,18 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | After downtime, fire the latest missed occurrence once and resume | Quartz cron misfire policy (I4); Kubernetes CronJob; Temporal with overlap `Skip` (I1) | Followed (D1). |
 | Jitter on fires that share a listed time | Live (L1); Temporal spec jitter (I1) | Followed with live's formula (D5). |
 | A durable engine owns the timers | Temporal Schedules | Followed for the Temporal sink (D2). Departure: Temporal delivers the occurrence and agentd's queue runs it, so every sink has one run path. |
-| Pause a partition and keep polling while a record is retried | librdkafka (I6) | Followed (DS-13). |
+| Pause a partition and keep polling while a record is handled or retried | librdkafka (I6) | Followed (DS-13): only a partition that delivers a record meanwhile is paused. |
 
 ## Plan: one PR
 
 The code lands as one PR after this spec, built as the ordered commits below, as the resource history PR was. Each
 commit builds and passes the suite on its own; a split the 200-line rule forces happens inside the commit that needs
-it. The PR touches about 58 files, under CodeRabbit's 100-file review limit: about 9 for commit 1, 2 for commit 2,
-10 for commit 3, 7 for commit 4, 2 for commit 5, 3 for commit 6, 10 for commit 7 and 15 for commit 8 (the Temporal
-crate, its workspace and lock entries, the settings and the CI service).
+it. The PR touches 63 files, under CodeRabbit's 100-file review limit.
 
 | Commit | What | Requirements |
 |---|---|---|
 | 1 | A deployment write never overwrites a newer one; an overlapping fired create keeps the first session | DS-14, DS-20 |
-| 2 | Migrations V18 and V19: the fire queue columns and indexes | none (schema for DS-1, DS-15, DS-18) |
+| 2 | Migrations V22 and V23: the fire queue columns and indexes | none (schema for DS-1, DS-15, DS-18) |
 | 3 | The fire queue and its workers, not yet called | DS-3 to DS-7, DS-18, DS-19 |
 | 4 | The tick and the feed on the queue | DS-1, DS-2, DS-8, DS-9, DS-10, DS-12 |
 | 5 | An invalid schedule change is passed over | DS-11 |
@@ -119,9 +117,11 @@ crate, its workspace and lock entries, the settings and the CI service).
 - Statements for a fire's bookkeeping: 1 `SELECT` of the deployment, 1 guarded `UPDATE`, and the outbox's 2 when a
   schedule change applies; a redo repeats the first two.
 - `store-postgres/src/entities/sessions.rs`: a session insert that fails on its primary key returns
-  `StoreError::Conflict`. `sessions/src/service/lifecycle.rs` (191 lines): on `Conflict` for a create with a requested
+  `StoreError::Conflict`. `sessions/src/service/lifecycle.rs`: on `Conflict` for a create with a requested
   id, `create_fired` returns the session through `made` and does not call `end_work`, so the losing create never stops
-  the winner's work item (DS-20). Its queue write is the existing upsert, which leaves a work item that is not
+  the winner's work item (DS-20). Both creates queue their initial events through the event log's append with
+  `Append::IfEmpty`, which appends under the session's append lock only while its log is empty, so the first append
+  lands and the other is a no-op; a create of a session that is archived or terminated appends nothing. Its queue write is the existing upsert, which leaves a work item that is not
   requeuable as it is. Whichever create queues first and whichever inserts first, the work item matches the winning
   session: both creates fire one occurrence of one deployment, and a deployment's agent and environment are fixed at
   its create (no route updates them). The work item keeps the queue the first queue write chose from the environment
@@ -133,15 +133,18 @@ crate, its workspace and lock entries, the settings and the CI service).
   one session, one queued work item whose environment and session are the winning session's and whose queue is the one
   the first queue write chose (also when the environment's config type changes between the two creates), and one
   deployment run
-  whose `session_id` is that session and whose `error` is null.
+  whose `session_id` is that session and whose `error` is null; `sessions` "the initial events of two overlapping
+  creates are queued once by whichever appends first", for both append orders; `pg_event_log` "concurrent appends into
+  an empty log land once and none into a log with events".
 
-### Commit 2: migrations V18 and V19
+### Commit 2: migrations V22 and V23
 
-- `V18__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
-  outcome text check (outcome in ('ran', 'skipped', 'dropped'));`. The columns are nullable and nothing reads them
-  yet; `outcome` is null until a fire is done. No backfill: a database that ran `main` may hold claims `take` wrote without
-  these columns, and commit 4 recovers any such claim left unfinished.
-- `V19__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
+- The versions follow `main`'s V20 and V21, as Flyway refuses a lower version after a higher one.
+- `V22__fire_queue.sql`: `alter table fire_claims add column spec jsonb, add column due_at timestamptz, add column
+  outcome text;`, with no `CHECK`: `Outcome::as_str` is the one list of `outcome`'s values. The columns are nullable
+  and nothing reads them yet; `outcome` is null until a fire is done. agentd
+  is not in production, so no claim `take` wrote needs a backfill.
+- `V23__fire_queue_indexes.sql`, in its own file as V12: `create index concurrently fire_claims_due_idx on
   fire_claims (due_at) where not done;` and `create index concurrently fire_claims_done_idx on fire_claims
   (scheduled_at) where done;`.
 - Tests: the migration suite; `pg_fires` passes unchanged.
@@ -152,8 +155,9 @@ The PR's build opens with probes B33 and B34.
 
 - `shared/src/ports/fire/claims.rs`: `Fire { spec, scheduled_at, due_at }`; `FireClaims` gains `enqueue`,
   `claim_due(limit)` and `retry(&Fire, at)`, and `finish` takes an `Outcome`. `take` stays until commit 4.
-- `shared/src/ports/fire/worker.rs` (new): `FireWorker::run_due` claims up to 16 fires, runs each through
-  `FireRegistry` with a 60 s timeout, then finishes or retries it, and reports each outcome and lag to a callback
+- `shared/src/ports/fire/worker.rs` (new): `FireWorker::fill` claims a due fire for each of its 16 slots that is
+  free, every second and whenever a fire finishes, runs each through `FireRegistry` with a 60 s timeout, then
+  finishes or retries it within 10 s, and reports each outcome and lag to a callback
   the api crate passes in.
 - `shared/src/ports/fire/jitter.rs` (new): the due time of DS-3, from `CompiledSchedule::next_fires`;
   `shared/src/schedule.rs` is not changed.
@@ -183,27 +187,19 @@ The PR's build opens with probes B33 and B34.
   the existing `UPDATE … FROM unnest`, 1 `UPDATE schedules SET paused = true WHERE target = ANY($1)` for unreadable
   rows, and the existing `DELETE`; repeated while a batch is full. Firing after the commit and the 60 s skip are
   removed, and `PgScheduler` no longer holds the registry. The file does not grow.
-- `schedules.rs`: unpause is 1 `UPDATE schedules SET paused = false, next_fire_at = $2 WHERE target = $1`, the next
-  occurrence after now. The file does not grow.
+- `schedules.rs`: unpause reads the schedule and the database's `now()`, then writes 1 `UPDATE schedules SET paused =
+  false, next_fire_at = $2 WHERE target = $1 AND paused AND spec = $3 AND $2 > clock_timestamp()`, the next
+  occurrence after that `now()`; a write that matches no row reads again, up to 3 times.
 - `shared/src/ports/fire/worker.rs`: the DS-8 window is checked before a run.
 - `shared/src/ports/fire/delivery.rs`: `deliver` enqueues instead of running and answers `true` once the insert
   commits; `changes-kafka` and `signals-valkey/src/fires.rs` call it unchanged.
 - `api/src/backends/postgres.rs`: `FireSources::start` spawns the tick and the worker (every 1 s).
 - `fire_claims/claim.rs`: `take` and its 15-minute and 3-attempt rules are removed, with their `pg_fires` tests.
-- Claims `take` wrote on `main` have no `due_at` and no `spec`, and `claim_due` never selects them (`due_at <=
-  now()` is not true for `NULL`). They follow `main`'s rules: `enqueue`'s conflict clause becomes `ON CONFLICT
-  (workspace_id, target, scheduled_at) DO UPDATE SET spec = EXCLUDED.spec, due_at = EXCLUDED.due_at WHERE
-  fire_claims.spec IS NULL AND NOT fire_claims.done`, so a redelivered external fire fills in its unfinished claim
-  and runs, as `take` would have run it again; an unfinished built-in claim is never run again, as on `main`, where
-  the tick never redelivered one. The PR deploys only after every replica running `main` has stopped, so no
-  old replica's `take` or key-only `finish` runs beside the new workers, and a filled-in claim is run only by them.
 - Tests: `pg_schedules` "a due occurrence fires once across two schedulers" over the queue; "250 due schedules all
   fire in one tick", with 150 older due rows first; "a fire that fails is run again, then done"; "a crash after the
   tick commits loses nothing"; "after downtime only the latest missed occurrence fires"; "a fire not run before its
   following occurrence is skipped"; "an unpaused schedule does not fire the time it missed"; "an unreadable schedule
-  is paused and does not hold the batch"; `pg_fire_queue` "a redelivered external fire fills in its unfinished take
-  claim and runs once", "a claim take finished is not run again on redelivery" and "an unfinished built-in take claim
-  is not run and is swept after 30 days".
+  is paused and does not hold the batch"; "unpausing an active schedule keeps its due occurrence".
 
 ### Commit 5: an invalid schedule change is passed over
 
@@ -214,14 +210,18 @@ The PR's build opens with probes B33 and B34.
 
 ### Commit 6: a Kafka consumer keeps its group while it retries
 
-- `changes-kafka/src/lib.rs`: on a failed record, pause every partition the consumer is assigned, then alternate the
-  backoff retry with `consumer.recv()`, which serves rebalances and returns no record while every partition is
-  paused; stop retrying if the record's partition is revoked; resume the assignment and commit once the record
-  succeeds. No record of another partition is read, so none is skipped or committed past. The retry moves to `retry.rs` if `lib.rs` would
-  pass 200 lines.
-- Test: `changes-kafka/tests/kafka.rs` "a record retried past max.poll.interval.ms keeps one reader", with
+- `changes-kafka/src/retry.rs`: every attempt at a record, and every backoff between attempts, runs while the
+  consumer keeps polling. A record polled meanwhile pauses its partition, which is moved back to that record (or,
+  for the record's own partition, to just past the record being retried) and read again afterwards; the assignment
+  resumes only when something was held back. A revoked partition ends the attempt, checked every second and after a
+  success, and nothing is committed, so its next owner reads the record. `lib.rs` assigns partitions
+  `cooperative-sticky`: a join moves only the partitions balance needs, so a one-partition topic stays with its
+  holder.
+- Tests: `changes-kafka/tests/kafka.rs` "a record retried past max poll interval keeps one reader", with
   `max.poll.interval.ms` at 10 s and a record failing for 20 s: no second consumer is assigned the partition and the
-  record applies once.
+  record applies once; "a retry attempt longer than max poll interval keeps one reader"; "a first attempt longer than
+  max poll interval keeps one reader"; "a record whose partition is revoked mid attempt is applied once by its next
+  owner".
 
 ### Commit 7: metrics, retention and docs
 
@@ -229,8 +229,7 @@ The PR's build opens with probes B33 and B34.
   `agentd.scheduler.fire.lag` (s), gauge `agentd.scheduler.fires.due` from 1 `SELECT count(*) FROM fire_claims WHERE
   NOT done AND due_at <= now()` every 30 s per replica.
 - `fire_claims/sweep.rs` (new): hourly, 1 `DELETE FROM fire_claims WHERE done AND scheduled_at < now() - interval
-  '30 days'` on the `done` index, and 1 `DELETE FROM fire_claims WHERE NOT done AND due_at IS NULL AND scheduled_at <
-  now() - interval '30 days'` on the `due_at` index, for unfinished claims `take` left (commit 4).
+  '30 days'` on the `done` index.
 - Docs: `configuration.md` "Scheduled work" describes the queue, the jitter, retries and the window;
   `observability.md` names each signal and its threshold for any backend (due fires above 0 for 5 minutes, lag p99
   over 60 s, any `skipped` or `dropped`); `operations.md` says every role runs the feed handlers; the
@@ -240,16 +239,18 @@ The PR's build opens with probes B33 and B34.
 ### Commit 8: Temporal as a scheduler sink
 
 - `crates/adapters/scheduler-temporal` (new): `TemporalScheduler: SchedulerPort` over Temporal Schedules. `upsert`
-  creates or updates a schedule with the cron and timezone, jitter 0, overlap `AllowAll` and a catch-up window up to
-  the following occurrence; `pause`, `unpause`, `delete` and `describe` map one to one. A Temporal worker in agentd
+  creates or updates a schedule with the cron and timezone, jitter 0, overlap `AllowAll` and a catch-up window of ten
+  years, longer than any gap between a cron's occurrences (Temporal's action buffer still bounds how many it delivers
+  after an outage, and the fire queue skips one whose following occurrence is due); `pause`, `unpause`, `delete` and `describe` map one to one. A Temporal worker in agentd
   runs one activity that writes the action's occurrence (`ScheduledStartTime` as `scheduled_at`) through
   `FireClaims::enqueue`, retried by Temporal until it commits.
 - `api/src/config` and `backends.rs`: `AGENTD_SCHEDULER` (`postgres` by default, or `temporal`),
   `AGENTD_TEMPORAL_ADDRESS`, `AGENTD_TEMPORAL_NAMESPACE`, `AGENTD_TEMPORAL_TASK_QUEUE`; with `temporal`, the built-in
   tick does not run.
 - Dependencies: `temporalio-client` and `temporalio-sdk` (I2).
-- Tests: a Temporal dev server in CI (`temporal server start-dev`); "a deployment created with the Temporal sink fires
-  through the queue once"; "pause and unpause reach the Temporal schedule".
+- Tests: a Temporal dev server in CI (`temporal server start-dev`); "a schedule on the Temporal sink fires through the
+  queue once", which drives the sink directly; "pause and unpause reach the Temporal schedule", which also reads back
+  the ten-year catch-up window.
 
 ## Sizing
 

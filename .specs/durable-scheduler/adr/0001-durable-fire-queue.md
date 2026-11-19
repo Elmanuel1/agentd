@@ -1,6 +1,6 @@
 # ADR 0001: Every due occurrence is a row in a durable fire queue before it runs
 
-Status: Proposed
+Status: Accepted
 Date: 2026-11-16
 Deciders: the user (Elmanuel1)
 Scope: agentd's scheduler (the tick, the fire inbox, the change feed's fire consumers) and its optional Temporal sink
@@ -48,7 +48,7 @@ burst of more than about 600 schedules a minute per replica is served late and t
 
 - An occurrence can no longer be lost once its schedule has moved on, and a top-of-hour burst is spread by the
   jitter and run concurrently.
-- `fire_claims` gains `spec`, `due_at` and `outcome` (V18) and two partial indexes (V19); done rows are deleted 30
+- `fire_claims` gains `spec`, `due_at` and `outcome` (V22) and two partial indexes (V23); done rows are deleted 30
   days after their occurrence (D12).
 - The 15-minute lease and 3-attempt limit of runtime-parity K-8 are replaced by the 2-minute lease and the backoff
   bounded by the following occurrence.
