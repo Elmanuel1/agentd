@@ -26,8 +26,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - run: cargo fmt --all --check
       # clippy.toml's banned macros warn until the #[async_trait] uses are migrated.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings --force-warn clippy::disallowed_macros
@@ -78,8 +78,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - name: Migrate the schema with Flyway
         run: |
           docker run --rm --network host \
@@ -167,8 +167,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

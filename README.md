@@ -62,7 +62,7 @@ docker compose -f docker/docker-compose.yml logs keys   # the dev API key, made 
 cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, AGENTD_AWS_ENDPOINT the S3, Secrets Manager, SSM and KMS ones, AGENTD_TEMPORAL_ADDRESS the Temporal ones
 ```
 
-Building needs `protoc` (`brew install protobuf`, or Debian's `protobuf-compiler`): the Temporal SDK compiles its
+Building needs `protoc` (`brew install protobuf`, or Debian's `protobuf-compiler` and `libprotobuf-dev`): the Temporal SDK compiles its
 protobuf definitions.
 
 There is no development mode: the stack seals vault credentials in Postgres
