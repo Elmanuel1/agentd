@@ -8,6 +8,7 @@ use blobs_s3::{BlobError, S3BlobStore};
 
 mod feed;
 mod postgres;
+mod scheduler;
 mod secrets;
 mod stores;
 
@@ -15,6 +16,7 @@ pub use postgres::FireSources;
 pub use stores::Stores;
 
 use crate::telemetry::ports::Observed;
+use crate::telemetry::scheduler::SchedulerMetrics;
 use crate::telemetry::{self, Metrics};
 use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
 use sessions::signals::Signals;
@@ -25,7 +27,7 @@ use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::SecretError;
 use signals_valkey::{Valkey, ValkeySignals};
-use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgHistoryLog, PgScheduler, ScheduleOutbox};
+use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgHistoryLog, ScheduleOutbox};
 use webhooks::WebhookSender;
 
 use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
@@ -117,6 +119,9 @@ pub enum BootError {
     /// The loop's model providers or budget.
     #[error("loop: {0}")]
     Loop(String),
+    /// The scheduler sink.
+    #[error("scheduler: {0}")]
+    Scheduler(String),
 }
 
 impl Backends {
@@ -141,22 +146,26 @@ impl Backends {
                 let outside = postgres::Outside { blobs, secrets };
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
-                let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
-                let scheduler = PgScheduler::new(pg.backend.clone(), fires.clone());
+                let queue = PgFireClaims::new(pg.backend.clone());
+                let meter = opentelemetry::global::meter("agentd");
+                let scheduling = SchedulerMetrics::new(&meter);
+                let delivered = scheduling.clone();
+                let registry = FireRegistry::new(Arc::new(queue.clone()));
+                let fires = Arc::new(registry.counting_enqueued(move |n| delivered.enqueued(n)));
+                let sink = scheduler::Sink::connect(&config.scheduler, &pg.backend).await?;
                 let feed = feed::ChangeFeed::from_config(streams, &valkey);
                 let sender =
                     WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
                         .map_err(BootError::Signals)?;
-                let meter = opentelemetry::global::meter("agentd");
                 drop(telemetry::feed::watch(&meter, pg.backend.diesel.clone(), &streams.changes_slot));
                 let log = Arc::new(PgHistoryLog::load(pg.backend.clone()).await?);
                 let mut handlers = history::recorders(log, telemetry::feed::apply_delay(&meter));
-                handlers.push(Arc::new(ScheduleOutbox::new(Arc::new(scheduler.clone()))));
+                handlers.push(Arc::new(ScheduleOutbox::new(sink.port())));
                 handlers.push(Arc::new(sender));
                 drop(feed.spawn(handlers));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                (pg.stores, pg.load, keys, fires, FireSources::new(scheduler, feed))
+                (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))
             }
         };
         let signals: Arc<dyn Signals> =

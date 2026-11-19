@@ -26,6 +26,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - run: cargo fmt --all --check
       # clippy.toml's banned macros warn until the #[async_trait] uses are migrated.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings --force-warn clippy::disallowed_macros
@@ -65,6 +67,8 @@ jobs:
       AGENTD_VALKEY_URL: redis://localhost:6379
       AGENTD_VALKEY_CLUSTER_URL: redis://127.0.0.1:7001
       AGENTD_KAFKA_BROKERS: localhost:9092
+      AGENTD_TEMPORAL_ADDRESS: http://localhost:7233
+      TEMPORAL_CLI_VERSION: "1.10.1"
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
@@ -74,6 +78,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - name: Migrate the schema with Flyway
         run: |
           docker run --rm --network host \
@@ -87,6 +93,12 @@ jobs:
         run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" kafka localhost:9092
       - name: Start a one-node Valkey cluster, for the cluster-mode tests
         run: docker/valkey/start-cluster.sh 7001
+      - name: Start a Temporal dev server, for the Temporal scheduler sink's tests
+        run: |
+          curl -sfL "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin temporal
+          nohup temporal server start-dev --headless --port 7233 > temporal.log 2>&1 &
+          for _ in $(seq 1 60); do temporal operator cluster health --address localhost:7233 >/dev/null 2>&1 && exit 0; sleep 1; done
+          tail -20 temporal.log; exit 1
       - run: cargo test --workspace --locked --no-fail-fast
         env:
           AGENTD_FAULT_TESTS: "1"
@@ -155,6 +167,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

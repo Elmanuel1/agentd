@@ -1,13 +1,17 @@
 //! The scheduler port: durable timers that fire a registered target.
 //!
-//! Scheduler fire contract (fixed, backend-independent): **no retry**
-//! (`attempts = 1`), **no backfill**, exactly-once per `(target, scheduled_at)`.
-//! `upcoming_runs_at` is computed by [`crate::schedule`], never by the backend,
-//! so the wire is identical across backends.
+//! Scheduler fire contract (fixed, backend-independent): a sink delivers each
+//! occurrence to the fire queue ([`super::fire::FireRegistry::enqueue`]), whose
+//! workers run it once per `(target, scheduled_at)` and retry an infra
+//! failure; **no backfill**: after downtime only the latest missed occurrence
+//! is delivered. `upcoming_runs_at` is computed by [`crate::schedule`], never
+//! by the backend, so the wire is identical across backends.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use crate::schedule::{CompiledSchedule, CronKind, CronSchedule, ScheduleError};
 
 // ─── Scheduler port ────────────────────────────────────────────────────────
 
@@ -56,6 +60,18 @@ pub struct ScheduleSpec {
     pub target: FireTarget,
     /// Whose resource this is.
     pub tenant: TenantRef,
+}
+
+impl ScheduleSpec {
+    /// Its cron and timezone, ready to compute fire times.
+    pub fn compile(&self) -> Result<CompiledSchedule, ScheduleError> {
+        let cron = CronSchedule {
+            kind: CronKind::Cron,
+            expression: self.cron.clone(),
+            timezone: self.timezone.clone(),
+        };
+        cron.compile()
+    }
 }
 
 /// Idempotency identity of a single fire: `(target, scheduled_at)`.

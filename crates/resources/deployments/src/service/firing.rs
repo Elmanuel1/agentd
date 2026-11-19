@@ -58,15 +58,16 @@ impl DeploymentsService {
     }
 
     /// One fire: freeze → create session → record run. Business failures
-    /// become error runs; `agent_archived` additionally auto-archives.
+    /// become error runs; `agent_archived` additionally auto-archives. An
+    /// archived deployment keeps its run and is not written.
     async fn fire(
         &self,
         ctx: &AuthContext,
-        mut d: Deployment,
+        d: Deployment,
         trigger: TriggerContext,
     ) -> Result<DeploymentRun, ApiError> {
-        // A scheduled fire may run again after a stop (the fire inbox takes
-        // it over), so its run and session ids come from the fire itself: the
+        // A scheduled fire may run again after a stop (the fire queue retries
+        // it), so its run and session ids come from the fire itself: the
         // second attempt finds what the first made.
         let key = match &trigger {
             TriggerContext::Schedule { scheduled_at } => {
@@ -90,18 +91,21 @@ impl DeploymentsService {
             tag: DeploymentRunTag::DeploymentRun,
         };
         self.store.push_run(&ctx.workspace, run.clone()).await.map_err(map_store)?;
-        // Stamp last_run_at + refresh upcoming for scheduled fires.
-        if let TriggerContext::Schedule { scheduled_at } = &trigger {
-            d.schedule.last_run_at = Some(*scheduled_at);
-            let _ = d.schedule.refresh_upcoming(Utc::now());
-        }
-        let change = match error.as_ref().map(|e| apply_run_error(&mut d, e)) {
-            Some(Applied::Archive) => Some(ScheduleChange::Delete { target: target(&d.id) }),
-            Some(Applied::Pause) => Some(ScheduleChange::Pause { target: target(&d.id) }),
-            Some(Applied::Keep) | None => None,
-        };
-        d.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, d, change.as_ref()).await.map_err(map_store)?;
+        self.rewrite(ctx, d, |d| {
+            if d.status == DeploymentStatus::Archived {
+                return Ok(None);
+            }
+            if let TriggerContext::Schedule { scheduled_at } = &trigger {
+                d.schedule.last_run_at = Some(*scheduled_at);
+                let _ = d.schedule.refresh_upcoming(Utc::now());
+            }
+            Ok(match error.as_ref().map(|e| apply_run_error(d, e)) {
+                Some(Applied::Archive) => Some(ScheduleChange::Delete { target: target(&d.id) }),
+                Some(Applied::Pause) => Some(ScheduleChange::Pause { target: target(&d.id) }),
+                Some(Applied::Keep) | None => None,
+            })
+        })
+        .await?;
         Ok(run)
     }
 }

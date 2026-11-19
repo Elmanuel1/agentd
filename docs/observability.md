@@ -23,11 +23,12 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 | Postgres connections | the pool's setup hook | | a failed `CONNECT` in `db.client.operation.duration`; `db.client.connection.count` (idle, used), `.max`, `.pending_requests` | `error` |
 | Blobs, secrets | `telemetry::ports::Observed` around each port | `blobs.put`, `secrets.get` | `agentd.port.operation.duration` (s) by port, operation and outcome | `warn` |
 | Scheduled fires | `Observed` around each module's fire handler | `fires.deployment` (the one fire kind today) | the same, port `fires` | `warn` |
+| The scheduler | `telemetry::scheduler`, in the tick and the fire workers; the due count every 30 s on every replica | | `agentd.scheduler.fires` by `outcome` (`enqueued`, `ran`, `retried`, `skipped`, `dropped`); `agentd.scheduler.fire.lag` (s), a run's start minus its due time (buckets 0.5 s to 30 minutes); `agentd.scheduler.fires.due`, the due fires not done, the same table on every replica, so take the maximum | `warn` on a retry or a skip, `error` on a drop |
 
 Every boundary operation is covered: 49 route registrations plus the unknown-path fallback, every statement
 through the pool, all 3 operations of each of the 3 outbound ports, and every fire kind. Inside a request, time
-between boundaries is the request span's own time. Not covered: the scheduler's tick and outbox relay loops and the S3
-SDK's internal retries (both log, but emit no metric).
+between boundaries is the request span's own time. Not covered: the schedule outbox's relay and the S3 SDK's
+internal retries (both log, but emit no metric).
 
 A 5xx response body says only `Internal server error` (or `Overloaded` for a 529), as the live API does. The
 real cause stays on the server, in the `request failed` log line and the span.

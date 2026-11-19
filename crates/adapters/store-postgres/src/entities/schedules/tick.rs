@@ -1,21 +1,21 @@
-//! The tick: claim the due rows, move each to its next time, fire the
-//! on-time ones.
+//! The tick: in batches, claim the due rows, write each one's latest due
+//! occurrence to the fire queue and move it to its next time, in the same
+//! transaction, so an occurrence is never lost once its schedule moves on.
 
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use diesel::QueryableByName;
-use diesel::sql_types::{Array, Jsonb, Nullable, Text, Timestamptz};
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use shared::ports::fire::{Fire, jitter};
 use shared::ports::{ScheduleSpec, SchedulerError};
 
 use super::{PgScheduler, compile, unavailable};
+use crate::entities::fire_claims::queue;
 
-/// A fire later than this after its time is skipped, never sent late (no
-/// backfill): after downtime the schedule moves on to its next time.
-const MISFIRE: chrono::Duration = chrono::Duration::seconds(60);
-/// Due rows one tick claims.
-const BATCH: i64 = 100;
+/// Due rows one batch claims.
+const BATCH: usize = 100;
 
 #[derive(QueryableByName)]
 struct Due {
@@ -29,14 +29,9 @@ struct Due {
     now: DateTime<Utc>,
 }
 
-/// A due row's fire (its spec and time), when it is not too late, and its
-/// next time, when it has one.
-struct Advanced {
-    fire: Option<(ScheduleSpec, DateTime<Utc>)>,
-    next: Option<DateTime<Utc>>,
-}
-
-fn advance(due: &Due) -> Result<Advanced, SchedulerError> {
+/// A due row's latest occurrence at or before now, older ones dropped, and
+/// its next time, when it has one.
+fn advance(due: &Due) -> Result<(Fire, Option<DateTime<Utc>>), SchedulerError> {
     let spec: ScheduleSpec = serde_json::from_value(due.spec.clone()).map_err(unavailable)?;
     let compiled = compile(&spec)?;
     let mut latest = due.next_fire_at;
@@ -44,73 +39,91 @@ fn advance(due: &Due) -> Result<Advanced, SchedulerError> {
         latest = n;
     }
     let next = compiled.next_fires(due.now, 1).into_iter().next();
-    let on_time = due.now - latest <= MISFIRE;
-    Ok(Advanced { fire: on_time.then_some((spec, latest)), next })
+    let due_at = jitter::due_at(&spec, latest);
+    Ok((Fire { spec, scheduled_at: latest, due_at }, next))
 }
 
 impl PgScheduler {
-    /// Claim the due rows, move each to its next time (or remove one with
-    /// none), then fire the on-time ones outside the transaction.
-    pub async fn tick(&self) -> Result<(), SchedulerError> {
+    /// Write every due schedule's occurrence to the fire queue, a batch per
+    /// transaction until a batch comes back short; `enqueued` hears the queue
+    /// rows each committed batch added, so a later batch that fails takes
+    /// nothing from the count.
+    pub async fn tick(&self, enqueued: &(impl Fn(usize) + Sync)) -> Result<(), SchedulerError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
-        let fire = conn
-            .transaction::<_, diesel::result::Error, _>(async move |c| {
-                    let due: Vec<Due> = diesel::sql_query(
-                        "SELECT target, spec, next_fire_at, now() AS now FROM schedules
-                         WHERE next_fire_at <= now() AND NOT paused
-                         ORDER BY next_fire_at LIMIT $1 FOR UPDATE SKIP LOCKED",
-                    )
-                    .bind::<diesel::sql_types::BigInt, _>(BATCH)
-                    .load(c)
-                    .await?;
-                    let (mut fire, mut targets, mut nexts) = (Vec::new(), Vec::new(), Vec::new());
-                    for d in &due {
-                        match advance(d) {
-                            Ok(Advanced { fire: on_time, next }) => {
-                                fire.extend(on_time);
-                                targets.push(d.target.as_str());
-                                nexts.push(next);
-                            }
-                            Err(e) => tracing::warn!(target = %d.target, error = %e, "scheduler: a schedule cannot be read"),
-                        }
-                    }
-                    diesel::sql_query(
-                        "UPDATE schedules SET next_fire_at = v.next FROM unnest($1::text[], $2::timestamptz[]) AS v(target, next)
-                         WHERE schedules.target = v.target AND v.next IS NOT NULL",
-                    )
-                    .bind::<Array<Text>, _>(&targets)
-                    .bind::<Array<Nullable<Timestamptz>>, _>(&nexts)
-                    .execute(c)
-                    .await?;
-                    let ended: Vec<&str> =
-                        targets.iter().zip(&nexts).filter(|(_, n)| n.is_none()).map(|(t, _)| *t).collect();
-                    diesel::sql_query("DELETE FROM schedules WHERE target = ANY($1)")
-                        .bind::<Array<Text>, _>(&ended)
-                        .execute(c)
-                        .await?;
-                    Ok(fire)
-                })
-            .await
-            .map_err(unavailable)?;
-        drop(conn);
-        for (spec, at) in fire {
-            if let Err(e) = self.fires.fire(&spec, at).await {
-                tracing::warn!(target = %spec.target.key(), error = %e, "scheduler: fire dropped (no retry)");
+        loop {
+            let (claimed, added) = conn.transaction(async |c| batch(c).await).await.map_err(unavailable)?;
+            enqueued(added);
+            if claimed < BATCH {
+                return Ok(());
             }
         }
-        Ok(())
     }
 
-    /// Tick every `interval`.
-    pub fn spawn(self, interval: Duration) -> tokio::task::JoinHandle<()> {
+    /// Tick every `interval`; `enqueued` hears the queue rows each batch added.
+    pub fn spawn(
+        self,
+        interval: Duration,
+        enqueued: impl Fn(usize) + Send + Sync + 'static,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
-                if let Err(e) = self.tick().await {
+                if let Err(e) = self.tick(&enqueued).await {
                     tracing::warn!(error = %e, "scheduler: the tick failed");
                 }
             }
         })
     }
+}
+
+/// One batch: the schedules it claimed, and the queue rows it added.
+async fn batch(c: &mut AsyncPgConnection) -> Result<(usize, usize), diesel::result::Error> {
+    let due: Vec<Due> = diesel::sql_query(
+        "SELECT target, spec, next_fire_at, now() AS now FROM schedules
+         WHERE next_fire_at <= now() AND NOT paused
+         ORDER BY next_fire_at LIMIT $1 FOR UPDATE SKIP LOCKED",
+    )
+    .bind::<BigInt, _>(i64::try_from(BATCH).unwrap_or(i64::MAX))
+    .load(c)
+    .await?;
+    if due.is_empty() {
+        return Ok((0, 0));
+    }
+    let (mut fires, mut targets, mut nexts, mut paused) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut ended = Vec::new();
+    for d in &due {
+        let (next, unreadable) = match advance(d) {
+            Ok((fire, next)) => {
+                fires.push(fire);
+                ended.extend(next.is_none().then_some(d.target.as_str()));
+                (next, false)
+            }
+            Err(e) => {
+                tracing::error!(target = %d.target, error = %e, "scheduler: a schedule cannot be read; paused");
+                (None, true)
+            }
+        };
+        targets.push(d.target.as_str());
+        nexts.push(next);
+        paused.push(unreadable);
+    }
+    let added = queue::enqueue_in(c, &fires).await?;
+    diesel::sql_query(
+        "UPDATE schedules SET next_fire_at = coalesce(v.next, schedules.next_fire_at), paused = v.paused
+         FROM unnest($1::text[], $2::timestamptz[], $3::bool[]) AS v(target, next, paused)
+         WHERE schedules.target = v.target AND (v.next IS NOT NULL OR v.paused)",
+    )
+    .bind::<Array<Text>, _>(&targets)
+    .bind::<Array<Nullable<Timestamptz>>, _>(&nexts)
+    .bind::<Array<Bool>, _>(&paused)
+    .execute(c)
+    .await?;
+    if !ended.is_empty() {
+        diesel::sql_query("DELETE FROM schedules WHERE target = ANY($1)")
+            .bind::<Array<Text>, _>(&ended)
+            .execute(c)
+            .await?;
+    }
+    Ok((due.len(), added))
 }

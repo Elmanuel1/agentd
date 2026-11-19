@@ -1,0 +1,28 @@
+[package]
+name = "scheduler-temporal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+shared = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+temporalio-client = { workspace = true }
+temporalio-sdk = { workspace = true }
+temporalio-macros = { workspace = true }
+temporalio-common = { workspace = true }
+temporalio-workflow = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+store-postgres = { workspace = true }
+
+[lints]
+workspace = true

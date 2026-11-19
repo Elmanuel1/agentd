@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use agents::AgentRef;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use shared::limits::{required, validate_array_max, values};
 use shared::metadata::MetadataPolicy;
 use shared::ports::{ScheduleChange, ScheduleSpec, TenantRef};
@@ -49,6 +49,9 @@ pub trait DeploymentDeps: Send + Sync {
         key: Option<&'a str>,
     ) -> BoxFuture<'a, Result<String, sessions::service::FireRefusal>>;
 }
+
+/// Live's answer to a schedule with no occurrence in the next year.
+const NEVER_FIRES: &str = "`schedule.expression` does not produce any occurrences in the next year";
 
 /// Deployment service.
 pub struct DeploymentsService {
@@ -96,7 +99,11 @@ impl DeploymentsService {
             kind: schedule_input.kind,
             upcoming_runs_at: vec![],
         };
-        schedule.refresh_upcoming(Utc::now())?; // also validates cron+tz
+        let after = Utc::now();
+        schedule.refresh_upcoming(after)?; // also validates cron+tz
+        if schedule.upcoming_runs_at.first().is_none_or(|t| t.as_datetime() > after + Duration::days(365)) {
+            return Err(ApiError::invalid_request(NEVER_FIRES));
+        }
 
         let now = Timestamp::now();
         let d = Deployment {
@@ -143,48 +150,44 @@ impl DeploymentsService {
 
     /// `POST /v1/deployments/{id}/pause` — reversible; manual runs allowed.
     pub async fn pause(&self, ctx: &AuthContext, raw_id: &str) -> Result<Deployment, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        guard_not_archived(&d)?;
-        d.status = DeploymentStatus::Paused;
-        d.paused_reason = Some(PausedReason::Manual);
-        d.updated_at = Timestamp::now();
-        let change = ScheduleChange::Pause { target: target(&d.id) };
-        self.store.replace(&ctx.workspace, d.clone(), Some(&change)).await.map_err(map_store)?;
-        Ok(d)
+        self.rewrite(ctx, self.get(ctx, raw_id).await?, |d| {
+            guard_not_archived(d)?;
+            d.status = DeploymentStatus::Paused;
+            d.paused_reason = Some(PausedReason::Manual);
+            Ok(Some(ScheduleChange::Pause { target: target(&d.id) }))
+        })
+        .await
     }
 
     /// `POST /v1/deployments/{id}/unpause` — resumes next occurrence; no
     /// backfill.
     pub async fn unpause(&self, ctx: &AuthContext, raw_id: &str) -> Result<Deployment, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        guard_not_archived(&d)?;
-        d.status = DeploymentStatus::Active;
-        d.paused_reason = None;
-        d.updated_at = Timestamp::now();
-        d.schedule.refresh_upcoming(Utc::now())?;
-        let change = ScheduleChange::Unpause { target: target(&d.id) };
-        self.store.replace(&ctx.workspace, d.clone(), Some(&change)).await.map_err(map_store)?;
-        Ok(d)
+        self.rewrite(ctx, self.get(ctx, raw_id).await?, |d| {
+            guard_not_archived(d)?;
+            d.status = DeploymentStatus::Active;
+            d.paused_reason = None;
+            d.schedule.refresh_upcoming(Utc::now())?;
+            Ok(Some(ScheduleChange::Unpause { target: target(&d.id) }))
+        })
+        .await
     }
 
     /// `POST /v1/deployments/{id}/archive` — terminal; schedule deleted.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Deployment, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut d = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        if d.status != DeploymentStatus::Archived {
+        self.rewrite(ctx, self.get(ctx, raw_id).await?, |d| {
+            if d.status == DeploymentStatus::Archived {
+                return Ok(None);
+            }
             d.status = DeploymentStatus::Archived;
             d.archived_at = Some(Timestamp::now());
-            d.updated_at = Timestamp::now();
-            let change = ScheduleChange::Delete { target: target(&d.id) };
-            self.store.replace(&ctx.workspace, d.clone(), Some(&change)).await.map_err(map_store)?;
-        }
-        Ok(d)
+            Ok(Some(ScheduleChange::Delete { target: target(&d.id) }))
+        })
+        .await
     }
 }
 
 mod firing;
+mod rewrite;
 
 fn guard_not_archived(d: &Deployment) -> Result<(), ApiError> {
     if d.status == DeploymentStatus::Archived {
@@ -200,6 +203,7 @@ pub(super) fn parse_id(raw: &str) -> Result<DeploymentId, ApiError> {
 pub(super) fn map_store(e: StoreError) -> ApiError {
     match e {
         StoreError::NotFound => ApiError::not_found("deployment not found"),
+        StoreError::Stale => ApiError::conflict_invalid_request("deployment kept changing; try again"),
         StoreError::Backend(m) => ApiError::internal(m.to_string()),
     }
 }

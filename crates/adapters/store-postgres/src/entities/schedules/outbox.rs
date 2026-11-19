@@ -10,7 +10,7 @@ use diesel::QueryableByName;
 use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
-use shared::ports::{ScheduleChange, SchedulerPort};
+use shared::ports::{ScheduleChange, SchedulerError, SchedulerPort};
 
 /// Record `change` in the transaction on `c`.
 pub(crate) async fn record(
@@ -69,8 +69,9 @@ impl NativeChangeHandler for ScheduleOutbox {
 
     /// An insert's change, applied again after a crash, leaves the same
     /// schedule; its delete in the same transaction is not a change to apply.
-    /// A change that never decodes is passed over, so it cannot hold back
-    /// the ones after it; a sink failure is retried.
+    /// A change that never decodes, or that the sink refuses as invalid, is
+    /// passed over, so it cannot hold back the ones after it; a sink that is
+    /// unavailable is retried.
     async fn handle(&self, change: &Change) -> Result<(), BackendError> {
         let Some(row) = change.after.as_ref().filter(|_| change.op == ChangeOp::Insert) else {
             return Ok(());
@@ -79,7 +80,14 @@ impl NativeChangeHandler for ScheduleOutbox {
             tracing::error!(row = ?row.get("seq"), "schedules: an outbox change does not decode; passed over");
             return Ok(());
         };
-        decoded.apply(self.sink.as_ref()).await.map_err(BackendError::new)
+        match decoded.apply(self.sink.as_ref()).await {
+            Err(SchedulerError::InvalidSpec(e)) => {
+                let target = decoded.target().key();
+                tracing::error!(%target, error = %e, "schedules: the scheduler refused a change as invalid; passed over");
+                Ok(())
+            }
+            applied => applied.map_err(BackendError::new),
+        }
     }
 }
 

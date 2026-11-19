@@ -30,6 +30,7 @@ dreams = { workspace = true }
 history = { workspace = true }
 work = { workspace = true }
 store-postgres = { workspace = true }
+scheduler-temporal = { workspace = true }
 diesel = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

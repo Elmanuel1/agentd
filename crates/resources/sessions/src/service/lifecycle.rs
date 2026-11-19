@@ -45,6 +45,7 @@ impl SessionsService {
         }
         let initial: Vec<EventPayload> = req.initial_events.into_iter().map(EventPayload::User).collect();
         validate_sendable("initial_events", &initial)?;
+        let requested = req.id.is_some();
         if let Some(made) = self.made(ctx, req.id.as_ref(), &initial).await? {
             return Ok(made);
         }
@@ -78,9 +79,17 @@ impl SessionsService {
             deployment_id: req.deployment_id,
         };
         self.queue_work(ctx, &session, &environment).await?;
-        if let Err(e) = self.store.insert(&ctx.workspace, session.clone()).await {
-            self.end_work(&ctx.workspace, &session.id).await;
-            return Err(map_store(e).into());
+        match self.store.insert(&ctx.workspace, session.clone()).await {
+            // An overlapping create of the same requested id inserted first:
+            // the work item is that session's, so it stays queued (DS-20).
+            Err(StoreError::Conflict) if requested => {
+                return self.store.get(&ctx.workspace, &session.id).await.map_err(|e| map_store(e).into());
+            }
+            Err(e) => {
+                self.end_work(&ctx.workspace, &session.id).await;
+                return Err(map_store(e).into());
+            }
+            Ok(()) => {}
         }
         if !initial.is_empty() {
             self.send_events(ctx, session.id.as_str(), None, initial).await?;

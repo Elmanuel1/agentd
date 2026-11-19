@@ -8,18 +8,20 @@ use std::time::Duration;
 use sessions::retention::Retention;
 use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
-use shared::ports::fire::FireRegistry;
+use shared::ports::fire::{FireRegistry, FireWorker};
 use store_postgres::{
-    PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
+    PgBackend, PgError, PgFireClaims, PgLoad, PgRunLock, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
 
 use super::Stores;
 use super::feed::ChangeFeed;
+use super::scheduler::Sink;
 use super::secrets::Secrets;
+use crate::telemetry::scheduler::{self, SchedulerMetrics};
 use crate::telemetry::{self, Metrics};
 
-/// How often each replica claims due schedules (cron is minute-grained).
-const TICK: Duration = Duration::from_secs(10);
+/// How often each replica runs the due fires of the fire queue.
+const FIRES: Duration = Duration::from_secs(1);
 
 /// What the Postgres backends give the rest of the app.
 pub(super) struct Postgres {
@@ -71,23 +73,31 @@ pub(super) async fn connect(
     Ok(Postgres { stores, load: Arc::new(load), backend: pg })
 }
 
-/// The fires every replica delivers: the built-in scheduler's tick (a due
-/// schedule goes to whichever replica claims it first) and the fires
-/// an external scheduler writes to the change feed. They start once the handlers are registered.
+/// What every replica runs: the scheduler sink's side that writes each
+/// occurrence to the fire queue (the built-in tick, or the Temporal worker),
+/// the change feed's consumer of an external scheduler's fires, which writes
+/// them there too, and the fire workers, which run the queue. They start once
+/// the handlers are registered.
 #[derive(Debug)]
 pub struct FireSources {
-    tick: PgScheduler,
+    sink: Sink,
     feed: ChangeFeed,
+    queue: PgFireClaims,
+    metrics: SchedulerMetrics,
 }
 
 impl FireSources {
-    pub(super) fn new(tick: PgScheduler, feed: ChangeFeed) -> Self {
-        Self { tick, feed }
+    pub(super) fn new(sink: Sink, feed: ChangeFeed, queue: PgFireClaims, metrics: SchedulerMetrics) -> Self {
+        Self { sink, feed, queue, metrics }
     }
 
-    /// Start delivering to `fires`.
+    /// Start, running the queue through `fires`.
     pub(crate) fn start(self, fires: &Arc<FireRegistry>) {
-        drop(self.tick.spawn(TICK));
+        let (ticked, ended) = (self.metrics.clone(), self.metrics);
+        self.sink.start(fires, move |n| ticked.enqueued(n));
         drop(self.feed.spawn_fires(fires.clone()));
+        drop(FireWorker::new(fires.clone(), move |ending, lag| ended.ended(ending, lag)).spawn(FIRES));
+        drop(scheduler::watch_due(&opentelemetry::global::meter("agentd"), self.queue.clone()));
+        drop(self.queue.spawn_sweep());
     }
 }

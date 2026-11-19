@@ -459,6 +459,9 @@ async fn pg_sessions_refuse_a_stale_write_and_events_for_a_deleted_session() {
     let read: Session =
         serde_json::from_str(include_str!("../../../../conformance/fixtures/session.create.json")).unwrap();
     store.insert(&ws, read.clone()).await.unwrap();
+    let mut again = read.clone();
+    again.title = Some("again".into());
+    assert!(matches!(store.insert(&ws, again).await, Err(StoreError::Conflict)), "the id is taken");
 
     let mut first = read.clone();
     first.title = Some("first".into());

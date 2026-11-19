@@ -8,6 +8,7 @@ use ::sessions::store::{NativeSessionsStore, Order, SessionFilter, StoreError};
 use ::sessions::types::{Session, SessionId, SessionStatus};
 use ::work::store::Reach;
 use chrono::{DateTime, Utc};
+use diesel::result::{DatabaseErrorKind, Error::DatabaseError};
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
 use diesel::{BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -45,18 +46,17 @@ struct NewSession {
 impl NativeSessionsStore for PgSessionsStore {
     async fn insert(&self, ws: &WorkspaceId, s: Session) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
-        diesel::insert_into(sessions::table)
-            .values(NewSession {
-                workspace_id: ws.as_str().to_owned(),
-                session_id: s.id.as_str().to_owned(),
-                status: enum_str(&s.status),
-                created_at: s.created_at.as_datetime(),
-                doc: to_doc(&s)?,
-            })
-            .execute(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        Ok(())
+        let row = NewSession {
+            workspace_id: ws.as_str().to_owned(),
+            session_id: s.id.as_str().to_owned(),
+            status: enum_str(&s.status),
+            created_at: s.created_at.as_datetime(),
+            doc: to_doc(&s)?,
+        };
+        match diesel::insert_into(sessions::table).values(row).execute(&mut conn).await {
+            Err(DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => Err(StoreError::Conflict),
+            inserted => inserted.map(drop).map_err(diesel_be),
+        }
     }
 
     async fn get(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Session, StoreError> {

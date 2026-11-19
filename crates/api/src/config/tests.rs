@@ -180,5 +180,6 @@ fn aws_secret_options_come_from_config() {
 }
 
 mod keys;
+mod scheduler;
 mod secrets;
 mod streams;

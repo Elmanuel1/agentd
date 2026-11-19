@@ -10,12 +10,13 @@ One binary serves three roles, chosen with `AGENTD_ROLE`:
 
 | Role | Runs | Scale on |
 |---|---|---|
-| `api` | the HTTP API, event streams, event retention, the change feed's handlers (schedules, webhooks, history) | request rate and open streams |
+| `api` | the HTTP API, event streams, event retention | request rate and open streams |
 | `loop` | loop workers only; every route answers 404 | `agentd.loop.steps_due` |
 | `all` | both, for a single replica or a small deployment | either |
 
-Every role ticks the built-in scheduler. Replicas hold nothing between requests or steps, so any number of each
-role run side by side and any one of them can stop at any time.
+Every role runs the fire workers and the change feed's handlers (schedules, webhooks, history), and either ticks
+the built-in scheduler (`AGENTD_SCHEDULER=postgres`) or runs agentd's Temporal worker (`temporal`). Replicas hold nothing between requests or steps, so any number of each role run side by side
+and any one of them can stop at any time.
 
 ## A deployment
 
@@ -51,3 +52,6 @@ A `self_hosted` environment's tools run on the customer's worker (`ant beta:work
 | `agentd.history.apply_delay` p99 | over 5 minutes | history lags its commits: check the feed backlog and the `history:` log lines |
 | `webhook_deliveries` rows with `dropped_at` set | any for a configured endpoint | an endpoint refused three attempts: check the endpoint and its secret |
 | `agentd.retention.last_success` | older than 15 minutes while retention is set | retention stopped: read its `warn` lines |
+| `agentd.scheduler.fires.due` (max across replicas) | above 0 for 5 minutes | due fires wait: the workers are failing or behind; read the `fires:` log lines and `agentd.scheduler.fires` with outcome `retried` |
+| `agentd.scheduler.fire.lag` p99 | over 60 s | fires start late: check the database's load and the fire handlers' `warn` lines |
+| `agentd.scheduler.fires` with outcome `skipped` or `dropped` | any | an occurrence did not run: `skipped` ran out of time before its following occurrence; `dropped` has no handler or an unreadable spec (its `ERROR` line names the target) |
