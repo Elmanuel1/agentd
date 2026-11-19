@@ -8,7 +8,7 @@ use std::time::Duration;
 use sessions::retention::Retention;
 use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
-use shared::ports::fire::FireRegistry;
+use shared::ports::fire::{FireRegistry, FireWorker};
 use store_postgres::{
     PgBackend, PgError, PgLoad, PgRunLock, PgScheduler, PgSessionEventLog, PgSessionsStore, PoolSettings,
 };
@@ -20,6 +20,8 @@ use crate::telemetry::{self, Metrics};
 
 /// How often each replica claims due schedules (cron is minute-grained).
 const TICK: Duration = Duration::from_secs(10);
+/// How often each replica runs the due fires of the fire queue.
+const FIRES: Duration = Duration::from_secs(1);
 
 /// What the Postgres backends give the rest of the app.
 pub(super) struct Postgres {
@@ -71,9 +73,10 @@ pub(super) async fn connect(
     Ok(Postgres { stores, load: Arc::new(load), backend: pg })
 }
 
-/// The fires every replica delivers: the built-in scheduler's tick (a due
-/// schedule goes to whichever replica claims it first) and the fires
-/// an external scheduler writes to the change feed. They start once the handlers are registered.
+/// What every replica runs: the built-in scheduler's tick, which writes each
+/// due schedule's occurrence to the fire queue, the change feed's consumer of
+/// an external scheduler's fires, which writes them there too, and the fire
+/// workers, which run the queue. They start once the handlers are registered.
 #[derive(Debug)]
 pub struct FireSources {
     tick: PgScheduler,
@@ -85,9 +88,10 @@ impl FireSources {
         Self { tick, feed }
     }
 
-    /// Start delivering to `fires`.
+    /// Start, running the queue through `fires`.
     pub(crate) fn start(self, fires: &Arc<FireRegistry>) {
-        drop(self.tick.spawn(TICK));
+        drop(self.tick.spawn(TICK, |_| {}));
         drop(self.feed.spawn_fires(fires.clone()));
+        drop(FireWorker::new(fires.clone(), |_, _| {}).spawn(FIRES));
     }
 }

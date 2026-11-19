@@ -3,24 +3,25 @@ use std::sync::Mutex;
 use super::*;
 use crate::ports::FireTarget;
 
-/// Claims that answer `claim` to every take and count the finishes.
-struct Claims {
-    claim: Claim,
-    finished: Mutex<usize>,
+/// A queue that records what it is given, or is `down`.
+#[derive(Default)]
+struct Queue {
+    queued: Mutex<Vec<Fire>>,
+    down: bool,
 }
 
-impl NativeFireClaims for Claims {
-    async fn take(&self, _spec: &ScheduleSpec, _at: DateTime<Utc>) -> Result<Claim, FireError> {
-        Ok(self.claim)
-    }
-    async fn enqueue(&self, _: &[Fire]) -> Result<(), FireError> {
+impl NativeFireClaims for Queue {
+    async fn enqueue(&self, fires: &[Fire]) -> Result<(), FireError> {
+        if self.down {
+            return Err(FireError::Unavailable("database down".into()));
+        }
+        self.queued.lock().unwrap().extend_from_slice(fires);
         Ok(())
     }
     async fn claim_due(&self, _: usize) -> Result<Vec<Claimed>, FireError> {
         Ok(vec![])
     }
     async fn finish(&self, _: &Claimed, _: Outcome) -> Result<bool, FireError> {
-        *self.finished.lock().unwrap() += 1;
         Ok(true)
     }
     async fn retry(&self, _: &Claimed, _: DateTime<Utc>) -> Result<bool, FireError> {
@@ -28,12 +29,8 @@ impl NativeFireClaims for Claims {
     }
 }
 
-fn claims(claim: Claim) -> Arc<Claims> {
-    Arc::new(Claims { claim, finished: Mutex::new(0) })
-}
-
 fn registry() -> FireRegistry {
-    FireRegistry::new(claims(Claim::Run { token: 1 }))
+    FireRegistry::new(Arc::new(Queue::default()))
 }
 
 /// Fails every fire.
@@ -86,7 +83,7 @@ async fn fire_runs_the_kinds_handler_under_the_schedules_tenant_as_its_key() {
     let handler = Arc::new(Recording::default());
     registry.register(handler.clone()).unwrap();
     let at = Utc::now();
-    registry.fire(&spec("deployment"), at).await.unwrap();
+    registry.run(&spec("deployment"), at).await.unwrap();
     let fires = handler.fires.lock().unwrap();
     let (tenant, id, fired_at) = fires.first().unwrap();
     assert_eq!(tenant.org.as_str(), "org_a");
@@ -99,32 +96,43 @@ async fn fire_runs_the_kinds_handler_under_the_schedules_tenant_as_its_key() {
 }
 
 #[tokio::test]
-async fn a_fire_runs_and_finishes_only_when_its_claim_says_run() {
-    for (claim, runs) in [(Claim::Run { token: 1 }, 1), (Claim::Done, 0), (Claim::Held, 0)] {
-        let c = claims(claim);
-        let registry = FireRegistry::new(c.clone());
-        let handler = Arc::new(Recording::default());
-        registry.register(handler.clone()).unwrap();
-        assert_eq!(registry.fire(&spec("deployment"), Utc::now()).await.unwrap(), claim);
-        assert_eq!(handler.fires.lock().unwrap().len(), runs, "{claim:?}");
-        assert_eq!(*c.finished.lock().unwrap(), runs, "{claim:?}");
-    }
+async fn an_enqueued_fire_is_queued_due_after_its_jitter_and_not_run() {
+    let queue = Arc::new(Queue::default());
+    let registry = FireRegistry::new(queue.clone());
+    let handler = Arc::new(Recording::default());
+    registry.register(handler.clone()).unwrap();
+    let at = Utc::now();
+    registry.enqueue(&spec("deployment"), at).await.unwrap();
+    let queued = queue.queued.lock().unwrap().clone();
+    let due_at = jitter::due_at(&spec("deployment"), at);
+    assert_eq!(queued, vec![Fire { spec: spec("deployment"), scheduled_at: at, due_at }]);
+    assert!(handler.fires.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn a_failed_fire_is_not_finished() {
-    let c = claims(Claim::Run { token: 1 });
-    let registry = FireRegistry::new(c.clone());
+async fn a_delivery_is_acknowledged_once_its_occurrence_is_queued() {
+    let at = Utc::now();
+    let queue = Arc::new(Queue::default());
+    let registry = FireRegistry::new(queue.clone());
+    assert!(deliver(&registry, Some((spec("deployment"), at)), "fires/0@1").await);
+    assert_eq!(queue.queued.lock().unwrap().len(), 1);
+    assert!(deliver(&registry, None, "fires/0@2").await, "a delivery with no fire is dropped");
+    let down = FireRegistry::new(Arc::new(Queue { down: true, ..Queue::default() }));
+    assert!(!deliver(&down, Some((spec("deployment"), at)), "fires/0@3").await, "delivered again");
+}
+
+#[tokio::test]
+async fn a_failed_fire_is_an_error() {
+    let registry = registry();
     registry.register(Arc::new(Failing)).unwrap();
-    assert!(registry.fire(&spec("deployment"), Utc::now()).await.is_err());
-    assert_eq!(*c.finished.lock().unwrap(), 0);
+    assert!(matches!(registry.run(&spec("deployment"), Utc::now()).await, Err(FireError::Failed(_))));
 }
 
 #[tokio::test]
 async fn fire_of_a_kind_with_no_handler_is_an_error() {
     let registry = registry();
     registry.register(Arc::new(Recording::default())).unwrap();
-    let err = registry.fire(&spec("dream"), Utc::now()).await.unwrap_err();
+    let err = registry.run(&spec("dream"), Utc::now()).await.unwrap_err();
     assert!(matches!(err, FireError::NoHandler(kind) if kind == "dream"));
 }
 

@@ -142,7 +142,7 @@ impl Backends {
                 let pg =
                     postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
                 let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.backend.clone()))));
-                let scheduler = PgScheduler::new(pg.backend.clone(), fires.clone());
+                let scheduler = PgScheduler::new(pg.backend.clone());
                 let feed = feed::ChangeFeed::from_config(streams, &valkey);
                 let sender =
                     WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)

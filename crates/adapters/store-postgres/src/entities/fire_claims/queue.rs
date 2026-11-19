@@ -1,6 +1,8 @@
 //! The queue's rows: an occurrence is written once with its spec and due
 //! time, claimed by one worker at a time under a 2-minute lease, and settled
-//! only by the claim that still holds its token (the row's `attempts`).
+//! only by the claim that still holds its token (the row's `attempts`). A
+//! row the earlier fire inbox claimed has no `due_at`, so no worker claims it
+//! until a redelivery fills it in.
 
 use chrono::{DateTime, Utc};
 use diesel::QueryableByName;
@@ -35,7 +37,8 @@ struct Taken {
     attempts: i32,
 }
 
-/// Write `fires` in the transaction on `c`; an occurrence already queued keeps its row.
+/// Write `fires` in the transaction on `c`; an occurrence already queued keeps its row, except that a row
+/// the earlier fire inbox claimed without a spec and never finished is filled in, so the workers run it.
 pub(crate) async fn enqueue_in(
     c: &mut AsyncPgConnection,
     fires: &[Fire],
@@ -53,7 +56,8 @@ pub(crate) async fn enqueue_in(
         "INSERT INTO fire_claims (workspace_id, target, scheduled_at, spec, due_at, claimed_at, attempts)
          SELECT v.w, v.t, v.s, v.sp, v.d, '-infinity', 0
          FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::jsonb[], $5::timestamptz[]) AS v(w, t, s, sp, d)
-         ON CONFLICT (workspace_id, target, scheduled_at) DO NOTHING",
+         ON CONFLICT (workspace_id, target, scheduled_at) DO UPDATE SET spec = EXCLUDED.spec, due_at = EXCLUDED.due_at
+           WHERE fire_claims.spec IS NULL AND NOT fire_claims.done",
     )
     .bind::<Array<Text>, _>(&workspaces)
     .bind::<Array<Text>, _>(&targets)

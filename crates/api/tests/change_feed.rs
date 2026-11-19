@@ -22,10 +22,9 @@ use diesel::sql_types::{BigInt, Text};
 use diesel_async::RunQueryDsl;
 use serde_json::{Value, json};
 use shared::ports::changes::ChangeHandler;
-use shared::ports::fire::FireRegistry;
 use shared::ports::{FireTarget, SchedulerError, SchedulerPort};
 use signals_valkey::{Valkey, ValkeyChanges};
-use store_postgres::{PgFireClaims, PgScheduler, ScheduleOutbox};
+use store_postgres::{PgScheduler, ScheduleOutbox};
 
 fn cdc_enabled() -> bool {
     std::env::var("AGENTD_CDC_TESTS").as_deref() == Ok("1")
@@ -106,8 +105,7 @@ async fn a_deployment_s_schedule_changes_reach_the_scheduler_through_the_wal() {
         return;
     }
     let Some(rig) = Rig::new().await else { return };
-    let fires = Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(rig.pg.clone()))));
-    let sched = PgScheduler::new(rig.pg.clone(), fires);
+    let sched = PgScheduler::new(rig.pg.clone());
     let outbox: Arc<dyn ChangeHandler> = Arc::new(ScheduleOutbox::new(Arc::new(sched.clone())));
     let tasks = match std::env::var("AGENTD_KAFKA_BROKERS") {
         Ok(brokers) => KafkaChanges::new(&brokers, "agentd").spawn(vec![outbox]),

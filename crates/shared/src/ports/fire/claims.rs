@@ -66,28 +66,8 @@ impl Outcome {
     }
 }
 
-/// What the claim of one fire delivered outside the queue allows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Claim {
-    /// This caller owns the fire under `token`: run it, then finish it.
-    Run {
-        /// The claim's token.
-        token: i32,
-    },
-    /// The fire ran, or ran out of attempts: drop the delivery.
-    Done,
-    /// Another replica owns the fire and its lease holds: deliver it again later.
-    Held,
-}
-
 /// The fire queue, in durable storage.
 pub trait FireClaims: Send + Sync {
-    /// Claim the fire of `spec` at `at` outside the queue, or take over one whose lease ran out.
-    fn take<'a>(
-        &'a self,
-        spec: &'a ScheduleSpec,
-        at: DateTime<Utc>,
-    ) -> BoxFuture<'a, Result<Claim, FireError>>;
     /// Add `fires`; an occurrence already queued keeps its row.
     fn enqueue<'a>(&'a self, fires: &'a [Fire]) -> BoxFuture<'a, Result<(), FireError>>;
     /// Claim up to `limit` due fires that are not done and whose lease is free.
@@ -100,11 +80,6 @@ pub trait FireClaims: Send + Sync {
 
 /// What an adapter implements to provide [`FireClaims`]; the methods are documented there.
 pub trait NativeFireClaims: Send + Sync {
-    fn take(
-        &self,
-        spec: &ScheduleSpec,
-        at: DateTime<Utc>,
-    ) -> impl Future<Output = Result<Claim, FireError>> + Send;
     fn enqueue(&self, fires: &[Fire]) -> impl Future<Output = Result<(), FireError>> + Send;
     fn claim_due(&self, limit: usize) -> impl Future<Output = Result<Vec<Claimed>, FireError>> + Send;
     fn finish(
@@ -120,13 +95,6 @@ pub trait NativeFireClaims: Send + Sync {
 }
 
 impl<T: NativeFireClaims> FireClaims for T {
-    fn take<'a>(
-        &'a self,
-        spec: &'a ScheduleSpec,
-        at: DateTime<Utc>,
-    ) -> BoxFuture<'a, Result<Claim, FireError>> {
-        Box::pin(NativeFireClaims::take(self, spec, at))
-    }
     fn enqueue<'a>(&'a self, fires: &'a [Fire]) -> BoxFuture<'a, Result<(), FireError>> {
         Box::pin(NativeFireClaims::enqueue(self, fires))
     }

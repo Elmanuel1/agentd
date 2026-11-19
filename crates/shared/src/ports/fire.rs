@@ -16,7 +16,7 @@ mod claims;
 mod delivery;
 pub mod jitter;
 mod worker;
-pub use claims::{Claim, Claimed, Fire, FireClaims, FireKey, NativeFireClaims, Outcome};
+pub use claims::{Claimed, Fire, FireClaims, FireKey, NativeFireClaims, Outcome};
 pub use delivery::deliver;
 pub use worker::{Ending, FireWorker};
 
@@ -67,7 +67,7 @@ impl std::fmt::Debug for FireRegistry {
 }
 
 impl FireRegistry {
-    /// No handlers yet; every fire is claimed in `claims` first.
+    /// No handlers yet; fires queue in `claims`.
     pub fn new(claims: Arc<dyn FireClaims>) -> Self {
         Self { handlers: RwLock::default(), claims }
     }
@@ -82,33 +82,16 @@ impl FireRegistry {
         Ok(())
     }
 
-    /// Deliver one tick of `spec` to the handler of its target's kind, as
-    /// the schedule's key writing a request of its own, once its claim allows;
-    /// the claim it found. A failed fire stays claimed and runs again when
-    /// it is delivered again after its lease.
-    pub async fn fire(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<Claim, FireError> {
-        self.handler(spec)?;
-        let claim = self.claims.take(spec, scheduled_at).await?;
-        let Claim::Run { token } = claim else {
-            return Ok(claim);
-        };
-        self.run(spec, scheduled_at).await?;
-        let key = FireKey {
-            workspace_id: spec.tenant.workspace_id.clone(),
-            target: spec.target.key(),
-            scheduled_at,
-        };
-        self.claims.finish(&Claimed { key, token, spec: Some(spec.clone()) }, Outcome::Ran).await?;
-        Ok(claim)
+    /// Write the occurrence of `spec` at `scheduled_at` to the fire queue,
+    /// due after its jitter; an occurrence already queued keeps its row.
+    pub async fn enqueue(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
+        let due_at = jitter::due_at(spec, scheduled_at);
+        self.claims.enqueue(&[Fire { spec: spec.clone(), scheduled_at, due_at }]).await
     }
 
     /// Run the fire of `spec` at `scheduled_at` through its kind's handler,
     /// as the schedule's key writing a request of its own.
-    pub(crate) async fn run(
-        &self,
-        spec: &ScheduleSpec,
-        scheduled_at: DateTime<Utc>,
-    ) -> Result<(), FireError> {
+    pub async fn run(&self, spec: &ScheduleSpec, scheduled_at: DateTime<Utc>) -> Result<(), FireError> {
         let handler = self.handler(spec)?;
         let writer = Writer::fresh(&spec.tenant.api_key_id);
         let tenant = spec.tenant.auth_context();

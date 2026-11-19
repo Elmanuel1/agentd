@@ -5,7 +5,7 @@ use chrono::DateTime;
 
 use super::*;
 use crate::AuthContext;
-use crate::ports::fire::{Claim, Fire, FireHandler, FireKey, NativeFireClaims};
+use crate::ports::fire::{Fire, FireHandler, FireKey, NativeFireClaims};
 use crate::ports::{FireTarget, ScheduleSpec, TenantRef};
 
 /// A queue that hands out `due` once, and records each finish and retry;
@@ -19,9 +19,6 @@ struct Queue {
 }
 
 impl NativeFireClaims for Queue {
-    async fn take(&self, _: &ScheduleSpec, _: DateTime<Utc>) -> Result<Claim, FireError> {
-        Ok(Claim::Done)
-    }
     async fn enqueue(&self, _: &[Fire]) -> Result<(), FireError> {
         Ok(())
     }

@@ -1,14 +1,11 @@
 //! [`FireClaims`](shared::ports::fire::FireClaims) over `fire_claims`, the
-//! fire queue: [`queue`] writes, claims and settles its rows; [`claim`] is the
-//! claim a fire delivered outside the queue takes.
+//! fire queue, whose rows [`queue`] writes, claims and settles.
 
 use chrono::{DateTime, Utc};
-use shared::ports::ScheduleSpec;
-use shared::ports::fire::{Claim, Claimed, Fire, FireError, NativeFireClaims, Outcome};
+use shared::ports::fire::{Claimed, Fire, FireError, NativeFireClaims, Outcome};
 
 use crate::PgBackend;
 
-mod claim;
 pub(crate) mod queue;
 
 /// The fire queue on Postgres.
@@ -29,10 +26,6 @@ fn unavailable(e: impl std::fmt::Display) -> FireError {
 }
 
 impl NativeFireClaims for PgFireClaims {
-    async fn take(&self, spec: &ScheduleSpec, at: DateTime<Utc>) -> Result<Claim, FireError> {
-        claim::take(&self.backend, spec, at).await
-    }
-
     async fn enqueue(&self, fires: &[Fire]) -> Result<(), FireError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
         queue::enqueue_in(&mut conn, fires).await.map_err(unavailable)
