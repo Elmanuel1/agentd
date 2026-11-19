@@ -92,7 +92,8 @@ impl SchedulerPort for PgScheduler {
     }
 
     /// Resume from the next occurrence after now. The write applies only while the row is still
-    /// paused, so a repeated unpause leaves an active schedule's next occurrence as it is.
+    /// paused with the spec read, so a repeated unpause leaves an active schedule as it is and a
+    /// spec changed meanwhile keeps its own next occurrence.
     async fn unpause(&self, target: &FireTarget) -> Result<(), SchedulerError> {
         let mut conn = self.backend.diesel.write().await.map_err(unavailable)?;
         let row: Option<Stored> = diesel::sql_query("SELECT spec, paused FROM schedules WHERE target = $1")
@@ -105,14 +106,15 @@ impl SchedulerPort for PgScheduler {
         if !row.paused {
             return Ok(());
         }
-        let spec: ScheduleSpec = serde_json::from_value(row.spec).map_err(unavailable)?;
+        let spec: ScheduleSpec = serde_json::from_value(row.spec.clone()).map_err(unavailable)?;
         let next = compile(&spec)?.next_fires(Utc::now(), 1).into_iter().next();
         let next = next.ok_or_else(|| SchedulerError::InvalidSpec("the schedule never fires".into()))?;
         diesel::sql_query(
-            "UPDATE schedules SET paused = false, next_fire_at = $2 WHERE target = $1 AND paused",
+            "UPDATE schedules SET paused = false, next_fire_at = $2 WHERE target = $1 AND paused AND spec = $3",
         )
         .bind::<Text, _>(target.key())
         .bind::<Timestamptz, _>(next)
+        .bind::<Jsonb, _>(row.spec)
         .execute(&mut conn)
         .await
         .map(drop)
