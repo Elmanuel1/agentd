@@ -22,11 +22,12 @@ timeout, and keeps retries in memory:
    `agentd:webhooks` and returns.
 2. Every instance runs one claim loop. On a wake, at most once every 50 ms, and every 1 s without one, it claims up
    to its free senders (at most 100) of due rows with `FOR NO KEY UPDATE SKIP LOCKED`, leaving out endpoints whose breaker
-   is open on it unless they are disabled, and sets `claimed_until = clock_timestamp() + 60 s` in the same transaction. The
+   is open on it unless they are disabled, and sets `claimed_until = now() + 60 s` and `claim_seq = claim_seq + 1` in the same
+   transaction. The
    update repeats the due conditions, and the instance sends only the rows it returns.
-3. The claim's `claimed_until` is its token: the row lock serializes claims, so every later claim of the row,
-   after an expiry or a release, gets a strictly later value, and the outcome and the
-   release write only while the row still holds the value the claim returned. `attempt` counts POSTs: the outcome
+3. The claim's `claim_seq` is its token: a counter each claim raises and nothing lowers, so every later claim of the
+   row, after an expiry or a release, gets a higher value, and the outcome, the release and the drop write only while
+   the row still holds the value the claim returned. `attempt` counts POSTs: the outcome
    adds one, a lapsed claim adds one at the next claim, a released claim adds none, and a claim that reaches 3 drops
    the row unsent. Before each POST the sender checks that at least 15 s of the claim remain and that its endpoint state read is
    under 11 s old, so a send

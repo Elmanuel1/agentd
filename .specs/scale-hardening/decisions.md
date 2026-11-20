@@ -19,9 +19,10 @@ api.anthropic.com. Each row names who decided and when.
 | D16 | Model calls go through a breaker per provider per replica that makes steps wait, not fail. | User, 2026-11-19 ("Add both") |
 | D17 | MCP `initialize`, `tools/list` and token refresh have no in-call retry. A failure is a `session.error` marked `retrying` and the next turn tries again, as live (runtime-parity MC-14). | User, 2026-11-19 ("Yes, remove them") |
 | D18 | The webhook claim loop polls every 1 s behind the wake. It does not sleep until the next due time. | User, 2026-11-19 ("Keep the 1 s poll") |
-| D19 | Two instances never hold one delivery: the claim's select and update run in one transaction, the update repeats the due conditions, all times come from Postgres's clock (the claim token from `clock_timestamp()`), and the sender checks before each POST that 15 s of its claim remain. | User, 2026-11-19 ("Make sure that two instances don't claim the same thing") |
+| D19 | Two instances never hold one delivery: the claim's select and update run in one transaction, the update repeats the due conditions, all times are Postgres `now()`, the claim token is the row's `claim_seq` (D26), and the sender checks before each POST that 15 s of its claim remain. | User, 2026-11-19 ("Make sure that two instances don't claim the same thing") |
 | D20 | The migrations V24 to V27 and the `webhook_endpoint_states` table are approved. | User, 2026-11-19 (plan approved) |
 | D25 | Postgres sets `processed_at`, from `clock_timestamp()` after the session's append lock, so one session's values grow in commit order and the events list's tail has no gaps. | User, 2026-11-19 ("Stamp in Postgres") |
+| D26 | The webhook claim token is `claim_seq bigint not null default 0` on `webhook_deliveries`, added in V24: each claim raises it by one, nothing lowers it, and every outcome, release and drop is fenced on it, so a clock step cannot make two claims share a token. | User, 2026-11-19 ("Add claim_seq") |
 
 ## Matched to live
 

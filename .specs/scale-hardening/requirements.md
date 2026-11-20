@@ -187,7 +187,8 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   sending capacity, with no shared counter and no number to agree on (D1).
 - **Claim**, one short transaction: select up to the instance's free senders (at most 100) of due rows, leaving out
   endpoints whose breaker is open on this instance unless the endpoint is disabled, `ORDER BY next_attempt_at ... FOR
-  NO KEY UPDATE SKIP LOCKED`; set `claimed_until = clock_timestamp() + 60 s` on them in one `UPDATE`; commit; then send each in
+  NO KEY UPDATE SKIP LOCKED`; set `claimed_until = now() + 60 s` and `claim_seq = claim_seq + 1` on them in one
+  `UPDATE`; commit; then send each in
   the background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
   dropped without a send when it falls due (live does not replay), whatever its breaker says. A replica learns of a
   disable from its 10 s state read; from then on it starts no POST to the endpoint, and a POST already started
@@ -195,11 +196,10 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   counted from when that read started (its snapshot can be no newer); a read that is already 11 s old when it
   completes is discarded. When a read fails or runs late past that, the replica releases its claims unsent and starts no POST until a read succeeds, so
   stale state never sends to a disabled endpoint.
-- **The claim token is `claimed_until`.** It is set from `clock_timestamp()`, the time the claim's `UPDATE` runs,
-  not the transaction's start. Two claims of one row are serialized by the row lock, so the later claim's `UPDATE`
-  runs after the earlier one committed (and after any release of it) and gets a strictly later value: no two claims
-  of a row share a token, whether the earlier one expired or was released. Every later write for the claim (outcome, release)
-  matches the row's `claimed_until` to the value the claim returned, so a write from an expired or released claim
+- **The claim token is `claim_seq`** (D26), a counter on the row that each claim raises by one and nothing ever
+  lowers: no two claims of a row share a token, whether the earlier one expired or was released, and no clock is
+  involved. `claimed_until` only says when the claim expires. Every later write for the claim (outcome, release,
+  drop) matches the row's `claim_seq` to the value the claim returned, so a write from an expired or released claim
   changes nothing. `attempt` counts POSTs: the outcome adds 1, and a claim that lapsed (its `claimed_until` is still
   set when the next claim takes the row) adds 1 at that next claim, since it may have sent. A released claim clears
   `claimed_until`, so it spends nothing. A claim that brings `attempt` to 3 drops the row without sending, so a
@@ -209,8 +209,8 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
     read the row between them.
   - The `UPDATE` repeats the conditions (not delivered, not dropped, unclaimed or claim expired) and the sender sends
     only the rows it returns. A row another instance claimed in between is simply not updated, so it is not sent.
-  - Every time is Postgres's clock (`now()` for due and expiry checks, `clock_timestamp()` for the token), never an
-    instance's clock, so clock skew cannot make a live claim look expired.
+  - Every time is Postgres `now()`, never an instance's clock, so clock skew cannot make a live claim look expired.
+    The token is a counter, not a time.
 - **A claim normally outlives its send.** The instance takes its own deadline as 60 s from just before it takes a
   connection and begins the claim transaction (on its monotonic clock; `now()` is the transaction's start, so this
   deadline is never later than the row's `claimed_until`), and checks before each POST that at least 15 s remain:
@@ -478,7 +478,8 @@ files use `concurrently` as V10 to V12. No guards or row checks (`project-agentd
 - **V24** (PR 1 commit 2):
   `create table webhook_endpoint_states (endpoint_key text primary key, org_id text not null, failing_since
   timestamptz, disabled_at timestamptz, disabled_reason text, config_digest text not null);`
-  `alter table webhook_deliveries add column last_status smallint, add column last_error text;`
+  `alter table webhook_deliveries add column last_status smallint, add column last_error text, add column claim_seq
+  bigint not null default 0;`
   - `endpoint_key` alone is the key: endpoint ids are unique across orgs (`endpoints.rs` `by_key`). `org_id` stays for
     the operator command and logs. `disabled_reason` is text with no `CHECK IN` (rule 20); a Rust enum
     (`redirect`, `private_address`, `failing`) maps it. The table is not on the Debezium feed.
@@ -592,21 +593,21 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS
      NULL AND dropped_at IS NULL AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()) AND
      endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED`, then `UPDATE
-     webhook_deliveries AS d SET claimed_until = clock_timestamp() + interval '60 seconds', attempt = least(3, d.attempt +
-     (d.claimed_until IS NOT NULL)::int) FROM
+     webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds', claim_seq = d.claim_seq + 1, attempt =
+     least(3, d.attempt + (d.claimed_until IS NOT NULL)::int) FROM
      unnest($3::text[], $4::text[]) AS v(webhook_id, endpoint_key) WHERE d.webhook_id = v.webhook_id AND
      d.endpoint_key = v.endpoint_key AND d.delivered_at IS NULL AND d.dropped_at IS NULL AND (d.claimed_until IS NULL
-     OR d.claimed_until < now()) RETURNING d.webhook_id, d.endpoint_key, d.claimed_until, d.attempt, d.endpoint_url,
+     OR d.claimed_until < now()) RETURNING d.webhook_id, d.endpoint_key, d.claim_seq, d.attempt, d.endpoint_url,
      d.body`. `$1` is the open-breaker endpoints minus the disabled ones. A returned row at `attempt` 3 (the cap) is dropped
      unsent with the drop statement below, which leaves `attempt` at 3. The
      sender sends only the returned rows.
    - `queue.rs`, release unsent: `UPDATE webhook_deliveries SET claimed_until = NULL WHERE webhook_id = $1 AND
-     endpoint_key = $2 AND claimed_until = $3`.
+     endpoint_key = $2 AND claim_seq = $3`.
    - `queue.rs`, drop unsent: `UPDATE webhook_deliveries SET dropped_at = now(), claimed_until = NULL, last_error =
-     $4 WHERE webhook_id = $1 AND endpoint_key = $2 AND claimed_until = $3`; also used for a disabled endpoint's rows.
+     $4 WHERE webhook_id = $1 AND endpoint_key = $2 AND claim_seq = $3`; also used for a disabled endpoint's rows.
    - `queue.rs`, outcome: `UPDATE webhook_deliveries SET attempt = attempt + 1, {delivered_at = now() | dropped_at =
      now() | next_attempt_at = now() + make_interval(secs => $4)}, claimed_until = NULL, last_status = $5, last_error
-     = $6 WHERE webhook_id = $1 AND endpoint_key = $2 AND claimed_until = $3`.
+     = $6 WHERE webhook_id = $1 AND endpoint_key = $2 AND claim_seq = $3`.
    - `queue.rs`, oldest due: `SELECT min(next_attempt_at) FROM webhook_deliveries WHERE delivered_at IS NULL AND
      dropped_at IS NULL`.
    - `endpoints.rs`, failure: `INSERT INTO webhook_endpoint_states (endpoint_key, org_id, failing_since,
@@ -642,7 +643,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
    claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
    whose claims lapse three times is dropped with `attempt` 3"; "a claim at `attempt` 3 that lapses before its drop
-   is dropped by the next claim, still at `attempt` 3"; "a release then an immediate re-claim gets a new token, and the
+   is dropped by the next claim, still at `attempt` 3"; "a release then an immediate re-claim gets a higher `claim_seq`, and the
    released claim's outcome changes nothing"; "a replica whose endpoint state read fails or is late starts no POST
    once its last good read is 11 s old, and sends again after the next good read"; "a read that started before a disable and completes 11 s later is
    discarded, and no POST goes to the disabled endpoint"; "a disabled
