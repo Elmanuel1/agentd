@@ -88,7 +88,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | F-6 | When a session is archived, the API shall terminate it in the archive's commit: status `terminated`, `session.status_terminated` appended, and its webhook deliveries written (D61). |
 | F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s. |
 | F-5 | While Postgres is overloaded (a connection waits more than 1 s for the pool, or the database's connections pass 90% of `max_connections`), the API shall refuse a new event stream with 529 `overloaded_error` "Overloaded" and keep the streams already open. |
-| E-2 | Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
+| E-2 | Narrowed by SH-41 of [scale hardening](../scale-hardening/requirements.md): the sweeper deletes at most 10,000 events per statement. Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
 | E-4 | When a session is deleted, the API shall delete its events through the event-log port after the commit that deletes the session row. |
 | E-3 | Where a read replica is configured (`AGENTD_PG_READ_URL`), the API shall serve `events.list` from it; steps, streams and every write read the primary. |
 
@@ -103,7 +103,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | S-5 | When a claim's lease runs out before its commit, the loop shall let another loop worker take the step over and run it again from the log. |
 | S-6 | When a session is woken while its step runs, the loop shall run another step after the commit. |
 | S-7 | The loop shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
-| S-8 | A loop worker shall run at most `AGENTD_STEPS_PER_WORKER` steps at once (default 256), from one database pool of `AGENTD_PG_POOL_SIZE` connections (default 16), holding a connection only while it claims, reads or commits. |
+| S-8 | A loop worker shall run at most `AGENTD_STEPS_PER_WORKER` steps at once (default 256), from one database pool of `AGENTD_DB_POOL_SIZE` connections (default 16), holding a connection only while it claims, reads or commits. |
 | R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api`, `loop`, or `all`. |
 | R-2 | agentd shall export the number of due, unclaimed steps (`agentd.loop.steps_due`) and of leased steps (`agentd.loop.steps_leased`) as metrics, which the loop workers' autoscaler follows. |
 | M-1 | The loop shall run at most `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` model calls at once per workspace. |
@@ -243,8 +243,8 @@ Decision D29; evidence B15 to B17, B23.
 |---|---|
 | H-1 | When a session's status changes to running, idle or terminated, the API shall send each enabled endpoint configured for its organization live's body (`whe_<32 hex>`, six-digit `created_at`, `data: {type, id, organization_id, workspace_id}`). |
 | H-2 | The API shall sign deliveries with Standard Webhooks and send `user-agent: Claude-Platform`. |
-| H-3 | If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
-| H-4 | The API shall keep each delivery in Postgres from the commit of the change it reports, and the change feed shall hand each new delivery row to a sender, including a sender started after the row was written. |
+| H-3 | Superseded by SH-3 of [scale hardening](../scale-hardening/requirements.md). If a delivery is not answered 2xx, then the API shall retry it twice about 31 s apart, re-signed, then drop it. |
+| H-4 | Narrowed by SH-1 to SH-4 of [scale hardening](../scale-hardening/requirements.md): the change feed wakes the senders; the table is the send path. The API shall keep each delivery in Postgres from the commit of the change it reports, and the change feed shall hand each new delivery row to a sender, including a sender started after the row was written. |
 | H-7 | The API shall read each organization's webhook endpoints, their signing secrets included, from `AGENTD_WEBHOOK_ENDPOINTS` (D49). |
 
 ## 10. Environment-variable credentials and conformance
@@ -329,7 +329,7 @@ The Fargate launcher's fleet (D33):
 | A per-session sandbox Durable Object with an outbound egress hook and R2 backups | Cloudflare's `claude-managed-agents` template (G9) | Followed and credited (D38); it differs where the template departs from live (CF-8 to CF-10). |
 | Single-use workers scaled on queue depth | ECS target tracking on backlog per task, with task scale-in protection (Q3) | Followed for the Fargate launcher and the loop workers (D33). |
 | Envelope encryption for per-tenant secrets at scale | AWS KMS data keys (Q2) | The scale-up path behind `SecretStore`, with its trigger (D30). |
-| A transactional outbox read from the WAL | Debezium's outbox pattern; Standard Webhooks, Svix and Stripe for deliveries | Followed for schedule changes and webhook deliveries (D50 to D52). Retries depart from Svix's exponential backoff: two retries about 31 s apart, because live does that (H-3). |
+| A transactional outbox read from the WAL | Debezium's outbox pattern; Standard Webhooks, Svix and Stripe for deliveries | Followed for schedule changes and webhook deliveries (D50 to D52). Retries follow live's jittered exponential backoff within Svix's pattern (SH-3). |
 | Durable timers with a misfire policy, and an idempotent fire inbox | Quartz JDBC JobStore; Kubernetes CronJob `startingDeadlineSeconds` | Followed: `schedules` rows are the timer, a fire more than a minute late is skipped, and `fire_claims` runs each fire once (D50). |
 | Configuration and keys from the environment | Twelve-Factor III | Followed for agentd's keys and the webhook endpoints (D49, D59). |
 | The app exports metrics; alarms belong to the infrastructure | OpenTelemetry vendor-neutral export | Followed (D54). |
@@ -548,7 +548,7 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   delete.
 - **S2.** `crates/engine/src/worker.rs` (claim, run one step, commit), `api/src/config/role.rs` (`AGENTD_ROLE`,
   `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`, `AGENTD_MODEL_ATTEMPTS`, `AGENTD_STEPS_PER_WORKER`,
-  `AGENTD_PG_POOL_SIZE`); the two gauges come from 1 `SELECT count(*) FILTER (WHERE lease_until IS NULL AND due_at <=
+  `AGENTD_DB_POOL_SIZE`); the two gauges come from 1 `SELECT count(*) FILTER (WHERE lease_until IS NULL AND due_at <=
   now()), count(*) FILTER (WHERE lease_until > now()) FROM loop_steps` every 10 s per replica. Tests: an `api`
   replica claims no step; two `loop` replicas share the queue; a workspace at its limit leaves its next step for
   later and others run; a worker set to 4 steps runs no fifth at once; the gauges match the table.
