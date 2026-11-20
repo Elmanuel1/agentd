@@ -15,7 +15,9 @@ if k get secret agentd-model >/dev/null 2>&1; then
   exit 1
 fi
 # A running container keeps the environment it started with, so a deleted Secret's key stays until a restart.
-for pod in $(k get pods -l app.kubernetes.io/instance=agentd -o name); do
+pods=$(k get pods -l app.kubernetes.io/instance=agentd -o name)
+[ -n "$pods" ] || { echo "no agentd pod is running: deploy/kind/up.sh first" >&2; exit 1; }
+for pod in $pods; do
   if ! k exec "$pod" -- sh -c '[ -z "${AGENTD_ANTHROPIC_API_KEY:-}${AGENTD_OPENROUTER_API_KEY:-}" ]'; then
     echo "$pod still holds a model key: kubectl --context $CTX -n $NS rollout restart deployment/agentd-api deployment/agentd-loop" >&2
     exit 1

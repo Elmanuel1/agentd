@@ -19,7 +19,9 @@ kubectl --context "$CTX" create namespace "$NS" --dry-run=client -o yaml | kubec
 # Made once per cluster: the keys and sealed vault credentials made under them stay valid across runs.
 k get secret agentd-postgres >/dev/null 2>&1 || printf 'password=%s\n' "$(openssl rand -hex 16)" | secret_from_stdin agentd-postgres
 if ! k get secret agentd-database >/dev/null 2>&1; then
-  password=$(k get secret agentd-postgres -o jsonpath='{.data.password}' | base64 -d)
+  encoded=$(k get secret agentd-postgres -o jsonpath='{.data.password}')
+  password=$(printf %s "$encoded" | base64 -d)
+  [ -n "$password" ] || { echo "agentd-postgres holds no password" >&2; exit 1; }
   printf 'DATABASE_URL=postgres://agentd:%s@postgres:5432/agentd\n' "$password" | secret_from_stdin agentd-database
 fi
 if ! k get secret agentd-keys >/dev/null 2>&1; then
@@ -43,11 +45,14 @@ if [ -n "$upgrade" ]; then
   k rollout status deployment/agentd-loop --timeout=5m
 fi
 
-config=$(k create configmap debezium-config --from-file=docker/debezium/application.properties \
-  --dry-run=client -o yaml | k apply -f -)
+k create configmap debezium-config --from-file=docker/debezium/application.properties \
+  --dry-run=client -o yaml | k apply -f - >/dev/null
 k apply -f deploy/kind/debezium.yaml >/dev/null
-# Debezium Server reads its properties once, at start.
-case "$config" in *configured) k rollout restart deployment/debezium >/dev/null ;; esac
+# Debezium Server reads its properties once, at start: their checksum on the pod template rolls it out
+# whenever they differ from what it runs, also on a rerun after an interrupted one.
+sum=$(shasum -a 256 docker/debezium/application.properties | cut -c1-16)
+k patch deployment debezium --type merge \
+  -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"agentd/config-sha256\":\"$sum\"}}}}}" >/dev/null
 k rollout status deployment/debezium --timeout=10m
 
 echo "agentd is up at $BASE_URL. A workspace key (org_dev, wrkspc_01dev):"
