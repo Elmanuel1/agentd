@@ -34,9 +34,12 @@ service:
   # Set with `type: NodePort` to pin the node port.
   nodePort: null
 
-# The Secret holding DATABASE_URL (postgres://user:password@host:port/name, options such as ?sslmode=require
-# appended), for agentd and the migrations. Its password is URL-safe (hex): the migrations split the URL as is.
-databaseSecret: agentd-database
+# The database URL (postgres://user:password@host:port/name, options such as ?sslmode=require appended), read
+# from one key of an existing Secret by agentd and the migrations. Special characters in the user or password
+# are URL-encoded; the migrations split the URL as is, so keep them URL-safe (hex).
+database:
+  existingSecret: agentd-database
+  urlKey: DATABASE_URL
 
 # Plain settings, put in a ConfigMap. Required: AGENTD_API_BASE_URL and AGENTD_VALKEY_URL.
 env: {}

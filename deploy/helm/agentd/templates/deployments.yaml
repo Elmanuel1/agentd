@@ -35,11 +35,10 @@ spec:
           env:
             - name: AGENTD_ROLE
               value: {{ $role }}
+            {{- include "agentd.databaseUrl" $ | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: {{ $.Release.Name }}
-            - secretRef:
-                name: {{ $.Values.databaseSecret }}
             {{- range $.Values.envFromSecrets }}
             - secretRef:
                 name: {{ .name }}

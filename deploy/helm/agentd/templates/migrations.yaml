@@ -30,11 +30,7 @@ spec:
               rest=${DATABASE_URL#*://}; auth=${rest%%@*};
               exec flyway -url="jdbc:postgresql://${rest#*@}" -user="${auth%%:*}" -password="${auth#*:}" migrate
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.databaseSecret }}
-                  key: DATABASE_URL
+            {{- include "agentd.databaseUrl" . | nindent 12 }}
             - name: FLYWAY_CONNECT_RETRIES
               value: "20"
             - name: FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK

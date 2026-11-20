@@ -51,13 +51,13 @@ credentials are sealed in Postgres, and no webhook endpoint is set. The cluster 
 | `migrations.image.*` | `agentd-migrations`, `dev`, `IfNotPresent` | the migrations' image, built with the same version as agentd's |
 | `roles.api`, `roles.loop` | 2 replicas each, 128 MiB requested, 512 MiB limit | one Deployment per role, with its `replicas` and `resources` |
 | `service.type`, `service.port`, `service.nodePort` | `ClusterIP`, 8080, unset | the Service in front of the `api` replicas |
-| `databaseSecret` | `agentd-database` | the Secret holding `DATABASE_URL` (`postgres://user:password@host:port/name`, options such as `?sslmode=require` appended), read by agentd and split by the migrations into Flyway's JDBC URL, user and password; its password is URL-safe (hex) |
+| `database.existingSecret`, `database.urlKey` | `agentd-database`, `DATABASE_URL` | the Secret and its key holding the database URL (`postgres://user:password@host:port/name`, options such as `?sslmode=require` appended), read as `DATABASE_URL` by agentd and split by the migrations into Flyway's JDBC URL, user and password; special characters are URL-encoded, so keep the password URL-safe (hex) |
 | `env` | empty | plain settings, in a ConfigMap; `AGENTD_API_BASE_URL` and `AGENTD_VALKEY_URL` are required |
 | `envFromSecrets` | `agentd-keys`, then `agentd-model` (optional) | Secrets whose every key becomes an environment variable |
 | `terminationGracePeriodSeconds`, `preStopSleepSeconds` | 30, 5 | the stop: the Service drops the pod, then SIGTERM drains requests for 10 s |
 
 Secrets reach agentd only as environment variables from Kubernetes Secrets the chart names; the chart never
-holds a secret value. `agentd-database` holds `DATABASE_URL`. `agentd-keys` holds the four key rings (`AGENTD_API_KEY_PEPPERS`, `AGENTD_WORK_TOKEN_KEYS`,
+holds a secret value. `agentd-database` holds the database URL under `DATABASE_URL`; only that key is read. `agentd-keys` holds the four key rings (`AGENTD_API_KEY_PEPPERS`, `AGENTD_WORK_TOKEN_KEYS`,
 `AGENTD_PLACEHOLDER_KEYS`, `AGENTD_SECRET_KEYS`), the same for every replica. `agentd-model` holds
 `AGENTD_ANTHROPIC_API_KEY` or `AGENTD_OPENROUTER_API_KEY`; without it agentd serves the API and every turn ends
 on a `session.error` naming the missing provider.
