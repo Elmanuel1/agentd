@@ -22,10 +22,13 @@ timeout, and keeps retries in memory:
    `agentd:webhooks` and returns.
 2. Every instance runs one claim loop. On a wake, at most once every 50 ms, and every 1 s without one, it claims up
    to its free senders (at most 100) of due rows with `FOR NO KEY UPDATE SKIP LOCKED`, leaving out endpoints whose breaker
-   is open on it, and sets `claimed_until = now() + 60 s` and `attempt = attempt + 1` in the same transaction. The
+   is open on it unless they are disabled, and sets `claimed_until = now() + 60 s` in the same transaction. The
    update repeats the due conditions, and the instance sends only the rows it returns.
-3. A POST starts only while at least 15 s of its claim remain, so a send (10 s timeout) always ends inside its
-   claim. Every outcome write is fenced on `attempt`.
+3. The claim's `claimed_until` is its token: every later claim of the row has a later value, and the outcome and the
+   release write only while the row still holds the value the claim returned. `attempt` counts recorded outcomes, so
+   a claim that expires unsent spends none. A POST starts only while at least 15 s of the claim remain, so a send
+   (10 s timeout) normally ends inside it; a process that stalls past its claim can overlap the next one, which
+   receivers handle as a duplicate `webhook-id`.
 4. Attempts, spacing and disable rules match live: three attempts, jittered exponential backoff (15 to 30 s, then 30
    to 60 s), a 3xx or a non-public address disables at once, and 120 h of failure disables (Svix's window, as live
    states none). Endpoint health is a shared row in `webhook_endpoint_states`; the breaker is per replica.

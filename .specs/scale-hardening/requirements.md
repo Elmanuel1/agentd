@@ -58,7 +58,7 @@ SH-51 are not used.
 | SH-30 | W | If an endpoint answers 3xx, then the webhook sender shall disable it. |
 | SH-31 | W | If every attempt to an endpoint has failed for 120 h, then the webhook sender shall disable it. |
 | SH-32 | E | When an endpoint answers 2xx, the webhook sender shall clear its failing time. |
-| SH-33 | S | While an endpoint's breaker is open on a replica, the webhook sender on that replica shall claim none of its deliveries. |
+| SH-33 | S | While an endpoint's breaker is open on a replica and the endpoint is not disabled, the webhook sender on that replica shall claim none of its deliveries. |
 | SH-34 | S | While an endpoint is disabled, the webhook sender shall drop its deliveries without sending them, on every replica within 10 s of the disable. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
@@ -186,20 +186,28 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   central coordinator: `FOR NO KEY UPDATE SKIP LOCKED` gives each row to exactly one instance, so adding instances adds
   sending capacity, with no shared counter and no number to agree on (D1).
 - **Claim**, one short transaction: select up to the instance's free senders (at most 100) of due rows, leaving out
-  endpoints whose breaker is open on this instance, `ORDER BY next_attempt_at ... FOR NO KEY UPDATE SKIP LOCKED`; set
-  `claimed_until = now() + 60 s` and `attempt = attempt + 1` on them in one `UPDATE`; commit; then send each in the
-  background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
-  dropped without a send (live does not replay).
+  endpoints whose breaker is open on this instance unless the endpoint is disabled, `ORDER BY next_attempt_at ... FOR
+  NO KEY UPDATE SKIP LOCKED`; set `claimed_until = now() + 60 s` on them in one `UPDATE`; commit; then send each in
+  the background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
+  dropped without a send (live does not replay), whatever its breaker says, so SH-34's 10 s holds.
+- **The claim token is `claimed_until`.** Each claim's value is later than every earlier claim's on that row: a row
+  is claimed again only once `now()` has passed its old value. Every later write for the claim (outcome, release)
+  matches the row's `claimed_until` to the value the claim returned, so a write from an expired or released claim
+  changes nothing. `attempt` counts recorded outcomes only: a claim that expires or is released spends no attempt,
+  so the three attempts are always three POSTs with a recorded result.
 - **Two instances never hold one row.** Three guards, each enough on its own for its case:
   - The lock: the `SELECT ... FOR NO KEY UPDATE SKIP LOCKED` and the `UPDATE` run in one transaction, so no other claim can
     read the row between them.
   - The `UPDATE` repeats the conditions (not delivered, not dropped, unclaimed or claim expired) and the sender sends
     only the rows it returns. A row another instance claimed in between is simply not updated, so it is not sent.
   - Every time is Postgres `now()`, never an instance's clock, so clock skew cannot make a live claim look expired.
-- **A claim outlives its send.** The instance takes its own deadline as 60 s from just before the claim statement
-  (on its monotonic clock, so it is never later than the row's `claimed_until`), and starts a POST only while at least
-  15 s remain: the 10 s send timeout plus 5 s spare. A row with less left is released unsent (`claimed_until = NULL`,
-  `attempt` put back), so an instance that stalled cannot POST into another instance's claim.
+- **A claim normally outlives its send.** The instance takes its own deadline as 60 s from just before it takes a
+  connection and begins the claim transaction (on its monotonic clock; `now()` is the transaction's start, so this
+  deadline is never later than the row's `claimed_until`), and starts a POST only while at least 15 s remain: the
+  10 s send timeout plus 5 s spare. A row with less left is released unsent (`claimed_until = NULL`), so an instance
+  that stalled before its POST does not send into another instance's claim. A process that stalls more than 5 s
+  after that check and before its request ends can still overlap a new claim; the outcome fence drops its write, and
+  the receiver sees the same `webhook-id` twice (at-least-once).
 - **Wakes are folded**: an instance runs at most one claim every 50 ms; wakes that arrive in between are folded into
   the next claim. So a new delivery goes out within about 50 ms, and the claim rate stays bounded however many rows
   arrive.
@@ -207,25 +215,27 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   now (D1); follow-up F-7 adds a fair share in the claim query once the load test gives numbers.
 - **Send.** Through `Guard` (resolve, refuse a non-public address, pin it), `user-agent: Claude-Platform`, a cached
   client per host (M1), 10 s timeout, 3 s connect, no redirects.
-- **Outcome**, fenced on `attempt`: 2xx sets `delivered_at`; otherwise attempt 3 sets `dropped_at`, and attempts 1
-  and 2 set `next_attempt_at` by exponential backoff with jitter (SH-3, L1): the first wait is 15 to 30 s, the second
+- **Outcome**, fenced on the claim token, sets `attempt = attempt + 1`: 2xx sets `delivered_at`; otherwise the third
+  attempt sets `dropped_at`, and the first and second set `next_attempt_at` by exponential backoff with jitter (SH-3, L1): the first wait is 15 to 30 s, the second
   30 to 60 s (a 30 s base doubled per attempt, half fixed and half random), inside live's 5 to 120 s. Every outcome
   records `last_status` and `last_error`.
 - **No double sends**: the rows are written once, in the commit of the change they report (`webhook_deliveries.rs:46-61`),
   so a record the feed hands over twice is still one row; and only the instance holding a row's claim sends it, and
   only while that claim has 15 s left. A
   delivery whose outcome is not recorded before its claim expires is the one duplicate left (the instance crashed
-  after the POST, or the outcome write failed or ran late): the claim expires after 60 s and another instance sends
+  after the POST, the outcome write failed or ran late, or the process stalled past its claim): the claim expires after 60 s and another instance sends
   it again with the same `webhook-id`, which is live's documented at-least-once delivery.
 - **Breaker**, per replica in memory (design skill exception): 5 failures in a row open it for 30 s. While open, the
-  endpoint is skipped: nothing is claimed for it, so no attempt is spent without a POST. After 30 s one send is let
+  endpoint is skipped unless it is disabled: nothing is claimed for it, so no attempt is spent without a POST. After 30 s one send is let
   through; a 2xx closes it, a failure opens it again.
 - **Auto-disable**, shared in `webhook_endpoint_states`:
   - a 3xx or a non-public address disables at once (L1);
   - every failure sets `failing_since` if it is empty, and disables when `failing_since` is older than 120 h (Svix's
     default; live states no window);
   - a 2xx clears `failing_since`; each replica knows which endpoints are failing from the state read below, so only
-    a 2xx to a failing endpoint costs a statement;
+    a 2xx to a failing endpoint costs a statement. A 2xx that lands within 10 s of another replica's first failure,
+    before this replica's next read, misses the clear, so a failing run can be counted from up to 10 s early: a
+    bound of 10 s on a 120 h window;
   - every replica reads the failing and disabled sets every 10 s, so a disable reaches all replicas within 10 s;
   - disabling logs `ERROR` once (a person must act) with org, endpoint and reason;
   - re-enable (D6): `agentd webhooks enable <org> <endpoint>`, or a change to the endpoint's URL or secret in
@@ -256,7 +266,7 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 
 - V25: `failures bigint not null default 0` on `loop_steps` (bigint, as `attempts`).
 - `defer_failed` is one `UPDATE` that computes the wait from the row's old value (Postgres `SET` reads the old row):
-  `due_at = now() + random() * least(300, 5 * 2 ^ failures) * interval '1 second'`, `failures = failures + 1`. The
+  `due_at = now() + random() * least(300, 5 * 2 ^ least(failures, 6)) * interval '1 second'`, `failures = failures + 1`. The
   first failure waits up to 5 s (today's base), the second up to 10 s, capped at 5 min. A commit sets `failures = 0`
   in its existing `UPDATE`. The claim does not need to return `failures`.
 
@@ -309,6 +319,9 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   updates that set `revoked_at` publishes the key id on Valkey `agentd:keys`; every replica drops it. This covers the
   API, `agentd keys revoke` (R8) and a workspace's keys alike, with no Valkey connection in the CLI. If the message is
   lost, the TTL bounds acceptance to 60 s (D8).
+- A miss cannot cache a key revoked while it read: the cache keeps an invalidation counter, a lookup reads it before
+  its Postgres read, and the insert happens only if the counter has not moved. Revokes are rare, so a revoke anywhere
+  only stops caching for the misses in flight at that moment.
 - Environment keys and admin keys are not cached (F-4).
 
 ### Event log (E1 to E4)
@@ -332,8 +345,13 @@ partial index only when the query's `WHERE` implies the predicate (DEP-15).
   once, as with the `OR`): `event_id = ANY($3)` on the primary key; `doc ? 'tool_use_id' AND doc->>'tool_use_id' =
   ANY($3)`; the same for `custom_tool_use_id`.
 - **List**: processed rows first, from the asc or desc index, keyset `(processed_at text, seq)` from the token; when
-  a page runs past them, the unprocessed tail from the unprocessed index by `seq` (nulls last in both orders, as
-  today). The token records which phase it is in. Type and thread filters stay as filters on rows read in index
+  a page runs past them, the tail by `seq` (nulls last in both orders, as today). The token records the phase, the
+  keyset, and the boundary: the highest `processed_at` phase 1 can return (asc: the last one it returned; desc: the
+  first page's first). The tail is one `UNION` of two arms, each `seq` > the tail's last `seq`, ordered by `seq`: the
+  unprocessed rows (unprocessed index) and the rows processed after the boundary (processed index). So an event
+  stamped processed while the walk is in its tail is returned once, in the tail, and an event the tail already
+  returned is never returned again. This rests on a session's stamps being taken in order: a step stamps under the
+  session's append lock (runtime-parity F1), one step at a time. Type and thread filters stay as filters on rows read in index
   order, so a selective filter reads more rows than the page holds.
 - **Idle guard**: `SELECT doc ... WHERE <ws, session> AND doc->>'type' = 'session.status_idle' ORDER BY seq DESC
   LIMIT 1`. An idle event is processed when it is appended, so its `seq` order is its `processed_at` order.
@@ -418,7 +436,8 @@ Keyset, token still `page_<base64>`, one statement per page each:
 | files | `SELECT workspace_id, file_id FROM files WHERE doc ? 'expires_at' AND doc->>'expires_at' < $1 LIMIT 1000`, `$1` the cutoff in the fixed format (DEP-14) | 30 days after `expires_at` |
 
 - Event retention keeps its setting, off by default (L6), and deletes at most 10,000 rows per statement:
-  `SELECT seq ... ORDER BY seq OFFSET 10000 LIMIT 1` gives the bound, then `DELETE ... AND seq < $3`.
+  `SELECT seq ... ORDER BY seq OFFSET 10000 LIMIT 1` gives the bound, then `DELETE ... AND seq < $3`. When the bound
+  query returns no row, at most 10,000 remain, and the `DELETE` runs without the bound.
 - Expired files: listed and their metadata readable for 30 days, content 404 (L5).
 - `fire_claims` keeps the scheduler's own hourly sweep (DS-15, the scheduler's scope; one row per fire, far fewer than
   deliveries). Follow-up F-6 moves it into this sweeper, so there is one way.
@@ -552,16 +571,17 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS
      NULL AND dropped_at IS NULL AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()) AND
      endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED`, then `UPDATE
-     webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds', attempt = d.attempt + 1 FROM
+     webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds' FROM
      unnest($3::text[], $4::text[]) AS v(webhook_id, endpoint_key) WHERE d.webhook_id = v.webhook_id AND
      d.endpoint_key = v.endpoint_key AND d.delivered_at IS NULL AND d.dropped_at IS NULL AND (d.claimed_until IS NULL
-     OR d.claimed_until < now()) RETURNING d.webhook_id, d.endpoint_key, d.attempt, d.endpoint_url, d.body`. The
+     OR d.claimed_until < now()) RETURNING d.webhook_id, d.endpoint_key, d.claimed_until, d.attempt, d.endpoint_url,
+     d.body`. `$1` is the open-breaker endpoints minus the disabled ones. The
      sender sends only the returned rows.
-   - `queue.rs`, release unsent: `UPDATE webhook_deliveries SET claimed_until = NULL, attempt = attempt - 1 WHERE
-     webhook_id = $1 AND endpoint_key = $2 AND attempt = $3`.
-   - `queue.rs`, outcome: `UPDATE webhook_deliveries SET {delivered_at = now() | dropped_at = now() | next_attempt_at
-     = now() + make_interval(secs => $4)}, claimed_until = NULL, last_status = $5, last_error = $6 WHERE webhook_id
-     = $1 AND endpoint_key = $2 AND attempt = $3`.
+   - `queue.rs`, release unsent: `UPDATE webhook_deliveries SET claimed_until = NULL WHERE webhook_id = $1 AND
+     endpoint_key = $2 AND claimed_until = $3`.
+   - `queue.rs`, outcome: `UPDATE webhook_deliveries SET attempt = attempt + 1, {delivered_at = now() | dropped_at =
+     now() | next_attempt_at = now() + make_interval(secs => $4)}, claimed_until = NULL, last_status = $5, last_error
+     = $6 WHERE webhook_id = $1 AND endpoint_key = $2 AND claimed_until = $3`.
    - `queue.rs`, oldest due: `SELECT min(next_attempt_at) FROM webhook_deliveries WHERE delivered_at IS NULL AND
      dropped_at IS NULL`.
    - `endpoints.rs`, failure: `INSERT INTO webhook_endpoint_states (endpoint_key, org_id, failing_since,
@@ -594,7 +614,9 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    "20 claimers on separate connections, started together on 1,000 due rows, 50 rounds: no row is claimed twice and
    every row is claimed once"; "a row claimed by another instance between the select and the update is not returned";
    "a live claim is not taken over, an expired one is"; "a row with under 15 s of claim left is released unsent, its
-   attempt unchanged"; "a late outcome from an expired claim changes nothing"; "an open breaker spends
+   attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
+   claim changes nothing after a newer claim"; "three claims that expire unsent spend no attempt"; "a disabled
+   endpoint's rows are dropped within 10 s while its breaker is open"; "an open breaker spends
    no attempt"; "a 3xx disables at once"; "a private address is not sent to and disables"; "failing for 120 h disables,
    a 2xx in between restarts the clock"; "a disabled endpoint's new delivery is dropped unsent"; "a changed URL
    re-enables at boot, an unchanged config keeps it disabled"; unit tests for the wake fold, the senders and the breaker.
@@ -612,7 +634,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    25 s".
 5. **Step backoff** (SH-9). `V25__loop_steps_failures.sql`; `loop_steps/held.rs` (174) moves `defer` and
    `defer_failed` to `held/defer.rs`: `UPDATE loop_steps SET failures = failures + 1, lease_owner = NULL, lease_until
-   = NULL, due_at = now() + random() * least(300, 5 * 2 ^ failures) * interval '1 second' WHERE {HELD}`; the commit's
+   = NULL, due_at = now() + random() * least(300, 5 * 2 ^ least(failures, 6)) * interval '1 second' WHERE {HELD}`; the commit's
    existing `UPDATE` adds `failures = 0`. `worker/step.rs` calls it. Tests: `pg_loop_steps` "the first wait is at most
    5 s, the waits grow, cap at 5 min, and a commit resets them".
 6. **Budget jitter** (SH-53). `signals-valkey/src/budget.rs` (80). Unit test for the spread.
@@ -631,7 +653,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
 9. **Key cache** (SH-16 to SH-18). `api-keys/src/cache.rs` (new) wrapping `ApiKeysService`; `api-keys/src/revoked.rs`
    (new, the `api_keys` feed handler); the broadcast port from commit 2 on channel `agentd:keys`. Tests: "a cached key
    reads Postgres once", "a key revoked through `agentd keys revoke` is refused on another replica within 1 s", "a key
-   revoked with no message is refused after the TTL".
+   revoked with no message is refused after the TTL", "a miss that reads a key while it is revoked does not cache it".
 10. **Model breaker** (SH-47, SH-48). `engine/src/model/breaker.rs` (new: per provider, open, half-open, close);
     `model/retry.rs` (87) asks it before each try and folds its wait into the backoff. Tests: "after 5 failures the
     provider gets no call for 30 s and steps wait, not fail", "a retry-after longer than 30 s holds the breaker open",
@@ -658,7 +680,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    to `session_events/answers.rs` (new, the `UNION`); `reads.rs` (184) moves `events_page` and `head` to
    `reads/page.rs` (new): list one or two statements per page (processed, then the tail), head two (`max(seq)`, the
    queued read); `waiting.rs` calls `last_idle`. `shared/src/page/keyset.rs` (new, the token). Tests: `pg_event_log`
-   "the list pages without repeats or gaps while events arrive, both orders", and one "EXPLAIN uses the index" per
+   "the list pages without repeats or gaps while events arrive, both orders", "an event stamped while the walk is in
+   its tail is returned once", and one "EXPLAIN uses the index" per
    read on a 50,000-event session.
 2. **Signals** (SH-24). `sessions/src/signals.rs` (64) the port; `signals-valkey/src/lib.rs` (97) and
    `signals-valkey/src/channels.rs` (new); `worker/watch.rs`, `worker/mod.rs`, `service/stream.rs` (177; the tail map
