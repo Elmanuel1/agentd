@@ -57,12 +57,12 @@ k apply -f deploy/kind/perf.yaml >/dev/null
 state= give_up=$(( $(date +%s) + 960 ))
 until [ -n "$state" ]; do
   if [ "$(date +%s)" -gt "$give_up" ]; then
-    k describe job perf >&2 || true
+    k describe job perf --request-timeout=20s >&2 || true
     echo "the load Job did not finish" >&2
     exit 1
   fi
   sleep 5
-  state=$(k get job perf -o jsonpath='{.status.conditions[?(@.status=="True")].type}' | grep -oE 'Complete|Failed' | head -1 || true)
+  state=$(k get job perf --request-timeout=20s -o jsonpath='{.status.conditions[?(@.status=="True")].type}' | grep -oE 'Complete|Failed' | head -1 || true)
 done
 k logs job/perf || k describe job perf
 [ "$state" = Complete ]
