@@ -365,9 +365,15 @@ partial index only when the query's `WHERE` implies the predicate (DEP-15).
   (asc `seq >` it, desc `seq <` it), ordered by `seq` that way: the
   unprocessed rows (unprocessed index) and the rows processed after the boundary (processed index). So an event
   stamped processed while the walk is in its tail is returned once, in the tail, and an event the tail already
-  returned is never returned again. This rests on a session's stamps being taken in order: a step stamps under the
-  session's append lock (runtime-parity F1), one step at a time. Type and thread filters stay as filters on rows read in index
+  returned is never returned again. This rests on a session's `processed_at` values growing in commit order, so
+  Postgres sets them (D25): see "Stamping" below. Type and thread filters stay as filters on rows read in index
   order, so a selective filter reads more rows than the page holds.
+- **Stamping** (D25): every write that sets `processed_at` (the step's stamp of the events it read, and an insert
+  of an event that is processed at once: agent events, archive, terminate) sets it in SQL, from `clock_timestamp()`
+  formatted as `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`, the fixed format
+  of DEP-14. Each runs after the session's append lock (`writes.rs` `lock`), so one session's values grow in commit
+  order. The instance's time (`write.at`, `Timestamp::now()` in `worker/turn.rs:21`, `service/threads.rs:58`,
+  `sessions/terminate.rs:27`) is no longer written; callers use the doc the statement returns.
 - **Idle guard**: `SELECT doc ... WHERE <ws, session> AND doc->>'type' = 'session.status_idle' ORDER BY seq DESC
   LIMIT 1`. An idle event is processed when it is appended, so its `seq` order is its `processed_at` order.
 - **Head**: `max(seq)` on the primary key, and the queued read on the unprocessed index.
@@ -704,9 +710,14 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
 1. **Event log** (SH-22, SH-23). `V26__session_events_indexes.sql`; `session_events.rs` (193) moves the answer lookup
    to `session_events/answers.rs` (new, the `UNION`); `reads.rs` (184) moves `events_page` and `head` to
    `reads/page.rs` (new): list one or two statements per page (processed, then the tail), head two (`max(seq)`, the
-   queued read); `waiting.rs` calls `last_idle`. `shared/src/page/keyset.rs` (new, the token). Tests: `pg_event_log`
+   queued read); `waiting.rs` calls `last_idle`. `shared/src/page/keyset.rs` (new, the token).
+   `session_events/writes.rs` (75): `stamp` takes no `at` and sets `processed_at` from `clock_timestamp()`;
+   `insert` sets it the same way on every doc that carries one; both run after `lock`. The callers that passed an
+   instance time (`loop_steps/held.rs`, `worker/take.rs`, `worker/turn.rs`, `service/threads.rs`,
+   `sessions/terminate.rs`) read it from the returned doc. Tests: `pg_event_log`
    "the list pages without repeats or gaps while events arrive, both orders", "an event stamped while the walk is in
-   its tail is returned once", and one "EXPLAIN uses the index" per
+   its tail is returned once", "a session's `processed_at` values grow in commit order when a slow step commits
+   after a faster archive", "`processed_at` keeps the fixed format", and one "EXPLAIN uses the index" per
    read on a 50,000-event session.
 2. **Signals** (SH-24). `sessions/src/signals.rs` (64) the port; `signals-valkey/src/lib.rs` (97) and
    `signals-valkey/src/channels.rs` (new); `worker/watch.rs`, `worker/mod.rs`, `service/stream.rs` (177; the tail map
