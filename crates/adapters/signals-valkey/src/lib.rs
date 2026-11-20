@@ -130,6 +130,24 @@ mod tests {
         }
     }
 
+    /// `rediss://` at `AGENTD_VALKEY_TLS_URL`, whose certificate the CA at
+    /// `AGENTD_VALKEY_TLS_CA` signs (`docker/valkey/start-tls.sh`).
+    #[tokio::test]
+    async fn rediss_trusts_the_ca_it_is_given_and_not_otherwise() {
+        let (Ok(url), Ok(ca)) =
+            (std::env::var("AGENTD_VALKEY_TLS_URL"), std::env::var("AGENTD_VALKEY_TLS_CA"))
+        else {
+            return;
+        };
+        let ping = |valkey: Valkey| async move {
+            let mut conn = valkey.connection().await?;
+            redis::cmd("PING").query_async::<String>(&mut conn).await
+        };
+        assert_eq!(ping(Valkey::open_trusting(&url, false, Some(&ca)).unwrap()).await.unwrap(), "PONG");
+        let untrusted = ping(Valkey::open(&url, false).unwrap()).await.unwrap_err();
+        assert!(untrusted.to_string().contains("UnknownIssuer"), "{untrusted}");
+    }
+
     #[tokio::test]
     async fn a_signal_published_reaches_every_subscriber() {
         for valkey in test_valkeys() {
