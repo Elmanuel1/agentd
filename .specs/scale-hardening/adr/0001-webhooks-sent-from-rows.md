@@ -22,12 +22,14 @@ timeout, and keeps retries in memory:
    `agentd:webhooks` and returns.
 2. Every instance runs one claim loop. On a wake, at most once every 50 ms, and every 1 s without one, it claims up
    to its free senders (at most 100) of due rows with `FOR NO KEY UPDATE SKIP LOCKED`, leaving out endpoints whose breaker
-   is open on it unless they are disabled, and sets `claimed_until = now() + 60 s` in the same transaction. The
+   is open on it unless they are disabled, and sets `claimed_until = clock_timestamp() + 60 s` in the same transaction. The
    update repeats the due conditions, and the instance sends only the rows it returns.
-3. The claim's `claimed_until` is its token: every later claim of the row has a later value, and the outcome and the
+3. The claim's `claimed_until` is its token: the row lock serializes claims, so every later claim of the row,
+   after an expiry or a release, gets a strictly later value, and the outcome and the
    release write only while the row still holds the value the claim returned. `attempt` counts POSTs: the outcome
    adds one, a lapsed claim adds one at the next claim, a released claim adds none, and a claim that reaches 3 drops
-   the row unsent. A POST starts only while at least 15 s of the claim remain, so a send
+   the row unsent. Before each POST the sender checks that at least 15 s of the claim remain and that its endpoint state read is
+   under 11 s old, so a send
    (10 s timeout) normally ends inside it; a process that stalls past its claim can overlap the next one, which
    receivers handle as a duplicate `webhook-id`.
 4. Attempts, spacing and disable rules match live: three attempts, jittered exponential backoff (15 to 30 s, then 30
@@ -52,7 +54,7 @@ timeout, and keeps retries in memory:
   ignored by the handler.
 - A new delivery waits up to about 50 ms for a claim. Deliveries still go out while the change feed is down, found
   by the 1 s poll.
-- Delivery stays at least once: when a delivery's outcome is not recorded before its claim expires (the instance
+- Delivery is bounded retries with possible duplicate POSTs, not a guarantee: when a delivery's outcome is not recorded before its claim expires (the instance
   crashed after its POST, or the outcome write failed or ran late), another instance sends it again with the same
   `webhook-id`, unless that claim was the third attempt. A delivery whose three claims all lapse is dropped, possibly
   without any POST: the limit keeps a row that instances keep dying on from being retried without end.

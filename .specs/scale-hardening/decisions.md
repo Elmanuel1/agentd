@@ -19,7 +19,7 @@ api.anthropic.com. Each row names who decided and when.
 | D16 | Model calls go through a breaker per provider per replica that makes steps wait, not fail. | User, 2026-11-19 ("Add both") |
 | D17 | MCP `initialize`, `tools/list` and token refresh have no in-call retry. A failure is a `session.error` marked `retrying` and the next turn tries again, as live (runtime-parity MC-14). | User, 2026-11-19 ("Yes, remove them") |
 | D18 | The webhook claim loop polls every 1 s behind the wake. It does not sleep until the next due time. | User, 2026-11-19 ("Keep the 1 s poll") |
-| D19 | Two instances never hold one delivery: the claim's select and update run in one transaction, the update repeats the due conditions, all times are Postgres `now()`, and a POST starts only while 15 s of its claim remain. | User, 2026-11-19 ("Make sure that two instances don't claim the same thing") |
+| D19 | Two instances never hold one delivery: the claim's select and update run in one transaction, the update repeats the due conditions, all times come from Postgres's clock (the claim token from `clock_timestamp()`), and the sender checks before each POST that 15 s of its claim remain. | User, 2026-11-19 ("Make sure that two instances don't claim the same thing") |
 | D20 | The migrations V24 to V27 and the `webhook_endpoint_states` table are approved. | User, 2026-11-19 (plan approved) |
 
 ## Matched to live

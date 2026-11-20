@@ -50,7 +50,7 @@ SH-51 are not used.
 | ID | P | Requirement |
 |---|---|---|
 | SH-1 | E | When the change feed hands the webhook sender a new delivery, the webhook sender shall publish one wake to every instance and return without sending. |
-| SH-2 | U | The webhook sender shall send a delivery only after claiming it for 60 s, shall start its POST only while at least 15 s of that claim remain, and shall claim no delivery another replica holds or has finished. |
+| SH-2 | U | The webhook sender shall send a delivery only after claiming it for 60 s, shall check before each POST that at least 15 s of that claim remain and that its endpoint state is fresh (SH-34), and shall claim no delivery another replica holds or has finished. |
 | SH-3 | W | If a delivery is not answered 2xx, then the webhook sender shall set its next attempt by exponential backoff with jitter, 15 to 30 s after the first attempt and 30 to 60 s after the second, and drop it after its third attempt (L1 "jittered exponential backoff"; supersedes H-3's fixed 31 s). |
 | SH-4 | E | When an instance is woken, and at least every second, the webhook sender shall claim with `SKIP LOCKED` up to its free senders (at most 100) of due deliveries, leaving out endpoints whose breaker is open on it unless the endpoint is disabled, at most once every 50 ms. |
 | SH-20 | U | The webhook sender shall send through the egress guard with `user-agent: Claude-Platform`, reusing a client per host for 5 minutes. |
@@ -59,7 +59,7 @@ SH-51 are not used.
 | SH-31 | W | If every attempt to an endpoint has failed for 120 h, then the webhook sender shall disable it. |
 | SH-32 | E | When an endpoint answers 2xx, the webhook sender shall clear its failing time. |
 | SH-33 | S | While an endpoint's breaker is open on a replica and the endpoint is not disabled, the webhook sender on that replica shall claim none of its deliveries. |
-| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable (its 10 s state read plus a 1 s claim), and shall drop each of its deliveries without sending it when the delivery falls due. |
+| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more shall start no POST until a read succeeds. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
 | SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, endpoint and reason. |
@@ -187,13 +187,17 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   sending capacity, with no shared counter and no number to agree on (D1).
 - **Claim**, one short transaction: select up to the instance's free senders (at most 100) of due rows, leaving out
   endpoints whose breaker is open on this instance unless the endpoint is disabled, `ORDER BY next_attempt_at ... FOR
-  NO KEY UPDATE SKIP LOCKED`; set `claimed_until = now() + 60 s` on them in one `UPDATE`; commit; then send each in
+  NO KEY UPDATE SKIP LOCKED`; set `claimed_until = clock_timestamp() + 60 s` on them in one `UPDATE`; commit; then send each in
   the background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
   dropped without a send when it falls due (live does not replay), whatever its breaker says. A replica learns of a
   disable from its 10 s state read; from then on it starts no POST to the endpoint, and a POST already started
-  finishes (SH-34).
-- **The claim token is `claimed_until`.** Each claim's value is later than every earlier claim's on that row: a row
-  is claimed again only once `now()` has passed its old value. Every later write for the claim (outcome, release)
+  finishes (SH-34). Before each POST the sender checks that its last good state read is under 11 s old; when a read
+  fails or runs late past that, the replica releases its claims unsent and starts no POST until a read succeeds, so
+  stale state never sends to a disabled endpoint.
+- **The claim token is `claimed_until`.** It is set from `clock_timestamp()`, the time the claim's `UPDATE` runs,
+  not the transaction's start. Two claims of one row are serialized by the row lock, so the later claim's `UPDATE`
+  runs after the earlier one committed (and after any release of it) and gets a strictly later value: no two claims
+  of a row share a token, whether the earlier one expired or was released. Every later write for the claim (outcome, release)
   matches the row's `claimed_until` to the value the claim returned, so a write from an expired or released claim
   changes nothing. `attempt` counts POSTs: the outcome adds 1, and a claim that lapsed (its `claimed_until` is still
   set when the next claim takes the row) adds 1 at that next claim, since it may have sent. A released claim clears
@@ -204,14 +208,15 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
     read the row between them.
   - The `UPDATE` repeats the conditions (not delivered, not dropped, unclaimed or claim expired) and the sender sends
     only the rows it returns. A row another instance claimed in between is simply not updated, so it is not sent.
-  - Every time is Postgres `now()`, never an instance's clock, so clock skew cannot make a live claim look expired.
+  - Every time is Postgres's clock (`now()` for due and expiry checks, `clock_timestamp()` for the token), never an
+    instance's clock, so clock skew cannot make a live claim look expired.
 - **A claim normally outlives its send.** The instance takes its own deadline as 60 s from just before it takes a
   connection and begins the claim transaction (on its monotonic clock; `now()` is the transaction's start, so this
-  deadline is never later than the row's `claimed_until`), and starts a POST only while at least 15 s remain: the
-  10 s send timeout plus 5 s spare. A row with less left is released unsent (`claimed_until = NULL`), so an instance
+  deadline is never later than the row's `claimed_until`), and checks before each POST that at least 15 s remain:
+  the 10 s send timeout plus 5 s spare. The check is made before the POST, not when its first byte leaves. A row with less left is released unsent (`claimed_until = NULL`), so an instance
   that stalled before its POST does not send into another instance's claim. A process that stalls more than 5 s
   after that check and before its request ends can still overlap a new claim; the outcome fence drops its write, and
-  the receiver sees the same `webhook-id` twice (at-least-once).
+  the receiver sees the same `webhook-id` twice.
 - **Wakes are folded**: an instance runs at most one claim every 50 ms; wakes that arrive in between are folded into
   the next claim. So a new delivery goes out within about 50 ms, and the claim rate stays bounded however many rows
   arrive.
@@ -228,7 +233,7 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   only while that claim has 15 s left. A
   delivery whose outcome is not recorded before its claim expires is the one duplicate left (the instance crashed
   after the POST, the outcome write failed or ran late, or the process stalled past its claim): the claim expires after 60 s and another instance sends
-  it again with the same `webhook-id`, which is live's documented at-least-once delivery. The one exception is a
+  it again with the same `webhook-id`, as live's documented delivery allows. Retries are bounded: the one exception is a
   claim that lapses as the third attempt: the next claim drops the row, so a delivery whose three claims all lapse
   is dropped, possibly without any POST. Three lapses in a row mean instances died while holding that row, and
   the limit keeps such a row from being retried without end.
@@ -486,7 +491,7 @@ agentd is not in production (D12), so no rows need carrying over.
    of the binary.
 3. During a rolling deploy of code PR 1, an old instance still POSTs first attempts from the change feed and holds
    retries in memory, while a new instance claims the same rows from the table. In that overlap a delivery can go
-   out twice with the same `webhook-id`, which receivers already handle (at-least-once). An old instance's
+   out twice with the same `webhook-id`, which receivers already handle as a duplicate. An old instance's
    in-memory retries end when it stops; their rows are still undelivered, so a new instance sends them.
 4. Before code PR 2's streamed uploads, the bucket gets an `AbortIncompleteMultipartUpload` lifecycle rule
    (`docs/operations.md`).
@@ -580,7 +585,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS
      NULL AND dropped_at IS NULL AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()) AND
      endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED`, then `UPDATE
-     webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds', attempt = d.attempt +
+     webhook_deliveries AS d SET claimed_until = clock_timestamp() + interval '60 seconds', attempt = d.attempt +
      (d.claimed_until IS NOT NULL)::int FROM
      unnest($3::text[], $4::text[]) AS v(webhook_id, endpoint_key) WHERE d.webhook_id = v.webhook_id AND
      d.endpoint_key = v.endpoint_key AND d.delivered_at IS NULL AND d.dropped_at IS NULL AND (d.claimed_until IS NULL
@@ -627,7 +632,9 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    "a live claim is not taken over, an expired one is"; "a row with under 15 s of claim left is released unsent, its
    attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
    claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
-   whose claims lapse three times is dropped"; "a disabled
+   whose claims lapse three times is dropped"; "a release then an immediate re-claim gets a new token, and the
+   released claim's outcome changes nothing"; "a replica whose endpoint state read fails or is late starts no POST
+   once its last good read is 11 s old, and sends again after the next good read"; "a disabled
    endpoint gets no POST after the next state read, and each of its rows is dropped when it falls due, also
    while its breaker is open"; "an open breaker spends
    no attempt"; "a 3xx disables at once"; "a private address is not sent to and disables"; "failing for 120 h disables,
