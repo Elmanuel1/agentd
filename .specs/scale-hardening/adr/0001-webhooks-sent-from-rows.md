@@ -48,8 +48,9 @@ timeout, and keeps retries in memory:
   ignored by the handler.
 - A new delivery waits up to about 50 ms for a claim. Deliveries still go out while the change feed is down, found
   by the 1 s poll.
-- Delivery stays at least once: an instance that crashes after its POST and before its outcome leaves the claim to
-  expire, and another instance sends again with the same `webhook-id`.
+- Delivery stays at least once: when a delivery's outcome is not recorded before its claim expires (the instance
+  crashed after its POST, or the outcome write failed or ran late), another instance sends it again with the same
+  `webhook-id`.
 - Delivered rows are deleted after 24 h and dropped rows after 30 days, which keeps the table bounded.
 - Runtime-parity H-3 is superseded by SH-3; H-4 and D51 narrow to "the change feed wakes the senders; the table is
   the send path".

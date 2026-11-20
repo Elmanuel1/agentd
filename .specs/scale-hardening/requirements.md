@@ -63,7 +63,7 @@ SH-51 are not used.
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
 | SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, endpoint and reason. |
-| SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send a delivery again only after the instance holding its claim stopped between the POST and its outcome. |
+| SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send a delivery again only when its outcome was not recorded before its claim expired. |
 
 ## 2. The change feed
 
@@ -214,8 +214,9 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 - **No double sends**: the rows are written once, in the commit of the change they report (`webhook_deliveries.rs:46-61`),
   so a record the feed hands over twice is still one row; and only the instance holding a row's claim sends it, and
   only while that claim has 15 s left. A
-  crash after the POST and before the outcome is the one duplicate left: the claim expires after 60 s and another
-  instance sends it again with the same `webhook-id`, which is live's documented at-least-once delivery.
+  delivery whose outcome is not recorded before its claim expires is the one duplicate left (the instance crashed
+  after the POST, or the outcome write failed or ran late): the claim expires after 60 s and another instance sends
+  it again with the same `webhook-id`, which is live's documented at-least-once delivery.
 - **Breaker**, per replica in memory (design skill exception): 5 failures in a row open it for 30 s. While open, the
   endpoint is skipped: nothing is claimed for it, so no attempt is spent without a POST. After 30 s one send is let
   through; a 2xx closes it, a failure opens it again.
