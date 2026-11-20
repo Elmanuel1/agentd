@@ -586,12 +586,12 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS
      NULL AND dropped_at IS NULL AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()) AND
      endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED`, then `UPDATE
-     webhook_deliveries AS d SET claimed_until = clock_timestamp() + interval '60 seconds', attempt = d.attempt +
-     (d.claimed_until IS NOT NULL)::int FROM
+     webhook_deliveries AS d SET claimed_until = clock_timestamp() + interval '60 seconds', attempt = least(3, d.attempt +
+     (d.claimed_until IS NOT NULL)::int) FROM
      unnest($3::text[], $4::text[]) AS v(webhook_id, endpoint_key) WHERE d.webhook_id = v.webhook_id AND
      d.endpoint_key = v.endpoint_key AND d.delivered_at IS NULL AND d.dropped_at IS NULL AND (d.claimed_until IS NULL
      OR d.claimed_until < now()) RETURNING d.webhook_id, d.endpoint_key, d.claimed_until, d.attempt, d.endpoint_url,
-     d.body`. `$1` is the open-breaker endpoints minus the disabled ones. A returned row at `attempt` 3 is dropped
+     d.body`. `$1` is the open-breaker endpoints minus the disabled ones. A returned row at `attempt` 3 (the cap) is dropped
      unsent with the drop statement below, which leaves `attempt` at 3. The
      sender sends only the returned rows.
    - `queue.rs`, release unsent: `UPDATE webhook_deliveries SET claimed_until = NULL WHERE webhook_id = $1 AND
@@ -635,7 +635,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    "a live claim is not taken over, an expired one is"; "a row with under 15 s of claim left is released unsent, its
    attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
    claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
-   whose claims lapse three times is dropped with `attempt` 3"; "a release then an immediate re-claim gets a new token, and the
+   whose claims lapse three times is dropped with `attempt` 3"; "a claim at `attempt` 3 that lapses before its drop
+   is dropped by the next claim, still at `attempt` 3"; "a release then an immediate re-claim gets a new token, and the
    released claim's outcome changes nothing"; "a replica whose endpoint state read fails or is late starts no POST
    once its last good read is 11 s old, and sends again after the next good read"; "a read that started before a disable and completes 11 s later is
    discarded, and no POST goes to the disabled endpoint"; "a disabled
