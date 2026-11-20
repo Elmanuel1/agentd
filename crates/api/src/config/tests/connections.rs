@@ -81,6 +81,18 @@ fn an_otlp_certificate_needs_an_https_endpoint() {
         ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/ca.pem"),
     ];
     assert_eq!(config(&plain).unwrap_err().var, "OTEL_EXPORTER_OTLP_CERTIFICATE");
+    assert_eq!(c.telemetry.otlp_https, OtlpHttps { traces: true, metrics: true, logs: true });
+    for signal in ["TRACES", "METRICS", "LOGS"] {
+        let var = format!("OTEL_EXPORTER_OTLP_{signal}_ENDPOINT");
+        let one_plain = [
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:4317"),
+            (var.as_str(), "http://collector:4317"),
+            ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/ca.pem"),
+        ];
+        let err = config(&one_plain).unwrap_err();
+        let got = (err.var, err.reason.as_str());
+        assert_eq!(got, ("OTEL_EXPORTER_OTLP_CERTIFICATE", "needs every OTLP endpoint https://"), "{signal}");
+    }
 }
 
 #[test]
@@ -109,4 +121,14 @@ fn a_schemeless_otlp_endpoint_is_tls_unless_insecure() {
     let explicit =
         [("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"), ("OTEL_EXPORTER_OTLP_INSECURE", "false")];
     assert_eq!(config(&explicit).unwrap().telemetry.otlp_https, none);
+}
+
+#[test]
+fn only_an_https_otlp_endpoint_gets_tls() {
+    let c = config(&[
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "unix:///tmp/otel.sock"),
+        ("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://logs:4317"),
+    ])
+    .unwrap();
+    assert_eq!(c.telemetry.otlp_https, OtlpHttps { traces: false, metrics: false, logs: true });
 }
