@@ -7,7 +7,13 @@ BASE_URL=http://127.0.0.1:8080
 k() { kubectl --context "$CTX" -n "$NS" "$@"; }
 
 # A key made through agentd's CLI in an api pod, printed once: `cli_key keys create --org ... --workspace ...`.
-cli_key() { k exec deploy/agentd-api -- agentd "$@"; }
+# Found by label, so it works whether the api runs as a Deployment or an Argo Rollout.
+cli_key() {
+  pod=$(k get pods -l app.kubernetes.io/instance=agentd,app.kubernetes.io/component=api \
+    --field-selector=status.phase=Running -o name | head -1)
+  [ -n "$pod" ] || { echo "no running agentd api pod" >&2; return 1; }
+  k exec "$pod" -- agentd "$@"
+}
 
 # A Secret from name=value pairs read on stdin, so no value appears in a process's arguments.
 secret_from_stdin() { k create secret generic "$1" --from-env-file=/dev/stdin --dry-run=client -o yaml | k apply -f - >/dev/null; }

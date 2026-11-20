@@ -52,6 +52,25 @@ envFromSecrets:
   - name: agentd-model
     optional: true
 
+# Argo Rollouts (argoproj.io): with `enabled`, each role is a Rollout instead of a Deployment, and the cluster
+# runs the Argo Rollouts controller. Without `canary.enabled`, a new version replaces pods as a rolling update does.
+argoRollouts:
+  enabled: false
+  canary:
+    enabled: false
+    maxSurge: 25%
+    maxUnavailable: 0
+    # Each step sets the share of pods (or of traffic, with trafficRouting) on the new version, or pauses;
+    # a pause with no duration waits for `kubectl argo rollouts promote`.
+    steps:
+      - setWeight: 25
+      - pause: { duration: 2m }
+      - setWeight: 50
+      - pause: { duration: 2m }
+    # A trafficRouting block (nginx, istio, alb, ...) for the api Rollout, as Argo Rollouts takes it. With one, the
+    # api gets a second Service, `<release>-api-canary`, and its traffic splits by weight instead of by pod count.
+    trafficRouting: {}
+
 # SIGTERM drains requests for 10 s (crates/api/src/main.rs); the grace period leaves room for it.
 terminationGracePeriodSeconds: 30
 # Time for the Service to drop a stopping pod before it stops taking connections.

@@ -55,6 +55,9 @@ credentials are sealed in Postgres, and no webhook endpoint is set. The cluster 
 | `env` | empty | plain settings, in a ConfigMap; `AGENTD_API_BASE_URL` and `AGENTD_VALKEY_URL` are required |
 | `envFromSecrets` | `agentd-keys`, then `agentd-model` (optional) | Secrets whose every key becomes an environment variable |
 | `terminationGracePeriodSeconds`, `preStopSleepSeconds` | 30, 5 | the stop: the Service drops the pod, then SIGTERM drains requests for 10 s |
+| `argoRollouts.enabled` | false | each role is an Argo Rollout instead of a Deployment; see "Argo Rollouts" below |
+| `argoRollouts.canary.enabled`, `.steps`, `.maxSurge`, `.maxUnavailable` | false, 25% then 50% with 2-minute pauses, 25%, 0 | the canary's steps; disabled, a new version replaces pods as a rolling update does |
+| `argoRollouts.canary.trafficRouting` | empty | a trafficRouting block for the api Rollout, as Argo Rollouts takes it |
 
 Secrets reach agentd only as environment variables from Kubernetes Secrets the chart names; the chart never
 holds a secret value. `agentd-database` holds the database URL under `DATABASE_URL`; only that key is read. `agentd-keys` holds the four key rings (`AGENTD_API_KEY_PEPPERS`, `AGENTD_WORK_TOKEN_KEYS`,
@@ -86,6 +89,41 @@ SDK session tests and the load send user messages to agents, which would call th
 environment key for it, and sends one message that asks for `echo kind-e2e-ok` through the bash tool. It passes
 when `agent.tool_use` and a `user.tool_result` holding `kind-e2e-ok` are in the session's events and the turn
 ends with `end_turn`. On exit, pass or fail, it deletes the worker and the model key and rolls agentd out again.
+
+## Argo Rollouts
+
+With `argoRollouts.enabled`, the chart renders each role as an [Argo Rollouts](https://argoproj.github.io/rollouts/)
+`Rollout` instead of a `Deployment`, with the same pod template; the cluster runs the Argo Rollouts controller. A
+new version then replaces pods as a rolling update does, within `maxSurge` and `maxUnavailable`.
+
+With `argoRollouts.canary.enabled` as well, a new version goes through `steps`: each `setWeight` moves that share
+of the role's pods to the new version and each `pause` waits, for its `duration` or, with none, until
+`kubectl argo rollouts promote`. Without `trafficRouting` the weight is a share of pods, and the `agentd-api`
+Service sends traffic to old and new pods alike. With a `trafficRouting` block (an ingress controller or a service
+mesh), the api Rollout gets a second Service, `<release>-api-canary`, and Argo Rollouts splits the api's traffic by
+weight between it and `<release>-api`. The `loop` role takes no traffic, so its weight is always a share of pods.
+
+```yaml
+argoRollouts:
+  enabled: true
+  canary:
+    enabled: true
+    steps:
+      - setWeight: 25
+      - pause: { duration: 2m }
+      - setWeight: 50
+      - pause: {}
+```
+
+The kind scripts run the chart with `argoRollouts` disabled. To try a canary on the kind cluster, install the
+controller (its CRDs need a server-side apply), then upgrade the release with the values above:
+
+```sh
+kubectl --context kind-agentd create namespace argo-rollouts
+kubectl --context kind-agentd apply --server-side -n argo-rollouts \
+  -f https://github.com/argoproj/argo-rollouts/releases/download/v1.10.2/install.yaml
+helm upgrade agentd deploy/helm/agentd --kube-context kind-agentd -n agentd -f deploy/kind/values.yaml -f rollouts.yaml
+```
 
 ## Production
 

@@ -22,3 +22,24 @@ seccompProfile:
       name: {{ .Values.database.existingSecret }}
       key: {{ .Values.database.urlKey }}
 {{- end -}}
+
+{{- /* An Argo Rollouts canary. Without canary.enabled it has no steps and replaces pods as a rolling update
+does; with it, each step sets the canary's weight (by pod count, or by traffic for the api when
+trafficRouting is set) or pauses. */ -}}
+{{- define "agentd.rolloutStrategy" -}}
+{{- $canary := .Values.argoRollouts.canary -}}
+strategy:
+  canary:
+    maxSurge: {{ $canary.maxSurge | quote }}
+    maxUnavailable: {{ $canary.maxUnavailable }}
+    {{- if $canary.enabled }}
+    steps:
+      {{- toYaml $canary.steps | nindent 6 }}
+    {{- if and $canary.trafficRouting (eq .role "api") }}
+    canaryService: {{ .Release.Name }}-api-canary
+    stableService: {{ .Release.Name }}-api
+    trafficRouting:
+      {{- toYaml $canary.trafficRouting | nindent 6 }}
+    {{- end }}
+    {{- end }}
+{{- end -}}

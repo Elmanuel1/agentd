@@ -1,7 +1,12 @@
 {{- range $role, $spec := .Values.roles }}
 ---
+{{- if $.Values.argoRollouts.enabled }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+{{- else }}
 apiVersion: apps/v1
 kind: Deployment
+{{- end }}
 metadata:
   name: {{ $.Release.Name }}-{{ $role }}
   labels:
@@ -13,6 +18,9 @@ spec:
     matchLabels:
       app.kubernetes.io/instance: {{ $.Release.Name }}
       app.kubernetes.io/component: {{ $role }}
+  {{- if $.Values.argoRollouts.enabled }}
+  {{- include "agentd.rolloutStrategy" (dict "Values" $.Values "Release" $.Release "role" $role) | nindent 2 }}
+  {{- end }}
   template:
     metadata:
       labels:
