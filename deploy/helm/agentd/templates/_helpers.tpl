@@ -35,11 +35,12 @@ seccompProfile:
   value: "host={{ .Values.database.host }} port={{ .Values.database.port }} dbname={{ .Values.database.name }} user=$(PGUSER) password=$(PGPASSWORD) sslmode={{ .Values.database.sslMode }}"
 {{- end -}}
 
-{{- /* Where a pod runs: each setting from the role (or the migrations) when it sets one, else the chart-wide
-value. */ -}}
+{{- /* Where a pod runs: each setting from the role (or the migrations) when it has the key, even set empty to
+clear it, else the chart-wide value. */ -}}
 {{- define "agentd.scheduling" -}}
 {{- range $key := list "nodeSelector" "tolerations" "affinity" "topologySpreadConstraints" "priorityClassName" }}
-{{- with (index $.spec $key) | default (index $.Values $key) }}
+{{- $value := ternary (index $.spec $key) (index $.Values $key) (hasKey $.spec $key) }}
+{{- with $value }}
 {{ $key }}: {{- if kindIs "string" . }} {{ . }}{{ else }}{{ toYaml . | nindent 2 }}{{ end }}
 {{- end }}
 {{- end }}
