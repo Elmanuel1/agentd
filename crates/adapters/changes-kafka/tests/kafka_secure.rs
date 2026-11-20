@@ -105,7 +105,8 @@ async fn ssl_reads_the_feed() {
 }
 
 /// Kafka's unsecured OAUTHBEARER tokens (`alg: none`), which the test broker
-/// accepts; counts how many it hands out.
+/// accepts, each after a wait on the runtime's timer, as a credential fetch
+/// waits on its IO; counts how many it hands out.
 #[derive(Debug, Default)]
 struct Unsecured(Mutex<usize>);
 
@@ -113,6 +114,7 @@ impl BearerTokenSource for Unsecured {
     fn token(&self) -> BoxFuture<'_, Result<BearerToken, BackendError>> {
         *self.0.lock().unwrap() += 1;
         Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
             let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
             let claims = serde_json::json!({"sub": "agentd", "iat": now, "exp": now + 900}).to_string();
@@ -125,7 +127,8 @@ impl BearerTokenSource for Unsecured {
     }
 }
 
-#[tokio::test]
+/// On a multi-threaded runtime, as agentd runs.
+#[tokio::test(flavor = "multi_thread")]
 async fn oauthbearer_reads_the_feed_with_the_sources_tokens() {
     let Some(ca) = ca() else { return };
     let source = Arc::new(Unsecured::default());

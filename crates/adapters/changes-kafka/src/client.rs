@@ -69,7 +69,9 @@ impl ClientContext for Context {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
     /// librdkafka asks from whichever thread polls, a runtime worker among
-    /// them, so the token is fetched on a thread of its own.
+    /// them, so the token is fetched on a thread of its own. Precondition: a
+    /// multi-threaded runtime, whose other workers drive the fetch's IO while
+    /// this one waits.
     fn generate_oauth_token(&self, _: Option<&str>) -> Result<OAuthToken, Box<dyn std::error::Error>> {
         let source = self.bearer.clone().ok_or("no OAUTHBEARER token source is configured")?;
         let runtime = self.runtime.clone();
