@@ -176,7 +176,7 @@ pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};
 pub use scheduler::SchedulerConfig;
 pub use secrets::SecretsConfig;
-pub use store::StoreConfig;
+pub use store::{PgAuth, StoreConfig};
 pub use streams::StreamsConfig;
 pub use telemetry::TelemetryConfig;
 pub use work::WorkConfig;

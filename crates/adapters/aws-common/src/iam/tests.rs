@@ -14,7 +14,9 @@ const SIGNED_AT: u64 = 1_724_709_600;
 
 fn config() -> SdkConfig {
     SdkConfig::builder()
-        .credentials_provider(SharedCredentialsProvider::new(Credentials::new("akid", "secret", None, None, "test")))
+        .credentials_provider(SharedCredentialsProvider::new(Credentials::new(
+            "akid", "secret", None, None, "test",
+        )))
         .time_source(ManualTimeSource::new(UNIX_EPOCH + Duration::from_secs(SIGNED_AT)))
         .region(Region::new("us-east-1"))
         .build()

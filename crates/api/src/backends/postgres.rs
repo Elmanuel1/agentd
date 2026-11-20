@@ -5,9 +5,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use aws_common::RdsAuthToken;
 use sessions::retention::Retention;
 use sessions::store::DatabaseLoad;
 use shared::ports::blobs::BlobStore;
+use shared::ports::credentials::PasswordSource;
 use shared::ports::fire::{FireRegistry, FireWorker};
 use store_postgres::{
     PgBackend, PgError, PgFireClaims, PgLoad, PgRunLock, PgSessionEventLog, PgSessionsStore, PoolSettings,
@@ -17,6 +19,7 @@ use super::Stores;
 use super::feed::ChangeFeed;
 use super::scheduler::Sink;
 use super::secrets::Secrets;
+use crate::config::{PgAuth, StoreConfig};
 use crate::telemetry::scheduler::{self, SchedulerMetrics};
 use crate::telemetry::{self, Metrics};
 
@@ -38,24 +41,40 @@ pub(super) struct Outside {
     pub(super) secrets: Secrets,
 }
 
+/// The pool at `store`'s primary, logging in as its `AGENTD_PG_AUTH` says,
+/// without the pool's metrics: the commands' pool.
+pub(crate) async fn primary(store: &StoreConfig) -> Result<PgBackend, PgError> {
+    let StoreConfig::Postgres { url, auth, .. } = store;
+    PgBackend::connect_as(url, PoolSettings::default(), None, login(*auth).await).await
+}
+
+/// Each new connection's password, when `auth` mints one.
+async fn login(auth: PgAuth) -> Option<Arc<dyn PasswordSource>> {
+    match auth {
+        PgAuth::Password => None,
+        PgAuth::AwsIam => Some(Arc::new(RdsAuthToken::new(aws_common::sdk_config(None, None).await))),
+    }
+}
+
 /// Connect the pools; the load measure and, with a `retention` period, the
 /// retention runs start here.
 pub(super) async fn connect(
-    url: &str,
-    read_url: Option<&str>,
-    pool: PoolSettings,
+    store: &StoreConfig,
     retention: Option<Duration>,
     metrics: &Arc<Metrics>,
     outside: Outside,
 ) -> Result<Postgres, PgError> {
+    let StoreConfig::Postgres { url, read_url, pool, auth } = store;
+    let (pool, password) = (*pool, login(*auth).await);
     let observer = telemetry::db::observer(metrics.clone());
-    let pg = PgBackend::connect_observed(url, pool, observer.clone()).await?;
+    let pg = PgBackend::connect_as(url, pool, Some(observer.clone()), password.clone()).await?;
     let meter = opentelemetry::global::meter("agentd");
     telemetry::db::watch_pool(&meter, pg.diesel.clone());
     let Outside { blobs, secrets } = outside;
     let mut stores = Stores::postgres(pg.clone(), blobs, secrets.on(&pg, metrics));
     if let Some(read_url) = read_url {
-        stores = stores.reading_events_from(PgBackend::connect_observed(read_url, pool, observer).await?);
+        stores = stores
+            .reading_events_from(PgBackend::connect_as(read_url, pool, Some(observer), password).await?);
     }
     let load = PgLoad::new(pg.diesel.clone());
     drop(load.clone().spawn());

@@ -46,7 +46,7 @@ impl PgBackend {
 
     /// Connect using `database_url`, pooled as `settings` says.
     pub async fn connect_with(database_url: &str, settings: PoolSettings) -> Result<Self, PgError> {
-        Self::open(database_url, settings, None, None)
+        Self::connect_as(database_url, settings, None, None).await
     }
 
     /// [`Self::connect_with`], with `observe` watching the pool.
@@ -55,21 +55,13 @@ impl PgBackend {
         settings: PoolSettings,
         observe: Arc<dyn PgObserver>,
     ) -> Result<Self, PgError> {
-        Self::open(database_url, settings, Some(observe), None)
+        Self::connect_as(database_url, settings, Some(observe), None).await
     }
 
-    /// [`Self::connect_observed`], each new connection logging in with a
-    /// password `password` mints for it.
-    pub async fn connect_with_password(
-        database_url: &str,
-        settings: PoolSettings,
-        observe: Arc<dyn PgObserver>,
-        password: Arc<dyn PasswordSource>,
-    ) -> Result<Self, PgError> {
-        Self::open(database_url, settings, Some(observe), Some(password))
-    }
-
-    fn open(
+    /// Connect using `database_url`, pooled as `settings` says, with `observe`
+    /// watching the pool and each new connection logging in with the password
+    /// `password` mints for it, when they are given.
+    pub async fn connect_as(
         database_url: &str,
         settings: PoolSettings,
         observe: Option<Arc<dyn PgObserver>>,

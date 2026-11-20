@@ -136,7 +136,8 @@ async fn each_new_connection_logs_in_with_a_minted_password() {
     let url =
         format!("host=localhost port=5433 user=agentd dbname=agentd sslmode=verify-full sslrootcert={ca}");
     let settings = PoolSettings { max_size: 2, ..PoolSettings::default() };
-    let pg = PgBackend::connect_with_password(&url, settings, Arc::new(Quiet), minted.clone()).await.unwrap();
+    let pg =
+        PgBackend::connect_as(&url, settings, Some(Arc::new(Quiet)), Some(minted.clone())).await.unwrap();
     let (first, second) = (pg.diesel.get().await.unwrap(), pg.diesel.get().await.unwrap());
     drop((first, second));
     assert_eq!(encrypted_on(&pg).await, Ok(true));
@@ -148,15 +149,11 @@ async fn each_new_connection_logs_in_with_a_minted_password() {
 async fn a_minted_password_is_never_sent_unencrypted() {
     for mode in ["disable", "prefer"] {
         let url = format!("host=localhost {TLS} sslmode={mode}");
-        let err = PgBackend::connect_with_password(
-            &url,
-            PoolSettings::default(),
-            Arc::new(Quiet),
-            Arc::new(Minted::default()),
-        )
-        .await
-        .map(|_| ())
-        .unwrap_err();
+        let minted: Arc<dyn PasswordSource> = Arc::new(Minted::default());
+        let err = PgBackend::connect_as(&url, PoolSettings::default(), None, Some(minted))
+            .await
+            .map(|_| ())
+            .unwrap_err();
         assert_eq!(
             err.to_string(),
             "connect: an IAM password needs sslmode=require, verify-ca or verify-full"

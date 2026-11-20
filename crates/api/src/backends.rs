@@ -7,7 +7,7 @@ use std::sync::Arc;
 use blobs_s3::{BlobError, S3BlobStore};
 
 mod feed;
-mod postgres;
+pub(crate) mod postgres;
 mod scheduler;
 mod secrets;
 mod stores;
@@ -140,12 +140,11 @@ impl Backends {
         let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster)
             .map_err(|e| BootError::Signals(e.to_string()))?;
         let (stores, load, keys, fires, sources) = match &config.store {
-            StoreConfig::Postgres { url, read_url, pool } => {
+            store @ StoreConfig::Postgres { .. } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
                 let hooks = config.webhooks.clone();
                 let outside = postgres::Outside { blobs, secrets };
-                let pg =
-                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
+                let pg = postgres::connect(store, retention, &metrics, outside).await?;
                 let queue = PgFireClaims::new(pg.backend.clone());
                 let meter = opentelemetry::global::meter("agentd");
                 let scheduling = SchedulerMetrics::new(&meter);

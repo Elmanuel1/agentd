@@ -40,7 +40,12 @@ impl RdsAuthToken {
 }
 
 impl PasswordSource for RdsAuthToken {
-    fn password<'a>(&'a self, host: &'a str, port: u16, user: &'a str) -> BoxFuture<'a, Result<String, BackendError>> {
+    fn password<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+        user: &'a str,
+    ) -> BoxFuture<'a, Result<String, BackendError>> {
         Box::pin(async move {
             let url = format!("https://{host}:{port}/?Action=connect&DBUser={user}");
             let (signed, _) = presign(&self.0, &url, "rds-db").await?;
@@ -81,7 +86,11 @@ impl BearerTokenSource for MskAuthToken {
 
 /// `url` presigned for `service` (the signature and its parameters in the
 /// query), and the time it was signed at, from the configuration's clock.
-async fn presign(config: &SdkConfig, url: &str, service: &str) -> Result<(url::Url, SystemTime), BackendError> {
+async fn presign(
+    config: &SdkConfig,
+    url: &str,
+    service: &str,
+) -> Result<(url::Url, SystemTime), BackendError> {
     let now = config.time_source().map_or_else(SystemTime::now, |t| t.now());
     let credentials = config
         .credentials_provider()
@@ -102,7 +111,8 @@ async fn presign(config: &SdkConfig, url: &str, service: &str) -> Result<(url::U
         .settings(settings)
         .build()
         .map_err(failed)?;
-    let request = SignableRequest::new("GET", url, std::iter::empty(), SignableBody::Bytes(&[])).map_err(failed)?;
+    let request =
+        SignableRequest::new("GET", url, std::iter::empty(), SignableBody::Bytes(&[])).map_err(failed)?;
     let (instructions, _) = http_request::sign(request, &params.into()).map_err(failed)?.into_parts();
     let mut signed = url::Url::parse(url).map_err(failed)?;
     for (name, value) in instructions.params() {
