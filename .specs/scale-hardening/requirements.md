@@ -63,7 +63,7 @@ SH-51 are not used.
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
 | SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, endpoint and reason. |
-| SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send no delivery twice. |
+| SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send a delivery again only after the instance holding its claim stopped between the POST and its outcome. |
 
 ## 2. The change feed
 
@@ -161,7 +161,7 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 | Problem | Standard pattern (source) | This design |
 |---|---|---|
 | Webhook fan-out that one slow receiver must not stall | Svix, Stripe: deliveries are durable rows; a worker pool; retries scheduled in the store with jittered backoff (docs.svix.com/retries) | Followed. Svix itself is not used (D5). Svix's 8-attempt schedule is not used: live's 3 attempts win (D3). |
-| A work queue in Postgres | `SELECT ... FOR NO KEY UPDATE SKIP LOCKED` (Postgres docs, "The Locking Clause"; pg-boss, Oban) | Followed for the webhook claim on every instance. |
+| A work queue in Postgres | `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres docs, "The Locking Clause"; pg-boss, Oban) | Followed for the webhook claim on every instance, with `FOR NO KEY UPDATE`, the weaker lock for a row that is only updated (sql-transactions rule 19). |
 | Waking a Postgres queue | A wake signal in front of a fixed poll (Oban's stager, 1 s; Graphile Worker, 2 s; DEP-19) | Followed: a Valkey wake and a 1 s poll (D18). |
 | Endpoint health | Svix `endpoint_failure_disable_after`, 120 h (DEP-8); circuit breaker (Nygard, *Release It!*) | Followed: live's disable rules, Svix's window where live states none, a breaker per replica (D4). |
 | A shared upstream under overload | A circuit breaker per dependency (Nygard; Envoy outlier detection); retry only idempotent calls (AWS Builders' Library, "Timeouts, retries, and backoff with jitter") | Followed: a breaker per model provider per replica that makes callers wait, not fail. MCP and token refresh keep live's retry at the next turn (D17). |
@@ -544,8 +544,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    subscription, 1 s backstop, 50 ms fold, queue store, senders), `sender/senders.rs` (free senders, breaker state per
    endpoint), `sender/breaker.rs`, `sender/send.rs` (guard client, sign, POST, outcome: queue store, health, metrics),
    `sender/health.rs` (endpoint state store, the 10 s read); `shared/src/ports/broadcast.rs` (new port: `publish(channel, payload)`,
-   `subscribe(channel)`) and `signals-valkey/src/broadcast.rs` (new, its Valkey adapter; the wake is channel
-   `agentd:webhooks`). Each type at most 5 dependencies. Store: `webhook_deliveries.rs` becomes a
+   `subscribe(channel)`) and `signals-valkey/src/broadcast.rs` (new, its Valkey adapter, built on the `subscribe`
+   helper in `valkey.rs`; the wake is channel `agentd:webhooks`). Each type at most 5 dependencies. Store: `webhook_deliveries.rs` becomes a
    folder:
    - `insert.rs`: today's inserts.
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS

@@ -44,7 +44,8 @@ timeout, and keeps retries in memory:
 ## Consequences
 
 - Adding instances adds sending capacity, with no shared counter: Postgres gives each row to one instance.
-- Three writes per delivery (insert, claim, outcome) and two more change-feed records, both ignored by the handler.
+- Four writes per delivery (insert, claim, outcome, the sweep's delete) and three more change-feed records, all
+  ignored by the handler.
 - A new delivery waits up to about 50 ms for a claim. Deliveries still go out while the change feed is down, found
   by the 1 s poll.
 - Delivery stays at least once: an instance that crashes after its POST and before its outcome leaves the claim to
