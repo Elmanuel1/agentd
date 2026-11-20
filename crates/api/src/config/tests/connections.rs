@@ -67,3 +67,18 @@ fn a_valkey_ca_needs_a_rediss_url() {
         ("AGENTD_VALKEY_CA_CERT", "needs a rediss:// AGENTD_VALKEY_URL")
     );
 }
+
+#[test]
+fn an_otlp_certificate_needs_an_https_endpoint() {
+    let c = config(&[
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector:4317"),
+        ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/etc/otel/ca.pem"),
+    ])
+    .unwrap();
+    assert_eq!(c.telemetry.otlp_certificate.as_deref(), Some("/etc/otel/ca.pem"));
+    let plain = [
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"),
+        ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/ca.pem"),
+    ];
+    assert_eq!(config(&plain).unwrap_err().var, "OTEL_EXPORTER_OTLP_CERTIFICATE");
+}
