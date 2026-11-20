@@ -50,9 +50,9 @@ SH-51 are not used.
 | ID | P | Requirement |
 |---|---|---|
 | SH-1 | E | When the change feed hands the webhook sender a new delivery, the webhook sender shall publish one wake to every instance and return without sending. |
-| SH-2 | U | The webhook sender shall send a delivery only after claiming it for 60 s, shall start its POST only while at least 15 s of that claim remain, and shall send nothing for a delivery another replica holds or has finished. |
+| SH-2 | U | The webhook sender shall send a delivery only after claiming it for 60 s, shall start its POST only while at least 15 s of that claim remain, and shall start no POST for a delivery another replica holds or has finished. |
 | SH-3 | W | If a delivery is not answered 2xx, then the webhook sender shall set its next attempt by exponential backoff with jitter, 15 to 30 s after the first attempt and 30 to 60 s after the second, and drop it after its third attempt (L1 "jittered exponential backoff"; supersedes H-3's fixed 31 s). |
-| SH-4 | E | When an instance is woken, and at least every second, the webhook sender shall claim with `SKIP LOCKED` up to its free senders (at most 100) of due deliveries, leaving out endpoints whose breaker is open on it, at most once every 50 ms. |
+| SH-4 | E | When an instance is woken, and at least every second, the webhook sender shall claim with `SKIP LOCKED` up to its free senders (at most 100) of due deliveries, leaving out endpoints whose breaker is open on it unless the endpoint is disabled, at most once every 50 ms. |
 | SH-20 | U | The webhook sender shall send through the egress guard with `user-agent: Claude-Platform`, reusing a client per host for 5 minutes. |
 | SH-29 | W | If an endpoint resolves to a non-public address, then the webhook sender shall not send to it and shall disable it. |
 | SH-30 | W | If an endpoint answers 3xx, then the webhook sender shall disable it. |
@@ -115,7 +115,7 @@ SH-51 are not used.
 | ID | P | Requirement |
 |---|---|---|
 | SH-22 | U | The event log shall answer tool-call answers, queued events, stream starts and the idle-send guard from the indexes named in the design, reading only matching index entries. |
-| SH-23 | U | The event log shall read the events list in index order from the previous page's last `(processed_at, seq)`, unprocessed events last. |
+| SH-23 | U | The event log shall read the events list in index order from the previous page's last `(processed_at, seq)`, then a tail in `seq` order of the unprocessed events and the events processed after the walk's boundary, returning each event of the session once, with no gaps, while events are appended and processed. |
 | SH-28 | U | agentd shall page sessions, work items, agents, memory versions, deployment runs and agent versions in SQL from the previous page's last row, and memories in SQL at depth 0. |
 
 ## 7. Retention
@@ -193,8 +193,10 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 - **The claim token is `claimed_until`.** Each claim's value is later than every earlier claim's on that row: a row
   is claimed again only once `now()` has passed its old value. Every later write for the claim (outcome, release)
   matches the row's `claimed_until` to the value the claim returned, so a write from an expired or released claim
-  changes nothing. `attempt` counts recorded outcomes only: a claim that expires or is released spends no attempt,
-  so the three attempts are always three POSTs with a recorded result.
+  changes nothing. `attempt` counts POSTs: the outcome adds 1, and a claim that lapsed (its `claimed_until` is still
+  set when the next claim takes the row) adds 1 at that next claim, since it may have sent. A released claim clears
+  `claimed_until`, so it spends nothing. A claim that brings `attempt` to 3 drops the row without sending, so a
+  delivery whose outcome is never recorded is still tried at most three times.
 - **Two instances never hold one row.** Three guards, each enough on its own for its case:
   - The lock: the `SELECT ... FOR NO KEY UPDATE SKIP LOCKED` and the `UPDATE` run in one transaction, so no other claim can
     read the row between them.
@@ -233,9 +235,10 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   - every failure sets `failing_since` if it is empty, and disables when `failing_since` is older than 120 h (Svix's
     default; live states no window);
   - a 2xx clears `failing_since`; each replica knows which endpoints are failing from the state read below, so only
-    a 2xx to a failing endpoint costs a statement. A 2xx that lands within 10 s of another replica's first failure,
-    before this replica's next read, misses the clear, so a failing run can be counted from up to 10 s early: a
-    bound of 10 s on a 120 h window;
+    a 2xx to a failing endpoint costs a statement. Each replica also keeps its last 2xx time per endpoint; at each
+    10 s read, a failing endpoint whose `failing_since` is earlier than this replica's last 2xx to it is cleared
+    (`UPDATE webhook_endpoint_states SET failing_since = NULL WHERE endpoint_key = $1 AND failing_since = $2`, `$2`
+    the value read), so a 2xx that landed before the replica knew the endpoint was failing still ends the run;
   - every replica reads the failing and disabled sets every 10 s, so a disable reaches all replicas within 10 s;
   - disabling logs `ERROR` once (a person must act) with org, endpoint and reason;
   - re-enable (D6): `agentd webhooks enable <org> <endpoint>`, or a change to the endpoint's URL or secret in
@@ -345,9 +348,10 @@ partial index only when the query's `WHERE` implies the predicate (DEP-15).
   once, as with the `OR`): `event_id = ANY($3)` on the primary key; `doc ? 'tool_use_id' AND doc->>'tool_use_id' =
   ANY($3)`; the same for `custom_tool_use_id`.
 - **List**: processed rows first, from the asc or desc index, keyset `(processed_at text, seq)` from the token; when
-  a page runs past them, the tail by `seq` (nulls last in both orders, as today). The token records the phase, the
+  a page runs past them, the tail by `seq`, in the list's direction (nulls last in both orders, as today). The token records the phase, the
   keyset, and the boundary: the highest `processed_at` phase 1 can return (asc: the last one it returned; desc: the
-  first page's first). The tail is one `UNION` of two arms, each `seq` > the tail's last `seq`, ordered by `seq`: the
+  first page's first). The tail is one `UNION` of two arms, each past the tail's last `seq` in the list's direction
+  (asc `seq >` it, desc `seq <` it), ordered by `seq` that way: the
   unprocessed rows (unprocessed index) and the rows processed after the boundary (processed index). So an event
   stamped processed while the walk is in its tail is returned once, in the tail, and an event the tail already
   returned is never returned again. This rests on a session's stamps being taken in order: a step stamps under the
@@ -571,11 +575,13 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS
      NULL AND dropped_at IS NULL AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()) AND
      endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED`, then `UPDATE
-     webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds' FROM
+     webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds', attempt = d.attempt +
+     (d.claimed_until IS NOT NULL)::int FROM
      unnest($3::text[], $4::text[]) AS v(webhook_id, endpoint_key) WHERE d.webhook_id = v.webhook_id AND
      d.endpoint_key = v.endpoint_key AND d.delivered_at IS NULL AND d.dropped_at IS NULL AND (d.claimed_until IS NULL
      OR d.claimed_until < now()) RETURNING d.webhook_id, d.endpoint_key, d.claimed_until, d.attempt, d.endpoint_url,
-     d.body`. `$1` is the open-breaker endpoints minus the disabled ones. The
+     d.body`. `$1` is the open-breaker endpoints minus the disabled ones. A returned row at `attempt` 3 is dropped
+     unsent with the outcome statement. The
      sender sends only the returned rows.
    - `queue.rs`, release unsent: `UPDATE webhook_deliveries SET claimed_until = NULL WHERE webhook_id = $1 AND
      endpoint_key = $2 AND claimed_until = $3`.
@@ -615,7 +621,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    every row is claimed once"; "a row claimed by another instance between the select and the update is not returned";
    "a live claim is not taken over, an expired one is"; "a row with under 15 s of claim left is released unsent, its
    attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
-   claim changes nothing after a newer claim"; "three claims that expire unsent spend no attempt"; "a disabled
+   claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
+   whose claims lapse three times is dropped"; "a disabled
    endpoint's rows are dropped within 10 s while its breaker is open"; "an open breaker spends
    no attempt"; "a 3xx disables at once"; "a private address is not sent to and disables"; "failing for 120 h disables,
    a 2xx in between restarts the clock"; "a disabled endpoint's new delivery is dropped unsent"; "a changed URL

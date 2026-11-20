@@ -25,8 +25,9 @@ timeout, and keeps retries in memory:
    is open on it unless they are disabled, and sets `claimed_until = now() + 60 s` in the same transaction. The
    update repeats the due conditions, and the instance sends only the rows it returns.
 3. The claim's `claimed_until` is its token: every later claim of the row has a later value, and the outcome and the
-   release write only while the row still holds the value the claim returned. `attempt` counts recorded outcomes, so
-   a claim that expires unsent spends none. A POST starts only while at least 15 s of the claim remain, so a send
+   release write only while the row still holds the value the claim returned. `attempt` counts POSTs: the outcome
+   adds one, a lapsed claim adds one at the next claim, a released claim adds none, and a claim that reaches 3 drops
+   the row unsent. A POST starts only while at least 15 s of the claim remain, so a send
    (10 s timeout) normally ends inside it; a process that stalls past its claim can overlap the next one, which
    receivers handle as a duplicate `webhook-id`.
 4. Attempts, spacing and disable rules match live: three attempts, jittered exponential backoff (15 to 30 s, then 30
