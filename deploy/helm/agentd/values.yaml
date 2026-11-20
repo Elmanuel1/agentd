@@ -1,0 +1,80 @@
+# agentd's own workloads. The backing services (Postgres, Valkey, Kafka and Debezium Server, S3) are not part of
+# the chart: their addresses go in `env` and `database`, and every secret comes from a Secret named below.
+# docs/kubernetes.md has a quickstart; docs/configuration.md has every setting.
+
+image:
+  repository: agentd
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# Flyway 11 with crates/adapters/store-postgres/migrations (deploy/migrations.Dockerfile), run as a hook Job
+# before each install and upgrade rolls agentd out.
+migrations:
+  image:
+    repository: agentd-migrations
+    tag: dev
+    pullPolicy: IfNotPresent
+
+# One Deployment per role (AGENTD_ROLE). The Service sends traffic to `api` only: a `loop` replica answers 404.
+roles:
+  api:
+    replicas: 2
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+  loop:
+    replicas: 2
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+
+service:
+  type: ClusterIP
+  port: 8080
+  # Set with `type: NodePort` to pin the node port.
+  nodePort: null
+
+# Postgres. The user and password come from a Secret made before the install (by hand, External Secrets,
+# Sealed Secrets, CloudNativePG), under the keys named here; the chart only reads it. The password holds no
+# space, quote or backslash.
+database:
+  host: postgres
+  port: 5432
+  name: agentd
+  # libpq's sslmode: require (TLS), prefer or disable. The migrations honour it. agentd's Postgres client
+  # does not speak TLS, so agentd stops at boot on `require`: set `disable` until it does.
+  sslMode: require
+  secretName: agentd-database
+  userKey: username
+  passwordKey: password
+
+# Plain settings, put in a ConfigMap. Required: AGENTD_API_BASE_URL and AGENTD_VALKEY_URL.
+env: {}
+
+# Secrets whose every key becomes an environment variable: the key rings (AGENTD_API_KEY_PEPPERS,
+# AGENTD_WORK_TOKEN_KEYS, AGENTD_PLACEHOLDER_KEYS, AGENTD_SECRET_KEYS, the same for every replica) and the model
+# keys (AGENTD_ANTHROPIC_API_KEY or AGENTD_OPENROUTER_API_KEY).
+envFromSecrets:
+  - name: agentd-keys
+  - name: agentd-model
+    optional: true
+
+# Labels and annotations on every pod (the migrations' pod takes the annotations), merged under each role's own
+# `podLabels` and `podAnnotations`, for example an autoscaler's do-not-disrupt annotation.
+podLabels: {}
+podAnnotations: {}
+
+# Where pods run, for every role and the migrations; a role (`roles.api.nodeSelector`, ...) or `migrations`
+# setting its own replaces the value here. For example, spot capacity for one node pool:
+#   nodeSelector: { node-pool: agentd, capacity-type: spot }
+#   tolerations: [{ key: spot, operator: Exists, effect: NoSchedule }]
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# SIGTERM drains requests for 10 s (crates/api/src/main.rs); the grace period leaves room for it.
+terminationGracePeriodSeconds: 30
+# Time for the Service to drop a stopping pod before it stops taking connections.
+preStopSleepSeconds: 5

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "agentd.labels" . | nindent 4 }}
+data:
+  {{- range $name, $value := .Values.env }}
+  {{ $name }}: {{ $value | toString | quote }}
+  {{- end }}
