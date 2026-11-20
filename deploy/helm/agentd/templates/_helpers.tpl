@@ -19,12 +19,12 @@ seccompProfile:
 - name: PGUSER
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.database.existingSecret }}
+      name: {{ .Values.database.secretName }}
       key: {{ .Values.database.userKey }}
 - name: PGPASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.database.existingSecret }}
+      name: {{ .Values.database.secretName }}
       key: {{ .Values.database.passwordKey }}
 {{- end -}}
 

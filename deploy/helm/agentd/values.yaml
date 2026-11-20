@@ -34,7 +34,7 @@ service:
   # Set with `type: NodePort` to pin the node port.
   nodePort: null
 
-# Postgres. The user and password come from an existing Secret, under the keys named here (`username` and
+# Postgres. The user and password come from a Secret made before the install, under the keys named here (`username` and
 # `password`, as CloudNativePG and Bitnami write them); the password holds no space, quote or backslash.
 database:
   host: postgres
@@ -43,7 +43,7 @@ database:
   # libpq's sslmode: disable, prefer or require. agentd's Postgres client does not speak TLS yet, so `require`
   # stops agentd at boot; the migrations honour it.
   sslMode: disable
-  existingSecret: agentd-database
+  secretName: agentd-database
   userKey: username
   passwordKey: password
 

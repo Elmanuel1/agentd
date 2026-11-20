@@ -52,7 +52,7 @@ env:
 | `service.type`, `service.port`, `service.nodePort` | `ClusterIP`, 8080, unset | the Service in front of the `api` replicas |
 | `database.host`, `port`, `name` | `postgres`, 5432, `agentd` | where Postgres is |
 | `database.sslMode` | `disable` | libpq's `sslmode` (`disable`, `prefer`, `require`); agentd's Postgres client does not speak TLS yet, so `require` stops agentd at boot, while the migrations honour it |
-| `database.existingSecret`, `userKey`, `passwordKey` | `agentd-database`, `username`, `password` | the Secret and its keys holding the user and password, as CloudNativePG and Bitnami write them; the password holds no space, quote or backslash |
+| `database.secretName`, `userKey`, `passwordKey` | `agentd-database`, `username`, `password` | the Secret, made before the install (by hand, External Secrets, Sealed Secrets, CloudNativePG), and its keys holding the user and password; the chart only reads it, and the password holds no space, quote or backslash |
 | `env` | empty | plain settings, in a ConfigMap; `AGENTD_API_BASE_URL` and `AGENTD_VALKEY_URL` are required |
 | `envFromSecrets` | `agentd-keys`, then `agentd-model` (optional) | Secrets whose every key becomes an environment variable |
 | `terminationGracePeriodSeconds`, `preStopSleepSeconds` | 30, 5 | the stop: the Service drops the pod, then SIGTERM drains requests for 10 s |
