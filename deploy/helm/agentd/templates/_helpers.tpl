@@ -15,12 +15,24 @@ seccompProfile:
   type: RuntimeDefault
 {{- end -}}
 
-{{- define "agentd.databaseUrl" -}}
-- name: DATABASE_URL
+{{- define "agentd.databaseCredentials" -}}
+- name: PGUSER
   valueFrom:
     secretKeyRef:
       name: {{ .Values.database.existingSecret }}
-      key: {{ .Values.database.urlKey }}
+      key: {{ .Values.database.userKey }}
+- name: PGPASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.database.existingSecret }}
+      key: {{ .Values.database.passwordKey }}
+{{- end -}}
+
+{{- /* agentd's DATABASE_URL in libpq's key=value form, so the password needs no URL encoding. */ -}}
+{{- define "agentd.databaseUrl" -}}
+{{- include "agentd.databaseCredentials" . }}
+- name: DATABASE_URL
+  value: "host={{ .Values.database.host }} port={{ .Values.database.port }} dbname={{ .Values.database.name }} user=$(PGUSER) password=$(PGPASSWORD) sslmode={{ .Values.database.sslMode }}"
 {{- end -}}
 
 {{- /* Where a pod runs: each setting from the role (or the migrations) when it sets one, else the chart-wide

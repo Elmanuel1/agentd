@@ -22,10 +22,10 @@ spec:
           env:
             - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
               valueFrom:
-                secretKeyRef: { name: agentd-postgres, key: password }
+                secretKeyRef: { name: agentd-database, key: password }
             - name: DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_PASSWORD
               valueFrom:
-                secretKeyRef: { name: agentd-postgres, key: password }
+                secretKeyRef: { name: agentd-database, key: password }
           readinessProbe:
             httpGet:
               path: /q/health

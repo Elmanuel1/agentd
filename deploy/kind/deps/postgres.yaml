@@ -30,7 +30,7 @@ spec:
             - { name: POSTGRES_USER, value: agentd }
             - name: POSTGRES_PASSWORD
               valueFrom:
-                secretKeyRef: { name: agentd-postgres, key: password }
+                secretKeyRef: { name: agentd-database, key: password }
             - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
           ports:
             - containerPort: 5432

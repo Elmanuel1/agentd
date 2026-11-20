@@ -17,13 +17,8 @@ kind load docker-image --name "$CLUSTER" agentd:kind agentd-migrations:kind agen
 
 kubectl --context "$CTX" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "$CTX" apply -f - >/dev/null
 # Made once per cluster: the keys and sealed vault credentials made under them stay valid across runs.
-k get secret agentd-postgres >/dev/null 2>&1 || printf 'password=%s\n' "$(openssl rand -hex 16)" | secret_from_stdin agentd-postgres
-if ! k get secret agentd-database >/dev/null 2>&1; then
-  encoded=$(k get secret agentd-postgres -o jsonpath='{.data.password}')
-  password=$(printf %s "$encoded" | base64 -d)
-  [ -n "$password" ] || { echo "agentd-postgres holds no password" >&2; exit 1; }
-  printf 'DATABASE_URL=postgres://agentd:%s@postgres:5432/agentd\n' "$password" | secret_from_stdin agentd-database
-fi
+k get secret agentd-database >/dev/null 2>&1 \
+  || printf 'username=agentd\npassword=%s\n' "$(openssl rand -hex 16)" | secret_from_stdin agentd-database
 if ! k get secret agentd-keys >/dev/null 2>&1; then
   for v in AGENTD_API_KEY_PEPPERS AGENTD_WORK_TOKEN_KEYS AGENTD_PLACEHOLDER_KEYS AGENTD_SECRET_KEYS; do
     printf '%s=k1:%s\n' "$v" "$(openssl rand -hex 32)"

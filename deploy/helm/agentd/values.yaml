@@ -1,5 +1,5 @@
 # agentd's own workloads. The backing services (Postgres, Valkey, Kafka and Debezium Server, S3) are not part of
-# the chart: their addresses go in `env` and the database Secret, and every secret comes from a Secret named below.
+# the chart: their addresses go in `env` and `database`, and every secret comes from a Secret named below.
 # docs/kubernetes.md has the kind values; docs/configuration.md has every setting.
 
 image:
@@ -34,12 +34,18 @@ service:
   # Set with `type: NodePort` to pin the node port.
   nodePort: null
 
-# The database URL (postgres://user:password@host:port/name, options such as ?sslmode=require appended), read
-# from one key of an existing Secret by agentd and the migrations. Special characters in the user or password
-# are URL-encoded; the migrations split the URL as is, so keep them URL-safe (hex).
+# Postgres. The user and password come from an existing Secret, under the keys named here (`username` and
+# `password`, as CloudNativePG and Bitnami write them); the password holds no space, quote or backslash.
 database:
+  host: postgres
+  port: 5432
+  name: agentd
+  # libpq's sslmode: disable, prefer or require. agentd's Postgres client does not speak TLS yet, so `require`
+  # stops agentd at boot; the migrations honour it.
+  sslMode: disable
   existingSecret: agentd-database
-  urlKey: DATABASE_URL
+  userKey: username
+  passwordKey: password
 
 # Plain settings, put in a ConfigMap. Required: AGENTD_API_BASE_URL and AGENTD_VALKEY_URL.
 env: {}

@@ -26,16 +26,15 @@ spec:
         - name: flyway
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
           imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
-          # Flyway takes a JDBC URL with the user and password apart: split agentd's
-          # postgres://user:password@host:port/name[?options].
-          command:
-            - sh
-            - -c
-            - >-
-              rest=${DATABASE_URL#*://}; auth=${rest%%@*};
-              exec flyway -url="jdbc:postgresql://${rest#*@}" -user="${auth%%:*}" -password="${auth#*:}" migrate
+          args: [migrate]
           env:
-            {{- include "agentd.databaseUrl" . | nindent 12 }}
+            {{- include "agentd.databaseCredentials" . | nindent 12 }}
+            - name: FLYWAY_URL
+              value: "jdbc:postgresql://{{ .Values.database.host }}:{{ .Values.database.port }}/{{ .Values.database.name }}?sslmode={{ .Values.database.sslMode }}"
+            - name: FLYWAY_USER
+              value: $(PGUSER)
+            - name: FLYWAY_PASSWORD
+              value: $(PGPASSWORD)
             - name: FLYWAY_CONNECT_RETRIES
               value: "20"
             - name: FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK
