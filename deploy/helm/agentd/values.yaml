@@ -41,9 +41,9 @@ database:
   host: postgres
   port: 5432
   name: agentd
-  # libpq's sslmode: disable, prefer or require. agentd's Postgres client does not speak TLS yet, so `require`
-  # stops agentd at boot; the migrations honour it.
-  sslMode: disable
+  # libpq's sslmode: require (TLS), prefer or disable. The migrations honour it. agentd's Postgres client
+  # does not speak TLS, so agentd stops at boot on `require`: set `disable` until it does.
+  sslMode: require
   secretName: agentd-database
   userKey: username
   passwordKey: password
