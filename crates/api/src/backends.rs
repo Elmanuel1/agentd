@@ -137,8 +137,9 @@ impl Backends {
         let secrets = secrets::Secrets::connect(&config.secrets, &metrics).await?;
         let peppers = Arc::new(PepperRing::from_ring(&config.keys.peppers));
         let streams = &config.streams;
-        let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster)
-            .map_err(|e| BootError::Signals(e.to_string()))?;
+        let valkey =
+            Valkey::open_trusting(&streams.valkey_url, streams.valkey_cluster, streams.valkey_ca.as_deref())
+                .map_err(|e| BootError::Signals(e.to_string()))?;
         let (stores, load, keys, fires, sources) = match &config.store {
             store @ StoreConfig::Postgres { .. } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
@@ -152,7 +153,7 @@ impl Backends {
                 let registry = FireRegistry::new(Arc::new(queue.clone()));
                 let fires = Arc::new(registry.counting_enqueued(move |n| delivered.enqueued(n)));
                 let sink = scheduler::Sink::connect(&config.scheduler, &pg.backend).await?;
-                let feed = feed::ChangeFeed::from_config(streams, &valkey);
+                let feed = feed::ChangeFeed::from_config(streams, &valkey).await;
                 let sender =
                     WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
                         .map_err(BootError::Signals)?;

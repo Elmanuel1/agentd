@@ -163,6 +163,7 @@ fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigEr
 }
 
 mod hooks;
+mod kafka;
 mod keys;
 mod role;
 mod scheduler;
@@ -172,6 +173,7 @@ mod streams;
 mod telemetry;
 mod work;
 
+pub use kafka::{KafkaAuth, KafkaConfig};
 pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};
 pub use scheduler::SchedulerConfig;
