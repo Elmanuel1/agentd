@@ -199,8 +199,9 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 - **The claim token is `claim_seq`** (D26), a counter on the row that each claim raises by one and nothing ever
   lowers: no two claims of a row share a token, whether the earlier one expired or was released, and no clock is
   involved. `claimed_until` only says when the claim expires. Every later write for the claim (outcome, release,
-  drop) matches the row's `claim_seq` to the value the claim returned, so a write from an expired or released claim
-  changes nothing. `attempt` counts POSTs: the outcome adds 1, and a claim that lapsed (its `claimed_until` is still
+  drop) matches the row's `claim_seq` to the value the claim returned, so a write from a claim that a newer claim has
+  replaced changes nothing. A late outcome from an expired claim that no one has claimed again is applied on
+  purpose: no other instance holds the row, and the POST it reports did happen, so recording it saves a resend. `attempt` counts POSTs: the outcome adds 1, and a claim that lapsed (its `claimed_until` is still
   set when the next claim takes the row) adds 1 at that next claim, since it may have sent. A released claim clears
   `claimed_until`, so it spends nothing. A claim that brings `attempt` to 3 drops the row without sending, so a
   delivery whose outcome is never recorded is still tried at most three times.
@@ -640,8 +641,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    "20 claimers on separate connections, started together on 1,000 due rows, 50 rounds: no row is claimed twice and
    every row is claimed once"; "a row claimed by another instance between the select and the update is not returned";
    "a live claim is not taken over, an expired one is"; "a row with under 15 s of claim left is released unsent, its
-   attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
-   claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
+   attempt unchanged"; "a late outcome from an expired claim, before any re-claim, is recorded and
+   the row is not sent again"; "a release or outcome from an expired claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
    whose claims lapse three times is dropped with `attempt` 3"; "a claim at `attempt` 3 that lapses before its drop
    is dropped by the next claim, still at `attempt` 3"; "a release then an immediate re-claim gets a higher `claim_seq`, and the
    released claim's outcome changes nothing"; "a replica whose endpoint state read fails or is late starts no POST
