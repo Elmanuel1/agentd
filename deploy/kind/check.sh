@@ -53,8 +53,14 @@ k create configmap perf-lib --from-file=perf/lib --dry-run=client -o yaml | k ap
 k delete job perf --ignore-not-found >/dev/null
 k apply -f deploy/kind/perf.yaml >/dev/null
 # The Job's activeDeadlineSeconds ends it Failed if it never finishes, an unpulled image included.
-state=
+# The script gives up a minute after that deadline, should the API stop answering or the Job vanish.
+state= give_up=$(( $(date +%s) + 960 ))
 until [ -n "$state" ]; do
+  if [ "$(date +%s)" -gt "$give_up" ]; then
+    k describe job perf >&2 || true
+    echo "the load Job did not finish" >&2
+    exit 1
+  fi
   sleep 5
   state=$(k get job perf -o jsonpath='{.status.conditions[?(@.status=="True")].type}' | grep -oE 'Complete|Failed' | head -1 || true)
 done
