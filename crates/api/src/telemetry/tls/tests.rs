@@ -14,7 +14,7 @@ use super::otlp;
 /// How many TLS handshakes the front saw after one span was exported to it
 /// with `certificate` trusted.
 async fn handshakes(ca: &str, certificate: Option<&str>) -> usize {
-    let front = TlsFront::start(Path::new(ca), None).await;
+    let front = TlsFront::start(Path::new(ca), None).await.unwrap();
     let exporter = SpanExporter::builder()
         .with_tonic()
         .with_endpoint(format!("https://localhost:{}", front.addr.port()))

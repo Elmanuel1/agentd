@@ -21,10 +21,18 @@ fakes in test code, never from configuration ([Security](#security)).
 | Variable | Default | Meaning |
 |---|---|---|
 | `AGENTD_ADDR` | `0.0.0.0:8080` | Listen address |
-| `DATABASE_URL` | required | Postgres connection |
+| `DATABASE_URL` | required | Postgres connection, as a URL (`postgres://…`) or libpq's `key=value` string, with libpq's `sslmode` and `sslrootcert` (see [Encryption and authentication](#encryption-and-authentication)) |
+| `AGENTD_PG_AUTH` | `password` | How each Postgres connection logs in: `password`, the password in `DATABASE_URL` and `AGENTD_PG_READ_URL`; `aws_iam`, an RDS IAM token for each new connection |
 | `AGENTD_PG_READ_URL` | unset (the primary) | A Postgres read replica the events list (`GET /v1/sessions/{id}/events` and a thread's events) reads; every write, stream and other read uses `DATABASE_URL`. A list may lag the primary by the replica's delay |
 | `AGENTD_VALKEY_URL` | required | The Valkey (or Redis) every replica signals session changes through, on the `agentd:sessions` pub/sub channel, so a stream on one replica sees events written on another, and reads the change streams from; `rediss://` for TLS |
+| `AGENTD_VALKEY_CA_CERT` | unset (the operating system's roots) | With a `rediss://` `AGENTD_VALKEY_URL`: the PEM file the server's certificate chains to |
 | `AGENTD_KAFKA_BROKERS` | unset | Kafka's brokers (`host:port,…`), from whose topics agentd reads the change feed; unset, it reads it from Valkey Streams on `AGENTD_VALKEY_URL` |
+| `AGENTD_KAFKA_SECURITY_PROTOCOL` | unset (`plaintext`) | librdkafka's `security.protocol`: `plaintext`, `ssl`, `sasl_plaintext` or `sasl_ssl` |
+| `AGENTD_KAFKA_SASL_MECHANISM` | unset | librdkafka's `sasl.mechanism`: `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512` |
+| `AGENTD_KAFKA_SASL_USERNAME` | unset | librdkafka's `sasl.username` |
+| `AGENTD_KAFKA_SASL_PASSWORD` | unset | librdkafka's `sasl.password`; the configuration's `Debug` hides it |
+| `AGENTD_KAFKA_SSL_CA_LOCATION` | unset (the operating system's roots) | librdkafka's `ssl.ca.location`: the PEM file the brokers' certificates chain to |
+| `AGENTD_KAFKA_AUTH` | `password` | `password`: the SASL settings above, if any; `aws_iam`: Amazon MSK IAM, over `SASL_SSL` with `OAUTHBEARER` tokens, with no `AGENTD_KAFKA_SASL_*` setting and no other `AGENTD_KAFKA_SECURITY_PROTOCOL` |
 | `AGENTD_VALKEY_CLUSTER` | `false` | `true` when `AGENTD_VALKEY_URL` is a cluster's configuration endpoint (cluster mode enabled): agentd then follows the cluster's slots and subscribes over RESP3 |
 | `AGENTD_CHANGES_PREFIX` | `agentd` | Debezium's `topic.prefix`: agentd reads the change feed's tables from `<prefix>.public.<table>`, the delete messages from `<prefix>.message` and an external scheduler's fires from `<prefix>.fires` |
 | `AGENTD_CHANGES_SLOT` | `agentd_changes` | Debezium's replication slot, which every replica reads every 10 s into the `agentd.feed.slot.*` gauges (`docs/history.md`) |
@@ -97,7 +105,9 @@ step's 10 minute deadline.
 |---|---|---|
 | `AGENTD_ROLE` | `all` | `api` serves the API and runs no loop worker; `loop` runs loop workers only and serves no route (each answers `404`); `all` does both. Retention runs in `api` and `all`; every role runs the fire workers, the change feed's handlers, and the built-in tick or the Temporal worker (`AGENTD_SCHEDULER`) |
 | `AGENTD_SCHEDULER` | `postgres` | The scheduler sink: `postgres`, the built-in scheduler whose tick every replica runs, or `temporal`, Temporal Schedules (see Scheduled work) |
-| `AGENTD_TEMPORAL_ADDRESS` | `http://localhost:7233` | With `temporal`: the Temporal frontend |
+| `AGENTD_TEMPORAL_ADDRESS` | `http://localhost:7233` | With `temporal`: the Temporal frontend; `https://` reaches it over TLS |
+| `AGENTD_TEMPORAL_API_KEY` | unset | With an `https://` address: the API key (Temporal Cloud's) every call carries as a bearer token |
+| `AGENTD_TEMPORAL_TLS_SERVER_CA_CERT_PATH` | unset (the operating system's roots) | With an `https://` address: the PEM file the frontend's certificate chains to |
 | `AGENTD_TEMPORAL_NAMESPACE` | `default` | With `temporal`: the namespace that holds agentd's schedules |
 | `AGENTD_TEMPORAL_TASK_QUEUE` | `agentd` | With `temporal`: the task queue agentd's Temporal worker polls |
 | `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
@@ -422,6 +432,44 @@ credentials from Postgres and tags their secrets in Secrets Manager, and
 ([Postgres](#postgres)); each does nothing on a store that needs neither. A key is
 printed once and never stored; lose it and create another.
 
+## Encryption and authentication
+
+Each backing service is set on its own, in the way that service names it, so one deployment can mix them (Postgres
+on IAM, Kafka with a password, Valkey plain). Every service has the same three modes:
+
+| Mode | For |
+|---|---|
+| Plain, no TLS | Local development and CI: what every service gets when nothing is set |
+| TLS with a password or key | A server's certificate is checked against the CA file when one is set, else against the operating system's roots (the image's `ca-certificates`; `SSL_CERT_FILE` names another bundle) |
+| IAM | AWS only: a token minted from the AWS default credential chain (environment keys, web identity, ECS task or EC2 instance role) instead of a password, always over TLS |
+
+| Service | Plain | TLS | IAM |
+|---|---|---|---|
+| Postgres | `sslmode=disable`, or `prefer` (the default) to a server without TLS | `sslmode=verify-full` with `sslrootcert=<file>` (or `system`) | `AGENTD_PG_AUTH=aws_iam` |
+| Kafka | the default | `AGENTD_KAFKA_SECURITY_PROTOCOL=sasl_ssl` (or `ssl`), the `AGENTD_KAFKA_SASL_*` settings, `AGENTD_KAFKA_SSL_CA_LOCATION` | `AGENTD_KAFKA_AUTH=aws_iam` |
+| Valkey | `redis://` | `rediss://user:password@host`, `AGENTD_VALKEY_CA_CERT` | none |
+| Temporal | `http://` | `https://`, `AGENTD_TEMPORAL_API_KEY`, `AGENTD_TEMPORAL_TLS_SERVER_CA_CERT_PATH` | none |
+| OTLP collector | `http://` | `https://`, `OTEL_EXPORTER_OTLP_CERTIFICATE`, a header in `OTEL_EXPORTER_OTLP_HEADERS` | none |
+| S3, Secrets Manager, KMS | none | always `https://` (see `AGENTD_AWS_ENDPOINT`) | the AWS default credential chain |
+
+Postgres's `sslmode` is libpq's (<https://www.postgresql.org/docs/current/libpq-ssl.html>): `prefer` uses TLS
+when the server offers it and `require` insists on it, neither checking the certificate; `verify-ca` checks its
+chain and `verify-full` its chain and host name. `require` with an `sslrootcert` checks the chain, as libpq does.
+`allow` is not supported. The commands (`agentd keys`, `agentd vault-secrets`) connect the same way.
+
+With `AGENTD_PG_AUTH=aws_iam`, each new connection's password is an RDS IAM token for its host, port and the user
+in the URL, signed in the AWS region of the default chain (`AWS_REGION`); `DATABASE_URL` needs no password, and its
+`sslmode` must be `require`, `verify-ca` or `verify-full`, or agentd stops at boot. The database user needs the
+`rds_iam` role and the AWS principal `rds-db:connect` on it.
+
+With `AGENTD_KAFKA_AUTH=aws_iam`, agentd reads over `SASL_SSL` with `OAUTHBEARER`, each token an Amazon MSK IAM
+token for the region of the default chain, which librdkafka asks for again before the last one expires (15
+minutes). The principal needs `kafka-cluster:Connect` and the read permissions on the change topics and the
+`agentd.*` consumer groups.
+
+A setting that only TLS uses (a CA file, the Temporal API key) with a plain address stops the boot with an error
+naming it.
+
 ## Security
 
 There is no switch that weakens any of these; each is the only behaviour.
@@ -440,7 +488,10 @@ There is no switch that weakens any of these; each is the only behaviour.
   Such a name must resolve on the private network (a Compose or Kubernetes
   service), never through a DNS search domain to another host.
 - `DATABASE_URL` has no default, and the configuration's `Debug` shows it
-  without its password.
+  without its password, as it shows `AGENTD_KAFKA_SASL_PASSWORD` and
+  `AGENTD_TEMPORAL_API_KEY` only as set.
+- A minted IAM token is only sent over a connection that must be encrypted,
+  and the Temporal API key only over `https://`.
 - agentd serves plain HTTP. Put it behind a TLS-terminating load balancer or
   ingress, keep the listener on a private network, and never expose port 8080
   to the internet: API keys travel in request headers.
@@ -634,7 +685,8 @@ dedupes on `webhook-id`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (no export) | OTLP gRPC endpoint for traces, metrics and logs, such as `http://localhost:4317`. The OpenTelemetry SDK reads the other standard `OTEL_*` variables (`OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_EXPORTER_OTLP_HEADERS`) itself |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (no export) | OTLP gRPC endpoint for traces, metrics and logs, such as `http://localhost:4317`; `https://` exports over TLS. The OpenTelemetry SDK reads the other standard `OTEL_*` variables (`OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_EXPORTER_OTLP_HEADERS`) itself |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset (the operating system's roots) | With an `https://` endpoint: the PEM file the collector's certificate chains to |
 | `AGENTD_LOG_FORMAT` | `text` | `json` writes one JSON object per log line to stdout |
 | `RUST_LOG` | `info` | Log filter, `tracing-subscriber` syntax |
 

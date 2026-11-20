@@ -25,22 +25,21 @@ pub struct TlsFront {
 impl TlsFront {
     /// Serve `server.pem` and `server.key` from the directory `ca` is in,
     /// speaking HTTP/2 when the client asks for it.
-    pub async fn start(ca: &Path, upstream: Option<SocketAddr>) -> Self {
+    pub async fn start(ca: &Path, upstream: Option<SocketAddr>) -> std::io::Result<Self> {
         let dir = ca.parent().unwrap_or(Path::new("."));
         let certs = CertificateDer::pem_file_iter(dir.join("server.pem"))
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
-            .unwrap_or_else(|e| panic!("server.pem: {e}"));
-        let key = PrivateKeyDer::from_pem_file(dir.join("server.key"))
-            .unwrap_or_else(|e| panic!("server.key: {e}"));
+            .map_err(std::io::Error::other)?;
+        let key = PrivateKeyDer::from_pem_file(dir.join("server.key")).map_err(std::io::Error::other)?;
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let mut config = ServerConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .and_then(|b| b.with_no_client_auth().with_single_cert(certs, key))
-            .unwrap_or_else(|e| panic!("tls config: {e}"));
+            .map_err(std::io::Error::other)?;
         config.alpn_protocols = vec![b"h2".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(config));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap_or_else(|e| panic!("bind: {e}"));
-        let addr = listener.local_addr().unwrap_or_else(|e| panic!("addr: {e}"));
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
         let handshakes = Arc::new(AtomicUsize::new(0));
         let counted = handshakes.clone();
         tokio::spawn(async move {
@@ -59,7 +58,7 @@ impl TlsFront {
                 });
             }
         });
-        Self { addr, handshakes }
+        Ok(Self { addr, handshakes })
     }
 
     /// How many clients completed a TLS handshake.

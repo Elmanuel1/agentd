@@ -18,7 +18,7 @@ async fn over_tls(ca: Option<String>) -> Option<(TlsFront, TemporalConfig)> {
         (std::env::var("AGENTD_TEMPORAL_ADDRESS").ok()?, std::env::var("AGENTD_TEMPORAL_TLS_CA").ok()?);
     let upstream =
         plain.trim_start_matches("http://").to_socket_addrs().unwrap().find(std::net::SocketAddr::is_ipv4);
-    let front = TlsFront::start(Path::new(&test_ca), upstream).await;
+    let front = TlsFront::start(Path::new(&test_ca), upstream).await.unwrap();
     let config = TemporalConfig {
         address: format!("https://localhost:{}", front.addr.port()),
         namespace: "default".into(),

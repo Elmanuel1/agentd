@@ -9,6 +9,8 @@
 //! buffer still bounds how many it delivers after an outage) and the fire
 //! queue skips one whose following occurrence is due.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
+
 use async_trait::async_trait;
 use shared::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
 use temporalio_client::schedules::{
