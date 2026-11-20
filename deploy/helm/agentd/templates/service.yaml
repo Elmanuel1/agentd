@@ -16,24 +16,3 @@ spec:
       {{- with .Values.service.nodePort }}
       nodePort: {{ . }}
       {{- end }}
-{{- $canary := .Values.argoRollouts.canary }}
-{{- if and .Values.argoRollouts.enabled $canary.enabled $canary.trafficRouting }}
----
-# The canary's Service: Argo Rollouts points it at the new version's pods and the api Service at the stable ones.
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Release.Name }}-api-canary
-  labels:
-    {{- include "agentd.labels" . | nindent 4 }}
-spec:
-  type: ClusterIP
-  selector:
-    app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: api
-  ports:
-    - name: http
-      port: {{ .Values.service.port }}
-      targetPort: http
-{{- end }}
-

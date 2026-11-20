@@ -15,8 +15,13 @@ spec:
       labels:
         {{- include "agentd.labels" . | nindent 8 }}
         app.kubernetes.io/component: migrations
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       restartPolicy: Never
+      {{- include "agentd.scheduling" (dict "Values" .Values "spec" .Values.migrations) | nindent 6 }}
       containers:
         - name: flyway
           image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"

@@ -23,23 +23,13 @@ seccompProfile:
       key: {{ .Values.database.urlKey }}
 {{- end -}}
 
-{{- /* An Argo Rollouts canary. Without canary.enabled it has no steps and replaces pods as a rolling update
-does; with it, each step sets the canary's weight (by pod count, or by traffic for the api when
-trafficRouting is set) or pauses. */ -}}
-{{- define "agentd.rolloutStrategy" -}}
-{{- $canary := .Values.argoRollouts.canary -}}
-strategy:
-  canary:
-    maxSurge: {{ $canary.maxSurge | quote }}
-    maxUnavailable: {{ $canary.maxUnavailable }}
-    {{- if $canary.enabled }}
-    steps:
-      {{- toYaml $canary.steps | nindent 6 }}
-    {{- if and $canary.trafficRouting (eq .role "api") }}
-    canaryService: {{ .Release.Name }}-api-canary
-    stableService: {{ .Release.Name }}-api
-    trafficRouting:
-      {{- toYaml $canary.trafficRouting | nindent 6 }}
-    {{- end }}
-    {{- end }}
+{{- /* Where a pod runs: each setting from the role (or the migrations) when it sets one, else the chart-wide
+value. */ -}}
+{{- define "agentd.scheduling" -}}
+{{- range $key := list "nodeSelector" "tolerations" "affinity" "topologySpreadConstraints" "priorityClassName" }}
+{{- with (index $.spec $key) | default (index $.Values $key) }}
+{{ $key }}: {{- if kindIs "string" . }} {{ . }}{{ else }}{{ toYaml . | nindent 2 }}{{ end }}
+{{- end }}
+{{- end }}
 {{- end -}}
+

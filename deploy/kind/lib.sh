@@ -7,7 +7,7 @@ BASE_URL=http://127.0.0.1:8080
 k() { kubectl --context "$CTX" -n "$NS" "$@"; }
 
 # A key made through agentd's CLI in an api pod, printed once: `cli_key keys create --org ... --workspace ...`.
-# Found by label, so it works whether the api runs as a Deployment or an Argo Rollout.
+# Found by label, so it works whatever owns the api pods.
 cli_key() {
   pod=$(k get pods -l app.kubernetes.io/instance=agentd,app.kubernetes.io/component=api \
     --field-selector=status.phase=Running -o name | head -1)

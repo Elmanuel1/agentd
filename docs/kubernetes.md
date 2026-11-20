@@ -55,9 +55,8 @@ credentials are sealed in Postgres, and no webhook endpoint is set. The cluster 
 | `env` | empty | plain settings, in a ConfigMap; `AGENTD_API_BASE_URL` and `AGENTD_VALKEY_URL` are required |
 | `envFromSecrets` | `agentd-keys`, then `agentd-model` (optional) | Secrets whose every key becomes an environment variable |
 | `terminationGracePeriodSeconds`, `preStopSleepSeconds` | 30, 5 | the stop: the Service drops the pod, then SIGTERM drains requests for 10 s |
-| `argoRollouts.enabled` | false | each role is an Argo Rollout instead of a Deployment; see "Argo Rollouts" below |
-| `argoRollouts.canary.enabled`, `.steps`, `.maxSurge`, `.maxUnavailable` | false, 25% then 50% with 2-minute pauses, 25%, 0 | the canary's steps; disabled, a new version replaces pods as a rolling update does |
-| `argoRollouts.canary.trafficRouting` | empty | a trafficRouting block for the api Rollout, as Argo Rollouts takes it |
+| `podLabels`, `podAnnotations` | empty | labels and annotations on every pod, merged under a role's own `roles.<role>.podLabels` and `podAnnotations`; the migrations' pod takes the annotations |
+| `nodeSelector`, `tolerations`, `affinity`, `topologySpreadConstraints`, `priorityClassName` | empty | where every pod runs; a role (`roles.<role>.nodeSelector`, ...) or `migrations` that sets one replaces it; see "Scheduling" below |
 
 Secrets reach agentd only as environment variables from Kubernetes Secrets the chart names; the chart never
 holds a secret value. `agentd-database` holds the database URL under `DATABASE_URL`; only that key is read. `agentd-keys` holds the four key rings (`AGENTD_API_KEY_PEPPERS`, `AGENTD_WORK_TOKEN_KEYS`,
@@ -90,40 +89,34 @@ environment key for it, and sends one message that asks for `echo kind-e2e-ok` t
 when `agent.tool_use` and a `user.tool_result` holding `kind-e2e-ok` are in the session's events and the turn
 ends with `end_turn`. On exit, pass or fail, it deletes the worker and the model key and rolls agentd out again.
 
-## Argo Rollouts
+## Scheduling
 
-With `argoRollouts.enabled`, the chart renders each role as an [Argo Rollouts](https://argoproj.github.io/rollouts/)
-`Rollout` instead of a `Deployment`, with the same pod template; the cluster runs the Argo Rollouts controller. A
-new version then replaces pods as a rolling update does, within `maxSurge` and `maxUnavailable`.
-
-With `argoRollouts.canary.enabled` as well, a new version goes through `steps`: each `setWeight` moves that share
-of the role's pods to the new version and each `pause` waits, for its `duration` or, with none, until
-`kubectl argo rollouts promote`. Without `trafficRouting` the weight is a share of pods, and the `agentd-api`
-Service sends traffic to old and new pods alike. With a `trafficRouting` block (an ingress controller or a service
-mesh), the api Rollout gets a second Service, `<release>-api-canary`, and Argo Rollouts splits the api's traffic by
-weight between it and `<release>-api`. The `loop` role takes no traffic, so its weight is always a share of pods.
+The chart passes Kubernetes' own pod settings through, so the cluster's node pools and autoscaler (Karpenter,
+Cluster Autoscaler, a cloud's own) place agentd by labels, taints and annotations. A role's own setting replaces
+the chart-wide one, so the loop can run on spot capacity while the api stays on on-demand nodes:
 
 ```yaml
-argoRollouts:
-  enabled: true
-  canary:
-    enabled: true
-    steps:
-      - setWeight: 25
-      - pause: { duration: 2m }
-      - setWeight: 50
-      - pause: {}
+podAnnotations:
+  example.com/do-not-disrupt: "true"
+nodeSelector:
+  node-pool: agentd
+roles:
+  loop:
+    nodeSelector:
+      node-pool: agentd
+      capacity-type: spot
+    tolerations:
+      - { key: spot, operator: Exists, effect: NoSchedule }
 ```
 
-The kind scripts run the chart with `argoRollouts` disabled. To try a canary on the kind cluster, install the
-controller (its CRDs need a server-side apply), then upgrade the release with the values above:
+## Argo CD and progressive delivery
 
-```sh
-kubectl --context kind-agentd create namespace argo-rollouts
-kubectl --context kind-agentd apply --server-side -n argo-rollouts \
-  -f https://github.com/argoproj/argo-rollouts/releases/download/v1.10.2/install.yaml
-helm upgrade agentd deploy/helm/agentd --kube-context kind-agentd -n agentd -f deploy/kind/values.yaml -f rollouts.yaml
-```
+The chart renders plain Deployments and holds nothing specific to a deploy tool. An Argo CD `Application` points
+at `deploy/helm/agentd` and sets its values in `spec.source.helm`. A canary with Argo Rollouts lives beside it in
+the same Application: a `Rollout` with `workloadRef` naming the Deployment `<release>-api` (or `-loop`) runs that
+Deployment's pod template through the canary's steps, with its own `replicas`, Services and traffic routing.
+The role's `replicas` is 0 in the chart's values, so the Deployment only carries the pod template and Argo CD
+keeps it at zero. The chart needs nothing more than its stable Deployment names.
 
 ## Production
 
