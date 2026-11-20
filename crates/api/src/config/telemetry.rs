@@ -45,8 +45,9 @@ impl TelemetryConfig {
         let endpoint = set("OTEL_EXPORTER_OTLP_ENDPOINT");
         let https = |signal: &str| {
             let own = set(&format!("OTEL_EXPORTER_OTLP_{signal}_ENDPOINT"));
-            let insecure = set(&format!("OTEL_EXPORTER_OTLP_{signal}_INSECURE"))
-                .or_else(|| set("OTEL_EXPORTER_OTLP_INSECURE"))
+            // The exporter counts an empty INSECURE as set (and not `true`), an empty endpoint as unset.
+            let insecure = get(&format!("OTEL_EXPORTER_OTLP_{signal}_INSECURE"))
+                .or_else(|| get("OTEL_EXPORTER_OTLP_INSECURE"))
                 .is_some_and(|v| v.eq_ignore_ascii_case("true"));
             own.or_else(|| endpoint.clone()).is_some_and(|e| tls_endpoint(&e, insecure))
         };

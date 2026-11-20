@@ -132,3 +132,14 @@ fn only_an_https_otlp_endpoint_gets_tls() {
     .unwrap();
     assert_eq!(c.telemetry.otlp_https, OtlpHttps { traces: false, metrics: false, logs: true });
 }
+
+#[test]
+fn an_empty_signal_insecure_keeps_that_signal_on_tls() {
+    let c = config(&[
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4317"),
+        ("OTEL_EXPORTER_OTLP_INSECURE", "true"),
+        ("OTEL_EXPORTER_OTLP_TRACES_INSECURE", ""),
+    ])
+    .unwrap();
+    assert_eq!(c.telemetry.otlp_https, OtlpHttps { traces: true, metrics: false, logs: false });
+}
