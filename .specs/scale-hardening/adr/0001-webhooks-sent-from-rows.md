@@ -54,7 +54,8 @@ timeout, and keeps retries in memory:
   by the 1 s poll.
 - Delivery stays at least once: when a delivery's outcome is not recorded before its claim expires (the instance
   crashed after its POST, or the outcome write failed or ran late), another instance sends it again with the same
-  `webhook-id`.
+  `webhook-id`, unless that claim was the third attempt. A delivery whose three claims all lapse is dropped, possibly
+  without any POST: the limit keeps a row that instances keep dying on from being retried without end.
 - Delivered rows are deleted after 24 h and dropped rows after 30 days, which keeps the table bounded.
 - Runtime-parity H-3 is superseded by SH-3; H-4 and D51 narrow to "the change feed wakes the senders; the table is
   the send path".

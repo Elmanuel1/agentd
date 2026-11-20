@@ -50,7 +50,7 @@ SH-51 are not used.
 | ID | P | Requirement |
 |---|---|---|
 | SH-1 | E | When the change feed hands the webhook sender a new delivery, the webhook sender shall publish one wake to every instance and return without sending. |
-| SH-2 | U | The webhook sender shall send a delivery only after claiming it for 60 s, shall start its POST only while at least 15 s of that claim remain, and shall start no POST for a delivery another replica holds or has finished. |
+| SH-2 | U | The webhook sender shall send a delivery only after claiming it for 60 s, shall start its POST only while at least 15 s of that claim remain, and shall claim no delivery another replica holds or has finished. |
 | SH-3 | W | If a delivery is not answered 2xx, then the webhook sender shall set its next attempt by exponential backoff with jitter, 15 to 30 s after the first attempt and 30 to 60 s after the second, and drop it after its third attempt (L1 "jittered exponential backoff"; supersedes H-3's fixed 31 s). |
 | SH-4 | E | When an instance is woken, and at least every second, the webhook sender shall claim with `SKIP LOCKED` up to its free senders (at most 100) of due deliveries, leaving out endpoints whose breaker is open on it unless the endpoint is disabled, at most once every 50 ms. |
 | SH-20 | U | The webhook sender shall send through the egress guard with `user-agent: Claude-Platform`, reusing a client per host for 5 minutes. |
@@ -59,7 +59,7 @@ SH-51 are not used.
 | SH-31 | W | If every attempt to an endpoint has failed for 120 h, then the webhook sender shall disable it. |
 | SH-32 | E | When an endpoint answers 2xx, the webhook sender shall clear its failing time. |
 | SH-33 | S | While an endpoint's breaker is open on a replica and the endpoint is not disabled, the webhook sender on that replica shall claim none of its deliveries. |
-| SH-34 | S | While an endpoint is disabled, the webhook sender shall drop its deliveries without sending them, on every replica within 10 s of the disable. |
+| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable (its 10 s state read plus a 1 s claim), and shall drop each of its deliveries without sending it when the delivery falls due. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
 | SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, endpoint and reason. |
@@ -189,7 +189,9 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   endpoints whose breaker is open on this instance unless the endpoint is disabled, `ORDER BY next_attempt_at ... FOR
   NO KEY UPDATE SKIP LOCKED`; set `claimed_until = now() + 60 s` on them in one `UPDATE`; commit; then send each in
   the background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
-  dropped without a send (live does not replay), whatever its breaker says, so SH-34's 10 s holds.
+  dropped without a send when it falls due (live does not replay), whatever its breaker says. A replica learns of a
+  disable from its 10 s state read; from then on it starts no POST to the endpoint, and a POST already started
+  finishes (SH-34).
 - **The claim token is `claimed_until`.** Each claim's value is later than every earlier claim's on that row: a row
   is claimed again only once `now()` has passed its old value. Every later write for the claim (outcome, release)
   matches the row's `claimed_until` to the value the claim returned, so a write from an expired or released claim
@@ -226,7 +228,10 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   only while that claim has 15 s left. A
   delivery whose outcome is not recorded before its claim expires is the one duplicate left (the instance crashed
   after the POST, the outcome write failed or ran late, or the process stalled past its claim): the claim expires after 60 s and another instance sends
-  it again with the same `webhook-id`, which is live's documented at-least-once delivery.
+  it again with the same `webhook-id`, which is live's documented at-least-once delivery. The one exception is a
+  claim that lapses as the third attempt: the next claim drops the row, so a delivery whose three claims all lapse
+  is dropped, possibly without any POST. Three lapses in a row mean instances died while holding that row, and
+  the limit keeps such a row from being retried without end.
 - **Breaker**, per replica in memory (design skill exception): 5 failures in a row open it for 30 s. While open, the
   endpoint is skipped unless it is disabled: nothing is claimed for it, so no attempt is spent without a POST. After 30 s one send is let
   through; a 2xx closes it, a failure opens it again.
@@ -623,7 +628,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    attempt unchanged"; "a late outcome from an expired claim changes nothing"; "a release or outcome from an expired
    claim changes nothing after a newer claim"; "three released claims spend no attempt"; "a delivery
    whose claims lapse three times is dropped"; "a disabled
-   endpoint's rows are dropped within 10 s while its breaker is open"; "an open breaker spends
+   endpoint gets no POST after the next state read, and each of its rows is dropped when it falls due, also
+   while its breaker is open"; "an open breaker spends
    no attempt"; "a 3xx disables at once"; "a private address is not sent to and disables"; "failing for 120 h disables,
    a 2xx in between restarts the clock"; "a disabled endpoint's new delivery is dropped unsent"; "a changed URL
    re-enables at boot, an unchanged config keeps it disabled"; unit tests for the wake fold, the senders and the breaker.
@@ -722,7 +728,7 @@ Chosen where live is silent.
 | Claim fold / backstop | 50 ms / 1 s | a new delivery goes out within about 50 ms; at most 20 claims a second per instance; an idle claim is one empty read of the V9 due index; a fixed poll behind a wake is the Oban (1 s) and Graphile Worker (2 s) default; kept over sleeping until the next due time (D18) |
 | Retry backoff | 30 s base, doubled per attempt, equal jitter: 15 to 30 s, then 30 to 60 s | L1 documents jittered exponential backoff in 5 to 120 s (D2) |
 | Delivery claim | 60 s | D19; 6 × the 10 s send timeout; a crashed replica's send is picked up within 60 s, inside live's 120 s spacing range |
-| Send start margin | 15 s | the 10 s send timeout plus 5 s spare, so a POST always ends before its claim does |
+| Send start margin | 15 s | the 10 s send timeout plus 5 s spare, so a POST ends before its claim does unless the process stalls more than 5 s after the check |
 | Breaker | 5 failures, 30 s open | a dead endpoint costs one 10 s timeout per 30 s per replica |
 | Auto-disable window | 120 h | Svix's default (DEP-8) |
 | Endpoint state read | 10 s | 1 statement a second across 10 replicas |
