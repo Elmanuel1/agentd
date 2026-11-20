@@ -14,6 +14,13 @@ if k get secret agentd-model >/dev/null 2>&1; then
   echo "the cluster holds a model key (Secret agentd-model): delete it before the free checks" >&2
   exit 1
 fi
+# A running container keeps the environment it started with, so a deleted Secret's key stays until a restart.
+for pod in $(k get pods -l app.kubernetes.io/instance=agentd -o name); do
+  if ! k exec "$pod" -- sh -c '[ -z "${AGENTD_ANTHROPIC_API_KEY:-}${AGENTD_OPENROUTER_API_KEY:-}" ]'; then
+    echo "$pod still holds a model key: kubectl --context $CTX -n $NS rollout restart deployment/agentd-api deployment/agentd-loop" >&2
+    exit 1
+  fi
+done
 
 echo "== health"
 k wait --for=condition=Ready pod -l 'app.kubernetes.io/instance=agentd' --timeout=5m >/dev/null
@@ -43,7 +50,12 @@ k create configmap perf-scripts --from-file=perf/agentd.js --from-file=perf/thre
 k create configmap perf-lib --from-file=perf/lib --dry-run=client -o yaml | k apply -f - >/dev/null
 k delete job perf --ignore-not-found >/dev/null
 k apply -f deploy/kind/perf.yaml >/dev/null
-until [ -n "$(k get job perf -o jsonpath='{.status.succeeded}{.status.failed}')" ]; do sleep 5; done
-k logs job/perf
-[ "$(k get job perf -o jsonpath='{.status.succeeded}')" = 1 ]
+# The Job's activeDeadlineSeconds ends it Failed if it never finishes, an unpulled image included.
+state=
+until [ -n "$state" ]; do
+  sleep 5
+  state=$(k get job perf -o jsonpath='{.status.conditions[?(@.status=="True")].type}' | grep -oE 'Complete|Failed' | head -1 || true)
+done
+k logs job/perf || k describe job perf
+[ "$state" = Complete ]
 echo "every check passed"

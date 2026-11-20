@@ -7,6 +7,8 @@ metadata:
   name: perf
 spec:
   backoffLimit: 0
+  # Setup, the full suite's 2 minutes and its teardown fit well inside.
+  activeDeadlineSeconds: 900
   template:
     spec:
       restartPolicy: Never

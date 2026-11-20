@@ -17,9 +17,9 @@ kind load docker-image --name "$CLUSTER" agentd:kind agentd-migrations:kind agen
 
 kubectl --context "$CTX" create namespace "$NS" --dry-run=client -o yaml | kubectl --context "$CTX" apply -f - >/dev/null
 # Made once per cluster: the keys and sealed vault credentials made under them stay valid across runs.
-if ! k get secret agentd-postgres >/dev/null 2>&1; then
-  password=$(openssl rand -hex 16)
-  printf 'password=%s\n' "$password" | secret_from_stdin agentd-postgres
+k get secret agentd-postgres >/dev/null 2>&1 || printf 'password=%s\n' "$(openssl rand -hex 16)" | secret_from_stdin agentd-postgres
+if ! k get secret agentd-database >/dev/null 2>&1; then
+  password=$(k get secret agentd-postgres -o jsonpath='{.data.password}' | base64 -d)
   printf 'DATABASE_URL=postgres://agentd:%s@postgres:5432/agentd\n' "$password" | secret_from_stdin agentd-database
 fi
 if ! k get secret agentd-keys >/dev/null 2>&1; then
@@ -43,9 +43,11 @@ if [ -n "$upgrade" ]; then
   k rollout status deployment/agentd-loop --timeout=5m
 fi
 
-k create configmap debezium-config --from-file=docker/debezium/application.properties \
-  --dry-run=client -o yaml | k apply -f - >/dev/null
+config=$(k create configmap debezium-config --from-file=docker/debezium/application.properties \
+  --dry-run=client -o yaml | k apply -f -)
 k apply -f deploy/kind/debezium.yaml >/dev/null
+# Debezium Server reads its properties once, at start.
+case "$config" in *configured) k rollout restart deployment/debezium >/dev/null ;; esac
 k rollout status deployment/debezium --timeout=10m
 
 echo "agentd is up at $BASE_URL. A workspace key (org_dev, wrkspc_01dev):"
