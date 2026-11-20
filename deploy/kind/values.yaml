@@ -1,0 +1,31 @@
+# The chart's values on kind: images loaded into the node, the API on NodePort 30080, and the backing services
+# of deploy/kind/deps by their Service names.
+image:
+  repository: agentd
+  tag: kind
+  pullPolicy: Never
+
+migrations:
+  image:
+    repository: agentd-migrations
+    tag: kind
+    pullPolicy: Never
+
+service:
+  type: NodePort
+  nodePort: 30080
+
+env:
+  # agentd's API as the in-cluster worker reaches it, the work secret's `api_base_url`.
+  AGENTD_API_BASE_URL: http://agentd-api:8080
+  AGENTD_VALKEY_URL: redis://valkey:6379
+  AGENTD_VALKEY_CLUSTER: "1"
+  AGENTD_KAFKA_BROKERS: kafka:9092
+  # S3 on LocalStack, a single-label Service name as agentd requires for plain http.
+  AGENTD_AWS_ENDPOINT: http://localstack:4566
+  AGENTD_S3_CREATE_BUCKET: "1"
+  # Only the emulator accepts these; on AWS the pods get a role instead.
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_DEFAULT_REGION: us-east-1
+  RUST_LOG: info

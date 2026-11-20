@@ -1,0 +1,31 @@
+# perf/agentd.js on k6 inside the cluster, against the api Service, so no port-forward sits in the measured path.
+# deploy/kind/check.sh fills the ConfigMaps perf-scripts and perf-lib and the Secret perf-env (API_KEY, RATE,
+# STREAMS, DURATION, THRESHOLDS).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: perf
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:1.3.0
+          args: ["run", "--quiet", "/perf/agentd.js"]
+          env:
+            - { name: BASE_URL, value: "http://agentd-api:8080" }
+          envFrom:
+            - secretRef: { name: perf-env }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: scripts, mountPath: /perf }
+            - { name: lib, mountPath: /perf/lib }
+      volumes:
+        - name: scripts
+          configMap: { name: perf-scripts }
+        - name: lib
+          configMap: { name: perf-lib }

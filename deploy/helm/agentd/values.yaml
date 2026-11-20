@@ -1,0 +1,55 @@
+# agentd's own workloads. The backing services (Postgres, Valkey, Kafka and Debezium Server, S3) are not part of
+# the chart: their addresses go in `env` and the database Secret, and every secret comes from a Secret named below.
+# docs/kubernetes.md has the kind values; docs/configuration.md has every setting.
+
+image:
+  repository: agentd
+  tag: dev
+  pullPolicy: IfNotPresent
+
+# Flyway 11 with crates/adapters/store-postgres/migrations (deploy/migrations.Dockerfile), run as a hook Job
+# before each install and upgrade rolls agentd out.
+migrations:
+  image:
+    repository: agentd-migrations
+    tag: dev
+    pullPolicy: IfNotPresent
+
+# One Deployment per role (AGENTD_ROLE). The Service sends traffic to `api` only: a `loop` replica answers 404.
+roles:
+  api:
+    replicas: 2
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+  loop:
+    replicas: 2
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+
+service:
+  type: ClusterIP
+  port: 8080
+  # Set with `type: NodePort` to pin the node port.
+  nodePort: null
+
+# The Secret holding DATABASE_URL (postgres://user:password@host:port/name, options such as ?sslmode=require
+# appended), for agentd and the migrations. Its password is URL-safe (hex): the migrations split the URL as is.
+databaseSecret: agentd-database
+
+# Plain settings, put in a ConfigMap. Required: AGENTD_API_BASE_URL and AGENTD_VALKEY_URL.
+env: {}
+
+# Secrets whose every key becomes an environment variable: the key rings (AGENTD_API_KEY_PEPPERS,
+# AGENTD_WORK_TOKEN_KEYS, AGENTD_PLACEHOLDER_KEYS, AGENTD_SECRET_KEYS, the same for every replica) and the model
+# keys (AGENTD_ANTHROPIC_API_KEY or AGENTD_OPENROUTER_API_KEY).
+envFromSecrets:
+  - name: agentd-keys
+  - name: agentd-model
+    optional: true
+
+# SIGTERM drains requests for 10 s (crates/api/src/main.rs); the grace period leaves room for it.
+terminationGracePeriodSeconds: 30
+# Time for the Service to drop a stopping pod before it stops taking connections.
+preStopSleepSeconds: 5

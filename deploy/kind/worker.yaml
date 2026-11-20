@@ -1,0 +1,25 @@
+# The tool worker for deploy/kind/e2e.sh's self_hosted environment: `ant beta:worker poll` against the api
+# Service. The Secret ant-worker holds ANTHROPIC_ENVIRONMENT_ID and ANTHROPIC_ENVIRONMENT_KEY.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ant-worker
+  labels: { app: ant-worker }
+spec:
+  restartPolicy: Never
+  containers:
+    - name: ant-worker
+      image: agentd-ant-worker:kind
+      imagePullPolicy: Never
+      env:
+        - { name: ANTHROPIC_BASE_URL, value: "http://agentd-api:8080" }
+      envFrom:
+        - secretRef: { name: ant-worker }
+      resources:
+        requests: { cpu: 100m, memory: 128Mi }
+        limits: { memory: 1Gi }
+      securityContext:
+        allowPrivilegeEscalation: false
+        runAsNonRoot: true
+        capabilities:
+          drop: [ALL]

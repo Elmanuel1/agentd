@@ -1,0 +1,42 @@
+# Debezium Server: the committed changes of the tables in docker/debezium/application.properties (the ConfigMap
+# debezium-config), from the WAL into Kafka. Exactly one instance: a second could not take the replication slot,
+# so a new pod starts only after the old one stops. Applied after the migrations, so its tables exist before
+# the publication.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debezium
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: debezium }
+  template:
+    metadata:
+      labels: { app: debezium }
+    spec:
+      containers:
+        - name: debezium
+          image: quay.io/debezium/server:3.3.1.Final
+          env:
+            - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: agentd-postgres, key: password }
+            - name: DEBEZIUM_SOURCE_OFFSET_STORAGE_JDBC_CONNECTION_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: agentd-postgres, key: password }
+          readinessProbe:
+            httpGet:
+              path: /q/health
+              port: 8080
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: config, mountPath: /debezium/config, readOnly: true }
+      volumes:
+        - name: config
+          configMap:
+            name: debezium-config

@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-migrations
+  labels:
+    {{- include "agentd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "agentd.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: flyway
+          image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
+          # Flyway takes a JDBC URL with the user and password apart: split agentd's
+          # postgres://user:password@host:port/name[?options].
+          command:
+            - sh
+            - -c
+            - >-
+              rest=${DATABASE_URL#*://}; auth=${rest%%@*};
+              exec flyway -url="jdbc:postgresql://${rest#*@}" -user="${auth%%:*}" -password="${auth#*:}" migrate
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseSecret }}
+                  key: DATABASE_URL
+            - name: FLYWAY_CONNECT_RETRIES
+              value: "20"
+            - name: FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK
+              value: "false"

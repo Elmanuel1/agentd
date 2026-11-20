@@ -1,0 +1,38 @@
+# S3 on LocalStack, the blob store. Vault credentials stay on the default Postgres store, so S3 is the only
+# service it runs. Its buckets live only as long as the pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+spec:
+  selector: { app: localstack }
+  ports:
+    - port: 4566
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: localstack }
+  template:
+    metadata:
+      labels: { app: localstack }
+    spec:
+      containers:
+        - name: localstack
+          image: localstack/localstack:3.0
+          env:
+            - { name: SERVICES, value: s3 }
+          ports:
+            - containerPort: 4566
+          readinessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
