@@ -21,7 +21,7 @@ timeout, and keeps retries in memory:
 1. The table is the only send path. On a delivery insert the change feed's handler publishes one wake on Valkey
    `agentd:webhooks` and returns.
 2. Every instance runs one claim loop. On a wake, at most once every 50 ms, and every 1 s without one, it claims up
-   to its free senders (at most 100) of due rows with `FOR UPDATE SKIP LOCKED`, leaving out endpoints whose breaker
+   to its free senders (at most 100) of due rows with `FOR NO KEY UPDATE SKIP LOCKED`, leaving out endpoints whose breaker
    is open on it, and sets `claimed_until = now() + 60 s` and `attempt = attempt + 1` in the same transaction. The
    update repeats the due conditions, and the instance sends only the rows it returns.
 3. A POST starts only while at least 15 s of its claim remain, so a send (10 s timeout) always ends inside its

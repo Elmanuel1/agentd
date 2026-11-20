@@ -9,7 +9,7 @@ api.anthropic.com. Each row names who decided and when.
 
 | # | Decision | Source |
 |---|---|---|
-| D1 | Webhooks are sent only from their `webhook_deliveries` rows, by every instance. The change feed only wakes the instances; Postgres `FOR UPDATE SKIP LOCKED` is the coordinator. There is no per-organization cap. | User, 2026-11-19 ("Yes, switch"; "for now, I don't think we really need it") |
+| D1 | Webhooks are sent only from their `webhook_deliveries` rows, by every instance. The change feed only wakes the instances; Postgres `FOR NO KEY UPDATE SKIP LOCKED` is the coordinator. There is no per-organization cap. | User, 2026-11-19 ("Yes, switch"; "for now, I don't think we really need it") |
 | D2 | A retry waits by exponential backoff with jitter: a 30 s base doubled per attempt, half fixed and half random, so 15 to 30 s after the first attempt and 30 to 60 s after the second, inside live's 5 to 120 s. | Live, L1; user, 2026-11-19 (a backoff that grows per attempt) |
 | D5 | Svix is not used. agentd would still POST to it, and it re-serializes the signed body and replaces `webhook-id`. Its fault-tolerance features (durable rows, backoff, disable, breaker) are built in. | User, 2026-11-19 |
 | D6 | A disabled endpoint is re-enabled by `agentd webhooks enable <org> <endpoint>`, or by a change to its URL or secret in `AGENTD_WEBHOOK_ENDPOINTS`, seen at boot by its SHA-256 digest. | User, 2026-11-19 ("yes, go with that") |
@@ -28,7 +28,7 @@ api.anthropic.com. Each row names who decided and when.
 |---|---|---|
 | D3 | Three attempts, then the delivery is dropped. A 3xx or a non-public address disables an endpoint at once; sustained failure disables it after 120 h, Svix's default, as live states no window. Events emitted while disabled are not replayed. | L1; DEP-8 |
 | D7 | Rate limits as live: a fixed 60 s window per organization and bucket, starting at the window's first request; create 300, read 1,200, memory stores 30,000, files 500; the probed route map; live's headers; 429 `rate_limit_error` with `retry-after`. | L2; DEP-1 to DEP-5 |
-| D9 | Retention: delivered webhooks 24 h, dropped 30 days; memory versions 30 days, except the current version of a live memory; expired files listed for 30 days, their content 404; sessions never by age. | L4 to L6; sizing |
+| D9 | Retention: memory versions 30 days, except the current version of a live memory; expired files listed for 30 days, their content 404; sessions never by age. | L4 to L6 |
 | D21 | A request whose response has not started by its deadline is 504 `timeout_error`. | L3 |
 | D22 | The webhook sender sends with `user-agent: Claude-Platform`. | L1 |
 
@@ -42,6 +42,7 @@ api.anthropic.com. Each row names who decided and when.
 | D13 | The pool setting keeps the code's name, `AGENTD_DB_POOL_SIZE`; runtime-parity S-8 follows. | Code first, spec last (design skill) |
 | D15 | A scheduled fire's session create takes no rate-limit bucket here; follow-up F-1 adds it. | Scheduler scope (`.specs/durable-scheduler/`) |
 | D23 | Key revokes and webhook wakes start from the change feed; each action still does its own work inline. | `feedback-wal-for-after-effects` |
+| D24 | Delivered webhooks are kept 24 h and dropped ones 30 days, then swept. Both are kept for a retention period, failed rows visible meanwhile; 24 h covers a change-feed replay, and 30 days of all rows would be about 1.5 TB at the design point. | sql-transactions rule 15; sizing in [requirements.md](requirements.md) |
 
 ## Decided by Claude
 
@@ -67,3 +68,7 @@ No source settles these; each is listed for review.
 | F-5 | Several signing secrets per endpoint, if live adds them. |
 | F-6 | `fire_claims` retention moves into the sweeper. |
 | F-7 | A per-organization fair share in the webhook claim, from the load test's numbers. |
+| F-8 | The busy-workspace claim and its index (`loop_steps/claim.rs:25-56`). |
+| F-9 | One `set_config` round trip per checkout (`checkout.rs:67-81`). |
+| F-10 | The credential metadata GET reading the secret, and vault delete purging credentials one by one. |
+| F-11 | Rubric files read on every step. |

@@ -19,9 +19,9 @@
 | the webhook sender | the feed handler that wakes, and the claim loop on every instance | SH-1 to SH-4, SH-20, SH-29 to SH-34, SH-43, SH-52 |
 | the change feed | the Kafka or Valkey Streams consumer of Debezium's records | SH-5, SH-6 |
 | the event log | the `session_events` store behind `SessionEventLog` | SH-22, SH-23 |
-| the loop | the engine worker that claims and runs steps | SH-7 to SH-9, SH-24 to SH-26, SH-47, SH-48 |
-| the sweeper | the retention job | SH-37 to SH-40 |
-| the blob store | S3 or the local store | SH-21, SH-23 |
+| the loop | the engine worker that claims and runs steps | SH-7 to SH-9, SH-24 to SH-26, SH-47, SH-48, SH-53 |
+| the sweeper | the retention job | SH-37 to SH-41 |
+| the blob store | S3 or the local store | SH-21 |
 | agentd | the process as a whole (statements, keys, lists, shutdown, metrics) | SH-10, SH-17, SH-19, SH-28, SH-36, SH-42, SH-44 |
 | the operator command | `agentd webhooks` | SH-35 |
 
@@ -43,7 +43,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 D51 ([runtime-parity requirements](../runtime-parity/requirements.md)). SH-41 bounds how E-2 deletes. IDs SH-49 to
 SH-51 are not used.
 
-**Build order:** the spec, then code PR 1 commit ommits 1 to 13, then code PR 2 commit ommits 1 to 6, stacked with `gh stack`.
+**Build order:** the spec, then code PR 1 (commits 1 to 13), then code PR 2 (commits 1 to 6), stacked with `gh stack`.
 
 ## 1. Webhooks
 
@@ -62,8 +62,8 @@ SH-51 are not used.
 | SH-34 | S | While an endpoint is disabled, the webhook sender shall drop its deliveries without sending them, on every replica within 10 s of the disable. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
-| SH-43 | E | When the webhook sender disables an endpoint, it shall log one `ERROR` naming the org, endpoint and reason. |
-| SH-52 | U | The webhook load test shall show delivered webhooks a second growing with the number of instances, with no delivery sent twice, and record its results on PR 1. |
+| SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, endpoint and reason. |
+| SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send no delivery twice. |
 
 ## 2. The change feed
 
@@ -84,6 +84,7 @@ SH-51 are not used.
 | SH-26 | W | If an MCP reply exceeds 16 MiB, then the loop shall fail the call as an unreachable server. |
 | SH-47 | W | If a model provider fails 5 calls in a row from one replica with a retryable error, then the loop shall make no call to it from that replica for 30 s, or until its `retry-after` if later, and then let one call through. |
 | SH-48 | S | While a provider's breaker is open, the loop shall wait in each step's retry without spending a try, inside the step's deadline. |
+| SH-53 | W | If a step is over its workspace budget, then the loop shall make it due after the time left in the budget window plus a random 0 to 60 s. |
 
 ## 4. The edge
 
@@ -155,6 +156,26 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 
 `oldest_due_age` is one `SELECT min(next_attempt_at)` on the due index per replica every 10 s.
 
+## Industry practice
+
+| Problem | Standard pattern (source) | This design |
+|---|---|---|
+| Webhook fan-out that one slow receiver must not stall | Svix, Stripe: deliveries are durable rows; a worker pool; retries scheduled in the store with jittered backoff (docs.svix.com/retries) | Followed. Svix itself is not used (D5). Svix's 8-attempt schedule is not used: live's 3 attempts win (D3). |
+| A work queue in Postgres | `SELECT ... FOR NO KEY UPDATE SKIP LOCKED` (Postgres docs, "The Locking Clause"; pg-boss, Oban) | Followed for the webhook claim on every instance. |
+| Waking a Postgres queue | A wake signal in front of a fixed poll (Oban's stager, 1 s; Graphile Worker, 2 s; DEP-19) | Followed: a Valkey wake and a 1 s poll (D18). |
+| Endpoint health | Svix `endpoint_failure_disable_after`, 120 h (DEP-8); circuit breaker (Nygard, *Release It!*) | Followed: live's disable rules, Svix's window where live states none, a breaker per replica (D4). |
+| A shared upstream under overload | A circuit breaker per dependency (Nygard; Envoy outlier detection); retry only idempotent calls (AWS Builders' Library, "Timeouts, retries, and backoff with jitter") | Followed: a breaker per model provider per replica that makes callers wait, not fail. MCP and token refresh keep live's retry at the next turn (D17). |
+| A lease in Redis | Redis, "Distributed locks with Redis": compare-and-set release and extend, extend while working | Followed: one Lua compare-and-expire, run every 10 s while an entry runs. |
+| Draining on deploy | Sidekiq shutdown; Kubernetes `terminationGracePeriodSeconds`, 30 s (DEP-9) | Followed: everything drains in parallel inside 25 s. |
+| Retrying a failed job | Capped exponential backoff with full jitter (AWS Architecture Blog, "Exponential Backoff And Jitter") | Followed: 5 s doubling to 5 min. |
+| Bounding work | Postgres `statement_timeout`; a deadline per request (Google SRE book, "Handling Overload") | Followed. |
+| API rate limits | A counter per tenant in Redis with `retry-after` (Stripe, "Scaling your API with rate limiters") | Followed in live's shape: a fixed 60 s window per organization and bucket (DEP-1, DEP-2), not a token bucket. |
+| Auth cache | A short-lived in-process cache with explicit invalidation (Kubernetes webhook token authenticator cache) | Followed: 60 s, invalidated from the change feed (D8). |
+| Paging large tables | Keyset pagination (use-the-index-luke.com/no-offset) | Followed for large lists. |
+| Pub/sub fan-out | A channel per entity; sharded pub/sub on a cluster (Valkey `SSUBSCRIBE`) | Followed. |
+| Large uploads | S3 multipart, parts of 8 MiB, an `AbortIncompleteMultipartUpload` lifecycle rule (Amazon S3 User Guide) | Followed. |
+| Growth of coordination rows | Delete done rows after a window in small batches (Oban Pruner) | Followed: one sweeper, batches of 1,000. |
+
 ## Design
 
 ### Webhook sender (W1 to W4, R1)
@@ -162,16 +183,15 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 - **One send path, on every instance.** Webhooks are sent only from the table. The change feed does not send: on a
   `webhook_deliveries` insert its handler publishes one wake on Valkey `agentd:webhooks` and returns, so the feed is
   never held. On a wake, and every 1 s as a backstop, each instance claims due rows and sends them. Postgres is the
-  central coordinator: `FOR UPDATE SKIP LOCKED` gives each row to exactly one instance, so adding instances adds
-  sending capacity, with no shared counter and no number to agree on (user, 2026-11-19: "how do we scale the job
-  across multiple instances").
+  central coordinator: `FOR NO KEY UPDATE SKIP LOCKED` gives each row to exactly one instance, so adding instances adds
+  sending capacity, with no shared counter and no number to agree on (D1).
 - **Claim**, one short transaction: select up to the instance's free senders (at most 100) of due rows, leaving out
-  endpoints whose breaker is open on this instance, `ORDER BY next_attempt_at ... FOR UPDATE SKIP LOCKED`; set
+  endpoints whose breaker is open on this instance, `ORDER BY next_attempt_at ... FOR NO KEY UPDATE SKIP LOCKED`; set
   `claimed_until = now() + 60 s` and `attempt = attempt + 1` on them in one `UPDATE`; commit; then send each in the
   background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
   dropped without a send (live does not replay).
 - **Two instances never hold one row.** Three guards, each enough on its own for its case:
-  - The lock: the `SELECT ... FOR UPDATE SKIP LOCKED` and the `UPDATE` run in one transaction, so no other claim can
+  - The lock: the `SELECT ... FOR NO KEY UPDATE SKIP LOCKED` and the `UPDATE` run in one transaction, so no other claim can
     read the row between them.
   - The `UPDATE` repeats the conditions (not delivered, not dropped, unclaimed or claim expired) and the sender sends
     only the rows it returns. A row another instance claimed in between is simply not updated, so it is not sent.
@@ -184,7 +204,7 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   the next claim. So a new delivery goes out within about 50 ms, and the claim rate stays bounded however many rows
   arrive.
 - **Senders**: 256 in flight per instance, a bound on one process, not a fairness limit. No per-organization cap for
-  now (user, 2026-11-19); follow-up F-7 adds a fair share in the claim query once the load test gives numbers.
+  now (D1); follow-up F-7 adds a fair share in the claim query once the load test gives numbers.
 - **Send.** Through `Guard` (resolve, refuse a non-public address, pin it), `user-agent: Claude-Platform`, a cached
   client per host (M1), 10 s timeout, 3 s connect, no redirects.
 - **Outcome**, fenced on `attempt`: 2xx sets `delivered_at`; otherwise attempt 3 sets `dropped_at`, and attempts 1
@@ -239,7 +259,7 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
   first failure waits up to 5 s (today's base), the second up to 10 s, capped at 5 min. A commit sets `failures = 0`
   in its existing `UPDATE`. The claim does not need to return `failures`.
 
-### Budget jitter (BU1)
+### Budget jitter (BU1, SH-53)
 
 - `Admit::Later(left)` becomes `left + random(0 to 60 s)`.
 
@@ -318,7 +338,7 @@ partial index only when the query's `WHERE` implies the predicate (DEP-15).
   LIMIT 1`. An idle event is processed when it is appended, so its `seq` order is its `processed_at` order.
 - **Head**: `max(seq)` on the primary key, and the queued read on the unprocessed index.
 
-### Outbound calls (O1, O2; user, 2026-11-19: "Add both")
+### Outbound calls (O1, O2; D16, D17)
 
 Today model calls retry with full jitter; AWS calls use the SDK's standard retries; MCP and token refresh retry at the
 next turn after a `session.error` marked `retrying` (MC-14, live's behaviour); nothing has a breaker.
@@ -384,7 +404,8 @@ Keyset, token still `page_<base64>`, one statement per page each:
 
 - **One sweeper**, every 5 min on every replica. Each batch is one transaction that starts with
   `pg_try_advisory_xact_lock(hashtext('agentd.sweeps'))`; if another replica holds it, this replica skips the round.
-  The lock goes with the transaction, so a pooled connection never keeps it.
+  The lock goes with the transaction, so a pooled connection never keeps it. A round repeats batches, table by table,
+  until a batch returns fewer than 1,000 rows.
 - Batches of 1,000, two statements each (select keys, then `DELETE ... USING unnest`); blobs before rows, so a crash
   leaves a row past retention that the next round deletes, never an orphan blob:
 
@@ -415,18 +436,31 @@ files use `concurrently` as V10 to V12. No guards or row checks (`project-agentd
 
 - **V24** (PR 1 commit 2):
   `create table webhook_endpoint_states (endpoint_key text primary key, org_id text not null, failing_since
-  timestamptz, disabled_at timestamptz, disabled_reason text, config_digest text not null, actor text not null
-  default coalesce(nullif(current_setting('agentd.actor', true), ''), 'unattributed'), request_id text default
-  nullif(current_setting('agentd.request_id', true), ''));`
+  timestamptz, disabled_at timestamptz, disabled_reason text, config_digest text not null);`
   `alter table webhook_deliveries add column last_status smallint, add column last_error text;`
   - `endpoint_key` alone is the key: endpoint ids are unique across orgs (`endpoints.rs` `by_key`). `org_id` stays for
     the operator command and logs. `disabled_reason` is text with no `CHECK IN` (rule 20); a Rust enum
-    (`redirect`, `private_address`, `failing`) maps it. `actor` and `request_id` as V9, so history can say who
-    re-enabled. The table is not on the Debezium feed.
+    (`redirect`, `private_address`, `failing`) maps it. The table is not on the Debezium feed.
 - **V25** (PR 1 commit 5): `alter table loop_steps add column failures bigint not null default 0;`
 - **V26** (PR 2 commit 1): the six event log indexes.
 - **V27** (PR 2 commit 5): the five retention and list indexes.
 
+
+## Rollout
+
+agentd is not in production (D12), so no rows need carrying over.
+
+1. Before raising the pool to 16, operators set Postgres `max_connections` to at least replicas × 32 + 20, or put a
+   pooler in front (`docs/operations.md`).
+2. Flyway runs V24 and V25 before code PR 1's binary starts, and V26 and V27 before code PR 2's. All four only add a
+   table, columns or indexes, so the binary before them keeps working on the new schema and a rollback is a revert
+   of the binary.
+3. During a rolling deploy of code PR 1, an old instance still POSTs first attempts from the change feed and holds
+   retries in memory, while a new instance claims the same rows from the table. In that overlap a delivery can go
+   out twice with the same `webhook-id`, which receivers already handle (at-least-once). An old instance's
+   in-memory retries end when it stops; their rows are still undelivered, so a new instance sends them.
+4. Before code PR 2's streamed uploads, the bucket gets an `AbortIncompleteMultipartUpload` lifecycle rule
+   (`docs/operations.md`).
 
 ## Gaps on main
 
@@ -466,17 +500,16 @@ What the design fixes, as found on `main`. The Plan column names the commit.
 | X2 | `memory_versions` never deleted from | `memory/versions.rs` | PR 2 commit 5 |
 | X3 | Expired files never swept, hidden at once | `files.rs:174-176`, `V1:71-73` | PR 2 commit 5 |
 | X4 | Event retention deletes up to 500 sessions per statement, rows unbounded | `sessions/src/retention.rs:14-162` | PR 2 commit 5 |
-
 | R5 | `history.*` never deleted from | V17 | by design (paid history) |
 | R6 | Skills and memory head deletes remove blobs one at a time | `skills.rs:182`, `memory/heads.rs:109` | follow-up F-3 |
 | R7 | `api_keys`, `environment_keys`, `admin_keys` and `webhook_deliveries` are on the Debezium feed | `docker/debezium/application.properties:38` | used by SH-17; sized below |
 | R8 | `agentd keys revoke` runs in a process with Postgres only | `api/src/cli.rs:40-45` | covered by SH-17 (feed) |
 | R9 | `webhook_deliveries`, `loop_steps` are not in Diesel's `schema.rs`; their SQL is `sql_query` | `store-postgres/src/schema.rs` | `schema.rs` untouched |
 
-Gone or not in this brief (follow-ups so nothing is silently dropped): the busy-workspace claim and its index
-(`loop_steps/claim.rs:25-56`); `set_config` round trip per checkout (`checkout.rs:67-81`); credential metadata GET
-reading the secret, vault delete purging one by one; rubric files per step; environment and admin key caches
-(F-4).
+Left for follow-ups F-4 and F-8 to F-11 in [decisions.md](decisions.md): environment and admin key caches; the
+busy-workspace claim and its index (`loop_steps/claim.rs:25-56`); the `set_config` round trip per checkout
+(`checkout.rs:67-81`); the credential metadata GET reading the secret, and vault delete purging one by one; rubric
+files per step.
 
 **File sizes** (production lines without imports; the limit is 200 and a file over it never grows):
 
@@ -502,7 +535,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
 
 ## Plan of PRs
 
-### Code PR 1: correctness under load (one session; about 70 files; SH-1 to SH-21, SH-25, SH-26, SH-29 to SH-36, SH-42 to SH-44, SH-47, SH-48, SH-52)
+### Code PR 1: correctness under load (one session; about 70 files; SH-1 to SH-21, SH-25, SH-26, SH-29 to SH-36, SH-42 to SH-44, SH-47, SH-48, SH-52, SH-53)
 
 1. **Client cache** (SH-20, SH-25). `shared/src/net/clients.rs` (new, the map); `net.rs` uses it and gains
    `with_user_agent`. Tests: "two calls to one host reuse a client", "after 5 min the address is checked again".
@@ -510,13 +543,14 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    `webhooks/src/sender.rs` (177) becomes `sender.rs` (feed handler: publishes the wake), `sender/claim.rs` (wake
    subscription, 1 s backstop, 50 ms fold, queue store, senders), `sender/senders.rs` (free senders, breaker state per
    endpoint), `sender/breaker.rs`, `sender/send.rs` (guard client, sign, POST, outcome: queue store, health, metrics),
-   `sender/health.rs` (endpoint state store, the 10 s read); `shared/src/ports/wake.rs` (new port) and
-   `signals-valkey/src/wake.rs` (new, publish and subscribe `agentd:webhooks`). Each type at most 5 dependencies. Store: `webhook_deliveries.rs` becomes a
+   `sender/health.rs` (endpoint state store, the 10 s read); `shared/src/ports/broadcast.rs` (new port: `publish(channel, payload)`,
+   `subscribe(channel)`) and `signals-valkey/src/broadcast.rs` (new, its Valkey adapter; the wake is channel
+   `agentd:webhooks`). Each type at most 5 dependencies. Store: `webhook_deliveries.rs` becomes a
    folder:
    - `insert.rs`: today's inserts.
    - `queue.rs`, claim, one transaction: `SELECT webhook_id, endpoint_key FROM webhook_deliveries WHERE delivered_at IS
      NULL AND dropped_at IS NULL AND next_attempt_at <= now() AND (claimed_until IS NULL OR claimed_until < now()) AND
-     endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR UPDATE SKIP LOCKED`, then `UPDATE
+     endpoint_key <> ALL($1) ORDER BY next_attempt_at LIMIT $2 FOR NO KEY UPDATE SKIP LOCKED`, then `UPDATE
      webhook_deliveries AS d SET claimed_until = now() + interval '60 seconds', attempt = d.attempt + 1 FROM
      unnest($3::text[], $4::text[]) AS v(webhook_id, endpoint_key) WHERE d.webhook_id = v.webhook_id AND
      d.endpoint_key = v.endpoint_key AND d.delivered_at IS NULL AND d.dropped_at IS NULL AND (d.claimed_until IS NULL
@@ -580,7 +614,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    = NULL, due_at = now() + random() * least(300, 5 * 2 ^ failures) * interval '1 second' WHERE {HELD}`; the commit's
    existing `UPDATE` adds `failures = 0`. `worker/step.rs` calls it. Tests: `pg_loop_steps` "the first wait is at most
    5 s, the waits grow, cap at 5 min, and a commit resets them".
-6. **Budget jitter**. `signals-valkey/src/budget.rs` (80). Unit test for the spread.
+6. **Budget jitter** (SH-53). `signals-valkey/src/budget.rs` (80). Unit test for the spread.
 7. **Timeouts** (SH-10 to SH-12, SH-21). `store-postgres/src/pool.rs` (90): the two `SET`s in `custom_setup`;
    `api/src/config/store.rs` (60) the statement timeout; `api/src/edge/deadline.rs` (new); `edge/mod.rs` (23) one
    layer; `shared/src/module.rs` (73) the per-module timeout; `files/src/lib.rs`; `shared/src/error.rs` (196) moves its
@@ -594,7 +628,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    "reads share one bucket across agents and sessions", "memory stores have their own bucket", "events send and
    skills are not limited", "headers match live's on a read", "Valkey down admits and counts".
 9. **Key cache** (SH-16 to SH-18). `api-keys/src/cache.rs` (new) wrapping `ApiKeysService`; `api-keys/src/revoked.rs`
-   (new, the `api_keys` feed handler); `signals-valkey/src/keys.rs` (new, publish and subscribe). Tests: "a cached key
+   (new, the `api_keys` feed handler); the broadcast port from commit 2 on channel `agentd:keys`. Tests: "a cached key
    reads Postgres once", "a key revoked through `agentd keys revoke` is refused on another replica within 1 s", "a key
    revoked with no message is refused after the TTL".
 10. **Model breaker** (SH-47, SH-48). `engine/src/model/breaker.rs` (new: per provider, open, half-open, close);
@@ -605,12 +639,12 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
     down. Test: "a reply over 16 MiB fails the call".
 12. **Pool and wiring** (SH-19, SH-35, SH-44): `config/store.rs` default 16; `api/src/cli/webhooks.rs`
     (new, `agentd webhooks enable`: `UPDATE webhook_endpoint_states SET disabled_at = NULL, disabled_reason = NULL,
-    failing_since = NULL WHERE endpoint_key = $1 AND org_id = $2`, actor set as `agentd keys` does) and one arm in
+    failing_since = NULL WHERE endpoint_key = $1 AND org_id = $2`) and one arm in
     `cli/command.rs`; `api/src/backends.rs` (webhook claim loop and wake, health read, rate limiter, key cache and its feed handler, the
     shutdown deadline); `config.rs`; `docs/configuration.md` (every new setting), `docs/operations.md` (shutdown,
     deadlines, re-enable, the S3 lifecycle rule, `max_connections`), `docs/observability.md` (the metrics table).
     Tests: config default; "enable re-sends new deliveries".
-13. **Webhook load test** (SH-52; user, 2026-11-19: "Run a load test"). `api/tests/load/webhooks.rs` (new, `#[ignore]`,
+13. **Webhook load test** (SH-52). `api/tests/load/webhooks.rs` (new, `#[ignore]`,
     run by hand) and fake receivers: fast (100 ms), slow (5 s), dead; many organizations plus one noisy one. Runs: 1,
     2 and 3 instances, on Kafka and on Valkey Streams. Measures delivered webhooks a second per instance count, delay
     from insert to first attempt (p50, p99), claims a second against Postgres, and that no delivery is sent twice. It
@@ -654,22 +688,22 @@ Chosen where live is silent.
 | Value | Default | Reason |
 |---|---|---|
 | Senders per instance | 256 | today's cap; a bound on one process |
-| Claim fold / backstop | 50 ms / 1 s | a new delivery goes out within about 50 ms; at most 20 claims a second per instance; an idle claim is one empty read of the V9 due index; a fixed poll behind a wake is the Oban (1 s) and Graphile Worker (2 s) default; kept over sleeping until the next due time (user, 2026-11-19: "Keep the 1 s poll") |
-| Retry backoff | 30 s base, doubled per attempt, equal jitter: 15 to 30 s, then 30 to 60 s | L1 documents jittered exponential backoff in 5 to 120 s; user, 2026-11-19, asked for backoff that grows per attempt |
-| Delivery claim | 60 s | user, 2026-11-19; 6 × the 10 s send timeout; a crashed replica's send is picked up within 60 s, inside live's 120 s spacing range |
+| Claim fold / backstop | 50 ms / 1 s | a new delivery goes out within about 50 ms; at most 20 claims a second per instance; an idle claim is one empty read of the V9 due index; a fixed poll behind a wake is the Oban (1 s) and Graphile Worker (2 s) default; kept over sleeping until the next due time (D18) |
+| Retry backoff | 30 s base, doubled per attempt, equal jitter: 15 to 30 s, then 30 to 60 s | L1 documents jittered exponential backoff in 5 to 120 s (D2) |
+| Delivery claim | 60 s | D19; 6 × the 10 s send timeout; a crashed replica's send is picked up within 60 s, inside live's 120 s spacing range |
 | Send start margin | 15 s | the 10 s send timeout plus 5 s spare, so a POST always ends before its claim does |
 | Breaker | 5 failures, 30 s open | a dead endpoint costs one 10 s timeout per 30 s per replica |
 | Auto-disable window | 120 h | Svix's default (DEP-8) |
 | Endpoint state read | 10 s | 1 statement a second across 10 replicas |
 | Shutdown grace | 25 s | Kubernetes' 30 s default minus 5 s (DEP-9) |
-| Step backoff | 5 s doubling to 5 min, full jitter | today's 5 s base; AWS pattern |
+| Step backoff | 5 s doubling to 5 min, full jitter | today's 5 s base; full jitter as in the AWS Architecture Blog, "Exponential Backoff And Jitter" |
 | Statement / idle-in-transaction timeout | 30 s / 60 s | the longest statement left is a bounded batch |
 | Request deadline | 60 s, files 15 min | 500 MB at about 5 Mbit/s |
 | S3 attempt / operation | 30 s / 50 s | operation below the request deadline |
 | Key cache | 10,000 entries, 60 s | bounded memory; D8 |
 | MCP clients / reply cap | 1,024, 5 min / 16 MiB | 160 × live's 100,000-character threshold |
 | Model breaker | 5 failures, 30 s or `retry-after` | the same shape as the webhook breaker |
-| Delivered / dropped retention | 24 h / 30 days | 24 h covers a feed replay; sizing below |
+| Delivered / dropped retention | 24 h / 30 days | D24: 24 h covers a feed replay; sizing below |
 | Memory versions kept past 30 days | the current version of each live memory | L4's "recent versions" with no count: the smallest reading that keeps every live memory readable |
 
 Settings (`sre-configuration-design`: one only where a deployment must answer a real question; all `_MS`):
@@ -689,15 +723,21 @@ Everything else above is a constant. Rate limits are live's values and are const
 Design point: 10 replicas; 1,000 deliveries a second cluster-wide at peak (10,000 running sessions, a status change
 every 10 s, one endpoint); ceiling checked at 10,000 a second.
 
-- **Sends in flight**: 1,000/s × 50 ms = 50 cluster-wide, spread by the claims over the 10 instances, about 5 each
-  (50 each at the 10,000 ceiling), under 256. A dead server holds senders only until its breaker opens (5 failures).
-  Claims: at most 20 a second per instance, 200 cluster-wide, 2 statements each. The load test checks these numbers.
-- **Postgres writes per delivery**: insert, claim, outcome = 3; the failure path adds 1 per failed attempt; the 2xx
-  clear only for a failing endpoint. 3,000 writes a second at the design point, 30,000 at the ceiling (a larger
-  database). The claim loop: at most 20 transactions a second per instance.
-- **Change feed**: `webhook_deliveries` is on the feed (R7), so the claim and outcome add 2 records of about 600 B
-  per delivery: 3,000 records, about 1.8 MB a second at the design point. Debezium's `skipped.operations` is per
-  connector, not per table, so it is not used; the handler ignores updates as today. `webhook_endpoint_states` is not
+- **Sends in flight**: in flight = deliveries a second × the receiver's response time. An instance sends at most 256 /
+  latency a second, so 10 instances (2,560 senders) hold the 1,000 a second design point while the endpoint answers
+  within about 2.5 s; at 100 ms, 100 are in flight cluster-wide. Past that, rows wait in the table: nothing is lost,
+  `oldest_due_age` rises, and each added instance adds 256 senders. A slow 2xx does not open the breaker; a dead
+  server holds senders only until its breaker opens (5 failures). Claims: at most 20 a second per instance, 200
+  cluster-wide, 2 statements each. The load test checks these numbers with the 100 ms and 5 s receivers.
+- **Postgres writes per delivery**: insert, claim, outcome, and the sweep's delete = 4; the failure path adds 1 per
+  failed attempt; the 2xx clear only for a failing endpoint. 4,000 writes a second at the design point, 40,000 at the
+  ceiling (a larger database). The claim loop: at most 20 transactions a second per instance.
+- **Sweep**: at the design point about 300,000 delivered rows fall due per 5-minute round, so a round runs about 300
+  batches of 1,000, two statements each: about 2 statements a second on average.
+- **Change feed**: `webhook_deliveries` is on the feed (R7), so the claim, the outcome and the sweep's delete add 3
+  records per delivery (about 600 B each; the delete is smaller): about 4,000 records, about 2 MB a second at the
+  design point. Debezium's `skipped.operations` is per
+  connector, not per table, so it is not used; the handler ignores updates and deletes as today. `webhook_endpoint_states` is not
   on the feed.
 - **Delivery storage**: a row is about 600 B (a body of about 300 B, `event.rs:108`) plus its indexes. 86 M rows a
   day at the design point: 24 h of delivered rows is about 52 GB; at 1 % dropped, 30 days is about 16 GB. 10 × at
