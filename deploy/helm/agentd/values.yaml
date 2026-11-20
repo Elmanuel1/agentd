@@ -34,8 +34,9 @@ service:
   # Set with `type: NodePort` to pin the node port.
   nodePort: null
 
-# Postgres. The user and password come from a Secret made before the install, under the keys named here (`username` and
-# `password`, as CloudNativePG and Bitnami write them); the password holds no space, quote or backslash.
+# Postgres. The user and password come from a Secret made before the install (by hand, External Secrets,
+# Sealed Secrets, CloudNativePG), under the keys named here; the chart only reads it. The password holds no
+# space, quote or backslash.
 database:
   host: postgres
   port: 5432
