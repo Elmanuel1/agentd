@@ -3641,6 +3641,7 @@ dependencies = [
  "temporalio-macros",
  "temporalio-sdk",
  "temporalio-workflow",
+ "test-support",
  "thiserror",
  "tokio",
  "tracing",
@@ -4384,7 +4385,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "parking_lot 0.13.0",
+ "rustls",
  "shared",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
