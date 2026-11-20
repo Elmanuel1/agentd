@@ -4,7 +4,7 @@ target/
 .claude/
 conformance/fixtures/live/
 conformance/fixtures/capture/
-# Local output of the conformance suites, which deploy/kind/check.sh runs in the tree.
+# Local output of the conformance suites, which run in the tree.
 conformance/java/.gradle/
 conformance/java/build/
 conformance/python/.pytest_cache/

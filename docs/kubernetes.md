@@ -1,47 +1,46 @@
 # Kubernetes
 
-agentd runs on Kubernetes from the Helm chart in `deploy/helm/agentd`. The chart holds agentd's own workloads;
-the backing services are connection settings. `deploy/kind` brings the whole system up on a local
-[kind](https://kind.sigs.k8s.io) cluster, with the backing services inside it, to test it end to end against the
-real model. Every setting is in `configuration.md`; what to run and watch in production is in `operations.md`.
+agentd runs on Kubernetes from the Helm chart in `deploy/helm/agentd`. The chart holds agentd's own workloads
+only: the `api` and `loop` replicas and the migrations. Postgres, Valkey, the change feed (Kafka and Debezium
+Server) and S3 run outside it, and agentd reaches them through the environment the chart sets. Every setting is
+in `configuration.md`; what to run and watch in production is in `operations.md`.
 
-## Quickstart on kind
+## Quickstart
 
-Needs Docker (the cluster takes about 3 GB of memory), kind 0.24 or later, kubectl, Helm 3, `jq`, and for the checks
-Python 3.12 (`PYTHON=python3.12` when `python3` is older), Node and Java 21.
+Build the two images from the same commit, create the Secrets, then install the chart with the backing
+services' addresses:
 
 ```sh
-deploy/kind/up.sh       # cluster, images, backing services, chart, Debezium; prints a workspace key
-deploy/kind/check.sh    # the free checks: health, the SDK suites, the k6 smoke load
-AGENTD_ANTHROPIC_API_KEY=sk-ant-... deploy/kind/e2e.sh   # the real end-to-end run (paid: one short turn)
-deploy/kind/down.sh     # delete the cluster and the images
+docker build -f docker/Dockerfile -t <registry>/agentd:<tag> .
+docker build -f deploy/migrations.Dockerfile -t <registry>/agentd-migrations:<tag> .
+
+kubectl create secret generic agentd-database --from-literal=username=agentd --from-literal=password=<password>
+kubectl create secret generic agentd-keys \
+  --from-literal=AGENTD_API_KEY_PEPPERS=k1:$(openssl rand -hex 32) \
+  --from-literal=AGENTD_WORK_TOKEN_KEYS=k1:$(openssl rand -hex 32) \
+  --from-literal=AGENTD_PLACEHOLDER_KEYS=k1:$(openssl rand -hex 32) \
+  --from-literal=AGENTD_SECRET_KEYS=k1:$(openssl rand -hex 32)
+kubectl create secret generic agentd-model --from-literal=AGENTD_ANTHROPIC_API_KEY=<key>
+
+helm install agentd deploy/helm/agentd -f my-values.yaml
 ```
 
-agentd answers at `http://127.0.0.1:8080` (the API Service's NodePort 30080, published by `cluster.yaml`), so the
-SDKs, `ant` and `curl` on the host reach it as they reach compose. Port 8080 must be free: stop the compose stack
-first. `up.sh` is safe to run again: it rebuilds the images, rolls out the change, and keeps the database
-password and key rings it made on the first run. The scripts use the context `kind-agentd` and the namespace
-`agentd`, never the current context; `AGENTD_KIND_CLUSTER` names another cluster.
+```yaml
+# my-values.yaml
+image: { repository: <registry>/agentd, tag: <tag> }
+migrations:
+  image: { repository: <registry>/agentd-migrations, tag: <tag> }
+database: { host: <postgres host>, sslMode: disable }
+env:
+  AGENTD_API_BASE_URL: https://agentd.example.com
+  AGENTD_VALKEY_URL: rediss://<valkey host>:6379
+  AGENTD_VALKEY_CLUSTER: "1"
+  AGENTD_KAFKA_BROKERS: <broker>:9092
+  AGENTD_BLOB_BUCKET: <bucket>
+```
 
-## What runs
-
-| Workload | Kind | From |
-|---|---|---|
-| `agentd-api` | Deployment, 2 replicas, `AGENTD_ROLE=api`, behind the Service `agentd-api` | the chart |
-| `agentd-loop` | Deployment, 2 replicas, `AGENTD_ROLE=loop` | the chart |
-| `agentd-migrations` | Job, a Helm `pre-install` and `pre-upgrade` hook: Flyway 11 applies the migrations before agentd rolls out | the chart, image from `deploy/migrations.Dockerfile` |
-| `postgres` | StatefulSet, Postgres 16, `wal_level=logical`, `max_slot_wal_keep_size=1GB` | `deploy/kind/deps` |
-| `valkey` | StatefulSet, Valkey 9, a one-node cluster with AOF, announced as `valkey` | `deploy/kind/deps` |
-| `kafka` | StatefulSet, Kafka 3.9.1, one KRaft node; the change feed | `deploy/kind/deps` |
-| `localstack` | Deployment, LocalStack 3.0 with S3 only; the blob store | `deploy/kind/deps` |
-| `debezium` | Deployment, 1 replica, `Recreate`: Debezium Server with `docker/debezium/application.properties` | `deploy/kind/debezium.yaml` |
-| `ant-worker` | Pod, `ant beta:worker poll` 1.39.0 for `e2e.sh`'s environment | `deploy/kind/worker.yaml`, image from `deploy/kind/ant-worker.Dockerfile` |
-| `perf` | Job, k6 1.3.0 running `perf/agentd.js` against `http://agentd-api:8080` | `deploy/kind/perf.yaml` |
-
-Images pinned as compose pins them. The scheduler is the built-in one (`AGENTD_SCHEDULER=postgres`), vault
-credentials are sealed in Postgres, and no webhook endpoint is set. The cluster exports no telemetry unless
-`OTEL_EXPORTER_OTLP_ENDPOINT` is added to `env`; `docker/observability` on the host is reached at
-`http://host.docker.internal:4317`.
+`helm install --wait` returns once the migrations Job has run and every replica listens. The chart creates
+`agentd-api` (the Service in front of the `api` replicas), `agentd-loop` and the hook Job `agentd-migrations`.
 
 ## The chart
 
@@ -71,25 +70,8 @@ filesystem and no capabilities. The CLI (`agentd keys create` and the others) re
 server, so it runs in an api pod:
 
 ```sh
-kubectl --context kind-agentd -n agentd exec deploy/agentd-api -- agentd keys create --org org_dev --workspace wrkspc_01dev --name dev
+kubectl exec deploy/agentd-api -- agentd keys create --org <org_id> --workspace <workspace_id> --name <name>
 ```
-
-## The checks
-
-`check.sh` runs the checks that call no model, and refuses to start while the Secret `agentd-model` exists: the
-SDK session tests and the load send user messages to agents, which would call the paid model.
-
-1. Health: every pod is Ready, and `GET /v1/agents?limit=1` with a new workspace key answers 200.
-2. Conformance: the Python, TypeScript and Java suites at `AGENTD_BASE_URL=http://127.0.0.1:8080`, with a
-   workspace key and an admin key for `org_sdk`. Their worker cases stay skipped: they need the scripted model.
-3. Load: the k6 Job, at `RATE=10`, `STREAMS=10`, `DURATION=30s` and `thresholds.smoke.json` unless those are set
-   in the shell. It runs inside the cluster, so no port-forward sits in the measured path.
-
-`e2e.sh` is the real run: it puts the model key in `agentd-model` and rolls agentd out, makes an agent on
-`claude-haiku-4-5` with the built-in tools and a `self_hosted` environment, starts `ant-worker` with an
-environment key for it, and sends one message that asks for `echo kind-e2e-ok` through the bash tool. It passes
-when `agent.tool_use` and a `user.tool_result` holding `kind-e2e-ok` are in the session's events and the turn
-ends with `end_turn`. On exit, pass or fail, it deletes the worker and the model key and rolls agentd out again.
 
 ## Scheduling
 

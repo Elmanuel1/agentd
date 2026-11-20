@@ -1,6 +1,6 @@
 # agentd's own workloads. The backing services (Postgres, Valkey, Kafka and Debezium Server, S3) are not part of
 # the chart: their addresses go in `env` and `database`, and every secret comes from a Secret named below.
-# docs/kubernetes.md has the kind values; docs/configuration.md has every setting.
+# docs/kubernetes.md has a quickstart; docs/configuration.md has every setting.
 
 image:
   repository: agentd
