@@ -30,6 +30,10 @@ impl Target {
         }
         let mut config: tokio_postgres::Config =
             info.rest.parse().map_err(|e: tokio_postgres::Error| PgError::Connect(e.to_string()))?;
+        // A token is minted for one endpoint, so a second host would get the first one's.
+        if password.is_some() && config.get_hosts().len() > 1 {
+            return Err(PgError::Connect("an IAM password needs a single host".into()));
+        }
         config.ssl_mode(match info.mode {
             SslMode::Disable => PgSslMode::Disable,
             SslMode::Prefer => PgSslMode::Prefer,

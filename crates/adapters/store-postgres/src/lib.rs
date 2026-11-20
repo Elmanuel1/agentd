@@ -27,6 +27,7 @@ mod target;
 mod tls;
 
 pub use checkout::{DieselPgPool, PooledConnection};
+pub use conninfo::redacted;
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 pub use slot::{Slot, read_slot};

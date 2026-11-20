@@ -1,5 +1,5 @@
 //! Spans exported to an `https://` collector: a [`TlsFront`] serving the test
-//! certificate (`docker/tls/certs.sh`), its CA at `AGENTD_OTLP_TLS_CA`; skipped without it.
+//! certificate (`docker/tls/certs.sh`), its CA at `AGENTD_OTLP_TLS_CA`; those are skipped without it.
 
 use std::path::Path;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithTonicConfig};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use test_support::TlsFront;
 
-use super::otlp;
+use super::tls;
 
 /// How many TLS handshakes the front saw after one span was exported to it
 /// with `certificate` trusted.
@@ -19,7 +19,7 @@ async fn handshakes(ca: &str, certificate: Option<&str>) -> usize {
         .with_tonic()
         .with_endpoint(format!("https://localhost:{}", front.addr.port()))
         .with_timeout(Duration::from_secs(1))
-        .with_tls_config(otlp(certificate).unwrap())
+        .with_tls_config(tls(certificate).unwrap())
         .build()
         .unwrap();
     let provider = SdkTracerProvider::builder().with_batch_exporter(exporter).build();
@@ -42,6 +42,12 @@ async fn an_https_collector_the_roots_do_not_sign_is_refused() {
 
 #[test]
 fn a_certificate_that_cannot_be_read_is_an_error() {
-    let err = otlp(Some("/nonexistent/ca.pem")).unwrap_err();
+    let err = tls(Some("/nonexistent/ca.pem")).unwrap_err();
     assert!(err.starts_with("OTEL_EXPORTER_OTLP_CERTIFICATE /nonexistent/ca.pem: "), "{err}");
+}
+
+/// A plain endpoint gets no TLS configuration, so building needs no certificates.
+#[tokio::test]
+async fn plain_exporters_build_without_tls() {
+    assert!(super::exporters(&crate::config::TelemetryConfig::default()).is_ok());
 }

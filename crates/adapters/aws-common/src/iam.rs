@@ -47,6 +47,7 @@ impl PasswordSource for RdsAuthToken {
         user: &'a str,
     ) -> BoxFuture<'a, Result<String, BackendError>> {
         Box::pin(async move {
+            let user: String = url::form_urlencoded::byte_serialize(user.as_bytes()).collect();
             let url = format!("https://{host}:{port}/?Action=connect&DBUser={user}");
             let (signed, _) = presign(&self.0, &url, "rds-db").await?;
             Ok(signed.as_str().trim_start_matches("https://").to_owned())
@@ -91,13 +92,14 @@ async fn presign(
     url: &str,
     service: &str,
 ) -> Result<(url::Url, SystemTime), BackendError> {
-    let now = config.time_source().map_or_else(SystemTime::now, |t| t.now());
     let credentials = config
         .credentials_provider()
         .ok_or_else(|| failed("IAM authentication needs AWS credentials"))?
         .provide_credentials()
         .await
         .map_err(failed)?;
+    // After the credentials, which may take a while, so the token's 15 minutes start now.
+    let now = config.time_source().map_or_else(SystemTime::now, |t| t.now());
     let identity: Identity = credentials.into();
     let region = config.region().map_or("us-east-1", |r| r.as_ref());
     let mut settings = SigningSettings::default();

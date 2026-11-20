@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{ConnInfo, RootCert, SslMode, split};
+use super::{ConnInfo, RootCert, SslMode, redacted, split};
 
 fn info(rest: &str, mode: SslMode, root: Option<RootCert>) -> ConnInfo {
     ConnInfo { rest: rest.to_owned(), mode, root }
@@ -79,4 +79,17 @@ fn a_malformed_keyword_string_is_refused() {
         split("password='open").unwrap_err(),
         "the connection string has an unterminated quoted value"
     );
+}
+
+#[test]
+fn an_escaped_trailing_space_stays_in_a_kept_value() {
+    let got = split(r"password=p\  dbname=agentd sslmode=require").unwrap();
+    assert_eq!(got.rest, r"password=p\  dbname=agentd");
+}
+
+#[test]
+fn redacted_hides_the_password_in_either_form() {
+    assert_eq!(redacted("postgres://u:pw@db:5432/agentd?sslmode=require"), "postgres://u:***@db:5432/agentd");
+    assert_eq!(redacted(r"host=db password='p w' user=u"), "host=db password=*** user=u");
+    assert_eq!(redacted("password='open"), "***");
 }

@@ -28,7 +28,7 @@ transaction.state.log.min.isr=1
 group.initial.rebalance.delay.ms=0
 log.dirs=/tmp/kraft-combined-logs
 PROPERTIES
-docker run -d --name kafka-secure -p 19093:19093 -p 19094:19094 -v "$dir/kafka:/mnt/shared/config" \
+docker run -d --name kafka-secure -p 127.0.0.1:19093:19093 -p 127.0.0.1:19094:19094 -v "$dir/kafka:/mnt/shared/config" \
   apache/kafka:3.9.1 >/dev/null
 for _ in $(seq 1 60); do
   if docker exec kafka-secure /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9092 --alter \

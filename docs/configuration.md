@@ -459,7 +459,7 @@ chain and `verify-full` its chain and host name. `require` with an `sslrootcert`
 
 With `AGENTD_PG_AUTH=aws_iam`, each new connection's password is an RDS IAM token for its host, port and the user
 in the URL, signed in the AWS region of the default chain (`AWS_REGION`); `DATABASE_URL` needs no password, and its
-`sslmode` must be `require`, `verify-ca` or `verify-full`, or agentd stops at boot. The database user needs the
+`sslmode` must be `require`, `verify-ca` or `verify-full`, and it names a single host, or agentd stops at boot. The database user needs the
 `rds_iam` role and the AWS principal `rds-db:connect` on it.
 
 With `AGENTD_KAFKA_AUTH=aws_iam`, agentd reads over `SASL_SSL` with `OAUTHBEARER`, each token an Amazon MSK IAM
@@ -686,7 +686,7 @@ dedupes on `webhook-id`.
 | Variable | Default | Meaning |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (no export) | OTLP gRPC endpoint for traces, metrics and logs, such as `http://localhost:4317`; `https://` exports over TLS. The OpenTelemetry SDK reads the other standard `OTEL_*` variables (`OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_EXPORTER_OTLP_HEADERS`) itself |
-| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset (the operating system's roots) | With an `https://` endpoint: the PEM file the collector's certificate chains to |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset (the operating system's roots) | The PEM file an `https://` collector's certificate chains to; it needs every exporter's endpoint (`OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) to be `https://`. An exporter with a plain or `unix:` endpoint gets no TLS |
 | `AGENTD_LOG_FORMAT` | `text` | `json` writes one JSON object per log line to stdout |
 | `RUST_LOG` | `info` | Log filter, `tracing-subscriber` syntax |
 

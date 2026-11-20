@@ -93,7 +93,11 @@ async fn a_plain_server_takes_prefer_and_refuses_require() {
         return;
     }
     assert_eq!(encrypted(&url).await, Ok(false));
-    let separator = if url.contains('?') { '&' } else { '?' };
+    let separator = match url.starts_with("postgres") {
+        true if url.contains('?') => "&",
+        true => "?",
+        false => " ",
+    };
     let required = encrypted(&format!("{url}{separator}sslmode=require")).await;
     assert!(required.unwrap_err().contains("TLS"), "require must refuse a server without TLS");
 }
@@ -159,4 +163,19 @@ async fn a_minted_password_is_never_sent_unencrypted() {
             "connect: an IAM password needs sslmode=require, verify-ca or verify-full"
         );
     }
+    let two = "host=a,b port=5433 user=agentd dbname=agentd sslmode=require";
+    let minted: Arc<dyn PasswordSource> = Arc::new(Minted::default());
+    let err = PgBackend::connect_as(two, PoolSettings::default(), None, Some(minted))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+    assert_eq!(err.to_string(), "connect: an IAM password needs a single host");
+}
+
+/// PostgreSQL 17's direct TLS, which needs ALPN `postgresql`.
+#[tokio::test]
+async fn direct_tls_negotiation_connects_encrypted() {
+    let Some(ca) = ca() else { return };
+    let url = format!("host=localhost {TLS} sslmode=verify-full sslrootcert={ca} sslnegotiation=direct");
+    assert_eq!(encrypted(&url).await, Ok(true));
 }

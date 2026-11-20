@@ -20,16 +20,15 @@
 pub mod db;
 pub mod feed;
 pub mod http;
+mod otlp;
 pub mod ports;
 pub mod retention;
 pub mod scheduler;
 pub mod steps;
-mod tls;
 
 use opentelemetry::metrics::{Histogram, Meter, UpDownCounter};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter, WithTonicConfig};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -140,19 +139,13 @@ pub fn init(config: &TelemetryConfig) -> Result<Telemetry, String> {
     let mut telemetry = Telemetry::default();
     let otel = if config.otlp {
         let resource = Resource::builder().with_service_name("agentd").build();
-        let tls = tls::otlp(config.otlp_certificate.as_deref())?;
-        let spans = SpanExporter::builder().with_tonic().with_tls_config(tls.clone()).build();
-        let spans = spans.map_err(|e| e.to_string())?;
+        let (spans, metrics, logs) = otlp::exporters(config)?;
         let tracer =
             SdkTracerProvider::builder().with_batch_exporter(spans).with_resource(resource.clone()).build();
-        let metrics = MetricExporter::builder().with_tonic().with_tls_config(tls.clone()).build();
-        let metrics = metrics.map_err(|e| e.to_string())?;
         let meter = SdkMeterProvider::builder()
             .with_periodic_exporter(metrics)
             .with_resource(resource.clone())
             .build();
-        let logs =
-            LogExporter::builder().with_tonic().with_tls_config(tls).build().map_err(|e| e.to_string())?;
         let logger = SdkLoggerProvider::builder().with_batch_exporter(logs).with_resource(resource).build();
         opentelemetry::global::set_meter_provider(meter.clone());
         opentelemetry::global::set_text_map_propagator(

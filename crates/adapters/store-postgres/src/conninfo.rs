@@ -90,11 +90,24 @@ fn split_url(url: &str) -> (String, Vec<(String, String)>) {
     (rest, pairs)
 }
 
+fn split_keywords(conninfo: &str) -> Result<(String, Vec<(String, String)>), String> {
+    let (taken, kept): (Vec<Pair<'_>>, Vec<Pair<'_>>) =
+        keyword_pairs(conninfo)?.into_iter().partition(|p| is_tls_key(&p.key));
+    let kept: Vec<&str> = kept.iter().map(|p| p.text).collect();
+    Ok((kept.join(" "), taken.into_iter().map(|p| (p.key, p.value)).collect()))
+}
+
+/// One `keyword = value` of a connection string, as written and as read.
+struct Pair<'a> {
+    key: String,
+    value: String,
+    text: &'a str,
+}
+
 /// libpq's `keyword = value` form: a value is single-quoted or runs to the
 /// next space, and a backslash escapes the character after it in either.
-fn split_keywords(conninfo: &str) -> Result<(String, Vec<(String, String)>), String> {
+fn keyword_pairs(conninfo: &str) -> Result<Vec<Pair<'_>>, String> {
     let mut chars = conninfo.char_indices().peekable();
-    let mut kept = Vec::new();
     let mut pairs = Vec::new();
     loop {
         while chars.next_if(|(_, c)| c.is_whitespace()).is_some() {}
@@ -110,12 +123,28 @@ fn split_keywords(conninfo: &str) -> Result<(String, Vec<(String, String)>), Str
         while chars.next_if(|(_, c)| c.is_whitespace()).is_some() {}
         let value = keyword_value(&mut chars)?;
         let end = chars.peek().map_or(conninfo.len(), |(i, _)| *i);
-        match is_tls_key(&key) {
-            true => pairs.push((key, value)),
-            false => kept.push(conninfo.get(start..end).unwrap_or_default().trim_end()),
-        }
+        pairs.push(Pair { key, value, text: conninfo.get(start..end).unwrap_or_default() });
     }
-    Ok((kept.join(" "), pairs))
+    Ok(pairs)
+}
+
+/// `url` for a log: a URL without its query or password, a keyword string
+/// with its `password` value replaced, anything unreadable replaced whole.
+pub fn redacted(url: &str) -> String {
+    if let Some((scheme, rest)) = url.split_once("://") {
+        let rest = rest.split('?').next().unwrap_or_default();
+        return match rest.rsplit_once('@') {
+            Some((credentials, host)) => {
+                let user = credentials.split_once(':').map_or(credentials, |(user, _)| user);
+                format!("{scheme}://{user}:***@{host}")
+            }
+            None => format!("{scheme}://{rest}"),
+        };
+    }
+    let Ok(pairs) = keyword_pairs(url) else { return "***".into() };
+    let shown: Vec<&str> =
+        pairs.iter().map(|p| if p.key == "password" { "password=***" } else { p.text }).collect();
+    shown.join(" ")
 }
 
 fn keyword_value(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) -> Result<String, String> {

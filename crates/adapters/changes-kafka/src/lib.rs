@@ -116,7 +116,9 @@ impl KafkaChanges {
 
     async fn run(self, topic: String, reader: Reader) {
         loop {
-            if let Err(e) = self.serve(&topic, &reader).await {
+            if let Err(e) = self.client.ready().await {
+                tracing::warn!(%topic, error = %e, "changes: no OAUTHBEARER token; trying again");
+            } else if let Err(e) = self.serve(&topic, &reader).await {
                 tracing::warn!(%topic, error = %e, "changes: the topic read failed; reconnecting");
             }
             tokio::time::sleep(BACKOFF).await;

@@ -4,9 +4,9 @@
 set -eu
 dir=$1
 "$(dirname "$0")/../tls/certs.sh" "$dir"
-docker run -d --name postgres-tls -p 5433:5432 -v "$dir:/certs:ro" \
+docker run -d --name postgres-tls -p 127.0.0.1:5433:5432 -v "$dir:/certs:ro" \
   -e POSTGRES_USER=agentd -e POSTGRES_PASSWORD=agentd -e POSTGRES_DB=agentd \
-  --entrypoint sh postgres:16-alpine -c '
+  --entrypoint sh postgres:17-alpine -c '
     install -o postgres -m 600 /certs/server.key /var/lib/postgresql/server.key
     install -o postgres -m 644 /certs/server.pem /var/lib/postgresql/server.pem
     exec docker-entrypoint.sh postgres -c ssl=on \

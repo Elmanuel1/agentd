@@ -62,3 +62,9 @@ async fn a_token_without_credentials_is_refused() {
     let err = RdsAuthToken::new(bare).password("db", 5432, "u").await.unwrap_err();
     assert_eq!(err.to_string(), "IAM authentication needs AWS credentials");
 }
+
+#[tokio::test]
+async fn an_rds_token_encodes_a_user_with_reserved_characters() {
+    let token = RdsAuthToken::new(config()).password("db.example", 5432, "app&worker").await.unwrap();
+    assert!(token.starts_with("db.example:5432/?Action=connect&DBUser=app%26worker&X-Amz-"), "{token}");
+}

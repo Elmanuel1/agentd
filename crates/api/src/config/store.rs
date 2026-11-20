@@ -1,6 +1,6 @@
 //! The record store setting: Postgres, the only one there is.
 
-use store_postgres::PoolSettings;
+use store_postgres::{PoolSettings, redacted};
 
 use super::{ConfigError, number, selector, unknown};
 
@@ -31,27 +31,17 @@ pub enum PgAuth {
     AwsIam,
 }
 
-/// Shows the URL without its password or its query, where libpq also takes one.
+/// Shows each connection string without its password (and a URL without
+/// its query, where libpq also takes one).
 impl std::fmt::Debug for StoreConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self::Postgres { url, read_url, pool, auth } = self;
         f.debug_struct("Postgres")
-            .field("url", &shown(url))
-            .field("read_url", &read_url.as_deref().map(shown))
+            .field("url", &redacted(url))
+            .field("read_url", &read_url.as_deref().map(redacted))
             .field("pool", pool)
             .field("auth", auth)
             .finish()
-    }
-}
-
-fn shown(url: &str) -> String {
-    let url = url.split('?').next().unwrap_or_default();
-    match url.rsplit_once('@') {
-        Some((credentials, rest)) => {
-            let user = credentials.split_once(':').map_or(credentials, |(user, _)| user);
-            format!("{user}:***@{rest}")
-        }
-        None => url.to_owned(),
     }
 }
 

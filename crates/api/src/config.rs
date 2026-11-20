@@ -180,7 +180,7 @@ pub use scheduler::SchedulerConfig;
 pub use secrets::SecretsConfig;
 pub use store::{PgAuth, StoreConfig};
 pub use streams::StreamsConfig;
-pub use telemetry::TelemetryConfig;
+pub use telemetry::{OtlpHttps, TelemetryConfig};
 pub use work::WorkConfig;
 
 #[cfg(test)]

@@ -82,3 +82,13 @@ fn an_otlp_certificate_needs_an_https_endpoint() {
     ];
     assert_eq!(config(&plain).unwrap_err().var, "OTEL_EXPORTER_OTLP_CERTIFICATE");
 }
+
+#[test]
+fn a_keyword_connection_string_shows_no_password() {
+    let url = "host=db user=agentd password='s3cr3t pass' dbname=agentd sslmode=require";
+    let shown = format!("{:?}", config(&[("DATABASE_URL", url), ("AGENTD_PG_READ_URL", url)]).unwrap());
+    assert!(
+        !shown.contains("s3cr3t") && shown.contains("host=db user=agentd password=*** dbname=agentd"),
+        "{shown}"
+    );
+}

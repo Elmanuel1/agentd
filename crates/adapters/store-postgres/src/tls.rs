@@ -24,12 +24,14 @@ pub(crate) fn connector(mode: SslMode, root: Option<&RootCert>) -> Result<Option
         SslMode::VerifyCa => Arc::new(ChainOnly(webpki(root, &provider)?)),
         SslMode::VerifyFull => webpki(root, &provider)?,
     };
-    let config = ClientConfig::builder_with_provider(provider)
+    let mut config = ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
+    // PostgreSQL 17 refuses `sslnegotiation=direct` without this ALPN; over an SSLRequest it is accepted or ignored.
+    config.alpn_protocols = vec![b"postgresql".to_vec()];
     Ok(Some(MakeRustlsConnect::new(config)))
 }
 

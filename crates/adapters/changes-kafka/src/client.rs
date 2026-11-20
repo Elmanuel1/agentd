@@ -1,13 +1,18 @@
 //! How every consumer reaches the cluster: librdkafka's own properties
 //! (`security.protocol`, `sasl.*`, `ssl.*`), and for SASL/OAUTHBEARER the
-//! source librdkafka asks for each token before the last one expires.
+//! token librdkafka asks for before the last one expires. librdkafka asks from
+//! whichever thread polls, a runtime worker among them, so it is handed the
+//! token already fetched, and a task fetches the next: nothing waits on the
+//! runtime from inside the poll.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rdkafka::client::{ClientContext, OAuthToken};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{ConsumerContext, StreamConsumer};
-use shared::ports::credentials::BearerTokenSource;
+use shared::BackendError;
+use shared::ports::credentials::{BearerToken, BearerTokenSource};
 use tokio::runtime::Handle;
 
 /// The consumer every topic is read with.
@@ -17,7 +22,7 @@ pub(crate) type KafkaConsumer = StreamConsumer<Context>;
 #[derive(Clone, Default)]
 pub struct KafkaClient {
     properties: Vec<(String, String)>,
-    bearer: Option<Arc<dyn BearerTokenSource>>,
+    bearer: Option<Arc<Tokens>>,
 }
 
 /// Shows every property but `sasl.password`'s value.
@@ -44,8 +49,16 @@ impl KafkaClient {
         self.properties.retain(|(k, _)| k != "security.protocol" && k != "sasl.mechanism");
         self.properties.push(("security.protocol".into(), "SASL_SSL".into()));
         self.properties.push(("sasl.mechanism".into(), "OAUTHBEARER".into()));
-        self.bearer = Some(source);
+        self.bearer = Some(Arc::new(Tokens { source, last: Mutex::new(None) }));
         self
+    }
+
+    /// A token in hand before a consumer starts, so librdkafka's first ask is answered.
+    pub(crate) async fn ready(&self) -> Result<(), BackendError> {
+        match &self.bearer {
+            Some(tokens) if tokens.current().is_none() => tokens.fetch().await,
+            _ => Ok(()),
+        }
     }
 
     pub(crate) fn apply(&self, config: &mut ClientConfig) {
@@ -59,24 +72,47 @@ impl KafkaClient {
     }
 }
 
+/// The OAUTHBEARER source and the last token it gave.
+#[derive(Debug)]
+pub(crate) struct Tokens {
+    source: Arc<dyn BearerTokenSource>,
+    last: Mutex<Option<BearerToken>>,
+}
+
+impl Tokens {
+    /// The last token, while it has not expired.
+    fn current(&self) -> Option<BearerToken> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+        let last = self.last.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        last.filter(|t| u128::try_from(t.expires_at_ms).unwrap_or_default() > now)
+    }
+
+    async fn fetch(&self) -> Result<(), BackendError> {
+        let token = self.source.token().await?;
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some(token);
+        Ok(())
+    }
+}
+
 /// The consumers' context: it answers librdkafka's token refreshes.
 pub(crate) struct Context {
-    bearer: Option<Arc<dyn BearerTokenSource>>,
+    bearer: Option<Arc<Tokens>>,
     runtime: Handle,
 }
 
 impl ClientContext for Context {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
-    /// librdkafka asks from whichever thread polls, a runtime worker among
-    /// them, so the token is fetched on a thread of its own. Precondition: a
-    /// multi-threaded runtime, whose other workers drive the fetch's IO while
-    /// this one waits.
+    /// librdkafka asks again at 80% of the lifetime it is given, so the token
+    /// fetched now is in hand by the next ask.
     fn generate_oauth_token(&self, _: Option<&str>) -> Result<OAuthToken, Box<dyn std::error::Error>> {
-        let source = self.bearer.clone().ok_or("no OAUTHBEARER token source is configured")?;
-        let runtime = self.runtime.clone();
-        let token = std::thread::scope(|s| s.spawn(move || runtime.block_on(source.token())).join())
-            .map_err(|_| "the OAUTHBEARER token fetch panicked")??;
+        let tokens = self.bearer.clone().ok_or("no OAUTHBEARER token source is configured")?;
+        let token = tokens.current().ok_or("no OAUTHBEARER token yet")?;
+        self.runtime.spawn(async move {
+            if let Err(e) = tokens.fetch().await {
+                tracing::warn!(error = %e, "changes: the next OAUTHBEARER token could not be fetched");
+            }
+        });
         Ok(OAuthToken {
             token: token.value,
             principal_name: token.principal,

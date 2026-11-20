@@ -4,7 +4,7 @@
 set -eu
 dir=$1
 "$(dirname "$0")/../tls/certs.sh" "$dir"
-docker run -d --name valkey-tls -p 6390:6390 -v "$dir:/certs:ro" valkey/valkey:8.0-alpine valkey-server \
+docker run -d --name valkey-tls -p 127.0.0.1:6390:6390 -v "$dir:/certs:ro" valkey/valkey:8.0-alpine valkey-server \
   --port 0 --tls-port 6390 --tls-cert-file /certs/server.pem --tls-key-file /certs/server.key \
   --tls-ca-cert-file /certs/ca.pem --tls-auth-clients no >/dev/null
 for _ in $(seq 1 30); do
