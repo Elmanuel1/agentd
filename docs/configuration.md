@@ -686,7 +686,7 @@ dedupes on `webhook-id`.
 | Variable | Default | Meaning |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (no export) | OTLP gRPC endpoint for traces, metrics and logs, such as `http://localhost:4317`; `https://` exports over TLS. The OpenTelemetry SDK reads the other standard `OTEL_*` variables (`OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_EXPORTER_OTLP_HEADERS`) itself |
-| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset (the operating system's roots) | The PEM file an `https://` collector's certificate chains to; it needs every exporter's endpoint (`OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) to be `https://`. An exporter with a plain or `unix:` endpoint gets no TLS |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset (the operating system's roots) | The PEM file an `https://` collector's certificate chains to; it needs every exporter's endpoint (`OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`) to be TLS: `https://`, or no scheme without `OTEL_EXPORTER_OTLP_<SIGNAL>_INSECURE` or `OTEL_EXPORTER_OTLP_INSECURE` set to `true`, as the exporter reads them. An exporter with a plain or `unix:` endpoint gets no TLS |
 | `AGENTD_LOG_FORMAT` | `text` | `json` writes one JSON object per log line to stdout |
 | `RUST_LOG` | `info` | Log filter, `tracing-subscriber` syntax |
 

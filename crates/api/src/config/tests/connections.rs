@@ -92,3 +92,21 @@ fn a_keyword_connection_string_shows_no_password() {
         "{shown}"
     );
 }
+
+#[test]
+fn a_schemeless_otlp_endpoint_is_tls_unless_insecure() {
+    let base = ("OTEL_EXPORTER_OTLP_ENDPOINT", "collector:4317");
+    let all = OtlpHttps { traces: true, metrics: true, logs: true };
+    assert_eq!(config(&[base]).unwrap().telemetry.otlp_https, all);
+    let c = config(&[base, ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/ca.pem")]).unwrap();
+    assert_eq!(c.telemetry.otlp_certificate.as_deref(), Some("/ca.pem"));
+    let none = OtlpHttps { traces: false, metrics: false, logs: false };
+    assert_eq!(config(&[base, ("OTEL_EXPORTER_OTLP_INSECURE", "TRUE")]).unwrap().telemetry.otlp_https, none);
+    let metrics_plain =
+        [base, ("OTEL_EXPORTER_OTLP_INSECURE", "true"), ("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "false")];
+    let want = OtlpHttps { traces: true, metrics: false, logs: false };
+    assert_eq!(config(&metrics_plain).unwrap().telemetry.otlp_https, want);
+    let explicit =
+        [("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317"), ("OTEL_EXPORTER_OTLP_INSECURE", "false")];
+    assert_eq!(config(&explicit).unwrap().telemetry.otlp_https, none);
+}

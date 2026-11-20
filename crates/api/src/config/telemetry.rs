@@ -17,9 +17,10 @@ pub struct TelemetryConfig {
     pub json_logs: bool,
 }
 
-/// Per exporter, whether its endpoint is `https://`: the signal's own
-/// `OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`,
-/// as the exporter picks it.
+/// Per exporter, whether its endpoint is `https://`, by opentelemetry-otlp's
+/// rule: the signal's own `OTEL_EXPORTER_OTLP_<SIGNAL>_ENDPOINT`, else
+/// `OTEL_EXPORTER_OTLP_ENDPOINT`; one without a scheme is `https://` unless
+/// `OTEL_EXPORTER_OTLP_<SIGNAL>_INSECURE`, else `OTEL_EXPORTER_OTLP_INSECURE`, is `true`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OtlpHttps {
     /// The trace exporter's.
@@ -30,13 +31,24 @@ pub struct OtlpHttps {
     pub logs: bool,
 }
 
+/// An explicit scheme decides; `://` after a `/`, `?` or `#` is not one.
+fn tls_endpoint(endpoint: &str, insecure: bool) -> bool {
+    match endpoint.split_once("://") {
+        Some((scheme, _)) if !scheme.contains(['/', '?', '#']) => scheme == "https",
+        _ => !insecure,
+    }
+}
+
 impl TelemetryConfig {
     pub(super) fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let set = |var: &str| get(var).filter(|v| !v.is_empty());
         let endpoint = set("OTEL_EXPORTER_OTLP_ENDPOINT");
         let https = |signal: &str| {
             let own = set(&format!("OTEL_EXPORTER_OTLP_{signal}_ENDPOINT"));
-            own.or_else(|| endpoint.clone()).is_some_and(|e| e.starts_with("https://"))
+            let insecure = set(&format!("OTEL_EXPORTER_OTLP_{signal}_INSECURE"))
+                .or_else(|| set("OTEL_EXPORTER_OTLP_INSECURE"))
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            own.or_else(|| endpoint.clone()).is_some_and(|e| tls_endpoint(&e, insecure))
         };
         let otlp_https =
             OtlpHttps { traces: https("TRACES"), metrics: https("METRICS"), logs: https("LOGS") };

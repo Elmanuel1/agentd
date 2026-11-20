@@ -103,16 +103,18 @@ pub(crate) struct Context {
 impl ClientContext for Context {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
-    /// librdkafka asks again at 80% of the lifetime it is given, so the token
-    /// fetched now is in hand by the next ask.
+    /// librdkafka asks again at 80% of the lifetime it is given, and after a
+    /// refused ask, so the token fetched now is in hand by the next ask, also
+    /// when the last fetch failed and the cached token ran out.
     fn generate_oauth_token(&self, _: Option<&str>) -> Result<OAuthToken, Box<dyn std::error::Error>> {
         let tokens = self.bearer.clone().ok_or("no OAUTHBEARER token source is configured")?;
-        let token = tokens.current().ok_or("no OAUTHBEARER token yet")?;
+        let fetching = tokens.clone();
         self.runtime.spawn(async move {
-            if let Err(e) = tokens.fetch().await {
+            if let Err(e) = fetching.fetch().await {
                 tracing::warn!(error = %e, "changes: the next OAUTHBEARER token could not be fetched");
             }
         });
+        let token = tokens.current().ok_or("no OAUTHBEARER token yet")?;
         Ok(OAuthToken {
             token: token.value,
             principal_name: token.principal,
@@ -122,3 +124,6 @@ impl ClientContext for Context {
 }
 
 impl ConsumerContext for Context {}
+
+#[cfg(test)]
+mod tests;
