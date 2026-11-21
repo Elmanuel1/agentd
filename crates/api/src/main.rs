@@ -52,6 +52,9 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(url) = &config.model_prices_url {
+        drop(engine::model::price_feed::spawn(url.clone()));
+    }
     if config.cloud_swap_misses_secrets() {
         tracing::warn!(
             "AGENTD_SECRETS is postgres and AGENTD_RUNTIME_KEYS is set: the cloud egress swap reads only aws_sm \
