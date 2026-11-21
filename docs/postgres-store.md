@@ -80,6 +80,16 @@ AGENTD_PG_TESTS=1 DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
   cargo test -p store-postgres --test pg_integration
 ```
 
+`pg_tls` connects with each `sslmode` to a Postgres that serves TLS on
+`localhost:5433` (`docker/postgres/start-tls.sh`), and to the plain one at
+`DATABASE_URL`:
+
+```sh
+docker/postgres/start-tls.sh /tmp/agentd-tls
+AGENTD_PG_TLS_CA=/tmp/agentd-tls/ca.pem DATABASE_URL=postgres://agentd:agentd@localhost:5432/agentd \
+  cargo test -p store-postgres --test pg_tls
+```
+
 `dashboard_queries_are_native_sql` proves the list/filter/count value. In
 `pg_fire_queue`, `an_enqueued_occurrence_is_claimed_once_across_two_workers`
 races two claims of one fire and asserts exactly one gets it, and

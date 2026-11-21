@@ -68,7 +68,22 @@ cargo test --workspace   # hermetic; AGENTD_PG_TESTS=1 adds the Postgres tests, 
 ```
 
 Building needs `protoc` (`brew install protobuf`, or Debian's `protobuf-compiler` and `libprotobuf-dev`): the Temporal SDK compiles its
-protobuf definitions.
+protobuf definitions. It also needs OpenSSL's headers (`brew install openssl`, or Debian's `libssl-dev`): librdkafka
+is built with TLS against the system OpenSSL.
+
+The TLS tests run against servers signed by a test CA (`docker/tls/certs.sh`) and are skipped without its path:
+
+```sh
+docker/postgres/start-tls.sh /tmp/agentd-tls   # Postgres with TLS on localhost:5433
+docker/kafka/start-secure.sh /tmp/agentd-tls   # Kafka with SASL_SSL on localhost:19093, SSL on localhost:19094
+docker/valkey/start-tls.sh /tmp/agentd-tls     # Valkey with TLS on localhost:6390
+AGENTD_PG_TLS_CA=/tmp/agentd-tls/ca.pem AGENTD_KAFKA_TLS_CA=/tmp/agentd-tls/ca.pem \
+  AGENTD_VALKEY_TLS_URL=rediss://localhost:6390 AGENTD_VALKEY_TLS_CA=/tmp/agentd-tls/ca.pem \
+  AGENTD_TEMPORAL_TLS_CA=/tmp/agentd-tls/ca.pem AGENTD_OTLP_TLS_CA=/tmp/agentd-tls/ca.pem \
+  cargo test --workspace
+```
+
+The Temporal TLS tests also need `AGENTD_TEMPORAL_ADDRESS`, and the Postgres plain-server case `DATABASE_URL`.
 
 There is no development mode: the stack seals vault credentials in Postgres
 under `AGENTD_SECRET_KEYS` as a production deployment on the default store
