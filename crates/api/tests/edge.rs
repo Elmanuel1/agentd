@@ -632,3 +632,42 @@ async fn a_key_read_that_waits_out_the_pool_answers_529_overloaded_error() {
     assert_eq!(sent.body["error"]["type"], "overloaded_error");
     assert!(counted("agentd.http.rejected", Some(("reason", "overloaded"))) >= 1);
 }
+
+/// The edge over `modules` as `build_router` puts it, with `timeout` the deployment's deadline.
+fn built(modules: Vec<shared::module::Module>, timeout: Duration) -> Router {
+    exported();
+    let mut keys = StaticKeySource::default();
+    keys.register(KEY, "org_e", "wrkspc_e", "apikey_e");
+    api::build_router(api::AppState {
+        keys: Arc::new(keys),
+        admin_keys: Arc::new(StaticAdminKeys::default()),
+        modules,
+        metrics: Arc::new(api::telemetry::Metrics::global()),
+        environment_keys: Arc::new(Keys),
+        work: WorkAccess {
+            tokens: work::WorkTokens::new(&shared::hash::KeyRing::single(WORK_KEY.to_vec())),
+            items: Arc::new(Items),
+            grants: Arc::new(NoGrants),
+        },
+        edge: edge::EdgeSettings { request_timeout: timeout, limits: None },
+    })
+}
+
+#[tokio::test]
+async fn a_module_s_own_deadline_replaces_the_deployment_s() {
+    // SH-11: files take 15 min; every other module takes AGENTD_REQUEST_TIMEOUT_MS.
+    let slow = || {
+        get(|| async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            "late"
+        })
+    };
+    let agents = shared::module::Module::new(Router::new().route("/v1/agents", slow()), ());
+    let files = shared::module::Module::new(Router::new().route("/v1/files", slow()), ())
+        .with_deadline(Duration::from_secs(5));
+    let app = built(vec![agents, files], Duration::from_millis(100));
+    let late = hit(&app, "GET", "/v1/agents").await;
+    assert_eq!(late.status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(late.body["error"]["type"], "timeout_error");
+    assert_eq!(hit(&app, "GET", "/v1/files").await.status, StatusCode::OK);
+}

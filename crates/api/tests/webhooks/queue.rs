@@ -477,7 +477,7 @@ async fn a_changed_url_re_enables_at_boot_and_an_unchanged_config_keeps_it_disab
 }
 
 #[tokio::test]
-async fn the_operator_enable_clears_a_disable_and_its_failing_time_in_its_org_only() {
+async fn the_operator_enable_clears_a_disable_and_its_failing_time() {
     let Some(db) = db().await else { return };
     let endpoint = configured(&format!("ep_{}", common::stamp()), "d1");
     db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
@@ -485,12 +485,8 @@ async fn the_operator_enable_clears_a_disable_and_its_failing_time_in_its_org_on
     db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
     let state =
         async || db.store.read().await.unwrap().into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key);
-    assert!(!db.store.enable("org_other", &endpoint.endpoint_key).await.unwrap(), "another org's endpoint");
     assert!(state().await.is_some_and(|s| s.disabled.is_some() && s.failing_since.is_some()));
-    assert!(db.store.enable("org_hooks", &endpoint.endpoint_key).await.unwrap());
+    assert!(db.store.enable(&endpoint.endpoint_key).await.unwrap());
     assert_eq!(state().await, None, "neither disabled nor failing");
-    assert!(
-        !db.store.enable("org_hooks", "ep_never_sent").await.unwrap(),
-        "an endpoint agentd never sent to"
-    );
+    assert!(!db.store.enable("ep_never_sent").await.unwrap(), "an endpoint agentd never sent to");
 }

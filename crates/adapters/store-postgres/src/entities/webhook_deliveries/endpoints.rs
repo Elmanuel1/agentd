@@ -135,15 +135,14 @@ impl NativeEndpointStates for PgWebhooks {
 }
 
 impl PgWebhooks {
-    /// Enable `org`'s endpoint `endpoint_key` again and end its run of failures; `false` when it has no state row.
-    pub async fn enable(&self, org: &str, endpoint_key: &str) -> Result<bool, BackendError> {
+    /// Enable `endpoint_key` again and end its run of failures; `false` when it has no state row.
+    pub async fn enable(&self, endpoint_key: &str) -> Result<bool, BackendError> {
         let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
         let enabled = diesel::sql_query(
             "UPDATE webhook_endpoint_states SET disabled_at = NULL, disabled_reason = NULL, failing_since = NULL
-             WHERE endpoint_key = $1 AND org_id = $2",
+             WHERE endpoint_key = $1",
         )
         .bind::<Text, _>(endpoint_key)
-        .bind::<Text, _>(org)
         .execute(&mut conn)
         .await
         .map_err(BackendError::new)?;
