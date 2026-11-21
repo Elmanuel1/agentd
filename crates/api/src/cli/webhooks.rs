@@ -51,7 +51,14 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        let endpoints = r#"[{"id": "ep_1", "organization_id": "org_1", "url": "https://hooks.example.com/a", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}]"#;
+        configured("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").unwrap()
+    }
+
+    /// The configuration with one endpoint, `ep_1` of `org_1`, signed with `secret`.
+    fn configured(secret: &str) -> Result<Config, crate::config::ConfigError> {
+        let endpoints = format!(
+            r#"[{{"id": "ep_1", "organization_id": "org_1", "url": "https://hooks.example.com/a", "secret": "{secret}"}}]"#
+        );
         let all = [
             ("DATABASE_URL", "postgres://agentd@127.0.0.1:1/agentd"),
             ("AGENTD_API_BASE_URL", "http://agentd:8080"),
@@ -60,9 +67,17 @@ mod tests {
             ("AGENTD_PLACEHOLDER_KEYS", "k1:101112131415161718191a1b1c1d1e1f"),
             ("AGENTD_API_KEY_PEPPERS", "p1:202122232425262728292a2b2c2d2e2f"),
             ("AGENTD_SECRET_KEYS", "k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"),
-            ("AGENTD_WEBHOOK_ENDPOINTS", endpoints),
+            ("AGENTD_WEBHOOK_ENDPOINTS", endpoints.as_str()),
         ];
-        Config::from_lookup(|k| all.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned())).unwrap()
+        Config::from_lookup(|k| all.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned()))
+    }
+
+    #[test]
+    fn a_webhook_secret_under_24_bytes_stops_the_boot_and_names_the_endpoint() {
+        // SH-49: "secret" decodes to 6 bytes.
+        let refused = configured("whsec_c2VjcmV0").unwrap_err();
+        assert_eq!(refused.var, "AGENTD_WEBHOOK_ENDPOINTS");
+        assert_eq!(refused.reason, "endpoint ep_1: the secret decodes to fewer than 24 bytes");
     }
 
     fn words(all: &[&str]) -> Vec<String> {
