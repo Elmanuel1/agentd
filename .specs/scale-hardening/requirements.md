@@ -324,6 +324,8 @@ Authentication, TLS verification and credential refresh failures are counted by 
 - One Valkey Lua script per request on key `agentd:rate:{org}:{bucket}`: `INCR`; on 1 set `PEXPIRE 60000`; return
   the count and `PTTL`. Over the limit: 429 `rate_limit_error`, `retry-after` = the seconds left. Every limited route
   except files sends the three `anthropic-ratelimit-requests-*` headers, `reset` being now plus the window's TTL.
+- Requests before auth are not limited by agentd: a deployment puts a per-address limit in front of it (load
+  balancer, WAF or ingress), and the docs require one (D27). A refused key is counted by `agentd.security.failures`.
 - Valkey slow (over 200 ms, as the budget) or down: admit, count `agentd.http.rate_limit_unchecked`, and log `WARN`
   at most once a minute per replica.
 - **Load shedding (D14)**: no fixed in-flight cap. When the pool cannot hand out a connection within
