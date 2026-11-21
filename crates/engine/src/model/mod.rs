@@ -9,6 +9,7 @@ use std::future::Future;
 pub mod anthropic;
 mod block;
 pub mod budget;
+mod list_cost;
 pub mod openai;
 pub mod retry;
 pub mod router;
@@ -96,7 +97,7 @@ pub struct ModelResponse {
     /// The model reasoned before answering (reported as `agent.thinking`).
     #[serde(default)]
     pub thought: bool,
-    /// The request's list price in USD, where the provider reports one.
+    /// The request's list cost in USD; `None` when its model has no list price.
     #[serde(default)]
     pub cost: Option<f64>,
 }

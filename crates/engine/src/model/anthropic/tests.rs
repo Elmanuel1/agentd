@@ -146,3 +146,18 @@ fn a_compaction_asks_with_its_instructions_and_its_block_goes_back_as_it_came() 
     assert_eq!(reply.content, [Block::Compaction { content: "new summary".into(), signature: "s2".into() }]);
     assert_eq!((reply.usage.input_tokens, reply.usage.output_tokens), (144, 276));
 }
+
+#[test]
+fn a_response_is_priced_as_the_model_that_served_it() {
+    // Haiku 4.5's list rates: $1 input, $1.25 cache write, $0.10 cache read, $5 output per MTok.
+    let reply = |model: &str| {
+        parse(&json!({
+            "model": model, "content": [], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 10_000,
+                      "cache_creation_input_tokens": 400},
+        }))
+    };
+    let cost = reply("claude-haiku-4-5-20251001").cost.unwrap();
+    assert!((cost - (0.001 + 0.001 + 0.001 + 0.0005)).abs() < 1e-12, "{cost}");
+    assert_eq!(reply("claude-mythos-preview").cost, None, "a model with no list price");
+}

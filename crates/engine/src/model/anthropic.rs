@@ -168,7 +168,8 @@ pub fn parse(v: &Value) -> ModelResponse {
         usage.input_tokens += n(it, "/input_tokens");
         usage.output_tokens += n(it, "/output_tokens");
     }
-    ModelResponse { content, stop, usage, thought, cost: None }
+    let cost = super::list_cost::of(crate::json::at(v, "/model").as_str().unwrap_or_default(), &usage);
+    ModelResponse { content, stop, usage, thought, cost }
 }
 
 impl NativeModelClient for AnthropicModel {
