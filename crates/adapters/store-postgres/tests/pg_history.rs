@@ -249,7 +249,8 @@ async fn a_scrub_that_fails_leaves_no_row_of_its_recording() {
         .record("memory_versions", HistoryOp::Update, &at(2, 1), &redacted, held(&store, &version))
         .await;
     diesel::sql_query("ROLLBACK").execute(&mut *holder).await.unwrap();
-    assert!(matches!(failed, Err(HistoryError::Backend(_))), "{failed:?}");
+    let Err(HistoryError::Backend(error)) = failed else { panic!("{failed:?}") };
+    assert!(error.to_string().contains("lock timeout"), "{error}");
     let versions =
         "SELECT jsonb_build_object('v', version_id) AS row FROM history.memory_versions WHERE store_id = $1";
     assert_eq!(
@@ -257,8 +258,11 @@ async fn a_scrub_that_fails_leaves_no_row_of_its_recording() {
         Vec::<Value>::new(),
         "the redaction rolled back with its scrub"
     );
-    let heads = "SELECT jsonb_build_object('sha', doc->'content_sha256') AS row FROM history.memories WHERE store_id = $1";
-    assert_eq!(rows(&pg, heads, &store).await, [json!({"sha": "aaa"})]);
+    let heads = "SELECT jsonb_build_object('sha', doc->'content_sha256', 'size', doc->'content_size_bytes',
+                                          'path', path, 'doc_path', doc->'path') AS row
+                   FROM history.memories WHERE store_id = $1";
+    let kept = json!({"sha": "aaa", "size": 3, "path": "/a.md", "doc_path": "/a.md"});
+    assert_eq!(rows(&pg, heads, &store).await, [kept], "the head keeps its content");
 }
 
 #[derive(diesel::QueryableByName)]
