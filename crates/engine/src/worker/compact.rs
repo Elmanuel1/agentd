@@ -15,7 +15,7 @@ use super::Loop;
 use super::grade::conversation;
 use super::team::Thread;
 use super::turn::{Turn, batch};
-use super::usage::{charged, spent};
+use super::usage::{charged, kept, spent};
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
@@ -37,6 +37,8 @@ pub(super) struct Opened<'a> {
     pub(super) turn: &'a Turn,
     pub(super) thread: &'a Thread,
     pub(super) start: &'a EventId,
+    /// The session's exact list cost before the call.
+    pub(super) spent: u64,
 }
 
 /// What the step's call needs from the thread's log.
@@ -129,7 +131,7 @@ impl Loop {
         c: Compacting,
         mcp: &[McpTool],
     ) -> Result<(), BackendError> {
-        let Opened { turn, thread, start } = opened;
+        let Opened { turn, thread, start, spent: before } = opened;
         let (_, mut request) = self.request(&session, thread, c.messages, mcp);
         request.compact = Some(c.instructions);
         let model = request.model.clone();
@@ -137,19 +139,21 @@ impl Loop {
         let (mut events, mut engine) = (Vec::new(), Vec::new());
         match self.models.retry.call(self.models.client.as_ref(), request).await {
             Ok(reply) => {
-                let (usage, cents) = spent(&reply);
+                let (usage, cost) = spent(&reply);
                 if let Err(e) = self.models.budget.spend(provider, usage.input_tokens).await {
                     tracing::warn!(session = %claim.session, error = %e, "loop: could not count the call's tokens");
                 }
-                charged(&mut session, &usage, cents);
-                events.push(turn.event(SpanEvent::ModelRequestEnd {
+                charged(&mut session, &usage, cost, before);
+                let end = turn.event(SpanEvent::ModelRequestEnd {
                     model_request_start_id: start.clone(),
                     is_error: false,
                     model_usage: SpanModelUsage {
                         tokens: reply.usage.clone(),
                         speed: Some(ModelSpeed::Standard),
                     },
-                }));
+                });
+                engine.extend(cost.map(|c| (end.id.clone(), kept(c))));
+                events.push(end);
                 let cp = summary::checkpoint(&reply, &model, c.anthropic, c.through);
                 crate::metrics::compaction(cp.as_ref().map_or("no_summary", |_| "compacted"));
                 if let Some(cp) = cp {

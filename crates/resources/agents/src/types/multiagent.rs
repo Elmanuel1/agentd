@@ -118,4 +118,20 @@ impl Multiagent {
             Self::V20261001 { .. } => Vec::new(),
         }
     }
+
+    /// The model ids its roster agents and advisor run.
+    pub fn models(&self) -> Vec<&str> {
+        match self {
+            Self::Coordinator { agents } => agents
+                .iter()
+                .filter_map(|m| match m {
+                    RosterMember::Snapshot(a) => Some(a.config.model.id.as_str()),
+                    RosterMember::Advisor(a) => Some(a.model.as_str()),
+                    RosterMember::Agent(_) => None,
+                })
+                .collect(),
+            Self::V20261001 { advisor: Advisor::Enabled { model }, .. } => vec![model.as_str()],
+            Self::V20261001 { .. } => Vec::new(),
+        }
+    }
 }
