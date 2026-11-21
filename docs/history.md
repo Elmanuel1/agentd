@@ -25,7 +25,8 @@ deleter as its actor.
 
 Not kept: environments, which keep their own revisions (`environment_revisions`); the coordination tables
 (`work_items`, `loop_steps`, `mcp_connections`, `schedules`, `fire_claims`, `schedule_outbox`,
-`webhook_deliveries`); the session event log, which is the session's history; and the blob and secret content of a
+`webhook_deliveries`); the session event log, which is the session's history; the Postgres secret store's sealed
+credentials (`vault_secrets`, [configuration.md](configuration.md#postgres)); and the blob and secret content of a
 deleted file, skill, memory or credential, which the delete removes.
 
 ## How it is recorded
