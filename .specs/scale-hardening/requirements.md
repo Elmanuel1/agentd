@@ -62,7 +62,7 @@ SH-51 are not used.
 | SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more shall start no POST until a read succeeds. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
-| SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, endpoint and reason. |
+| SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, the endpoint id and the reason, and not the endpoint URL. |
 | SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send a delivery again only when its outcome was not recorded before its claim expired. |
 
 ## 2. The change feed
@@ -153,6 +153,10 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
 | `agentd.model.breaker_opened` | counter | `provider` | |
 | `agentd.loop.step_failures` | counter | | |
 | `agentd.sweeps.deleted` | counter | `table` | |
+
+Authentication, TLS verification and credential refresh failures are counted by `agentd.security.failures`
+(`reason` = auth, tls_verify, token_refresh_kafka, token_refresh_vault), which the security work exports;
+`agentd.http.rejected` does not count them again.
 
 `oldest_due_age` is one `SELECT min(next_attempt_at)` on the due index per replica every 10 s.
 
@@ -252,7 +256,8 @@ OTLP; each threshold is in the docs; agentd defines no alarm (D11).
     (`UPDATE webhook_endpoint_states SET failing_since = NULL WHERE endpoint_key = $1 AND failing_since = $2`, `$2`
     the value read), so a 2xx that landed before the replica knew the endpoint was failing still ends the run;
   - every replica reads the failing and disabled sets every 10 s, so a disable reaches all replicas within 10 s;
-  - disabling logs `ERROR` once (a person must act) with org, endpoint and reason;
+  - disabling logs `ERROR` once (a person must act) with the org, the endpoint id and the reason; the URL is left out,
+    so a token in its query string never reaches the log;
   - re-enable (D6): `agentd webhooks enable <org> <endpoint>`, or a change to the endpoint's URL or secret in
     `AGENTD_WEBHOOK_ENDPOINTS`, seen at boot by its SHA-256 digest (the secret itself is not stored).
 - **Shutdown.** At SIGTERM the instance stops claiming; sends in flight finish within the grace; a claim left behind
