@@ -19,7 +19,7 @@ use super::rubrics;
 use super::settle::settle;
 use super::take::{Interrupt, Taken, cut_off, take};
 use super::turn::{batch, opening};
-use super::usage::{charged, over_budget, spent};
+use super::usage::{charged, over_budget, so_far, spent};
 use super::watch::Watch;
 use crate::model::{ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
@@ -77,7 +77,8 @@ impl Loop {
             self.commit(claim, end, &batch(taken, Vec::new(), answers), &session).await?;
             return Ok(());
         }
-        if over_budget(&session) {
+        let before = so_far(&kept);
+        if over_budget(&session, before) {
             session.status = SessionStatus::Idle;
             let mut events = answers;
             events.extend(turn.idle(&session, StopReason::BudgetReached {}));
@@ -119,7 +120,7 @@ impl Loop {
         match fit {
             Err(e) => return self.unfit(claim, &turn, session, &start_id, &e).await,
             Ok(Some(c)) => {
-                let opened = Opened { turn: &turn, thread: &thread, start: &start_id };
+                let opened = Opened { turn: &turn, thread: &thread, start: &start_id, spent: before };
                 return self.compact(claim, session, opened, c, &servers.tools()).await;
             }
             Ok(None) => {}
@@ -149,11 +150,11 @@ impl Loop {
                 (batch(Vec::new(), Vec::new(), events), StepEnd::Done)
             }
             Ok(Ok(reply)) => {
-                let (usage, cents) = spent(&reply);
+                let (usage, cost) = spent(&reply);
                 if let Err(e) = self.models.budget.spend(provider, usage.input_tokens).await {
                     tracing::warn!(session = %id, error = %e, "loop: could not count the call's tokens");
                 }
-                charged(&mut session, &usage, cents);
+                charged(&mut session, &usage, cost, before);
                 let known: HashSet<&EventId> = log.iter().map(|e| &e.id).collect();
                 let later = self.stores.log.unprocessed_events(ws, id).await.map_err(BackendError::new)?;
                 let more = later.iter().any(|e| !known.contains(&e.id));

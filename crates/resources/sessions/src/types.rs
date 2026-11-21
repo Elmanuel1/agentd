@@ -10,7 +10,7 @@ mod requests;
 mod resources;
 mod threads;
 
-pub use budget::{Budget, MonetaryAmount};
+pub use budget::{Budget, MonetaryAmount, check_budgetable};
 pub use requests::{AgentOverrides, AgentRefInput, AgentUpdate, CreateSessionRequest, UpdateSessionRequest};
 
 pub use threads::{SessionThread, ThreadId, ThreadStats, ThreadStatus, ThreadTag, primary_thread_id};

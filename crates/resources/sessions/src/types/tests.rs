@@ -118,3 +118,22 @@ fn an_archived_or_terminated_session_takes_no_events() {
     assert_eq!(refusal(archived.takes_events()), conflict("session is archived and read-only"));
     assert_eq!(refusal(terminated.takes_events()), conflict("cannot send events to a terminated session"));
 }
+
+#[test]
+fn a_budget_needs_a_list_price_for_every_model_the_agent_runs() {
+    let mut agent = budgeted(10, None).agent;
+    agent.config.model.id = "claude-haiku-4-5".into();
+    check_budgetable(&agent).unwrap();
+    agent.config.model.id = "openai/gpt-6-luna".into();
+    check_budgetable(&agent).unwrap();
+    let mut roster = agent.clone();
+    roster.config.model.id = "claude-mythos-preview".into();
+    agent.config.multiagent = Some(agents::types::Multiagent::Coordinator {
+        agents: vec![agents::types::RosterMember::Snapshot(Box::new(roster))],
+    });
+    let e = check_budgetable(&agent).unwrap_err();
+    assert_eq!(
+        (e.status, e.message.as_str()),
+        (400, "budget: no list price is available for model `claude-mythos-preview`")
+    );
+}

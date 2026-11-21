@@ -10,6 +10,7 @@ use sessions::types::{OutcomeEvaluation, Session};
 use super::grade::{self, Outcome};
 use super::team::Thread;
 use super::turn::Turn;
+use super::usage;
 use serde_json::{Value, json};
 use shared::ContentBlock;
 
@@ -24,7 +25,8 @@ pub(super) struct Led {
     pub(super) idle: Option<StopReason>,
     /// The grader's verdict, for the session to record.
     pub(super) evaluation: Option<OutcomeEvaluation>,
-    /// The signed thinking blocks, kept beside the `agent.thinking` event.
+    /// Kept beside events: the signed thinking blocks beside `agent.thinking`,
+    /// and the call's exact list cost beside its `span.model_request_end`.
     pub(super) engine: Vec<(EventId, Value)>,
 }
 
@@ -161,12 +163,14 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
         unknown = true;
     }
     events.extend(calls);
-    events.push(turn.event(SpanEvent::ModelRequestEnd {
+    let end = turn.event(SpanEvent::ModelRequestEnd {
         model_request_start_id: start.clone(),
         is_error: false,
         // agentd asks every call at standard speed.
         model_usage: SpanModelUsage { tokens: r.usage.clone(), speed: Some(ModelSpeed::Standard) },
-    }));
+    });
+    engine.extend(usage::nanos(r).map(|c| (end.id.clone(), usage::kept(c))));
+    events.push(end);
     events.extend(after);
     let end = match (parked, unknown || more) {
         (true, _) => StepEnd::Requeue,

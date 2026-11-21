@@ -9,6 +9,8 @@ mod common;
 mod compact;
 #[path = "agent_loop/mcp.rs"]
 mod mcp;
+#[path = "agent_loop/stream.rs"]
+mod stream;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -356,7 +358,11 @@ async fn a_message_gets_one_answer_in_live_s_order() {
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
     let (_, got) = send_to(&app, request("GET", &format!("/v1/sessions/{s}"), Auth::Key(KEY), None)).await;
     assert_eq!((got["status"].as_str(), got["usage"]["input_tokens"].as_u64()), (Some("idle"), Some(10)));
-    assert_eq!(got["usage"]["list_cost"], json!({"amount": "1", "currency": "USD"}), "0.4 cents rounds up");
+    assert_eq!(
+        got["usage"]["list_cost"],
+        json!({"amount": "0", "currency": "USD"}),
+        "0.4 cents, to the nearest cent"
+    );
     let asked = model.asked.lock();
     assert_eq!(asked.len(), 1);
     assert!(matches!(&asked[0].messages[0].content[0], Block::Text { text } if text == "hello"));
@@ -540,9 +546,9 @@ async fn a_failing_model_is_retried_then_the_turn_stops_with_retries_exhausted()
 
 #[tokio::test]
 async fn a_spent_budget_stops_the_turn_before_the_next_call() {
-    // L-18.
+    // L-18. Each call costs 0.4 cents: the exact cost passes the 1 cent budget on the third.
     let Some(rig) = Rig::new().await else { return };
-    let model = Scripted::new(vec![Say::Text("one")]);
+    let model = Scripted::new(vec![Say::Text("one"), Say::Text("two"), Say::Text("three")]);
     let (app, _worker) = on_loop(&rig, model.clone()).await;
     let env = rig.environment("cloud").await;
     let agent = json!({"name": format!("loop-{}", common::stamp()), "model": "claude-haiku-4-5"});
@@ -550,12 +556,24 @@ async fn a_spent_budget_stops_the_turn_before_the_next_call() {
     let body = json!({"agent": agent["id"], "environment_id": env, "budget": {"type": "limit", "max_list_cost": {"amount": "1", "currency": "USD"}}});
     let (_, created) = send_to(&app, request("POST", "/v1/sessions", Auth::Key(KEY), Some(body))).await;
     let s = created["id"].as_str().unwrap().to_owned();
-    send(&app, &s, message("one")).await;
-    events_until(&app, &s, "session.status_idle", 1).await;
-    send(&app, &s, message("two")).await;
-    let events = events_until(&app, &s, "session.status_idle", 2).await;
-    assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "budget_reached"}));
-    assert_eq!(model.asked.lock().len(), 1, "no call once the budget is spent");
+    for (n, text) in ["one", "two", "three", "four"].into_iter().enumerate() {
+        send(&app, &s, message(text)).await;
+        events_until(&app, &s, "session.status_idle", n + 1).await;
+    }
+    let events = events_until(&app, &s, "session.status_idle", 4).await;
+    let stops: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "session.status_idle")
+        .map(|e| &e["stop_reason"]["type"])
+        .collect();
+    assert_eq!(stops, ["end_turn", "end_turn", "end_turn", "budget_reached"]);
+    assert_eq!(model.asked.lock().len(), 3, "no call once the exact cost reaches the budget");
+    let (_, got) = send_to(&app, request("GET", &format!("/v1/sessions/{s}"), Auth::Key(KEY), None)).await;
+    assert_eq!(
+        got["usage"]["list_cost"],
+        json!({"amount": "1", "currency": "USD"}),
+        "1.2 cents, to the nearest cent"
+    );
 }
 
 #[tokio::test]

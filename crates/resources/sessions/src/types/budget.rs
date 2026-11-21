@@ -1,3 +1,5 @@
+use agents::AgentSnapshot;
+use agents::types::Multiagent;
 use serde::{Deserialize, Serialize};
 pub use shared::MonetaryAmount;
 use shared::{ApiError, Patch};
@@ -20,6 +22,19 @@ impl Budget {
     pub fn max_minor_units(&self) -> Result<u64, ApiError> {
         let Self::Limit { max_list_cost } = self;
         max_list_cost.minor_units("budget.max_list_cost")
+    }
+}
+
+/// Refuse a budget for `agent` when it, a roster agent or its advisor runs a
+/// model with no list price, as live does at create.
+pub fn check_budgetable(agent: &AgentSnapshot) -> Result<(), ApiError> {
+    let others = agent.config.multiagent.as_ref().map(Multiagent::models).unwrap_or_default();
+    let mut models = std::iter::once(agent.config.model.id.as_str()).chain(others);
+    match models.find(|m| !shared::prices::budgetable(m)) {
+        Some(m) => {
+            Err(ApiError::invalid_request(format!("budget: no list price is available for model `{m}`")))
+        }
+        None => Ok(()),
     }
 }
 
