@@ -31,7 +31,7 @@ impl Loop {
         let mut woken = self.signals.subscribe();
         let mut running = JoinSet::new();
         let mut held: HashMap<Id, Claim> = HashMap::new();
-        let mut unstarted = None;
+        let (mut unstarted, mut stopped) = (None, None);
         while !*stop.borrow() {
             while let Some(done) = running.try_join_next_with_id() {
                 held.remove(&done.map_or_else(|e| e.id(), |(id, ())| id));
@@ -44,7 +44,22 @@ impl Loop {
                 },
             };
             let s = &self.settings;
-            let claim = match self.stores.steps.claim(&s.owner, s.lease_seconds(), s.per_workspace).await {
+            let claiming = self.stores.steps.claim(&s.owner, s.lease_seconds(), s.per_workspace);
+            tokio::pin!(claiming);
+            let claimed = tokio::select! {
+                claimed = &mut claiming => claimed,
+                _ = stop.changed() => {
+                    // The claim may already have committed, so it is awaited, inside the grace, not dropped.
+                    let at = Instant::now();
+                    stopped = Some(at);
+                    let Ok(claimed) = tokio::time::timeout_at(self.deadline(at), &mut claiming).await else {
+                        tracing::warn!("loop: a claim was still running when the grace ended; its lease expires");
+                        break;
+                    };
+                    claimed
+                }
+            };
+            let claim = match claimed {
                 // A claim that returns after the stop is released with the running steps, not started.
                 Ok(Some(claim)) if *stop.borrow() => {
                     unstarted = Some(claim);
@@ -74,11 +89,22 @@ impl Loop {
             });
             held.insert(id.id(), claim);
         }
-        self.drain(running, held, unstarted).await;
+        self.drain(running, held, unstarted, stopped.unwrap_or_else(Instant::now)).await;
     }
 
-    async fn drain(&self, mut running: JoinSet<()>, mut held: HashMap<Id, Claim>, unstarted: Option<Claim>) {
-        let deadline = Instant::now() + self.settings.grace.saturating_sub(RELEASE);
+    /// When the steps left at a stop at `at` are released: the grace from then, less the release's part.
+    fn deadline(&self, at: Instant) -> Instant {
+        at + self.settings.grace.saturating_sub(RELEASE)
+    }
+
+    async fn drain(
+        &self,
+        mut running: JoinSet<()>,
+        mut held: HashMap<Id, Claim>,
+        unstarted: Option<Claim>,
+        stopped: Instant,
+    ) {
+        let deadline = self.deadline(stopped);
         loop {
             match tokio::time::timeout_at(deadline, running.join_next_with_id()).await {
                 Ok(None) => break,

@@ -20,9 +20,11 @@ struct Snapshot {
     /// When the read started; none before the first good read.
     read_at: Option<Instant>,
     disabled: HashMap<String, DisabledReason>,
-    /// This replica's own disables and when their write returned (none while it is pending), so a
-    /// read that started before that keeps them.
-    mine: HashMap<String, (DisabledReason, Option<Instant>)>,
+    /// This replica's own disables and when their write returned, so a read that started before that
+    /// keeps them.
+    written: HashMap<String, (DisabledReason, Instant)>,
+    /// This replica's disables whose writes have not returned, with how many; every read keeps them.
+    pending: HashMap<String, (DisabledReason, usize)>,
 }
 
 /// The endpoint states as last read, with the disables this replica made since.
@@ -55,12 +57,15 @@ impl Health {
         let mut disabled: HashMap<String, DisabledReason> =
             rows.into_iter().map(|r| (r.endpoint_key, r.disabled)).collect();
         let mut snapshot = self.snapshot();
-        let mine: HashMap<String, (DisabledReason, Option<Instant>)> =
-            snapshot.mine.drain().filter(|(_, (_, at))| at.is_none_or(|at| at >= started)).collect();
-        for (key, (why, _)) in &mine {
+        let written: HashMap<String, (DisabledReason, Instant)> =
+            snapshot.written.drain().filter(|(_, (_, at))| *at >= started).collect();
+        let pending = std::mem::take(&mut snapshot.pending);
+        let mine =
+            written.iter().map(|(k, (why, _))| (k, why)).chain(pending.iter().map(|(k, (why, _))| (k, why)));
+        for (key, why) in mine {
             disabled.entry(key.clone()).or_insert(*why);
         }
-        *snapshot = Snapshot { read_at: Some(started), disabled, mine };
+        *snapshot = Snapshot { read_at: Some(started), disabled, written, pending };
         Ok(())
     }
 
@@ -88,9 +93,23 @@ impl Health {
         endpoint: &Configured,
         why: DisabledReason,
     ) -> Result<bool, BackendError> {
-        self.mark(&endpoint.endpoint_key, why, None);
+        let key = &endpoint.endpoint_key;
+        {
+            let mut snapshot = self.snapshot();
+            snapshot.disabled.insert(key.clone(), why);
+            snapshot.pending.entry(key.clone()).or_insert((why, 0)).1 += 1;
+        }
         let disabled = self.states.disable(endpoint, why).await;
-        self.mark(&endpoint.endpoint_key, why, Some(Instant::now()));
+        let mut snapshot = self.snapshot();
+        let left = snapshot.pending.get_mut(key).map(|(_, n)| {
+            *n = n.saturating_sub(1);
+            *n
+        });
+        if left == Some(0) {
+            snapshot.pending.remove(key);
+        }
+        drop(snapshot);
+        self.mark(key, why);
         disabled
     }
 
@@ -98,14 +117,14 @@ impl Health {
     pub(crate) async fn failed(&self, endpoint: &Configured) -> Result<bool, BackendError> {
         let disabled = self.states.failed(endpoint).await?;
         if disabled {
-            self.mark(&endpoint.endpoint_key, DisabledReason::Failing, Some(Instant::now()));
+            self.mark(&endpoint.endpoint_key, DisabledReason::Failing);
         }
         Ok(disabled)
     }
 
-    fn mark(&self, key: &str, why: DisabledReason, written: Option<Instant>) {
+    fn mark(&self, key: &str, why: DisabledReason) {
         let mut snapshot = self.snapshot();
         snapshot.disabled.insert(key.to_owned(), why);
-        snapshot.mine.insert(key.to_owned(), (why, written));
+        snapshot.written.insert(key.to_owned(), (why, Instant::now()));
     }
 }
