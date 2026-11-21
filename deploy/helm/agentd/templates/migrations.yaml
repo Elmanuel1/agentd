@@ -21,16 +21,25 @@ spec:
       {{- end }}
     spec:
       restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-migrations
+      automountServiceAccountToken: false
       {{- include "agentd.scheduling" (dict "Values" .Values "spec" .Values.migrations) | nindent 6 }}
+      securityContext:
+        {{- include "agentd.podSecurityContext" . | nindent 8 }}
+      volumes:
+        # Java's temporary files, under a read-only root filesystem.
+        - name: tmp
+          emptyDir: {}
+        {{- include "agentd.databaseCaVolume" . | nindent 8 }}
       containers:
         - name: flyway
-          image: "{{ .Values.migrations.image.repository }}:{{ .Values.migrations.image.tag }}"
+          image: {{ include "agentd.image" .Values.migrations.image | quote }}
           imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
           args: [migrate]
           env:
             {{- include "agentd.databaseCredentials" . | nindent 12 }}
             - name: FLYWAY_URL
-              value: "jdbc:postgresql://{{ .Values.database.host }}:{{ .Values.database.port }}/{{ .Values.database.name }}?sslmode={{ .Values.database.sslMode }}"
+              value: {{ include "agentd.flywayUrl" . | quote }}
             - name: FLYWAY_USER
               value: $(PGUSER)
             - name: FLYWAY_PASSWORD
@@ -39,3 +48,9 @@ spec:
               value: "20"
             - name: FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK
               value: "false"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- include "agentd.databaseCaMount" . | nindent 12 }}
+          securityContext:
+            {{- include "agentd.securityContext" . | nindent 12 }}

@@ -27,14 +27,19 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      serviceAccountName: {{ $.Release.Name }}-{{ $role }}
+      automountServiceAccountToken: false
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
       {{- include "agentd.scheduling" (dict "Values" $.Values "spec" $spec) | nindent 6 }}
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
+        {{- include "agentd.podSecurityContext" $ | nindent 8 }}
+      {{- with include "agentd.databaseCaVolume" $ }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
       containers:
         - name: agentd
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          image: {{ include "agentd.image" $.Values.image | quote }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           ports:
             - name: http
@@ -67,6 +72,10 @@ spec:
                 seconds: {{ $.Values.preStopSleepSeconds }}
           resources:
             {{- toYaml $spec.resources | nindent 12 }}
+          {{- with include "agentd.databaseCaMount" $ }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
           securityContext:
             {{- include "agentd.securityContext" $ | nindent 12 }}
 {{- end }}
