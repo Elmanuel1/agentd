@@ -59,7 +59,7 @@ SH-51 are not used.
 | SH-31 | W | If every attempt to an endpoint has failed for 120 h, then the webhook sender shall disable it. |
 | SH-32 | E | When an endpoint answers 2xx, the webhook sender shall clear its failing time. |
 | SH-33 | S | While an endpoint's breaker is open on a replica and the endpoint is not disabled, the webhook sender on that replica shall claim none of its deliveries. |
-| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more shall start no POST until a read succeeds. |
+| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, unless that replica stalls between its pre-POST check and the POST, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more shall start no POST until a read succeeds. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
 | SH-49 | W | If an endpoint's signing secret decodes to fewer than 24 bytes, then agentd shall refuse to start and name the endpoint by its id. |
@@ -197,7 +197,8 @@ Authentication, TLS verification and credential refresh failures are counted by 
   the background. Another instance skips the locked rows and takes others. A row whose endpoint is disabled is marked
   dropped without a send when it falls due (live does not replay), whatever its breaker says. A replica learns of a
   disable from its 10 s state read; from then on it starts no POST to the endpoint, and a POST already started
-  finishes (SH-34). Before each POST the sender checks that its last good state read is under 11 s old, its age
+  finishes (SH-34). The 11 s bound holds at the pre-POST check: the check and the POST start are not atomic, so a
+  process that stalls between them starts its POST late by the stall, the same exception the claim allows. Before each POST the sender checks that its last good state read is under 11 s old, its age
   counted from when that read started (its snapshot can be no newer); a read that is already 11 s old when it
   completes is discarded. When a read fails or runs late past that, the replica releases its claims unsent and starts no POST until a read succeeds, so
   stale state never sends to a disabled endpoint.
@@ -251,11 +252,11 @@ Authentication, TLS verification and credential refresh failures are counted by 
   - a 3xx or a non-public address disables at once (L1);
   - every failure sets `failing_since` if it is empty, and disables when `failing_since` is older than 120 h (Svix's
     default; live states no window);
-  - a 2xx clears `failing_since`; each replica knows which endpoints are failing from the state read below, so only
-    a 2xx to a failing endpoint costs a statement. Each replica also keeps its last 2xx time per endpoint; at each
-    10 s read, a failing endpoint whose `failing_since` is earlier than this replica's last 2xx to it is cleared
-    (`UPDATE webhook_endpoint_states SET failing_since = NULL WHERE endpoint_key = $1 AND failing_since = $2`, `$2`
-    the value read), so a 2xx that landed before the replica knew the endpoint was failing still ends the run;
+  - every 2xx clears `failing_since` in Postgres when it is recorded, in the same transaction as the delivery's
+    outcome, so the end of a run never waits on a replica's memory or survives its crash. On a healthy endpoint the
+    clear matches no row (a primary-key probe, no write). A failure after that 2xx starts a new run at its own
+    time. A failure written on another replica in the milliseconds before the clear commits is cleared with the
+    run; the next failure starts it again, so the 120 h disable comes later by at most one retry gap;
   - every replica reads the failing and disabled sets every 10 s, so a disable reaches all replicas within 10 s;
   - disabling logs `ERROR` once (a person must act) with the org, the endpoint id and the reason; the URL is left out,
     so a token in its query string never reaches the log;
@@ -339,7 +340,9 @@ Authentication, TLS verification and credential refresh failures are counted by 
 
 ### Key cache (K1)
 
-- A per-replica map from key digest to `AuthContext` and key id, 60 s TTL, at most 10,000 entries (expired entries
+- A per-replica map from key digest to `AuthContext` and key id, 60 s TTL counted from the start of the Postgres
+  read that filled the entry (so a miss in flight during a lost revoke still expires within 60 s of the revoke), at
+  most 10,000 entries (expired entries
   are cleared when it is full; if still full, the lookup is not cached). Failed lookups are not cached.
 - Revocation comes from the change feed: `api_keys` is already on Debezium's feed (R7). A handler for `api_keys`
   updates that set `revoked_at` publishes the key id on Valkey `agentd:keys`; every replica drops it. This covers the
@@ -383,8 +386,9 @@ partial index only when the query's `WHERE` implies the predicate (DEP-15).
 - **Stamping** (D25): every write that sets `processed_at` (the step's stamp of the events it read, and an insert
   of an event that is processed at once: agent events, archive, terminate) sets it in SQL, from `clock_timestamp()`
   formatted as `to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`, the fixed format
-  of DEP-14. Each runs after the session's append lock (`writes.rs` `lock`), so one session's values grow in commit
-  order. The instance's time (`write.at`, `Timestamp::now()` in `worker/turn.rs:21`, `service/threads.rs:58`,
+  of DEP-14. Each runs after the session's append lock (`writes.rs` `lock`) and reads the session's highest
+  `processed_at` from the desc index (one index probe), then stamps `greatest(clock_timestamp(), that + 1 µs)`. So
+  one session's values grow strictly in commit order, also when the clock repeats a microsecond or steps back. The instance's time (`write.at`, `Timestamp::now()` in `worker/turn.rs:21`, `service/threads.rs:58`,
   `sessions/terminate.rs:27`) is no longer written; callers use the doc the statement returns.
 - **Idle guard**: `SELECT doc ... WHERE <ws, session> AND doc->>'type' = 'session.status_idle' ORDER BY seq DESC
   LIMIT 1`. An idle event is processed when it is appended, so its `seq` order is its `processed_at` order.
@@ -641,8 +645,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
      config_digest, disabled_at, disabled_reason) VALUES ($1, $2, $3, now(), $4) ON CONFLICT (endpoint_key) DO
      UPDATE SET disabled_at = coalesce(webhook_endpoint_states.disabled_at, now()), disabled_reason =
      coalesce(webhook_endpoint_states.disabled_reason, excluded.disabled_reason)`.
-   - `endpoints.rs`, 2xx to a failing endpoint: `UPDATE webhook_endpoint_states SET failing_since = NULL WHERE
-     endpoint_key = $1 AND failing_since IS NOT NULL`.
+   - `endpoints.rs`, every 2xx, in the outcome's transaction: `UPDATE webhook_endpoint_states SET failing_since =
+     NULL WHERE endpoint_key = $1 AND failing_since IS NOT NULL`.
    - `endpoints.rs`, every 10 s: `SELECT endpoint_key, failing_since IS NOT NULL AS failing, disabled_at IS NOT NULL
      AS disabled FROM webhook_endpoint_states WHERE failing_since IS NOT NULL OR disabled_at IS NOT NULL` (one row per
      endpoint; the table is small).
@@ -669,7 +673,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    endpoint gets no POST after the next state read, and each of its rows is dropped when it falls due, also
    while its breaker is open"; "an open breaker spends
    no attempt"; "a 3xx disables at once"; "a private address is not sent to and disables"; "failing for 120 h disables,
-   a 2xx in between restarts the clock"; "a disabled endpoint's new delivery is dropped unsent"; "a changed URL
+   a 2xx in between restarts the clock"; "a 2xx recorded just before its replica stops still ends the run"; "a failure after a 2xx starts the run at that failure"; "a disabled endpoint's new delivery is dropped unsent"; "a changed URL
    re-enables at boot, an unchanged config keeps it disabled"; unit tests for the wake fold, the senders and the breaker.
 3. **Valkey lease** (SH-5, SH-6). `signals-valkey/src/changes/lease.rs` (new: script, ticker); `changes.rs` (187)
    moves the unordered pass to `changes/unordered.rs`. Tests: "a lease taken over mid-batch stops the old holder",
@@ -732,13 +736,14 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
    to `session_events/answers.rs` (new, the `UNION`); `reads.rs` (184) moves `events_page` and `head` to
    `reads/page.rs` (new): list one or two statements per page (processed, then the tail), head two (`max(seq)`, the
    queued read); `waiting.rs` calls `last_idle`. `shared/src/page/keyset.rs` (new, the token).
-   `session_events/writes.rs` (75): `stamp` takes no `at` and sets `processed_at` from `clock_timestamp()`;
+   `session_events/writes.rs` (75): `stamp` takes no `at` and sets `processed_at` to `greatest(clock_timestamp(),
+   the session's highest + 1 µs)`;
    `insert` sets it the same way on every doc that carries one; both run after `lock`. The callers that passed an
    instance time (`loop_steps/held.rs`, `worker/take.rs`, `worker/turn.rs`, `service/threads.rs`,
    `sessions/terminate.rs`) read it from the returned doc. Tests: `pg_event_log`
    "the list pages without repeats or gaps while events arrive, both orders", "an event stamped while the walk is in
    its tail is returned once", "a session's `processed_at` values grow in commit order when a slow step commits
-   after a faster archive", "`processed_at` keeps the fixed format", and one "EXPLAIN uses the index" per
+   after a faster archive", "`processed_at` keeps the fixed format", "a stamp after a later-dated one is still higher", and one "EXPLAIN uses the index" per
    read on a 50,000-event session.
 2. **Signals** (SH-24). `sessions/src/signals.rs` (64) the port; `signals-valkey/src/lib.rs` (97) and
    `signals-valkey/src/channels.rs` (new); `worker/watch.rs`, `worker/mod.rs`, `service/stream.rs` (177; the tail map
@@ -811,7 +816,7 @@ every 10 s, one endpoint); ceiling checked at 10,000 a second.
   server holds senders only until its breaker opens (5 failures). Claims: at most 20 a second per instance, 200
   cluster-wide, 2 statements each. The load test checks these numbers with the 100 ms and 5 s receivers.
 - **Postgres writes per delivery**: insert, claim, outcome, and the sweep's delete = 4; the failure path adds 1 per
-  failed attempt; the 2xx clear only for a failing endpoint. 4,000 writes a second at the design point, 40,000 at the
+  failed attempt; the 2xx clear writes only for a failing endpoint (on a healthy one it is a primary-key probe). 4,000 writes a second at the design point, 40,000 at the
   ceiling (a larger database). The claim loop: at most 20 transactions a second per instance.
 - **Sweep**: at the design point about 300,000 delivered rows fall due per 5-minute round, so a round runs about 300
   batches of 1,000, two statements each: about 2 statements a second on average.
