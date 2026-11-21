@@ -426,7 +426,7 @@ async fn a_redirect_disables_at_once_and_a_private_address_is_not_sent_to() {
     let sender = start(&db, hooks(&[("ep_moved", &url), ("ep_private", &private)]), vec![addr]);
     until("both disabled", async || {
         let states = db.store.read().await.unwrap();
-        let reason = |k: &str| states.iter().find(|s| s.endpoint_key == k).and_then(|s| s.disabled);
+        let reason = |k: &str| states.iter().find(|s| s.endpoint_key == k).map(|s| s.disabled);
         reason("ep_moved") == Some(DisabledReason::Redirect)
             && reason("ep_private") == Some(DisabledReason::PrivateAddress)
     })
@@ -456,12 +456,22 @@ async fn failing_for_120_h_disables_and_a_2xx_in_between_restarts_the_clock() {
     assert!(db.store.failed(&endpoint).await.unwrap(), "120 h of failures disable it");
     assert!(!db.store.failed(&endpoint).await.unwrap(), "once");
     let state = db.store.read().await.unwrap().into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key);
-    assert_eq!(state.unwrap().disabled, Some(DisabledReason::Failing));
+    assert_eq!(state.unwrap().disabled, DisabledReason::Failing);
 }
 
-/// Whether `key` has a run of failures open, as a replica's state read finds it.
+/// Whether `key` has a run of failures open.
 async fn failing(db: &Db, key: &str) -> bool {
-    db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == key && s.failing)
+    #[derive(diesel::QueryableByName)]
+    struct Open {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        open: bool,
+    }
+    let mut conn = db.pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "SELECT coalesce(bool_or(failing_since IS NOT NULL), false) AS open FROM webhook_endpoint_states WHERE endpoint_key = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(key);
+    q.get_result::<Open>(&mut conn).await.unwrap().open
 }
 
 /// One delivery to `key`, claimed and answered 2xx through the store.
@@ -487,7 +497,7 @@ async fn a_2xx_recorded_just_before_its_replica_stops_still_ends_the_run() {
     until("the 2xx is recorded", async || row(&db.pg, &ids[0]).await["delivered_at"].is_string()).await;
     sender.stop().await;
     assert_eq!(got.lock().len(), 1);
-    assert!(!failing(&db, &key).await, "another replica's read finds the run ended");
+    assert!(!failing(&db, &key).await, "the run ended in Postgres, not in this replica");
 }
 
 #[tokio::test]
@@ -522,8 +532,7 @@ async fn a_changed_url_re_enables_at_boot_and_an_unchanged_config_keeps_it_disab
     let key = format!("ep_{}", common::stamp());
     db.store.configure(&[configured(&key, "d1")]).await.unwrap();
     db.store.disable(&configured(&key, "d1"), DisabledReason::Redirect).await.unwrap();
-    let disabled =
-        async || db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == key && s.disabled.is_some());
+    let disabled = async || db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == key);
     db.store.configure(&[configured(&key, "d1")]).await.unwrap();
     assert!(disabled().await, "an unchanged config keeps it disabled");
     db.store.configure(&[configured(&key, "d2")]).await.unwrap();
@@ -539,39 +548,9 @@ async fn the_operator_enable_clears_a_disable_and_its_failing_time() {
     db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
     let state =
         async || db.store.read().await.unwrap().into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key);
-    assert!(state().await.is_some_and(|s| s.disabled.is_some() && s.failing));
+    assert!(state().await.is_some() && failing(&db, &endpoint.endpoint_key).await);
     assert!(db.store.enable(&endpoint.endpoint_key).await.unwrap());
-    assert_eq!(state().await, None, "neither disabled nor failing");
+    assert_eq!(state().await, None, "not disabled");
+    assert!(!failing(&db, &endpoint.endpoint_key).await, "not failing");
     assert!(!db.store.enable("ep_never_sent").await.unwrap(), "an endpoint agentd never sent to");
-}
-
-#[tokio::test]
-async fn agentd_webhooks_enable_succeeds_for_a_disabled_endpoint_and_fails_for_one_never_sent_to() {
-    // SH-35, through the command.
-    let Some(db) = db().await else { return };
-    let (sent, never) = (format!("ep_{}", common::stamp()), format!("ep_{}", common::stamp()));
-    let endpoints = json!([
-        {"id": sent, "organization_id": "org_hooks", "url": "https://hooks.agentd.test/a", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"},
-        {"id": never, "organization_id": "org_hooks", "url": "https://hooks.agentd.test/b", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}
-    ])
-    .to_string();
-    let env = |k: &str| match k {
-        "AGENTD_WEBHOOK_ENDPOINTS" => Some(endpoints.clone()),
-        "AGENTD_API_BASE_URL" => Some("http://agentd:8080".into()),
-        "AGENTD_WORK_TOKEN_KEYS" => Some("k1:000102030405060708090a0b0c0d0e0f".into()),
-        "AGENTD_PLACEHOLDER_KEYS" => Some("k1:101112131415161718191a1b1c1d1e1f".into()),
-        "AGENTD_API_KEY_PEPPERS" => Some("p1:202122232425262728292a2b2c2d2e2f".into()),
-        "AGENTD_SECRET_KEYS" => {
-            Some("k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into())
-        }
-        other => std::env::var(other).ok(),
-    };
-    let config = api::config::Config::from_lookup(env).unwrap();
-    let endpoint = configured(&sent, "d1");
-    db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
-    db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
-    let enable = |key: &str| ["enable".to_owned(), "org_hooks".to_owned(), key.to_owned()];
-    assert_eq!(api::cli::webhooks::webhooks(&config, &enable(&sent)).await, std::process::ExitCode::SUCCESS);
-    assert!(!db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == sent));
-    assert_eq!(api::cli::webhooks::webhooks(&config, &enable(&never)).await, std::process::ExitCode::FAILURE);
 }

@@ -96,7 +96,8 @@ impl<K: Eq + Hash + Clone> Breakers<K> {
         }
         let open = hold.map_or(OPEN, |h| h.max(OPEN));
         let opened = !matches!(*state, State::Open(_));
-        *state = State::Open(Instant::now() + open);
+        // A retry-after past what an Instant holds is nonsense; it gets the default hold.
+        *state = State::Open(Instant::now().checked_add(open).unwrap_or_else(|| Instant::now() + OPEN));
         opened
     }
 }
@@ -137,5 +138,16 @@ mod tests {
         assert_eq!(b.pass(&"p"), Pass::Go);
         tokio::time::advance(OPEN).await;
         assert_eq!(b.pass(&"p"), Pass::Go, "a probe that never answered is written off");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hold_past_what_an_instant_holds_gets_the_default_hold() {
+        let b = Breakers::default();
+        for _ in 0..FAILURES {
+            b.failed(&"p", Some(Duration::MAX));
+        }
+        assert!(matches!(b.pass(&"p"), Pass::Until(_)));
+        tokio::time::advance(OPEN).await;
+        assert_eq!(b.pass(&"p"), Pass::Go);
     }
 }

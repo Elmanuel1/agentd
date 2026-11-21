@@ -43,7 +43,6 @@ impl Health {
         self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Read the shared states.
     pub(crate) async fn refresh(&self) -> Result<(), BackendError> {
         let started = Instant::now();
         let rows = self.states.read().await?;
@@ -53,7 +52,7 @@ impl Health {
             )));
         }
         let mut disabled: HashMap<String, DisabledReason> =
-            rows.into_iter().filter_map(|r| Some((r.endpoint_key, r.disabled?))).collect();
+            rows.into_iter().map(|r| (r.endpoint_key, r.disabled)).collect();
         let mut snapshot = self.snapshot();
         let mine: HashMap<String, (DisabledReason, Instant)> =
             snapshot.mine.drain().filter(|(_, (_, at))| *at >= started).collect();
@@ -88,8 +87,10 @@ impl Health {
         endpoint: &Configured,
         why: DisabledReason,
     ) -> Result<bool, BackendError> {
+        self.snapshot().disabled.insert(endpoint.endpoint_key.clone(), why);
+        let disabled = self.states.disable(endpoint, why).await?;
         self.mark(&endpoint.endpoint_key, why);
-        self.states.disable(endpoint, why).await
+        Ok(disabled)
     }
 
     /// A failed attempt; `true` when it disabled the endpoint, after 120 h of failures.

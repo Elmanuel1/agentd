@@ -1,6 +1,6 @@
 //! `webhook_endpoint_states`: one statement per failed attempt, per disable,
-//! and per 10 s read on each replica; the table holds one row per configured
-//! endpoint, so the read takes it whole. A 2xx ends a run of failures with
+//! and per 10 s read of the disabled endpoints on each replica; the table
+//! holds one row per configured endpoint. A 2xx ends a run of failures with
 //! its outcome (`queue.rs`).
 
 use diesel::QueryableByName;
@@ -15,8 +15,6 @@ use super::PgWebhooks;
 struct Row {
     #[diesel(sql_type = Text)]
     endpoint_key: String,
-    #[diesel(sql_type = Bool)]
-    failing: bool,
     #[diesel(sql_type = Nullable<Text>)]
     disabled_reason: Option<String>,
 }
@@ -56,9 +54,7 @@ impl NativeEndpointStates for PgWebhooks {
     async fn read(&self) -> Result<Vec<EndpointState>, BackendError> {
         let mut conn = self.backend.diesel.get().await.map_err(BackendError::new)?;
         let rows: Vec<Row> = diesel::sql_query(
-            "SELECT endpoint_key, failing_since IS NOT NULL AS failing, CASE WHEN disabled_at IS NOT NULL THEN disabled_reason END
-               AS disabled_reason
-             FROM webhook_endpoint_states WHERE failing_since IS NOT NULL OR disabled_at IS NOT NULL",
+            "SELECT endpoint_key, disabled_reason FROM webhook_endpoint_states WHERE disabled_at IS NOT NULL",
         )
         .load(&mut conn)
         .await
@@ -67,10 +63,11 @@ impl NativeEndpointStates for PgWebhooks {
             .into_iter()
             .map(|r| EndpointState {
                 endpoint_key: r.endpoint_key,
-                failing: r.failing,
                 disabled: r
                     .disabled_reason
-                    .map(|d| DisabledReason::parse(&d).unwrap_or(DisabledReason::Failing)),
+                    .as_deref()
+                    .and_then(DisabledReason::parse)
+                    .unwrap_or(DisabledReason::Failing),
             })
             .collect())
     }

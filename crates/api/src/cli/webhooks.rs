@@ -50,17 +50,25 @@ async fn enable(config: &Config, org: &str, endpoint: &str) -> Result<(), String
 mod tests {
     use super::*;
 
+    const LONG: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw";
+    /// Nothing listens there: a command that reached the database would fail differently.
+    const NO_DATABASE: &str = "postgres://agentd@127.0.0.1:1/agentd";
+
     fn config() -> Config {
-        configured("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").unwrap()
+        configured(&[("ep_1", LONG)], NO_DATABASE).unwrap()
     }
 
-    /// The configuration with one endpoint, `ep_1` of `org_1`, signed with `secret`.
-    fn configured(secret: &str) -> Result<Config, crate::config::ConfigError> {
-        let endpoints = format!(
-            r#"[{{"id": "ep_1", "organization_id": "org_1", "url": "https://hooks.example.com/a", "secret": "{secret}"}}]"#
-        );
+    /// The configuration with `endpoints` (id and secret) of `org_1`, over `database`.
+    fn configured(endpoints: &[(&str, &str)], database: &str) -> Result<Config, crate::config::ConfigError> {
+        let listed: Vec<serde_json::Value> = endpoints
+            .iter()
+            .map(|(id, secret)| {
+                serde_json::json!({"id": id, "organization_id": "org_1", "url": "https://hooks.example.com/a", "secret": secret})
+            })
+            .collect();
+        let endpoints = serde_json::Value::Array(listed).to_string();
         let all = [
-            ("DATABASE_URL", "postgres://agentd@127.0.0.1:1/agentd"),
+            ("DATABASE_URL", database),
             ("AGENTD_API_BASE_URL", "http://agentd:8080"),
             ("AGENTD_VALKEY_URL", "redis://127.0.0.1:1"),
             ("AGENTD_WORK_TOKEN_KEYS", "k1:000102030405060708090a0b0c0d0e0f"),
@@ -75,7 +83,7 @@ mod tests {
     #[test]
     fn a_webhook_secret_under_24_bytes_stops_the_boot_and_names_the_endpoint() {
         // SH-49: "secret" decodes to 6 bytes.
-        let refused = configured("whsec_c2VjcmV0").unwrap_err();
+        let refused = configured(&[("ep_1", "whsec_c2VjcmV0")], NO_DATABASE).unwrap_err();
         assert_eq!(refused.var, "AGENTD_WEBHOOK_ENDPOINTS");
         assert_eq!(refused.reason, "endpoint ep_1: the secret decodes to fewer than 24 bytes");
     }
@@ -103,5 +111,26 @@ mod tests {
         assert_eq!(enable(&config, "org_1", "ep_9").await.unwrap_err(), not_configured("org_1", "ep_9"));
         let read = enable(&config, "org_1", "ep_1").await.unwrap_err();
         assert_ne!(read, not_configured("org_1", "ep_1"), "a configured endpoint goes on to the database");
+    }
+
+    #[tokio::test]
+    async fn enable_succeeds_for_a_disabled_endpoint_and_fails_for_one_never_sent_to() {
+        use ::webhooks::states::{DisabledReason, EndpointStates};
+        if std::env::var("AGENTD_PG_TESTS").as_deref() != Ok("1") {
+            return;
+        }
+        let database = std::env::var("DATABASE_URL").unwrap();
+        let (sent, never) = (
+            format!("ep_{}", uuid::Uuid::new_v4().simple()),
+            format!("ep_{}", uuid::Uuid::new_v4().simple()),
+        );
+        let config = configured(&[(sent.as_str(), LONG), (never.as_str(), LONG)], &database).unwrap();
+        let store = PgWebhooks::new(store_postgres::PgBackend::connect(&database).await.unwrap());
+        let endpoint = config.webhooks.endpoint(&sent).unwrap().configured();
+        store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
+        store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
+        assert_eq!(webhooks(&config, &words(&["enable", "org_1", sent.as_str()])).await, ExitCode::SUCCESS);
+        assert!(!store.read().await.unwrap().iter().any(|s| s.endpoint_key == sent), "enabled");
+        assert_eq!(webhooks(&config, &words(&["enable", "org_1", never.as_str()])).await, ExitCode::FAILURE);
     }
 }

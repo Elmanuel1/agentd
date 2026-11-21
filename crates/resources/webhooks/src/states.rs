@@ -36,15 +36,13 @@ impl DisabledReason {
     }
 }
 
-/// One endpoint's row as every replica reads it.
+/// A disabled endpoint, as every replica reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndpointState {
     /// The endpoint.
     pub endpoint_key: String,
-    /// Whether a run of failures is open.
-    pub failing: bool,
-    /// Why it is disabled, when it is.
-    pub disabled: Option<DisabledReason>,
+    /// Why it is disabled.
+    pub disabled: DisabledReason,
 }
 
 /// An endpoint as configured, which its state row carries.
@@ -62,7 +60,7 @@ pub struct Configured {
 pub trait EndpointStates: Send + Sync {
     /// Store each endpoint's digest; one whose URL or secret changed is enabled again.
     fn configure<'a>(&'a self, endpoints: &'a [Configured]) -> BoxFuture<'a, Result<(), BackendError>>;
-    /// Every failing or disabled endpoint.
+    /// Every disabled endpoint.
     fn read(&self) -> BoxFuture<'_, Result<Vec<EndpointState>, BackendError>>;
     /// Count a failed attempt; `true` when this one disabled it, its run having passed 120 h.
     fn failed<'a>(&'a self, endpoint: &'a Configured) -> BoxFuture<'a, Result<bool, BackendError>>;

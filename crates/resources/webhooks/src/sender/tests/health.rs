@@ -62,11 +62,11 @@ async fn a_read_that_started_before_a_disable_and_completes_11_s_later_is_discar
     *states.delay.lock() = Duration::from_secs(11);
     assert!(health.refresh().await.is_err(), "discarded");
     assert!(!health.fresh());
-    states.inner.rows.lock().push(EndpointState {
-        endpoint_key: "a".into(),
-        failing: false,
-        disabled: Some(DisabledReason::Redirect),
-    });
+    states
+        .inner
+        .rows
+        .lock()
+        .push(EndpointState { endpoint_key: "a".into(), disabled: DisabledReason::Redirect });
     *states.delay.lock() = Duration::ZERO;
     health.refresh().await.unwrap();
     assert!(health.fresh() && health.disabled("a"));

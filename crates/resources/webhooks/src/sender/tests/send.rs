@@ -145,8 +145,7 @@ async fn a_delivery_whose_claims_lapsed_three_times_or_whose_endpoint_is_disable
     let (url, got, addr) = receiver(StatusCode::OK).await;
     let rig = start(&url, vec![addr], vec![due("whe_3", &url, 3)]);
     rig.until(|q| !q.dropped.lock().is_empty()).await;
-    let disabled =
-        EndpointState { endpoint_key: "a".into(), failing: false, disabled: Some(DisabledReason::Failing) };
+    let disabled = EndpointState { endpoint_key: "a".into(), disabled: DisabledReason::Failing };
     let rig2 = start_with(&url, vec![addr], vec![due("whe_4", &url, 0)], vec![disabled]);
     rig2.until(|q| !q.dropped.lock().is_empty() || !q.recorded.lock().is_empty()).await;
     assert!(got.lock().is_empty());

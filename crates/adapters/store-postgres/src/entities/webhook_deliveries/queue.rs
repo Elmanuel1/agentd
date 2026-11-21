@@ -147,18 +147,19 @@ impl NativeDeliveryQueue for PgWebhooks {
             Next::Retry(wait) => query.bind::<Double, _>(wait.as_secs_f64()),
             Next::Delivered | Next::Dropped => query,
         };
-        let delivered = attempted.next == Next::Delivered;
+        if attempted.next != Next::Delivered {
+            return self.fenced(query).await;
+        }
         let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
+        // With the outcome, so the end of a run survives this replica stopping.
         conn.transaction::<_, diesel::result::Error, _>(async move |c| {
             let written = query.execute(c).await?;
-            // With the outcome, so the end of a run survives this replica stopping.
-            let ended = diesel::sql_query(
+            diesel::sql_query(
                 "UPDATE webhook_endpoint_states SET failing_since = NULL WHERE endpoint_key = $1 AND failing_since IS NOT NULL",
             )
-            .bind::<Text, _>(claim.endpoint_key.as_str());
-            if delivered {
-                ended.execute(c).await?;
-            }
+            .bind::<Text, _>(claim.endpoint_key.as_str())
+            .execute(c)
+            .await?;
             Ok(written == 1)
         })
         .await

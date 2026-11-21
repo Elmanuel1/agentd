@@ -113,7 +113,7 @@ impl Retry {
             }
             let jitter = Duration::from_millis(rand::rng().random_range(0..=millis(backoff)));
             let wait = jitter.max(floor);
-            if tried >= self.attempts || Instant::now() + wait >= end {
+            if tried >= self.attempts || Instant::now().checked_add(wait).is_none_or(|at| at >= end) {
                 return Err(error);
             }
             tokio::time::sleep(wait).await;

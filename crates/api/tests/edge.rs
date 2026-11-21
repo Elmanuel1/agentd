@@ -16,6 +16,8 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
+use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 use shared::beta::{BetaGate, BetaSet};
 use shared::module::BodyLimit;
 use shared::ports::keys::{EnvironmentGrant, EnvironmentKeySource, KeyError};
@@ -137,7 +139,39 @@ fn app_limited(limits: Option<edge::rate::Limits>) -> Router {
     app_on(Arc::new(keys), limits)
 }
 
+/// This binary's global meter, installed before any app is built, so the edge's counters land in it.
+fn exported() -> &'static (SdkMeterProvider, InMemoryMetricExporter) {
+    static METERS: std::sync::OnceLock<(SdkMeterProvider, InMemoryMetricExporter)> =
+        std::sync::OnceLock::new();
+    METERS.get_or_init(|| {
+        let out = InMemoryMetricExporter::default();
+        let meters =
+            SdkMeterProvider::builder().with_reader(PeriodicReader::builder(out.clone()).build()).build();
+        opentelemetry::global::set_meter_provider(meters.clone());
+        (meters, out)
+    })
+}
+
+/// `name`'s count so far whose attributes hold `value`, or all of it.
+fn counted(name: &str, value: Option<&str>) -> u64 {
+    let (meters, out) = exported();
+    meters.force_flush().unwrap();
+    let finished = out.get_finished_metrics().unwrap();
+    let last = finished
+        .iter()
+        .rev()
+        .flat_map(|rm| rm.scope_metrics())
+        .flat_map(|s| s.metrics())
+        .find(|m| m.name() == name);
+    let Some(AggregatedMetrics::U64(MetricData::Sum(sum))) = last.map(|m| m.data()) else { return 0 };
+    sum.data_points()
+        .filter(|p| value.is_none_or(|v| p.attributes().any(|kv| kv.value.as_str() == v)))
+        .map(|p| p.value())
+        .sum()
+}
+
 fn app_on(keys: Arc<dyn shared::ports::keys::KeySource>, limits: Option<edge::rate::Limits>) -> Router {
+    exported();
     let mut admin_keys = StaticAdminKeys::default();
     admin_keys.register(ADMIN_KEY, "org_e", "adminkey_e");
     let routes = Router::new()
@@ -505,8 +539,11 @@ async fn the_301st_create_in_a_window_answers_429_with_retry_after() {
     for _ in 0..300 {
         assert_eq!(hit(&app, "POST", "/v1/agents").await.status, StatusCode::OK);
     }
+    let before = counted("agentd.http.rejected", Some("rate_limited"));
     let refused = hit(&app, "POST", "/v1/agents").await;
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    // Every 429 counts through one path, so another test's can only add to this.
+    assert!(counted("agentd.http.rejected", Some("rate_limited")) > before);
     assert_eq!(refused.body["error"]["type"], "rate_limit_error");
     let after: u64 = refused.headers["retry-after"].to_str().unwrap().parse().unwrap();
     assert!((1..=60).contains(&after), "{after}");
@@ -567,9 +604,11 @@ async fn events_send_and_skills_are_not_limited_and_a_read_carries_live_s_header
 async fn with_the_counter_down_a_request_is_admitted() {
     // SH-15.
     let app = limited(Arc::new(Down));
+    let before = counted("agentd.http.rate_limit_unchecked", None);
     let sent = hit(&app, "POST", "/v1/agents").await;
     assert_eq!(sent.status, StatusCode::OK);
     assert!(!sent.headers.contains_key("anthropic-ratelimit-requests-limit"));
+    assert_eq!(counted("agentd.http.rate_limit_unchecked", None), before + 1, "counted as unchecked");
 }
 
 /// A key store whose read waits out the pool, as when no connection comes free.
@@ -586,13 +625,16 @@ impl shared::ports::keys::KeySource for Busy {
 #[tokio::test]
 async fn a_key_read_that_waits_out_the_pool_answers_529_overloaded_error() {
     // D14: on every route, auth included.
+    let before = counted("agentd.http.rejected", Some("overloaded"));
     let sent = hit(&app_on(Arc::new(Busy), None), "GET", "/v1/agents/agent_1").await;
     assert_eq!(sent.status.as_u16(), 529);
     assert_eq!(sent.body["error"]["type"], "overloaded_error");
+    assert_eq!(counted("agentd.http.rejected", Some("overloaded")), before + 1);
 }
 
 /// The edge over `modules` as `build_router` puts it, with `timeout` the deployment's deadline.
 fn built(modules: Vec<shared::module::Module>, timeout: Duration) -> Router {
+    exported();
     let mut keys = StaticKeySource::default();
     keys.register(KEY, "org_e", "wrkspc_e", "apikey_e");
     api::build_router(api::AppState {
