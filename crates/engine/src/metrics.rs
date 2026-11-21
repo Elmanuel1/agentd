@@ -17,6 +17,9 @@ struct Instruments {
     events_appended: Counter<u64>,
     compactions: Counter<u64>,
     mcp_calls: Counter<u64>,
+    released: Counter<u64>,
+    step_failures: Counter<u64>,
+    breaker_opened: Counter<u64>,
 }
 
 fn instruments() -> &'static Instruments {
@@ -50,6 +53,18 @@ fn instruments() -> &'static Instruments {
             mcp_calls: m
                 .u64_counter("agentd.loop.mcp_calls")
                 .with_description("MCP tool calls, by outcome")
+                .build(),
+            released: m
+                .u64_counter("agentd.loop.released")
+                .with_description("Steps released unfinished when the shutdown grace ended")
+                .build(),
+            step_failures: m
+                .u64_counter("agentd.loop.step_failures")
+                .with_description("Steps that failed and wait to run again")
+                .build(),
+            breaker_opened: m
+                .u64_counter("agentd.model.breaker_opened")
+                .with_description("A provider's breaker opened on this replica, by provider")
                 .build(),
         }
     })
@@ -96,4 +111,19 @@ pub(crate) fn compaction(outcome: &'static str) {
 /// An MCP tool call that ended `outcome` (`ok`, `tool_error`, `unreachable`).
 pub(crate) fn mcp_call(outcome: &'static str) {
     instruments().mcp_calls.add(1, &[KeyValue::new("outcome", outcome)]);
+}
+
+/// The grace ended with `n` steps running; they were released.
+pub(crate) fn released(n: u64) {
+    instruments().released.add(n, &[]);
+}
+
+/// A step failed; it runs again after its backoff.
+pub(crate) fn step_failed() {
+    instruments().step_failures.add(1, &[]);
+}
+
+/// `provider`'s breaker opened.
+pub(crate) fn model_breaker_opened(provider: &'static str) {
+    instruments().breaker_opened.add(1, &[KeyValue::new("provider", provider)]);
 }
