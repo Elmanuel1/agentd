@@ -578,7 +578,11 @@ with `outcome` `dropped` and logged at `ERROR`. A claim's attempt count is its
 token: a worker whose lease another took over writes nothing and logs the
 lost lease at `WARN`. A deployment fire derives its run and session ids from
 the deployment and the fire time, so a fire run again finds the session and
-run the first made and makes no second one. Done rows are deleted every hour
+run the first made and makes no second one. Two runs of one fire that overlap
+queue the session's initial events once: the event log appends them under the
+session's append lock only while its log is empty, so whichever run appends
+first lands them and the other appends nothing. A fire that finds its session
+archived or terminated appends nothing. Done rows are deleted every hour
 30 days after their occurrence.
 
 ## The change feed
