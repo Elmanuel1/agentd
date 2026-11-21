@@ -108,7 +108,8 @@ impl Rpc {
         sent.map_err(|_| Failure::Unreachable)
     }
 
-    async fn post(&mut self, body: &Value) -> Result<(HeaderMap, String), Failure> {
+    /// `capped`: the reply fails the call past 16 MiB (D28: `initialize` and `tools/list` only).
+    async fn post(&mut self, body: &Value, capped: bool) -> Result<(HeaderMap, String), Failure> {
         let mut reply = self.send(body, true).await?;
         // Live sends a request its bearer was refused for once more with no
         // Authorization header (MC-4 and MC-26 capture).
@@ -123,15 +124,21 @@ impl Rpc {
             s => return Err(Failure::Status(s.as_u16())),
         }
         let headers = reply.headers().clone();
-        Ok((headers, super::reply::read(reply).await?))
+        let text = match capped {
+            true => super::reply::read(reply).await?,
+            false => reply.text().await.map_err(|_| Failure::Unreachable)?,
+        };
+        Ok((headers, text))
     }
 
     /// Send `method` and wait for its answer.
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Answer, Failure> {
         let id = self.next;
         self.next += 1;
-        let (headers, text) =
-            self.post(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).await?;
+        let capped = super::reply::CAPPED.contains(&method);
+        let (headers, text) = self
+            .post(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}), capped)
+            .await?;
         if let Some(s) = headers.get(SESSION).and_then(|v| v.to_str().ok()) {
             self.session = Some(s.to_owned());
         }
@@ -156,6 +163,6 @@ impl Rpc {
 
     /// Send the notification `method`, which has no answer.
     pub async fn notify(&mut self, method: &str) -> Result<(), Failure> {
-        self.post(&json!({"jsonrpc": "2.0", "method": method})).await.map(drop)
+        self.post(&json!({"jsonrpc": "2.0", "method": method}), false).await.map(drop)
     }
 }

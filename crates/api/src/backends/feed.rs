@@ -76,8 +76,9 @@ fn together(handlers: Vec<Arc<dyn ChangeHandler>>) -> Vec<Arc<dyn ChangeHandler>
     by_table.into_iter().map(|t| Arc::new(t) as Arc<dyn ChangeHandler>).collect()
 }
 
-/// The handlers of one table, each run on every change in turn; an error leaves the change to be handled
-/// again by all of them, so each must take a repeat.
+/// The handlers of one table, each run on every change in turn. Every one runs even when an earlier one
+/// fails, so one failure never holds back another; an error leaves the change to be handled again by all
+/// of them, so each must take a repeat.
 struct Together {
     source: Source,
     all: Vec<Arc<dyn ChangeHandler>>,
@@ -94,10 +95,12 @@ impl ChangeHandler for Together {
 
     fn handle<'a>(&'a self, change: &'a Change) -> BoxFuture<'a, Result<(), BackendError>> {
         Box::pin(async move {
+            let mut first = Ok(());
             for h in &self.all {
-                h.handle(change).await?;
+                let handled = h.handle(change).await;
+                first = first.and(handled);
             }
-            Ok(())
+            first
         })
     }
 }
@@ -110,7 +113,7 @@ mod tests {
 
     use super::*;
 
-    /// Records each change it handles under `name`.
+    /// Records each change it handles under `name`, failing when its name starts with `fails`.
     struct Seen(Source, &'static str, Arc<Mutex<Vec<&'static str>>>);
 
     impl NativeChangeHandler for Seen {
@@ -119,7 +122,10 @@ mod tests {
         }
         async fn handle(&self, _: &Change) -> Result<(), BackendError> {
             self.2.lock().unwrap().push(self.1);
-            Ok(())
+            match self.1.starts_with("fails") {
+                true => Err(BackendError::new(std::io::Error::other("down"))),
+                false => Ok(()),
+            }
         }
     }
 
@@ -141,5 +147,23 @@ mod tests {
         };
         readers[0].handle(&change).await.unwrap();
         assert_eq!(*seen.lock().unwrap(), ["history", "revokes"]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_handler_does_not_hold_back_the_next_and_the_change_is_handled_again() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let on = |name| -> Arc<dyn ChangeHandler> {
+            Arc::new(Seen(Source::Table("api_keys".into()), name, seen.clone()))
+        };
+        let readers = together(vec![on("fails history"), on("revokes")]);
+        let change = Change {
+            table: "api_keys".into(),
+            op: ChangeOp::Update,
+            position: None,
+            before: None,
+            after: None,
+        };
+        assert!(readers[0].handle(&change).await.is_err(), "the failure is returned");
+        assert_eq!(*seen.lock().unwrap(), ["fails history", "revokes"]);
     }
 }

@@ -1,7 +1,8 @@
-//! An MCP server's reply: read chunk by chunk up to 16 MiB, so one server
-//! cannot fill the replica's memory (SH-26); a longer reply fails the call as
-//! an unreachable server does. Its messages are one JSON value, an array of
-//! them, or an event stream's `data` fields.
+//! An MCP server's reply. A reply to [`CAPPED`] is read chunk by chunk up to
+//! 16 MiB, so one server cannot fill the replica's memory, and a longer one
+//! fails the call as an unreachable server does (SH-26, D28); a `tools/call`
+//! reply is never failed for its size. Its messages are one JSON value, an
+//! array of them, or an event stream's `data` fields.
 
 use reqwest::header::{CONTENT_TYPE, HeaderMap};
 use serde_json::Value;
@@ -10,6 +11,9 @@ use super::client::Failure;
 
 /// The longest reply read: 160 times live's 100,000-character threshold for an output file (L8).
 pub(super) const MOST: usize = 16 * 1024 * 1024;
+
+/// The methods whose reply [`MOST`] bounds.
+pub(super) const CAPPED: [&str; 2] = ["initialize", "tools/list"];
 
 /// The reply's body, unless it runs past [`MOST`].
 pub(super) async fn read(mut reply: reqwest::Response) -> Result<String, Failure> {
@@ -84,5 +88,26 @@ mod tests {
         assert!(matches!(read(big).await, Err(Failure::Unreachable)));
         let fits = client.post(format!("http://{addr}/fits")).send().await.unwrap();
         assert_eq!(read(fits).await.ok().map(|b| b.len()), Some(MOST));
+    }
+
+    #[tokio::test]
+    async fn a_tools_call_reply_over_16_mib_is_answered_and_a_tools_list_one_fails() {
+        // D28: only `initialize` and `tools/list` keep the cap.
+        let echo = |axum::Json(req): axum::Json<Value>| async move {
+            axum::Json(
+                serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": {"pad": "x".repeat(MOST)}}),
+            )
+        };
+        let app = axum::Router::new().route("/", post(echo));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        let guard = shared::net::Guard::allowing(vec![addr]);
+        let url = format!("http://{addr}/");
+        let timeout = std::time::Duration::from_secs(30);
+        let mut rpc = super::super::client::Rpc::open(&guard, &url, None, None, timeout).await.unwrap();
+        let called = rpc.request("tools/call", serde_json::json!({})).await.unwrap();
+        assert_eq!(called.result.unwrap()["pad"].as_str().map(str::len), Some(MOST));
+        assert_eq!(rpc.request("tools/list", serde_json::json!({})).await.err(), Some(Failure::Unreachable));
     }
 }
