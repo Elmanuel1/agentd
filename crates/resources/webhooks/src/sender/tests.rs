@@ -231,12 +231,51 @@ async fn a_private_address_is_not_sent_to_and_disables_its_endpoint() {
 }
 
 #[tokio::test]
-async fn a_redirect_disables_its_endpoint_at_once() {
+async fn a_redirect_disables_its_endpoint_at_once_with_one_error_naming_org_endpoint_and_reason() {
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let _capture = tracing::subscriber::set_default(Errors(errors.clone()));
     let (url, _, addr) = receiver(StatusCode::FOUND).await;
     let rig = start(&url, vec![addr], vec![due("whe_1", &url, 0)]);
     rig.until(|q| !q.recorded.lock().is_empty()).await;
     assert_eq!(rig.states.disabled.lock().as_slice(), [("a".to_owned(), DisabledReason::Redirect)]);
     rig.stop().await;
+    let errors = errors.lock();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    for field in ["org=org_1", "endpoint=a", "reason=\"redirect\""] {
+        assert!(errors[0].contains(field), "{field} in {}", errors[0]);
+    }
+    assert!(!errors[0].contains(&url), "the URL stays out of the log");
+}
+
+/// Each `ERROR` event's fields, as `name=value` pairs.
+struct Errors(Arc<Mutex<Vec<String>>>);
+
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push_str(&format!("{}={value:?} ", field.name()));
+    }
+}
+
+impl tracing::Subscriber for Errors {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if *event.metadata().level() == tracing::Level::ERROR {
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().push(fields.0);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
 }
 
 #[tokio::test]
