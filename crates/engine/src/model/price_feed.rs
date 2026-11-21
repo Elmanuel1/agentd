@@ -1,5 +1,5 @@
 //! Keeps this replica's list prices current from a model list
-//! (`AGENTD_MODEL_PRICES_URL`): read at start and every five minutes. A read
+//! (`AGENTD_MODEL_PRICES_URL`): read at start and once a day. A read
 //! that fails keeps the prices last read, or the built-in table before any.
 
 use std::time::Duration;
@@ -7,13 +7,13 @@ use std::time::Duration;
 use shared::prices::{Feed, install};
 
 /// How often the list is read again.
-const EVERY: Duration = Duration::from_secs(300);
+const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long one read may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest list read; the public list is about 1 MB.
 const MAX_BYTES: usize = 16 << 20;
 
-/// Read the list at `url` now and every five minutes, for as long as the
+/// Read the list at `url` now and once a day, for as long as the
 /// process runs.
 pub fn spawn(url: String) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
