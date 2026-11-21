@@ -496,7 +496,9 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   Tests: with signals off, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
   `overloaded_error` and an open one keeps streaming; with a replica URL set, `events.list` reads it and a step
   reads the primary.
-- **E4.** Every event-log access stays behind its port (D18): `SessionEventReads` reads, and `SessionEventLog`,
+- **E4.** Narrowed by SH-41 of [scale hardening](../scale-hardening/requirements.md): retention deletes at most
+  10,000 events per statement, in the batches of that spec's retention section; `delete_events_of` stays for
+  session deletes. Every event-log access stays behind its port (D18): `SessionEventReads` reads, and `SessionEventLog`,
   which extends it, appends, stamps and deletes. One method deletes events:
   `SessionEventLog::delete_events_of(&[(workspace, session)])`, 1 `DELETE FROM session_events USING unnest($ws, $ids)
   AS v(workspace_id, session_id) WHERE session_events.workspace_id = v.workspace_id AND session_events.session_id =
