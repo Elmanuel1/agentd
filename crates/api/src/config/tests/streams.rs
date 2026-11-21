@@ -8,7 +8,9 @@ fn valkey_is_required_and_events_are_kept_unless_configured() {
     let base = StreamsConfig {
         valkey_url: "redis://valkey:6379".into(),
         valkey_cluster: false,
+        valkey_ca: None,
         kafka_brokers: None,
+        kafka: KafkaConfig { properties: Vec::new(), auth: KafkaAuth::Password },
         changes_prefix: "agentd".into(),
         changes_slot: "agentd_changes".into(),
         retention: None,
@@ -24,6 +26,7 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
     let c = config(&[
         ("AGENTD_VALKEY_URL", "rediss://:pw@valkey:6379"),
         ("AGENTD_VALKEY_CLUSTER", "true"),
+        ("AGENTD_VALKEY_CA_CERT", "/etc/valkey/ca.pem"),
         ("AGENTD_KAFKA_BROKERS", "kafka-1:9092,kafka-2:9092"),
         ("AGENTD_PG_READ_URL", "postgres://reader:r3ad-pass@replica:5432/agentd"),
         ("AGENTD_EVENT_RETENTION_DAYS", "30"),
@@ -36,7 +39,9 @@ fn valkey_a_read_replica_and_retention_come_from_config() {
         StreamsConfig {
             valkey_url: "rediss://:pw@valkey:6379".into(),
             valkey_cluster: true,
+            valkey_ca: Some("/etc/valkey/ca.pem".into()),
             kafka_brokers: Some("kafka-1:9092,kafka-2:9092".into()),
+            kafka: KafkaConfig { properties: Vec::new(), auth: KafkaAuth::Password },
             changes_prefix: "agentd".into(),
             changes_slot: "agentd_feed".into(),
             retention: Some(day * 30)

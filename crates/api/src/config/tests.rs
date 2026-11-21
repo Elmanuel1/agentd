@@ -35,6 +35,17 @@ fn defaults_select_postgres_s3_and_aws_secrets() {
 }
 
 #[test]
+fn list_prices_come_from_openrouter_s_model_list_unless_the_url_is_empty() {
+    let prices = |vars: &[(&str, &str)]| config(vars).unwrap().model_prices_url;
+    assert_eq!(prices(&[]).as_deref(), Some("https://openrouter.ai/api/v1/models"));
+    assert_eq!(
+        prices(&[("AGENTD_MODEL_PRICES_URL", "http://mirror/models")]).as_deref(),
+        Some("http://mirror/models")
+    );
+    assert_eq!(prices(&[("AGENTD_MODEL_PRICES_URL", "")]), None);
+}
+
+#[test]
 fn an_unknown_backend_is_an_error() {
     let err = config(&[("AGENTD_STORE", "dynamodb")]).unwrap_err();
     assert_eq!(err.var, "AGENTD_STORE");
@@ -179,6 +190,7 @@ fn aws_secret_options_come_from_config() {
     }
 }
 
+mod connections;
 mod keys;
 mod scheduler;
 mod secrets;

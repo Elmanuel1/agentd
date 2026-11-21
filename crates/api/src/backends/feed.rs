@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
-use changes_kafka::KafkaChanges;
+use aws_common::MskAuthToken;
+use changes_kafka::{KafkaChanges, KafkaClient};
 use shared::ports::changes::ChangeHandler;
 use shared::ports::fire::FireRegistry;
 use signals_valkey::{Valkey, ValkeyChanges};
 use tokio::task::JoinHandle;
 
-use crate::config::StreamsConfig;
+use crate::config::{KafkaAuth, StreamsConfig};
 
 /// Where the table changes and an external scheduler's fires arrive.
 #[derive(Debug, Clone)]
@@ -22,10 +23,18 @@ pub enum ChangeFeed {
 
 impl ChangeFeed {
     /// The feed `streams` selects; Valkey Streams on `valkey` without Kafka.
-    pub(crate) fn from_config(streams: &StreamsConfig, valkey: &Valkey) -> Self {
+    pub(crate) async fn from_config(streams: &StreamsConfig, valkey: &Valkey) -> Self {
         let prefix = &streams.changes_prefix;
         match &streams.kafka_brokers {
-            Some(brokers) => Self::Kafka(KafkaChanges::new(brokers, prefix)),
+            Some(brokers) => {
+                let client = KafkaClient::new(streams.kafka.properties.clone());
+                let client = match streams.kafka.auth {
+                    KafkaAuth::Password => client,
+                    KafkaAuth::AwsIam => client
+                        .with_bearer(Arc::new(MskAuthToken::new(aws_common::sdk_config(None, None).await))),
+                };
+                Self::Kafka(KafkaChanges::new(brokers, prefix).with_client(client))
+            }
             None => {
                 let consumer = format!("agentd-{}", uuid::Uuid::new_v4());
                 Self::Valkey(ValkeyChanges::new(valkey, prefix, &consumer))

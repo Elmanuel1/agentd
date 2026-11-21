@@ -7,7 +7,9 @@ use diesel::connection::Instrumentation;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig, RecyclingMethod};
 use diesel_async::{AsyncConnection, AsyncPgConnection};
+use shared::ports::credentials::PasswordSource;
 
+use crate::target::Target;
 use crate::{DieselPgPool, PgBackend, PgError};
 
 /// Watches the pool: every statement a connection runs, and every
@@ -44,8 +46,7 @@ impl PgBackend {
 
     /// Connect using `database_url`, pooled as `settings` says.
     pub async fn connect_with(database_url: &str, settings: PoolSettings) -> Result<Self, PgError> {
-        let manager = AsyncDieselConnectionManager::new_with_config(database_url, manager_config());
-        Self::pool(manager, settings)
+        Self::connect_as(database_url, settings, None, None).await
     }
 
     /// [`Self::connect_with`], with `observe` watching the pool.
@@ -54,14 +55,32 @@ impl PgBackend {
         settings: PoolSettings,
         observe: Arc<dyn PgObserver>,
     ) -> Result<Self, PgError> {
+        Self::connect_as(database_url, settings, Some(observe), None).await
+    }
+
+    /// Connect using `database_url`, pooled as `settings` says, with `observe`
+    /// watching the pool and each new connection logging in with the password
+    /// `password` mints for it, when they are given.
+    pub async fn connect_as(
+        database_url: &str,
+        settings: PoolSettings,
+        observe: Option<Arc<dyn PgObserver>>,
+        password: Option<Arc<dyn PasswordSource>>,
+    ) -> Result<Self, PgError> {
+        let target = Arc::new(Target::parse(database_url, password)?);
         let mut config = manager_config();
-        config.custom_setup = Box::new(move |url| {
+        config.custom_setup = Box::new(move |_| {
+            let target = target.clone();
             let observe = observe.clone();
-            let url = url.to_owned();
             Box::pin(async move {
-                let mut conn =
-                    AsyncPgConnection::establish(&url).await.inspect_err(|e| observe.connect_failed(e))?;
-                conn.set_instrumentation(observe.statements());
+                let mut conn = target.establish().await.inspect_err(|e| {
+                    if let Some(observe) = &observe {
+                        observe.connect_failed(e);
+                    }
+                })?;
+                if let Some(observe) = &observe {
+                    conn.set_instrumentation(observe.statements());
+                }
                 Ok(conn)
             })
         });

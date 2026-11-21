@@ -9,7 +9,7 @@ use crate::events::{EventPayload, UserEvent};
 use crate::store::{SessionFilter, StoreError};
 use crate::types::{
     AgentRefInput, CreateSessionRequest, Session, SessionId, SessionStatus, SessionTag, Stats,
-    UpdateSessionRequest,
+    UpdateSessionRequest, check_budgetable,
 };
 
 impl SessionsService {
@@ -52,6 +52,9 @@ impl SessionsService {
         let mut agent = self.deps.resolve_agent(ctx, agent_ref.id(), agent_ref.version()).await?;
         if let AgentRefInput::Tagged(overrides) = agent_ref {
             agent = overrides.apply(agent, &self.catalog)?;
+        }
+        if req.budget.is_some() {
+            check_budgetable(&agent)?;
         }
         let environment = self.deps.resolve_environment(ctx, &environment_id).await?;
         if req.deployment_id.is_some() {

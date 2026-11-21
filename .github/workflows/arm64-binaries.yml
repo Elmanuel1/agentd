@@ -25,8 +25,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+      - name: Install protoc and the well-known protobuf types (the Temporal SDK's build), and OpenSSL's headers (librdkafka's TLS)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev libssl-dev
       - run: cargo build --release --locked -p api
       # A tar keeps the binary's execute bit, which an artifact upload drops.
       - run: tar -C target/release -czf agentd-linux-arm64.tar.gz agentd

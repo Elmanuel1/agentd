@@ -27,7 +27,7 @@ async fn drain(worker: &FireWorker) {
 fn config() -> Option<TemporalConfig> {
     let address = std::env::var("AGENTD_TEMPORAL_ADDRESS").ok()?;
     let task_queue = format!("agentd-test-{}", Utc::now().timestamp_micros());
-    Some(TemporalConfig { address, namespace: "default".into(), task_queue })
+    Some(TemporalConfig { address, namespace: "default".into(), task_queue, api_key: None, server_ca: None })
 }
 
 /// A Temporal client of its own, to read what the sink stored.

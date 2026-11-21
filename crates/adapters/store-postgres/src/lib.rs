@@ -17,13 +17,17 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 mod checkout;
+mod conninfo;
 pub mod entities;
 mod load;
 mod pool;
 pub mod schema;
 mod slot;
+mod target;
+mod tls;
 
 pub use checkout::{DieselPgPool, PooledConnection};
+pub use conninfo::redacted;
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 pub use slot::{Slot, read_slot};

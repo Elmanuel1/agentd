@@ -29,6 +29,7 @@ pub mod net;
 pub mod page;
 pub mod patch;
 pub mod ports;
+pub mod prices;
 pub mod schedule;
 pub mod scope;
 pub mod tenancy;

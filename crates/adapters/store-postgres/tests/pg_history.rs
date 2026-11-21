@@ -10,7 +10,7 @@ use diesel_async::RunQueryDsl;
 use serde_json::{Value, json};
 use shared::Timestamp;
 use shared::ports::changes::Position;
-use shared::ports::history::{HistoryError, HistoryLog, HistoryOp};
+use shared::ports::history::{HeldVersion, HistoryError, HistoryLog, HistoryOp};
 use store_postgres::{PgBackend, PgHistoryLog};
 
 fn enabled() -> bool {
@@ -58,9 +58,9 @@ async fn a_change_recorded_twice_is_kept_once_and_changes_read_in_lsn_order() {
     }
     let (pg, log) = log().await;
     let id = format!("vlt_h{}", stamp());
-    log.record("vaults", HistoryOp::Update, &at(20, 2), &vault(&id, "two", "apikey_b")).await.unwrap();
-    log.record("vaults", HistoryOp::Insert, &at(10, 1), &vault(&id, "one", "apikey_a")).await.unwrap();
-    log.record("vaults", HistoryOp::Insert, &at(10, 1), &vault(&id, "one", "apikey_a")).await.unwrap();
+    log.record("vaults", HistoryOp::Update, &at(20, 2), &vault(&id, "two", "apikey_b"), None).await.unwrap();
+    log.record("vaults", HistoryOp::Insert, &at(10, 1), &vault(&id, "one", "apikey_a"), None).await.unwrap();
+    log.record("vaults", HistoryOp::Insert, &at(10, 1), &vault(&id, "one", "apikey_a"), None).await.unwrap();
     let got = rows(
         &pg,
         "SELECT jsonb_build_object('op', op, 'doc', doc, 'actor', actor, 'lsn', lsn::text) AS row
@@ -87,10 +87,10 @@ async fn the_feed_s_jsonb_text_and_base64_bytea_store_typed_and_a_delete_row_sto
     let row = json!({"api_key_id": id, "org_id": "org_h", "workspace_id": "wrkspc_h", "name": "k",
                      "key_digest": "AAEC", "partial_key_hint": "sk-...h", "created_at": "2026-11-16T10:00:00Z",
                      "revoked_at": null, "actor": "operator", "request_id": null});
-    log.record("api_keys", HistoryOp::Insert, &at(1, 1), &row).await.unwrap();
+    log.record("api_keys", HistoryOp::Insert, &at(1, 1), &row, None).await.unwrap();
     let mut deleted = row.clone();
     deleted["key_digest"] = json!("\\x000102");
-    log.record("api_keys", HistoryOp::Delete, &at(2, 2), &deleted).await.unwrap();
+    log.record("api_keys", HistoryOp::Delete, &at(2, 2), &deleted, None).await.unwrap();
     let got = rows(
         &pg,
         "SELECT jsonb_build_object('digest', encode(key_digest, 'hex'), 'op', op) AS row
@@ -110,10 +110,15 @@ async fn a_table_with_no_history_or_a_row_that_does_not_decode_is_unrecordable()
         return;
     }
     let (_, log) = log().await;
-    let none = log.record("work_items", HistoryOp::Insert, &at(1, 1), &json!({})).await;
+    let none = log.record("work_items", HistoryOp::Insert, &at(1, 1), &json!({}), None).await;
     assert!(matches!(none, Err(HistoryError::Unrecordable(_))), "{none:?}");
-    let bad = log.record("vaults", HistoryOp::Insert, &at(1, 1), &json!({"doc": "{"})).await;
+    let bad = log.record("vaults", HistoryOp::Insert, &at(1, 1), &json!({"doc": "{"}), None).await;
     assert!(matches!(bad, Err(HistoryError::Unrecordable(_))), "{bad:?}");
+}
+
+/// The memory version a row of `store` holds.
+fn held<'a>(store: &'a str, version: &'a str) -> Option<HeldVersion<'a>> {
+    Some(HeldVersion { workspace: "wrkspc_h", store, version })
 }
 
 /// A memory version's row and its head's, as the feed sends them.
@@ -135,7 +140,7 @@ fn memory_rows(store: &str, memory: &str, version: &str, sha: Option<&str>) -> (
 }
 
 #[tokio::test]
-async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_they_arrive() {
+async fn a_redaction_clears_its_version_and_the_heads_that_held_it_whenever_they_arrive() {
     if !enabled() {
         return;
     }
@@ -145,31 +150,30 @@ async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_t
     let (old, new) = (format!("memver_o{s}"), format!("memver_n{s}"));
     let (old_version, old_head) = memory_rows(&store, &memory, &old, Some("aaa"));
     let (new_version, new_head) = memory_rows(&store, &memory, &new, Some("bbb"));
-    log.record("memory_versions", HistoryOp::Insert, &at(3, 1), &new_version).await.unwrap();
-    log.record("memories", HistoryOp::Update, &at(4, 1), &new_head).await.unwrap();
+    log.record("memory_versions", HistoryOp::Insert, &at(3, 1), &new_version, held(&store, &new))
+        .await
+        .unwrap();
+    log.record("memories", HistoryOp::Update, &at(4, 1), &new_head, held(&store, &new)).await.unwrap();
     let versions =
         "SELECT jsonb_build_object('v', version_id, 'sha', doc->'content_sha256', 'path', doc->'path')
                       AS row FROM history.memory_versions WHERE store_id = $1 ORDER BY lsn";
     let heads = "SELECT jsonb_build_object('sha', doc->'content_sha256', 'path', path) AS row
                    FROM history.memories WHERE store_id = $1 ORDER BY lsn";
-    log.scrub_memory_content("wrkspc_h", &store, &new).await.unwrap();
     let unredacted = json!({"v": new, "sha": "bbb", "path": "/a.md"});
     assert_eq!(rows(&pg, versions, &store).await, [unredacted], "a version not redacted keeps its content");
 
     let (redacted, _) = memory_rows(&store, &memory, &old, None);
-    log.record("memory_versions", HistoryOp::Update, &at(5, 1), &redacted).await.unwrap();
-    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    log.record("memory_versions", HistoryOp::Update, &at(5, 1), &redacted, held(&store, &old)).await.unwrap();
     // The head that held the old version arrives after the redaction, as another topic may deliver it.
-    log.record("memories", HistoryOp::Insert, &at(2, 1), &old_head).await.unwrap();
-    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    log.record("memories", HistoryOp::Insert, &at(2, 1), &old_head, held(&store, &old)).await.unwrap();
     // So does the version's own insert, which an unordered stream may hand over last.
-    log.record("memory_versions", HistoryOp::Insert, &at(1, 1), &old_version).await.unwrap();
-    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    log.record("memory_versions", HistoryOp::Insert, &at(1, 1), &old_version, held(&store, &old))
+        .await
+        .unwrap();
     // And a head deleted for good after the redaction, its row as Postgres's to_jsonb gives it.
     let mut deleted = old_head.clone();
     deleted["doc"] = serde_json::from_str(old_head["doc"].as_str().unwrap()).unwrap();
-    log.record("memories", HistoryOp::Delete, &at(6, 1), &deleted).await.unwrap();
-    log.scrub_memory_content("wrkspc_h", &store, &old).await.unwrap();
+    log.record("memories", HistoryOp::Delete, &at(6, 1), &deleted, held(&store, &old)).await.unwrap();
     let cleared = json!({"v": old, "sha": null, "path": null});
     assert_eq!(
         rows(&pg, versions, &store).await,
@@ -180,6 +184,93 @@ async fn a_scrub_clears_a_redacted_version_and_the_heads_that_held_it_whenever_t
         rows(&pg, heads, &store).await,
         vec![none.clone(), json!({"sha": "bbb", "path": "/a.md"}), none]
     );
+}
+
+#[tokio::test]
+async fn a_redaction_recorded_while_its_version_s_rows_are_leaves_none_of_its_content() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let kept = "SELECT jsonb_build_object('sha', doc->'content_sha256', 'size', doc->'content_size_bytes',
+                                         'path', doc->'path') AS row
+                  FROM history.memory_versions WHERE store_id = $1
+                 UNION ALL
+                SELECT jsonb_build_object('sha', doc->'content_sha256', 'size', doc->'content_size_bytes',
+                                         'path', path, 'doc_path', doc->'path')
+                  FROM history.memories WHERE store_id = $1";
+    for round in 0..20 {
+        let s = format!("{}{round}", stamp());
+        let (store, memory, version) =
+            (format!("memstore_r{s}"), format!("mem_r{s}"), format!("memver_r{s}"));
+        let (inserted, head) = memory_rows(&store, &memory, &version, Some("aaa"));
+        let (redacted, _) = memory_rows(&store, &memory, &version, None);
+        let (first, second, third) = (at(1, 1), at(2, 1), at(3, 1));
+        // The versions' recorder and the heads' record at once, as their streams do.
+        let (a, b, c) = tokio::join!(
+            log.record("memory_versions", HistoryOp::Update, &third, &redacted, held(&store, &version)),
+            log.record("memory_versions", HistoryOp::Insert, &first, &inserted, held(&store, &version)),
+            log.record("memories", HistoryOp::Insert, &second, &head, held(&store, &version)),
+        );
+        a.unwrap();
+        b.unwrap();
+        c.unwrap();
+        let kept_rows = rows(&pg, kept, &store).await;
+        let cleared = |r: &Value| r.as_object().is_some_and(|o| o.values().all(Value::is_null));
+        assert_eq!(kept_rows.len(), 3, "round {round}");
+        assert!(kept_rows.iter().all(cleared), "round {round}: {kept_rows:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_scrub_that_fails_leaves_no_row_of_its_recording() {
+    if !enabled() {
+        return;
+    }
+    let (pg, log) = log().await;
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    // DATABASE_URL may be a URI or a keyword string; each takes the option its own way.
+    let impatient = match url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        true => {
+            let joiner = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{joiner}options=-c%20lock_timeout%3D200ms")
+        }
+        false => format!("{url} options='-c lock_timeout=200ms'"),
+    };
+    let impatient = PgBackend::connect(&impatient).await.unwrap();
+    let impatient = PgHistoryLog::load(impatient).await.unwrap();
+    let s = stamp();
+    let (store, memory, version) = (format!("memstore_f{s}"), format!("mem_f{s}"), format!("memver_f{s}"));
+    let (_, head) = memory_rows(&store, &memory, &version, Some("aaa"));
+    let (redacted, _) = memory_rows(&store, &memory, &version, None);
+    log.record("memories", HistoryOp::Insert, &at(1, 1), &head, held(&store, &version)).await.unwrap();
+    // Another transaction holds the head's history row, so the scrub's second update times out.
+    let mut holder = pg.diesel.get().await.unwrap();
+    diesel::sql_query("BEGIN").execute(&mut *holder).await.unwrap();
+    diesel::sql_query("SELECT 1 FROM history.memories WHERE store_id = $1 FOR UPDATE")
+        .bind::<Text, _>(&store)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let failed = impatient
+        .record("memory_versions", HistoryOp::Update, &at(2, 1), &redacted, held(&store, &version))
+        .await;
+    diesel::sql_query("ROLLBACK").execute(&mut *holder).await.unwrap();
+    let Err(HistoryError::Backend(error)) = failed else { panic!("{failed:?}") };
+    assert!(error.to_string().contains("lock timeout"), "{error}");
+    let versions =
+        "SELECT jsonb_build_object('v', version_id) AS row FROM history.memory_versions WHERE store_id = $1";
+    assert_eq!(
+        rows(&pg, versions, &store).await,
+        Vec::<Value>::new(),
+        "the redaction rolled back with its scrub"
+    );
+    let heads = "SELECT jsonb_build_object('sha', doc->'content_sha256', 'size', doc->'content_size_bytes',
+                                          'path', path, 'doc_path', doc->'path') AS row
+                   FROM history.memories WHERE store_id = $1";
+    let kept = json!({"sha": "aaa", "size": 3, "path": "/a.md", "doc_path": "/a.md"});
+    assert_eq!(rows(&pg, heads, &store).await, [kept], "the head keeps its content");
 }
 
 #[derive(diesel::QueryableByName)]
@@ -239,10 +330,10 @@ async fn one_actor_s_changes_and_one_request_s_read_across_tables_by_index() {
     let actor = format!("apikey_s{s}");
     let mut row = vault(&format!("vlt_s{s}"), "v", &actor);
     row["request_id"] = json!(format!("req_s{s}"));
-    log.record("vaults", HistoryOp::Insert, &at(5, 20), &row).await.unwrap();
+    log.record("vaults", HistoryOp::Insert, &at(5, 20), &row, None).await.unwrap();
     let skill = json!({"workspace_id": "wrkspc_h", "skill_id": format!("skill_s{s}"), "display_name": "s",
                        "created_at": "2026-11-16T10:00:00Z", "doc": "{}", "actor": actor, "request_id": format!("req_s{s}")});
-    log.record("skills", HistoryOp::Insert, &at(6, 10), &skill).await.unwrap();
+    log.record("skills", HistoryOp::Insert, &at(6, 10), &skill, None).await.unwrap();
     let by_actor = "SELECT jsonb_build_object('t', table_name, 'key', row_key) AS row FROM history.changes
                      WHERE actor = $1 AND committed_at >= to_timestamp(1790000000) ORDER BY committed_at";
     let got = rows(&pg, by_actor, &actor).await;
@@ -341,7 +432,7 @@ async fn the_runbook_s_rollbacks_and_baseline_run_as_documented() {
         ),
     )
     .await;
-    log.record("vaults", HistoryOp::Insert, &at(100, 1), &vault(&id, "one", "apikey_a")).await.unwrap();
+    log.record("vaults", HistoryOp::Insert, &at(100, 1), &vault(&id, "one", "apikey_a"), None).await.unwrap();
 
     run(&pg, &fill(block(&blocks, "update vaults v"), "0/64")).await;
     assert_eq!(live(&pg, &id).await, Some(("one".into(), "operator".into(), Some("req_ticket".into()))));

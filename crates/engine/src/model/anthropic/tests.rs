@@ -146,3 +146,43 @@ fn a_compaction_asks_with_its_instructions_and_its_block_goes_back_as_it_came() 
     assert_eq!(reply.content, [Block::Compaction { content: "new summary".into(), signature: "s2".into() }]);
     assert_eq!((reply.usage.input_tokens, reply.usage.output_tokens), (144, 276));
 }
+
+#[test]
+fn a_response_is_priced_as_the_model_that_served_it() {
+    // Haiku 4.5's list rates: $1 input, $1.25 cache write, $0.10 cache read, $5 output per MTok.
+    let reply = |model: &str| {
+        parse(&json!({
+            "model": model, "content": [], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 10_000,
+                      "cache_creation_input_tokens": 400},
+        }))
+    };
+    let cost = reply("claude-haiku-4-5-20251001").cost.unwrap();
+    assert!((cost - (0.001 + 0.001 + 0.001 + 0.0005)).abs() < 1e-12, "{cost}");
+    assert_eq!(reply("claude-mythos-preview").cost, None, "a model with no list price");
+}
+
+#[test]
+fn a_reply_with_iterations_counts_each_iteration_once() {
+    // The compaction docs' example: the top level is the message iteration, compaction left out.
+    let reply = parse(&json!({
+        "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 23000, "output_tokens": 1000, "iterations": [
+            {"type": "compaction", "input_tokens": 180000, "output_tokens": 3500},
+            {"type": "message", "input_tokens": 23000, "output_tokens": 1000}]},
+    }));
+    assert_eq!((reply.usage.input_tokens, reply.usage.output_tokens), (203_000, 4_500));
+    let cached = parse(&json!({
+        "content": [], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 50, "iterations": [
+            {"type": "compaction", "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 70},
+            {"type": "message", "input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 50}]},
+    }));
+    assert_eq!(cached.usage.cache_read_input_tokens, 120, "a cache count the iterations carry is their sum");
+    let uncached = parse(&json!({
+        "content": [], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 50,
+                  "iterations": [{"type": "message", "input_tokens": 10, "output_tokens": 2}]},
+    }));
+    assert_eq!(uncached.usage.cache_read_input_tokens, 50, "one they leave out comes from the top level");
+}
