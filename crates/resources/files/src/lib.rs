@@ -26,5 +26,8 @@ pub use session::{Mounts, NativeSessionFiles, SessionFiles};
 /// `sessions` says which files a session's work token reaches.
 pub fn module(service: Arc<FilesService>, sessions: Arc<dyn SessionFiles>) -> Module {
     let router = routes::router().layer(axum::Extension(Mounts(sessions)));
-    Module::new(router, service).with_body_limit(BodyLimit { api: "Files", max_mb: 500 })
+    // 500 MB at about 5 Mbit/s.
+    Module::new(router, service)
+        .with_body_limit(BodyLimit { api: "Files", max_mb: 500 })
+        .with_deadline(std::time::Duration::from_secs(900))
 }

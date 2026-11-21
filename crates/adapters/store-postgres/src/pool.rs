@@ -27,12 +27,23 @@ pub struct PoolSettings {
     pub max_size: usize,
     /// The longest wait for a free connection.
     pub wait: std::time::Duration,
+    /// The longest one statement may run (`statement_timeout`).
+    pub statement_timeout: std::time::Duration,
 }
 
 impl Default for PoolSettings {
     fn default() -> Self {
-        Self { max_size: 10, wait: std::time::Duration::from_secs(5) }
+        let statement_timeout = std::time::Duration::from_secs(30);
+        Self { max_size: 10, wait: std::time::Duration::from_secs(5), statement_timeout }
     }
+}
+
+/// Every new connection's bounds: a statement runs at most the pool's
+/// statement timeout, and a transaction left idle is ended after 60 s (SH-10).
+async fn bounded(conn: &mut AsyncPgConnection, settings: PoolSettings) -> diesel::QueryResult<()> {
+    let ms = settings.statement_timeout.as_millis();
+    let sql = format!("SET statement_timeout = {ms}; SET idle_in_transaction_session_timeout = '60s'");
+    diesel_async::SimpleAsyncConnection::batch_execute(conn, &sql).await
 }
 
 impl PgBackend {
@@ -44,8 +55,18 @@ impl PgBackend {
 
     /// Connect using `database_url`, pooled as `settings` says.
     pub async fn connect_with(database_url: &str, settings: PoolSettings) -> Result<Self, PgError> {
-        let manager = AsyncDieselConnectionManager::new_with_config(database_url, manager_config());
-        Self::pool(manager, settings)
+        let mut config = manager_config();
+        config.custom_setup = Box::new(move |url| {
+            let url = url.to_owned();
+            Box::pin(async move {
+                let mut conn = AsyncPgConnection::establish(&url).await?;
+                bounded(&mut conn, settings)
+                    .await
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)?;
+                Ok(conn)
+            })
+        });
+        Self::pool(AsyncDieselConnectionManager::new_with_config(database_url, config), settings)
     }
 
     /// [`Self::connect_with`], with `observe` watching the pool.
@@ -61,6 +82,10 @@ impl PgBackend {
             Box::pin(async move {
                 let mut conn =
                     AsyncPgConnection::establish(&url).await.inspect_err(|e| observe.connect_failed(e))?;
+                bounded(&mut conn, settings)
+                    .await
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)
+                    .inspect_err(|e| observe.connect_failed(e))?;
                 conn.set_instrumentation(observe.statements());
                 Ok(conn)
             })

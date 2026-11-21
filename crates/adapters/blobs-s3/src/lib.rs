@@ -13,6 +13,9 @@ use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
 pub use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore};
 
+/// How long opening a connection to S3 may take.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Where and how to reach the bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct S3Config {
@@ -33,6 +36,10 @@ pub struct S3Config {
     /// AWS S3 (none in us-east-1) and none on a custom endpoint, whose
     /// locations are named their own way or refused.
     pub location_constraint: Option<String>,
+    /// The longest one attempt may take (`AGENTD_S3_ATTEMPT_TIMEOUT_MS`, 30 s).
+    pub attempt_timeout: std::time::Duration,
+    /// The longest an operation may take, its retries included (`AGENTD_S3_OPERATION_TIMEOUT_MS`, 50 s).
+    pub operation_timeout: std::time::Duration,
 }
 
 impl S3Config {
@@ -46,6 +53,8 @@ impl S3Config {
             role_arn: None,
             create_bucket: false,
             location_constraint: None,
+            attempt_timeout: std::time::Duration::from_secs(30),
+            operation_timeout: std::time::Duration::from_secs(50),
         }
     }
 }
@@ -71,7 +80,13 @@ impl S3BlobStore {
         // The endpoint applies to S3 only: STS keeps its own. Checksums are
         // sent only where S3 requires them: S3-compatible stores (LocalStack,
         // older MinIO) reject the default trailing checksum on empty bodies.
+        let timeouts = aws_sdk_s3::config::timeout::TimeoutConfig::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .operation_attempt_timeout(config.attempt_timeout)
+            .operation_timeout(config.operation_timeout)
+            .build();
         let mut conf = aws_sdk_s3::config::Builder::from(&shared)
+            .timeout_config(timeouts)
             .force_path_style(config.path_style)
             .request_checksum_calculation(aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired);
         if let Some(endpoint) = &config.endpoint {

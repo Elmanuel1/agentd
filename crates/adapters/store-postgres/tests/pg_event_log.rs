@@ -530,7 +530,7 @@ async fn a_checkout_that_waits_over_a_second_trips_the_gate() {
     if !enabled() {
         return;
     }
-    let settings = PoolSettings { max_size: 1, wait: Duration::from_secs(5) };
+    let settings = PoolSettings { max_size: 1, wait: Duration::from_secs(5), ..PoolSettings::default() };
     let pg = PgBackend::connect_with(&url(), settings).await.unwrap();
     let load = PgLoad::new(pg.diesel.clone());
     load.measure().await.unwrap();

@@ -2,6 +2,7 @@
 //! The binary assembles one [`Module`] per resource.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{Extension, Router};
 
@@ -35,6 +36,8 @@ pub struct Module {
     pub betas: Vec<BetaGate>,
     /// Its request body cap: 32 MB unless the resource sets one.
     pub body_limit: BodyLimit,
+    /// How long a response may take to start, when not the deployment's request deadline.
+    pub deadline: Option<Duration>,
 }
 
 impl std::fmt::Debug for Module {
@@ -51,6 +54,7 @@ impl Module {
             fire_handlers: Vec::new(),
             betas: Vec::new(),
             body_limit: BodyLimit { api: "Managed Agents", max_mb: 32 },
+            deadline: None,
         }
     }
 
@@ -65,6 +69,13 @@ impl Module {
     #[must_use]
     pub fn with_body_limit(mut self, limit: BodyLimit) -> Self {
         self.body_limit = limit;
+        self
+    }
+
+    /// Give responses `deadline` to start, instead of the deployment's.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = Some(deadline);
         self
     }
 

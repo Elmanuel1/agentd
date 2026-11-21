@@ -13,8 +13,9 @@ pub enum StoreConfig {
         url: String,
         /// `AGENTD_PG_READ_URL`: a read replica the events list reads, when set.
         read_url: Option<String>,
-        /// `AGENTD_DB_POOL_SIZE` connections (default 10), each caller waiting
-        /// at most `AGENTD_DB_POOL_WAIT_MS` (default 5000) for one.
+        /// `AGENTD_DB_POOL_SIZE` connections (default 16, S-8), each caller waiting
+        /// at most `AGENTD_DB_POOL_WAIT_MS` (default 5000) for one, each
+        /// statement running at most `AGENTD_DB_STATEMENT_TIMEOUT_MS` (default 30000).
         pool: PoolSettings,
     },
 }
@@ -52,8 +53,13 @@ impl StoreConfig {
                 })?,
                 read_url: get("AGENTD_PG_READ_URL").filter(|u| !u.is_empty()),
                 pool: PoolSettings {
-                    max_size: number(get, "AGENTD_DB_POOL_SIZE", 10)?,
+                    max_size: number(get, "AGENTD_DB_POOL_SIZE", 16)?,
                     wait: std::time::Duration::from_millis(number(get, "AGENTD_DB_POOL_WAIT_MS", 5000)?),
+                    statement_timeout: std::time::Duration::from_millis(number(
+                        get,
+                        "AGENTD_DB_STATEMENT_TIMEOUT_MS",
+                        30_000,
+                    )?),
                 },
             }),
             other => Err(unknown("AGENTD_STORE", other)),

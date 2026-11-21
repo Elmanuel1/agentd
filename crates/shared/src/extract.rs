@@ -93,6 +93,7 @@ fn render(error: &ApiError, rid: Option<&RequestId>) -> Response {
     if status.is_server_error() {
         let public = match error.error_type {
             ErrorType::Overloaded => "Overloaded",
+            ErrorType::Timeout => "Request timed out",
             _ => "Internal server error",
         };
         let shown = ApiError { message: public.into(), ..error.clone() };

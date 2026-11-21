@@ -1,0 +1,115 @@
+//! The request deadline (SH-11, SH-12): a handler past it answers 504
+//! `timeout_error` and its open transaction is rolled back; a stream is not
+//! cut. The rollback case is gated by `AGENTD_PG_TESTS=1`.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+
+use std::time::Duration;
+
+use api::edge::deadline;
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::routing::get;
+use diesel_async::{AsyncConnection, RunQueryDsl};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+async fn get_once(app: Router, path: &str) -> (StatusCode, Vec<u8>) {
+    let response = app.oneshot(Request::get(path).body(Body::empty()).unwrap()).await.unwrap();
+    let status = response.status();
+    (status, response.into_body().collect().await.unwrap().to_bytes().to_vec())
+}
+
+#[tokio::test]
+async fn a_slow_handler_answers_504_timeout_error_and_a_stream_is_not_cut() {
+    let slow = Router::new().route(
+        "/slow",
+        get(|| async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            "late"
+        }),
+    );
+    let (st, body) = get_once(deadline::bounded(slow, Duration::from_millis(100)), "/slow").await;
+    assert_eq!(st, StatusCode::GATEWAY_TIMEOUT);
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["type"], "timeout_error");
+
+    // The head comes at once; the body runs past the deadline.
+    let stream = Router::new().route(
+        "/stream",
+        get(|| async {
+            let chunks = futures::stream::unfold(0, |n| async move {
+                (n < 3).then_some(())?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(format!("{n}"))), n + 1))
+            });
+            Body::from_stream(chunks)
+        }),
+    );
+    let (st, body) = get_once(deadline::bounded(stream, Duration::from_millis(150)), "/stream").await;
+    assert_eq!((st, body.as_slice()), (StatusCode::OK, b"012".as_slice()));
+}
+
+#[tokio::test]
+async fn a_request_whose_checkout_timed_out_answers_529_overloaded_error() {
+    // D14: whatever 5xx the route made of it.
+    let waited = Router::new().route(
+        "/busy",
+        get(|| async {
+            shared::overload::waited_out();
+            StatusCode::INTERNAL_SERVER_ERROR
+        }),
+    );
+    let (st, body) = get_once(deadline::bounded(waited, Duration::from_secs(5)), "/busy").await;
+    assert_eq!(st.as_u16(), 529);
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["type"], "overloaded_error");
+}
+
+#[tokio::test]
+async fn a_handler_past_the_deadline_has_its_transaction_rolled_back() {
+    if std::env::var("AGENTD_PG_TESTS").as_deref() != Ok("1") {
+        return;
+    }
+    let pg = store_postgres::PgBackend::connect(&std::env::var("DATABASE_URL").unwrap()).await.unwrap();
+    let key = format!("ep_deadline_{}", std::process::id());
+    let (held, sql) = (
+        pg.clone(),
+        format!(
+            "INSERT INTO webhook_endpoint_states (endpoint_key, org_id, config_digest) VALUES ('{key}', 'o', 'd')"
+        ),
+    );
+    let app = Router::new().route(
+        "/write",
+        get(move || {
+            let (pg, sql) = (held.clone(), sql.clone());
+            async move {
+                let mut conn = pg.diesel.write().await.unwrap();
+                conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+                    diesel::sql_query(sql).execute(c).await?;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+                "written"
+            }
+        }),
+    );
+    let (st, _) = get_once(deadline::bounded(app, Duration::from_millis(300)), "/write").await;
+    assert_eq!(st, StatusCode::GATEWAY_TIMEOUT);
+    #[derive(diesel::QueryableByName)]
+    struct Count {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        n: i64,
+    }
+    let mut conn = pg.diesel.get().await.unwrap();
+    let c: Count = diesel::sql_query(format!(
+        "SELECT count(*) AS n FROM webhook_endpoint_states WHERE endpoint_key = '{key}'"
+    ))
+    .get_result(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(c.n, 0, "the transaction was rolled back");
+}
