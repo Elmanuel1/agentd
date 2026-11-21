@@ -62,6 +62,8 @@ async fn app() -> Option<Router> {
         role: api::config::Role::All,
         guard: shared::net::Guard::default(),
         webhooks: std::sync::Arc::default(),
+        shutdown: api::shutdown::Shutdown::default(),
+        edge: api::edge::EdgeSettings::default(),
     };
     Some(build_router(AppState::build(backends).unwrap()))
 }

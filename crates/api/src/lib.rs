@@ -15,6 +15,7 @@ pub mod deps;
 pub mod edge;
 pub mod session_grants;
 pub mod session_work;
+pub mod shutdown;
 pub mod state;
 pub mod telemetry;
 
@@ -35,8 +36,10 @@ pub fn build_router(state: AppState) -> Router {
         return Router::new().fallback(|| async { shared::unknown_route_response() });
     }
     let gates: Arc<[BetaGate]> = state.modules.iter().flat_map(|m| m.betas.iter().copied()).collect();
+    let (timeout, limits) = (state.edge.request_timeout, state.edge.limits);
     let routes = state.modules.into_iter().fold(Router::new(), |router, module| {
-        router.merge(edge::limits::bounded(module.router, module.body_limit))
+        let bounded = edge::limits::bounded(module.router, module.body_limit);
+        router.merge(edge::deadline::bounded(bounded, module.deadline.unwrap_or(timeout)))
     });
     let credentials = edge::auth::Credentials {
         keys: state.keys,
@@ -44,5 +47,5 @@ pub fn build_router(state: AppState) -> Router {
         environment_keys: state.environment_keys,
         work: state.work,
     };
-    edge::wrap(routes, credentials, gates, state.metrics)
+    edge::wrap(routes, credentials, gates, state.metrics, limits)
 }

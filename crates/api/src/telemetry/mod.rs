@@ -8,7 +8,9 @@
 //! - every blob and secret operation is a span and feeds
 //!   `agentd.port.operation.duration` ([`ports`]),
 //! - the change feed's slot and the history apply delay feed `agentd.feed.*` and `agentd.history.*` ([`feed`]),
-//! - the scheduler's fires feed `agentd.scheduler.*` ([`scheduler`]),
+//! - the scheduler's fires feed `agentd.scheduler.*` ([`scheduler`]), the webhook sender
+//!   `agentd.webhooks.*` ([`webhooks`]), and the edge's refusals and key cache
+//!   `agentd.http.*` and `agentd.keys.*` ([`edge`]),
 //! - each of these carries `outcome` (`ok` or `error`) or the status code. A
 //!   5xx, a failed statement or a failed connection is logged at `error`, a
 //!   failed port operation at `warn`.
@@ -18,12 +20,14 @@
 //! when `AGENTD_LOG_FORMAT=json`.
 
 pub mod db;
+pub mod edge;
 pub mod feed;
 pub mod http;
 pub mod ports;
 pub mod retention;
 pub mod scheduler;
 pub mod steps;
+pub mod webhooks;
 
 use opentelemetry::metrics::{Histogram, Meter, UpDownCounter};
 use opentelemetry::trace::TracerProvider as _;
