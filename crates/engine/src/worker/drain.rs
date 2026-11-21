@@ -126,7 +126,7 @@ impl Loop {
                 crate::metrics::released(n);
                 tracing::info!(
                     steps = n,
-                    "loop: the grace ended; the running steps were released, due at once"
+                    "loop: at shutdown the steps this replica held were released, due at once"
                 );
             }
             Err(e) => {

@@ -79,3 +79,42 @@ async fn a_slow_unordered_batch_is_handled_together_and_once() {
         let _: () = conn.del(&stream).await.unwrap();
     }
 }
+
+/// Handles an entry whose `value` is `slow` in 2 s, any other at once.
+struct Mixed;
+
+impl NativeConsumer for Mixed {
+    fn ordered(&self) -> bool {
+        false
+    }
+
+    async fn consume(&self, entry: &StreamId) -> bool {
+        let slow = entry.get::<String>("value").as_deref() == Some("slow");
+        if slow {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        true
+    }
+}
+
+#[tokio::test]
+async fn a_fast_entry_is_acknowledged_while_a_slow_one_in_its_batch_runs() {
+    for valkey in crate::test_valkeys() {
+        let stream = name();
+        let mut conn = valkey.connection().await.unwrap();
+        for value in ["fast", "slow"] {
+            let _: String = conn.xadd(&stream, "*", &[("value", value)]).await.unwrap();
+        }
+        let _: () = conn.xgroup_create(&stream, GROUP, "0").await.unwrap();
+        let changes = ValkeyChanges::new(&valkey, "agentd", "a");
+        let (mut reader, read) = (valkey.connection().await.unwrap(), stream.clone());
+        let passing = tokio::spawn(async move { changes.pass(&mut reader, &read, &Mixed).await });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let pending: redis::streams::StreamPendingReply = conn.xpending(&stream, GROUP).await.unwrap();
+        assert_eq!(pending.count(), 1, "the fast entry is acknowledged before the slow one ends");
+        passing.await.unwrap().unwrap();
+        let pending: redis::streams::StreamPendingReply = conn.xpending(&stream, GROUP).await.unwrap();
+        assert_eq!(pending.count(), 0);
+        let _: () = conn.del(&stream).await.unwrap();
+    }
+}
