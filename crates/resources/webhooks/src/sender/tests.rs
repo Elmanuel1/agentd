@@ -75,9 +75,6 @@ impl NativeEndpointStates for States {
         self.disabled.lock().push((e.endpoint_key.clone(), why));
         Ok(true)
     }
-    async fn clear_failing(&self, _: &str, _: Timestamp) -> Result<(), BackendError> {
-        Ok(())
-    }
 }
 
 async fn receiver(code: StatusCode) -> (String, Arc<Mutex<Vec<HeaderMap>>>, std::net::SocketAddr) {
@@ -97,7 +94,7 @@ async fn receiver(code: StatusCode) -> (String, Arc<Mutex<Vec<HeaderMap>>>, std:
 }
 
 fn hooks(url: &str) -> Arc<Webhooks> {
-    let json = json!([{"id": "a", "organization_id": "org_1", "url": url, "secret": "whsec_c2VjcmV0"}]);
+    let json = json!([{"id": "a", "organization_id": "org_1", "url": url, "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}]);
     Arc::new(Webhooks::parse(&json.to_string()).unwrap())
 }
 

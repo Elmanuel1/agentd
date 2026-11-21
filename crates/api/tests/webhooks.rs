@@ -17,7 +17,7 @@ use webhooks::Webhooks;
 
 /// The rig's app, its sessions and vaults sending to one endpoint of the rig's organization.
 fn sending(rig: &Rig) -> axum::Router {
-    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_c2VjcmV0"}]);
+    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}]);
     let webhooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
     rig.replica(&rig.stores, Streaming { webhooks, ..Streaming::default() })
 }

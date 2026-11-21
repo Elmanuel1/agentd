@@ -196,3 +196,13 @@ mod keys;
 mod scheduler;
 mod secrets;
 mod streams;
+
+#[test]
+fn a_webhook_secret_under_24_bytes_stops_the_boot_and_names_the_endpoint() {
+    // SH-49.
+    let short =
+        r#"[{"id": "ep_1", "organization_id": "o", "url": "https://h.test/in", "secret": "whsec_c2VjcmV0"}]"#;
+    let refused = config(&[("AGENTD_WEBHOOK_ENDPOINTS", short)]).unwrap_err();
+    assert_eq!(refused.var, "AGENTD_WEBHOOK_ENDPOINTS");
+    assert_eq!(refused.reason, "endpoint ep_1: the secret decodes to fewer than 24 bytes");
+}

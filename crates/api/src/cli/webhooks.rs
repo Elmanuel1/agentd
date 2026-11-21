@@ -51,7 +51,7 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        let endpoints = r#"[{"id": "ep_1", "organization_id": "org_1", "url": "https://hooks.example.com/a", "secret": "whsec_c2VjcmV0"}]"#;
+        let endpoints = r#"[{"id": "ep_1", "organization_id": "org_1", "url": "https://hooks.example.com/a", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}]"#;
         let all = [
             ("DATABASE_URL", "postgres://agentd@127.0.0.1:1/agentd"),
             ("AGENTD_API_BASE_URL", "http://agentd:8080"),

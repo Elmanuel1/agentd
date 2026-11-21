@@ -1,12 +1,12 @@
 //! `webhook_endpoint_states`: one statement per failed attempt, per disable,
-//! per run of failures ended, and per 10 s read on each replica; the table
-//! holds one row per configured endpoint, so the read takes it whole.
+//! and per 10 s read on each replica; the table holds one row per configured
+//! endpoint, so the read takes it whole. A 2xx ends a run of failures with
+//! its outcome (`queue.rs`).
 
-use chrono::{DateTime, Utc};
 use diesel::QueryableByName;
-use diesel::sql_types::{Array, Bool, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, Bool, Nullable, Text};
 use diesel_async::RunQueryDsl;
-use shared::{BackendError, Timestamp};
+use shared::BackendError;
 use webhooks::states::{Configured, DisabledReason, EndpointState, NativeEndpointStates};
 
 use super::PgWebhooks;
@@ -15,8 +15,8 @@ use super::PgWebhooks;
 struct Row {
     #[diesel(sql_type = Text)]
     endpoint_key: String,
-    #[diesel(sql_type = Nullable<Timestamptz>)]
-    failing_since: Option<DateTime<Utc>>,
+    #[diesel(sql_type = Bool)]
+    failing: bool,
     #[diesel(sql_type = Nullable<Text>)]
     disabled_reason: Option<String>,
 }
@@ -56,7 +56,7 @@ impl NativeEndpointStates for PgWebhooks {
     async fn read(&self) -> Result<Vec<EndpointState>, BackendError> {
         let mut conn = self.backend.diesel.get().await.map_err(BackendError::new)?;
         let rows: Vec<Row> = diesel::sql_query(
-            "SELECT endpoint_key, failing_since, CASE WHEN disabled_at IS NOT NULL THEN disabled_reason END
+            "SELECT endpoint_key, failing_since IS NOT NULL AS failing, CASE WHEN disabled_at IS NOT NULL THEN disabled_reason END
                AS disabled_reason
              FROM webhook_endpoint_states WHERE failing_since IS NOT NULL OR disabled_at IS NOT NULL",
         )
@@ -67,7 +67,7 @@ impl NativeEndpointStates for PgWebhooks {
             .into_iter()
             .map(|r| EndpointState {
                 endpoint_key: r.endpoint_key,
-                failing_since: r.failing_since.map(Timestamp::from_datetime),
+                failing: r.failing,
                 disabled: r
                     .disabled_reason
                     .map(|d| DisabledReason::parse(&d).unwrap_or(DisabledReason::Failing)),
@@ -118,19 +118,6 @@ impl NativeEndpointStates for PgWebhooks {
         .await
         .map_err(BackendError::new)?;
         Ok(disabled.newly)
-    }
-
-    async fn clear_failing(&self, endpoint_key: &str, since: Timestamp) -> Result<(), BackendError> {
-        let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
-        diesel::sql_query(
-            "UPDATE webhook_endpoint_states SET failing_since = NULL WHERE endpoint_key = $1 AND failing_since = $2",
-        )
-        .bind::<Text, _>(endpoint_key)
-        .bind::<Timestamptz, _>(since.as_datetime())
-        .execute(&mut conn)
-        .await
-        .map(drop)
-        .map_err(BackendError::new)
     }
 }
 

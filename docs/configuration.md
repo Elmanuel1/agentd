@@ -57,7 +57,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_RUNTIME_KEYS` | unset (no runtime key) | agentd's runtime keys, `sk-ant-oat01-…`, comma separated, the current one first |
 | `AGENTD_ANTHROPIC_API_KEY` | unset (no Anthropic models) | The loop's key for the Messages API |
 | `AGENTD_OPENROUTER_API_KEY` | unset (no OpenAI-compatible models) | The loop's key for the API at `AGENTD_MODEL_BASE_URL` |
-| `AGENTD_WEBHOOK_ENDPOINTS` | unset (no webhook is sent) | Each organization's webhook endpoints, a JSON array of `{"id", "organization_id", "url", "secret": "whsec_…", "enabled"}` (see [Webhooks](#webhooks)) |
+| `AGENTD_WEBHOOK_ENDPOINTS` | unset (no webhook is sent) | Each organization's webhook endpoints, a JSON array of `{"id", "organization_id", "url", "secret": "whsec_…", "enabled"}`; each secret decodes to at least 24 bytes, or agentd refuses to start and names the endpoint (see [Webhooks](#webhooks)) |
 | `RUST_LOG` | `info` | Log level |
 
 

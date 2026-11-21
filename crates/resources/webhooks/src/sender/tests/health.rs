@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use parking_lot::Mutex;
-use shared::Timestamp;
 
 use super::*;
 use crate::states::{Configured, DisabledReason, EndpointState, NativeEndpointStates};
@@ -16,7 +15,6 @@ struct SlowStates {
     inner: States,
     delay: Mutex<Duration>,
     failing: std::sync::atomic::AtomicBool,
-    clears_fail: std::sync::atomic::AtomicBool,
 }
 
 impl NativeEndpointStates for SlowStates {
@@ -36,12 +34,6 @@ impl NativeEndpointStates for SlowStates {
     }
     async fn disable(&self, e: &Configured, why: DisabledReason) -> Result<bool, BackendError> {
         NativeEndpointStates::disable(&self.inner, e, why).await
-    }
-    async fn clear_failing(&self, k: &str, s: Timestamp) -> Result<(), BackendError> {
-        if self.clears_fail.load(Ordering::SeqCst) {
-            return Err(BackendError::new(std::io::Error::other("down")));
-        }
-        NativeEndpointStates::clear_failing(&self.inner, k, s).await
     }
 }
 
@@ -72,7 +64,7 @@ async fn a_read_that_started_before_a_disable_and_completes_11_s_later_is_discar
     assert!(!health.fresh());
     states.inner.rows.lock().push(EndpointState {
         endpoint_key: "a".into(),
-        failing_since: None,
+        failing: false,
         disabled: Some(DisabledReason::Redirect),
     });
     *states.delay.lock() = Duration::ZERO;
@@ -103,21 +95,4 @@ async fn a_delivery_with_under_15_s_of_claim_left_is_released_unsent() {
     send.deliver(due("whe_2", &url, 0), tokio::time::Instant::now() + Duration::from_secs(60)).await;
     assert_eq!(queue.released.lock().len(), 2, "an open breaker releases unsent");
     assert!(got.lock().is_empty());
-}
-
-#[tokio::test]
-async fn a_run_of_failures_that_cannot_be_ended_keeps_the_read_and_is_ended_by_the_next() {
-    let states = Arc::new(SlowStates::default());
-    let since = Timestamp::now();
-    let row = EndpointState { endpoint_key: "a".into(), failing_since: Some(since), disabled: None };
-    states.inner.rows.lock().push(row);
-    let health = crate::sender::health::Health::new(states.clone());
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    health.delivered("a").await.unwrap();
-    states.clears_fail.store(true, Ordering::SeqCst);
-    health.refresh().await.unwrap();
-    assert!(health.fresh(), "the read is kept: posts go on");
-    states.clears_fail.store(false, Ordering::SeqCst);
-    health.refresh().await.unwrap();
-    assert!(health.fresh());
 }

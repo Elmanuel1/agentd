@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use shared::{BackendError, Timestamp};
+use shared::BackendError;
 use tokio::time::Instant;
 
 use crate::states::{Configured, DisabledReason, EndpointStates};
@@ -19,21 +19,18 @@ pub(crate) const FRESH: Duration = Duration::from_secs(11);
 struct Snapshot {
     /// When the read started; none before the first good read.
     read_at: Option<Instant>,
-    failing: HashMap<String, Timestamp>,
     disabled: HashMap<String, DisabledReason>,
 }
 
-/// The endpoint states as last read, with what this replica learned since.
+/// The endpoint states as last read, with the disables this replica made since.
 pub(crate) struct Health {
     states: Arc<dyn EndpointStates>,
     snapshot: Mutex<Snapshot>,
-    /// This replica's last 2xx per endpoint, which ends a run of failures it read later.
-    last_ok: Mutex<HashMap<String, Timestamp>>,
 }
 
 impl Health {
     pub(crate) fn new(states: Arc<dyn EndpointStates>) -> Self {
-        Self { states, snapshot: Mutex::default(), last_ok: Mutex::default() }
+        Self { states, snapshot: Mutex::default() }
     }
 
     pub(crate) fn states(&self) -> &dyn EndpointStates {
@@ -44,8 +41,7 @@ impl Health {
         self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Read the shared states, then end each run of failures this replica saw a 2xx after; a run
-    /// that cannot be ended stays in the snapshot until a later read ends it.
+    /// Read the shared states.
     pub(crate) async fn refresh(&self) -> Result<(), BackendError> {
         let started = Instant::now();
         let rows = self.states.read().await?;
@@ -54,25 +50,8 @@ impl Health {
                 "the endpoint state read ran late; discarded",
             )));
         }
-        let mut failing: HashMap<String, Timestamp> =
-            rows.iter().filter_map(|r| Some((r.endpoint_key.clone(), r.failing_since?))).collect();
-        let disabled = rows.iter().filter_map(|r| Some((r.endpoint_key.clone(), r.disabled?))).collect();
-        let ended: Vec<(String, Timestamp)> = {
-            let last_ok = self.last_ok.lock().unwrap_or_else(PoisonError::into_inner);
-            let ok_after = |key: &String, since: &Timestamp| last_ok.get(key).is_some_and(|ok| ok > since);
-            failing.iter().filter(|(k, s)| ok_after(k, s)).map(|(k, s)| (k.clone(), *s)).collect()
-        };
-        for (key, since) in ended {
-            match self.states.clear_failing(&key, since).await {
-                Ok(()) => {
-                    failing.remove(&key);
-                }
-                Err(e) => {
-                    tracing::warn!(endpoint = %key, error = %e, "webhooks: an endpoint's failing time could not be cleared; the next read tries again")
-                }
-            }
-        }
-        *self.snapshot() = Snapshot { read_at: Some(started), failing, disabled };
+        let disabled = rows.into_iter().filter_map(|r| Some((r.endpoint_key, r.disabled?))).collect();
+        *self.snapshot() = Snapshot { read_at: Some(started), disabled };
         Ok(())
     }
 
@@ -111,15 +90,5 @@ impl Health {
             self.snapshot().disabled.insert(endpoint.endpoint_key.clone(), DisabledReason::Failing);
         }
         Ok(disabled)
-    }
-
-    /// A 2xx from `key`: a run of failures this replica knows of ends now.
-    pub(crate) async fn delivered(&self, key: &str) -> Result<(), BackendError> {
-        self.last_ok.lock().unwrap_or_else(PoisonError::into_inner).insert(key.to_owned(), Timestamp::now());
-        let since = self.snapshot().failing.remove(key);
-        match since {
-            Some(since) => self.states.clear_failing(key, since).await,
-            None => Ok(()),
-        }
     }
 }

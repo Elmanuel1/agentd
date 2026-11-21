@@ -1,13 +1,13 @@
 //! Each endpoint's health, shared by every replica in
-//! `webhook_endpoint_states`: since when every attempt has failed, and
+//! `webhook_endpoint_states`: whether a run of failures is open, and
 //! whether, when and why it is disabled. Live disables an endpoint at once
 //! on a 3xx or a non-public address; a run of failures disables it after
 //! 120 h, Svix's window, as live states none (D3).
 
 use std::future::Future;
 
+use shared::BackendError;
 use shared::ports::BoxFuture;
-use shared::{BackendError, Timestamp};
 
 /// Why an endpoint is disabled; `webhook_endpoint_states.disabled_reason`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,8 +41,8 @@ impl DisabledReason {
 pub struct EndpointState {
     /// The endpoint.
     pub endpoint_key: String,
-    /// When its current run of failures began.
-    pub failing_since: Option<Timestamp>,
+    /// Whether a run of failures is open.
+    pub failing: bool,
     /// Why it is disabled, when it is.
     pub disabled: Option<DisabledReason>,
 }
@@ -72,12 +72,6 @@ pub trait EndpointStates: Send + Sync {
         endpoint: &'a Configured,
         why: DisabledReason,
     ) -> BoxFuture<'a, Result<bool, BackendError>>;
-    /// End the run of failures that began at `since`.
-    fn clear_failing<'a>(
-        &'a self,
-        endpoint_key: &'a str,
-        since: Timestamp,
-    ) -> BoxFuture<'a, Result<(), BackendError>>;
 }
 
 /// What an adapter implements to provide [`EndpointStates`]; the methods are documented there.
@@ -90,11 +84,6 @@ pub trait NativeEndpointStates: Send + Sync {
         endpoint: &Configured,
         why: DisabledReason,
     ) -> impl Future<Output = Result<bool, BackendError>> + Send;
-    fn clear_failing(
-        &self,
-        endpoint_key: &str,
-        since: Timestamp,
-    ) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 
 impl<T: NativeEndpointStates> EndpointStates for T {
@@ -113,12 +102,5 @@ impl<T: NativeEndpointStates> EndpointStates for T {
         why: DisabledReason,
     ) -> BoxFuture<'a, Result<bool, BackendError>> {
         Box::pin(NativeEndpointStates::disable(self, endpoint, why))
-    }
-    fn clear_failing<'a>(
-        &'a self,
-        endpoint_key: &'a str,
-        since: Timestamp,
-    ) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(NativeEndpointStates::clear_failing(self, endpoint_key, since))
     }
 }

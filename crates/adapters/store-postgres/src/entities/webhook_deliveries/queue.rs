@@ -1,7 +1,8 @@
 //! The claim and every write fenced on it. Two instances never hold one
 //! row: the select's `FOR NO KEY UPDATE SKIP LOCKED` and the update run in
 //! one transaction, the update repeats the due conditions so a row claimed in
-//! between is not returned, and every time is Postgres `now()` (D19).
+//! between is not returned, and every time is Postgres `now()` (D19). A 2xx's
+//! outcome and the end of its endpoint's run of failures commit together.
 
 use chrono::{DateTime, Utc};
 use diesel::QueryableByName;
@@ -53,27 +54,22 @@ impl From<Taken> for Claimed {
 /// The fence every write after a claim carries: `$1` to `$3`.
 const CLAIMED: &str = "webhook_id = $1 AND endpoint_key = $2 AND claim_seq = $3";
 
+type Fenced<'q> = diesel::query_builder::BoxedSqlQuery<'q, diesel::pg::Pg, diesel::query_builder::SqlQuery>;
+
+/// `sql` bound to `claim` as `$1` to `$3`; its own binds follow from `$4`.
+fn on_claim<'q>(sql: String, claim: &'q ClaimRef) -> Fenced<'q> {
+    diesel::sql_query(sql)
+        .into_boxed()
+        .bind::<Text, _>(claim.webhook_id.as_str())
+        .bind::<Text, _>(claim.endpoint_key.as_str())
+        .bind::<BigInt, _>(claim.claim_seq)
+}
+
 impl PgWebhooks {
-    /// Run `sql`, fenced on `claim` and taking its own binds from `$4` on through `bind`.
-    async fn fenced<'q>(
-        &self,
-        sql: String,
-        claim: &'q ClaimRef,
-        bind: impl FnOnce(
-            diesel::query_builder::BoxedSqlQuery<'q, diesel::pg::Pg, diesel::query_builder::SqlQuery>,
-        ) -> diesel::query_builder::BoxedSqlQuery<
-            'q,
-            diesel::pg::Pg,
-            diesel::query_builder::SqlQuery,
-        >,
-    ) -> Result<bool, BackendError> {
-        let query = diesel::sql_query(sql)
-            .into_boxed()
-            .bind::<Text, _>(claim.webhook_id.as_str())
-            .bind::<Text, _>(claim.endpoint_key.as_str())
-            .bind::<BigInt, _>(claim.claim_seq);
+    /// Run `query`; `true` when the claim still held the row.
+    async fn fenced(&self, query: Fenced<'_>) -> Result<bool, BackendError> {
         let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
-        let written = bind(query).execute(&mut conn).await.map_err(BackendError::new)?;
+        let written = query.execute(&mut conn).await.map_err(BackendError::new)?;
         Ok(written == 1)
     }
 }
@@ -122,15 +118,14 @@ impl NativeDeliveryQueue for PgWebhooks {
 
     async fn release(&self, claim: &ClaimRef) -> Result<bool, BackendError> {
         let sql = format!("UPDATE webhook_deliveries SET claimed_until = NULL WHERE {CLAIMED}");
-        self.fenced(sql, claim, |q| q).await
+        self.fenced(on_claim(sql, claim)).await
     }
 
     async fn drop_unsent(&self, claim: &ClaimRef, why: &str) -> Result<bool, BackendError> {
         let sql = format!(
             "UPDATE webhook_deliveries SET dropped_at = now(), claimed_until = NULL, last_error = $4 WHERE {CLAIMED}"
         );
-        let why = why.to_owned();
-        self.fenced(sql, claim, move |q| q.bind::<Text, _>(why)).await
+        self.fenced(on_claim(sql, claim).bind::<Text, _>(why.to_owned())).await
     }
 
     async fn record(&self, claim: &ClaimRef, attempted: &Attempted) -> Result<bool, BackendError> {
@@ -145,16 +140,29 @@ impl NativeDeliveryQueue for PgWebhooks {
              WHERE {CLAIMED}"
         );
         let status = attempted.status.and_then(|s| i16::try_from(s).ok());
-        let error = attempted.error.clone();
-        let next = attempted.next;
-        self.fenced(sql, claim, move |q| {
-            let q = q.bind::<Nullable<SmallInt>, _>(status).bind::<Nullable<Text>, _>(error);
-            match next {
-                Next::Retry(wait) => q.bind::<Double, _>(wait.as_secs_f64()),
-                Next::Delivered | Next::Dropped => q,
+        let query = on_claim(sql, claim)
+            .bind::<Nullable<SmallInt>, _>(status)
+            .bind::<Nullable<Text>, _>(attempted.error.clone());
+        let query = match attempted.next {
+            Next::Retry(wait) => query.bind::<Double, _>(wait.as_secs_f64()),
+            Next::Delivered | Next::Dropped => query,
+        };
+        let delivered = attempted.next == Next::Delivered;
+        let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
+        conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            let written = query.execute(c).await?;
+            // With the outcome, so the end of a run survives this replica stopping.
+            let ended = diesel::sql_query(
+                "UPDATE webhook_endpoint_states SET failing_since = NULL WHERE endpoint_key = $1 AND failing_since IS NOT NULL",
+            )
+            .bind::<Text, _>(claim.endpoint_key.as_str());
+            if delivered {
+                ended.execute(c).await?;
             }
+            Ok(written == 1)
         })
         .await
+        .map_err(BackendError::new)
     }
 
     async fn oldest_due(&self) -> Result<Option<Timestamp>, BackendError> {

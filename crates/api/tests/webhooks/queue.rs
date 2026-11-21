@@ -118,7 +118,7 @@ async fn receiver(
 fn hooks(endpoints: &[(&str, &str)]) -> Arc<Webhooks> {
     let list: Vec<Value> = endpoints
         .iter()
-        .map(|(k, url)| json!({"id": k, "organization_id": "org_hooks", "url": url, "secret": "whsec_c2VjcmV0"}))
+        .map(|(k, url)| json!({"id": k, "organization_id": "org_hooks", "url": url, "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}))
         .collect();
     Arc::new(Webhooks::parse(&Value::Array(list).to_string()).unwrap())
 }
@@ -448,18 +448,72 @@ async fn failing_for_120_h_disables_and_a_2xx_in_between_restarts_the_clock() {
         )
     };
     exec(&db.pg, &set_since(119)).await;
-    let since = |states: Vec<webhooks::states::EndpointState>| {
-        states.into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key).and_then(|s| s.failing_since)
-    };
-    let run = since(db.store.read().await.unwrap()).unwrap();
-    db.store.clear_failing(&endpoint.endpoint_key, run).await.unwrap();
-    assert_eq!(since(db.store.read().await.unwrap()), None, "a 2xx ends the run");
+    assert!(failing(&db, &endpoint.endpoint_key).await);
+    delivered(&db, &endpoint.endpoint_key).await;
+    assert!(!failing(&db, &endpoint.endpoint_key).await, "a 2xx ends the run");
     assert!(!db.store.failed(&endpoint).await.unwrap(), "a new run starts now");
     exec(&db.pg, &set_since(121)).await;
     assert!(db.store.failed(&endpoint).await.unwrap(), "120 h of failures disable it");
     assert!(!db.store.failed(&endpoint).await.unwrap(), "once");
     let state = db.store.read().await.unwrap().into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key);
     assert_eq!(state.unwrap().disabled, Some(DisabledReason::Failing));
+}
+
+/// Whether `key` has a run of failures open, as a replica's state read finds it.
+async fn failing(db: &Db, key: &str) -> bool {
+    db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == key && s.failing)
+}
+
+/// One delivery to `key`, claimed and answered 2xx through the store.
+async fn delivered(db: &Db, key: &str) {
+    insert(&db.pg, key, "https://hooks.agentd.test/in", 1).await;
+    let c = db.store.claim(10, &[]).await.unwrap().into_iter().find(|c| c.claim.endpoint_key == key).unwrap();
+    let ok = Attempted { next: Next::Delivered, status: Some(204), error: None };
+    assert!(db.store.record(&c.claim, &ok).await.unwrap());
+}
+
+#[tokio::test]
+async fn a_2xx_recorded_just_before_its_replica_stops_still_ends_the_run() {
+    let Some(db) = db().await else { return };
+    let key = format!("ep_{}", common::stamp());
+    let (url, got, addr) = receiver(StatusCode::NO_CONTENT, Duration::ZERO).await;
+    let hooks = hooks(&[(key.as_str(), url.as_str())]);
+    // The sender's own boot configure then finds the digest unchanged and keeps the run.
+    let endpoint = hooks.endpoint(&key).unwrap().configured();
+    db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
+    db.store.failed(&endpoint).await.unwrap();
+    let ids = insert(&db.pg, &key, &url, 1).await;
+    let sender = start(&db, hooks, vec![addr]);
+    until("the 2xx is recorded", async || row(&db.pg, &ids[0]).await["delivered_at"].is_string()).await;
+    sender.stop().await;
+    assert_eq!(got.lock().len(), 1);
+    assert!(!failing(&db, &key).await, "another replica's read finds the run ended");
+}
+
+#[tokio::test]
+async fn a_failure_after_a_2xx_starts_the_run_at_that_failure() {
+    let Some(db) = db().await else { return };
+    let key = format!("ep_{}", common::stamp());
+    let endpoint = configured(&key, "d1");
+    db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
+    db.store.failed(&endpoint).await.unwrap();
+    exec(&db.pg, &format!("UPDATE webhook_endpoint_states SET failing_since = now() - interval '100 hours' WHERE endpoint_key = '{key}'")).await;
+    delivered(&db, &key).await;
+    assert!(!db.store.failed(&endpoint).await.unwrap());
+    #[derive(diesel::QueryableByName)]
+    struct Age {
+        #[diesel(sql_type = diesel::sql_types::Double)]
+        seconds: f64,
+    }
+    let mut conn = db.pg.diesel.get().await.unwrap();
+    let age: Age = diesel::sql_query(
+        "SELECT extract(epoch FROM now() - failing_since)::float8 AS seconds FROM webhook_endpoint_states WHERE endpoint_key = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(&key)
+    .get_result(&mut conn)
+    .await
+    .unwrap();
+    assert!(age.seconds < 60.0, "the run starts at the failure, not 100 h back: {}", age.seconds);
 }
 
 #[tokio::test]
@@ -485,7 +539,7 @@ async fn the_operator_enable_clears_a_disable_and_its_failing_time() {
     db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
     let state =
         async || db.store.read().await.unwrap().into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key);
-    assert!(state().await.is_some_and(|s| s.disabled.is_some() && s.failing_since.is_some()));
+    assert!(state().await.is_some_and(|s| s.disabled.is_some() && s.failing));
     assert!(db.store.enable(&endpoint.endpoint_key).await.unwrap());
     assert_eq!(state().await, None, "neither disabled nor failing");
     assert!(!db.store.enable("ep_never_sent").await.unwrap(), "an endpoint agentd never sent to");

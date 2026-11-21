@@ -87,9 +87,6 @@ impl Dispatch {
         let attempted = match answer {
             Answer::Ok(status) => {
                 self.breakers.succeeded(key);
-                if let Err(e) = self.health.delivered(key).await {
-                    tracing::warn!(endpoint = %key, error = %e, "webhooks: an endpoint's failing time could not be cleared");
-                }
                 Attempted { next: Next::Delivered, status: Some(status), error: None }
             }
             Answer::Redirect(status) => {

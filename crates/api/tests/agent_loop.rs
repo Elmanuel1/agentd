@@ -841,7 +841,7 @@ async fn a_file_rubric_reaches_the_grader_and_a_grader_with_no_verdict_fails_the
 
 /// One endpoint for the rig's organization.
 fn hooks(rig: &Rig) -> Arc<webhooks::Webhooks> {
-    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_c2VjcmV0"}]);
+    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}]);
     Arc::new(webhooks::Webhooks::parse(&json.to_string()).unwrap())
 }
 

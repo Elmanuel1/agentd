@@ -46,7 +46,7 @@ async fn a_claimed_delivery_is_signed_and_sent_with_live_s_headers() {
         ("Claude-Platform", "whe_1")
     );
     let ts: i64 = h["webhook-timestamp"].to_str().unwrap().parse().unwrap();
-    let secret = SigningSecret::parse("whsec_c2VjcmV0").unwrap();
+    let secret = SigningSecret::parse("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").unwrap();
     assert_eq!(h["webhook-signature"].to_str().unwrap(), sign(&secret, "whe_1", ts, "{}"));
     let recorded = rig.queue.recorded.lock().clone();
     let delivered = Attempted { next: Next::Delivered, status: Some(200), error: None };
@@ -145,11 +145,8 @@ async fn a_delivery_whose_claims_lapsed_three_times_or_whose_endpoint_is_disable
     let (url, got, addr) = receiver(StatusCode::OK).await;
     let rig = start(&url, vec![addr], vec![due("whe_3", &url, 3)]);
     rig.until(|q| !q.dropped.lock().is_empty()).await;
-    let disabled = EndpointState {
-        endpoint_key: "a".into(),
-        failing_since: None,
-        disabled: Some(DisabledReason::Failing),
-    };
+    let disabled =
+        EndpointState { endpoint_key: "a".into(), failing: false, disabled: Some(DisabledReason::Failing) };
     let rig2 = start_with(&url, vec![addr], vec![due("whe_4", &url, 0)], vec![disabled]);
     rig2.until(|q| !q.dropped.lock().is_empty() || !q.recorded.lock().is_empty()).await;
     assert!(got.lock().is_empty());

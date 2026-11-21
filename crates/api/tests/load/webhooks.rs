@@ -154,10 +154,10 @@ async fn the_sender_scales_with_instances() {
                     1 => &dead,
                     _ => &fast,
                 };
-                json!({"id": format!("ep_{o}"), "organization_id": format!("org_{o}"), "url": url, "secret": "whsec_c2VjcmV0"})
+                json!({"id": format!("ep_{o}"), "organization_id": format!("org_{o}"), "url": url, "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"})
             })
             .collect();
-        endpoints.push(json!({"id": "ep_noisy", "organization_id": "org_noisy", "url": fast, "secret": "whsec_c2VjcmV0"}));
+        endpoints.push(json!({"id": "ep_noisy", "organization_id": "org_noisy", "url": fast, "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}));
         let hooks = Arc::new(Webhooks::parse(&Value::Array(endpoints).to_string()).unwrap());
         let (stop, stopping) = watch::channel(false);
         let claims = Arc::new(Claims::default());
