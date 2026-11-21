@@ -62,13 +62,13 @@ impl Dispatch {
             Ok(url) => self.guard.client(url, TIMEOUT).await,
             Err(e) => Err(e),
         };
-        if let Err(NetError::Internal(addr)) = &client {
-            self.disable(endpoint, DisabledReason::PrivateAddress, addr).await;
-            return self.drop_unsent(&c.claim, "the endpoint resolves to a non-public address").await;
-        }
         // Checked after the address lookup, which can wait on DNS while a state read disables it.
         if self.health.disabled(key) {
             return self.drop_unsent(&c.claim, "the endpoint is disabled").await;
+        }
+        if let Err(NetError::Internal(addr)) = &client {
+            self.disable(endpoint, DisabledReason::PrivateAddress, addr).await;
+            return self.drop_unsent(&c.claim, "the endpoint resolves to a non-public address").await;
         }
         let ready = self.health.fresh() && deadline.saturating_duration_since(Instant::now()) >= MARGIN;
         if !ready || self.breakers.pass(&key.to_owned()) != Pass::Go {

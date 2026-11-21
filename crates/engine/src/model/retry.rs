@@ -3,9 +3,12 @@
 //! never sooner than the provider's `retry-after`, up to the attempts and
 //! inside the step's deadline. Each provider has a breaker on this replica
 //! (SH-47): 5 retryable failures in a row, across every step, open it for
-//! 30 s or the provider's `retry-after` if later. While it is open a step
+//! 30 s or the provider's `retry-after` if later, at most 5 minutes; an
+//! attempt that never answers counts as a failure. While it is open a step
 //! waits instead of calling, spending none of its tries; only a step whose
-//! tries or deadline run out fails (SH-48).
+//! tries or deadline run out fails (SH-48). Completions alone go through the
+//! breaker: a model's window can come from cache, so its lookup is neither
+//! held nor counted.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -84,7 +87,6 @@ impl Retry {
         }
     }
 
-    /// Try until an answer, counting each on `breakers` when given.
     async fn attempts<T, F, Fut>(
         &self,
         provider: &'static str,
@@ -143,7 +145,6 @@ fn succeeded(breakers: Option<&Breakers<&'static str>>, provider: &'static str) 
     }
 }
 
-/// Count a failed attempt on `breakers`, when given.
 fn failed(breakers: Option<&Breakers<&'static str>>, provider: &'static str, hold: Option<Duration>) {
     if breakers.is_some_and(|b| b.failed(&provider, hold)) {
         crate::metrics::model_breaker_opened(provider);

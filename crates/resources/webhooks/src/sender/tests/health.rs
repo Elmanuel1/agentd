@@ -16,6 +16,8 @@ struct SlowStates {
     delay: Mutex<Duration>,
     failing: std::sync::atomic::AtomicBool,
     disable_delay: Mutex<Duration>,
+    /// Waits for the next disables, in turn; once spent, `disable_delay`.
+    disable_delays: Mutex<Vec<Duration>>,
 }
 
 impl NativeEndpointStates for SlowStates {
@@ -34,7 +36,11 @@ impl NativeEndpointStates for SlowStates {
         NativeEndpointStates::failed(&self.inner, e).await
     }
     async fn disable(&self, e: &Configured, why: DisabledReason) -> Result<bool, BackendError> {
-        let delay = *self.disable_delay.lock();
+        let next = {
+            let mut delays = self.disable_delays.lock();
+            (!delays.is_empty()).then(|| delays.remove(0))
+        };
+        let delay = next.unwrap_or(*self.disable_delay.lock());
         tokio::time::sleep(delay).await;
         NativeEndpointStates::disable(&self.inner, e, why).await
     }
@@ -110,6 +116,27 @@ async fn a_read_that_runs_while_a_disable_is_written_does_not_undo_it() {
     tokio::time::advance(Duration::from_secs(2)).await;
     disabling.await.unwrap().unwrap();
     assert!(health.disabled("a"), "the disable is kept once its write returns");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disable_written_while_another_is_pending_keeps_the_endpoint_disabled() {
+    let states = Arc::new(SlowStates::default());
+    let health = Arc::new(crate::sender::health::Health::new(states.clone()));
+    *states.disable_delays.lock() = vec![Duration::from_secs(1), Duration::from_secs(5)];
+    let endpoint = Configured { endpoint_key: "a".into(), org_id: "org_1".into(), digest: "d".into() };
+    let disable = |why| {
+        let (health, endpoint) = (health.clone(), endpoint.clone());
+        tokio::spawn(async move { health.disable(&endpoint, why).await })
+    };
+    let (first, second) = (disable(DisabledReason::Redirect), disable(DisabledReason::PrivateAddress));
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    first.await.unwrap().unwrap();
+    health.refresh().await.unwrap();
+    assert!(health.disabled("a"), "the second write is still pending");
+    tokio::time::advance(Duration::from_secs(4)).await;
+    second.await.unwrap().unwrap();
+    assert!(health.disabled("a"));
 }
 
 #[tokio::test]

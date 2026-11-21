@@ -142,4 +142,10 @@ async fn a_window_lookup_neither_opens_nor_closes_the_breaker() {
     let before = Instant::now();
     assert!(ask(&r, &flaky).await.is_ok());
     assert_eq!(Instant::now(), before, "the breaker stayed closed");
+    let opener = Flaky::new(5, ModelError::Retryable("529".into()));
+    assert!(ask(&r, &opener).await.is_err(), "5 failed completions open it");
+    assert_eq!(r.window(&opener, "claude-haiku-4-5").await.unwrap(), 200_000);
+    let opened = Instant::now();
+    assert!(ask(&r, &opener).await.is_ok());
+    assert!(Instant::now() - opened >= breaker_open(), "a window lookup did not close it");
 }

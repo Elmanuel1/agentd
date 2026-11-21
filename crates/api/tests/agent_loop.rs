@@ -791,6 +791,107 @@ async fn a_step_running_at_sigterm_is_released_due_at_once_when_the_grace_ends()
     assert!(!step.leased && step.due_in <= 0, "due at once, not after its lease: {}", step.due_in);
 }
 
+/// A step queue whose claims take `.1` once `.2` is set, as on a slow database.
+struct SlowClaims(Arc<dyn sessions::steps::Steps>, Duration, std::sync::atomic::AtomicBool);
+
+impl sessions::steps::NativeSteps for SlowClaims {
+    async fn claim(
+        &self,
+        owner: &str,
+        lease: i64,
+        per_workspace: i64,
+    ) -> Result<Option<sessions::steps::Claim>, StoreError> {
+        if self.2.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(self.1).await;
+        }
+        self.0.claim(owner, lease, per_workspace).await
+    }
+    async fn write(
+        &self,
+        claim: &sessions::steps::Claim,
+        lease: i64,
+        write: sessions::steps::StepWrite<'_>,
+    ) -> Result<bool, StoreError> {
+        self.0.write(claim, lease, write).await
+    }
+    async fn commit(
+        &self,
+        claim: &sessions::steps::Claim,
+        end: sessions::steps::StepEnd,
+        write: sessions::steps::StepWrite<'_>,
+    ) -> Result<bool, StoreError> {
+        self.0.commit(claim, end, write).await
+    }
+    async fn defer(
+        &self,
+        claim: &sessions::steps::Claim,
+        wait: sessions::steps::Wait,
+    ) -> Result<(), StoreError> {
+        self.0.defer(claim, wait).await
+    }
+    async fn release_all(&self, owner: &str, claims: &[sessions::steps::Claim]) -> Result<u64, StoreError> {
+        self.0.release_all(owner, claims).await
+    }
+    async fn counts(&self) -> Result<sessions::steps::StepCounts, StoreError> {
+        self.0.counts().await
+    }
+}
+
+#[tokio::test]
+async fn a_claim_running_at_sigterm_counts_inside_the_one_grace() {
+    // SH-7, SH-8: the grace runs from the stop, not from when a slow claim returns.
+    let Some(rig) = Rig::new().await else { return };
+    let model = Scripted::new(vec![Say::Hold]);
+    let slow = Arc::new(SlowClaims(rig.stores.steps.clone(), Duration::from_secs(3), false.into()));
+    let tune = Tune { grace: Duration::from_secs(2), steps: 2, queue: Some(slow.clone()), ..Tune::default() };
+    let (app, mut worker) = worker(&rig, model.clone(), tune).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, json!([])).await;
+    send(&app, &s, message("think for a while")).await;
+    for _ in 0..100 {
+        if !model.asked.lock().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The second sender's next claim is now slow; the stop lands while it runs.
+    slow.2.store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    let stopped = tokio::time::Instant::now();
+    worker.stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), &mut worker.task).await.unwrap().unwrap();
+    assert!(stopped.elapsed() < Duration::from_millis(2_500), "inside one grace: {:?}", stopped.elapsed());
+    let step = step_of(&s).await.expect("the step stays queued");
+    assert!(!step.leased && step.due_in <= 0, "released, due at once: {}", step.due_in);
+}
+
+#[tokio::test]
+async fn a_step_claimed_after_sigterm_is_released_not_run() {
+    // SH-7, SH-8: a claim that lands after the stop starts nothing.
+    let Some(rig) = Rig::new().await else { return };
+    let model = Scripted::new(vec![Say::Hold, Say::Text("never")]);
+    let slow = Arc::new(SlowClaims(rig.stores.steps.clone(), Duration::from_millis(500), false.into()));
+    let tune = Tune { grace: Duration::from_secs(2), steps: 2, queue: Some(slow.clone()), ..Tune::default() };
+    let (app, mut worker) = worker(&rig, model.clone(), tune).await;
+    let env = rig.environment("cloud").await;
+    let (held, late) = (session(&app, &env, json!([])).await, session(&app, &env, json!([])).await);
+    send(&app, &held, message("think for a while")).await;
+    for _ in 0..100 {
+        if !model.asked.lock().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    slow.2.store(true, std::sync::atomic::Ordering::SeqCst);
+    send(&app, &late, message("hello")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    worker.stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), &mut worker.task).await.unwrap().unwrap();
+    assert_eq!(model.asked.lock().len(), 1, "the late step never called the model");
+    let step = step_of(&late).await.expect("the late step stays queued");
+    assert!(!step.leased && step.due_in <= 0, "released, due at once: {}", step.due_in);
+}
+
 #[tokio::test]
 async fn a_loop_replica_serves_no_route() {
     // R-1: only `api` and `all` replicas serve the API.
