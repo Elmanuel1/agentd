@@ -172,4 +172,17 @@ fn a_reply_with_iterations_counts_each_iteration_once() {
             {"type": "message", "input_tokens": 23000, "output_tokens": 1000}]},
     }));
     assert_eq!((reply.usage.input_tokens, reply.usage.output_tokens), (203_000, 4_500));
+    let cached = parse(&json!({
+        "content": [], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 50, "iterations": [
+            {"type": "compaction", "input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 70},
+            {"type": "message", "input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 50}]},
+    }));
+    assert_eq!(cached.usage.cache_read_input_tokens, 120, "a cache count the iterations carry is their sum");
+    let uncached = parse(&json!({
+        "content": [], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 2, "cache_read_input_tokens": 50,
+                  "iterations": [{"type": "message", "input_tokens": 10, "output_tokens": 2}]},
+    }));
+    assert_eq!(uncached.usage.cache_read_input_tokens, 50, "one they leave out comes from the top level");
 }

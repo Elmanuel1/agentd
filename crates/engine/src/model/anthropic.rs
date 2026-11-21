@@ -1,7 +1,6 @@
 //! The Anthropic Messages API client.
 
 use serde_json::{Value, json};
-use sessions::events::ModelUsage;
 
 use super::{Block, Message, ModelError, ModelRequest, ModelResponse, NativeModelClient, Role, StopKind};
 
@@ -155,19 +154,7 @@ pub fn parse(v: &Value) -> ModelResponse {
         Some("compaction") => StopKind::Compaction,
         _ => StopKind::EndTurn,
     };
-    let u = &crate::json::at(v, "/usage");
-    let n = |u: &Value, f: &str| crate::json::at(u, f).as_u64().unwrap_or(0);
-    let mut usage = ModelUsage {
-        cache_creation_input_tokens: n(u, "/cache_creation_input_tokens"),
-        cache_read_input_tokens: n(u, "/cache_read_input_tokens"),
-        input_tokens: n(u, "/input_tokens"),
-        output_tokens: n(u, "/output_tokens"),
-    };
-    // The top level leaves compaction out; the iterations' sum is the call's total.
-    if let Some(its) = crate::json::at(u, "/iterations").as_array().filter(|a| !a.is_empty()) {
-        usage.input_tokens = its.iter().map(|it| n(it, "/input_tokens")).sum();
-        usage.output_tokens = its.iter().map(|it| n(it, "/output_tokens")).sum();
-    }
+    let usage = usage::read(crate::json::at(v, "/usage"));
     let cost = super::list_cost::of(crate::json::at(v, "/model").as_str().unwrap_or_default(), &usage);
     ModelResponse { content, stop, usage, thought, cost }
 }
@@ -198,6 +185,8 @@ impl NativeModelClient for AnthropicModel {
         self.read_window(model).await
     }
 }
+
+mod usage;
 
 #[cfg(test)]
 mod tests;
