@@ -3,7 +3,7 @@
 /// Every wire `error.type` the live API emits, with its canonical HTTP status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorType {
-    /// 400 — also used for 409 conflicts other than typed ones, and for
+    /// 400, also used for 409 conflicts other than typed ones, and for
     /// malformed IDs (live probe: bad agent id → 400, **not** 404).
     InvalidRequest,
     /// 401
@@ -12,9 +12,9 @@ pub enum ErrorType {
     Permission,
     /// 404
     NotFound,
-    /// 409 — memory create at an occupied path.
+    /// 409: memory create at an occupied path.
     MemoryPathConflict,
-    /// 409 — memory update precondition failed.
+    /// 409: memory update precondition failed.
     MemoryPreconditionFailed,
     /// 413
     RequestTooLarge,
@@ -22,7 +22,7 @@ pub enum ErrorType {
     RateLimit,
     /// 500
     Api,
-    /// 504 — the response did not start before the server's time limit.
+    /// 504: the response did not start before the server's time limit.
     Timeout,
     /// 529
     Overloaded,

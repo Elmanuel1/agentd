@@ -1469,6 +1469,7 @@ dependencies = [
  "environments",
  "files",
  "opentelemetry",
+ "opentelemetry_sdk",
  "parking_lot 0.13.0",
  "rand 0.10.4",
  "reqwest",

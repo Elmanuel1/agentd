@@ -1,6 +1,7 @@
 //! The request deadline (SH-11, SH-12): a handler past it answers 504
 //! `timeout_error` and its open transaction is rolled back; a stream is not
-//! cut. The rollback case is gated by `AGENTD_PG_TESTS=1`.
+//! cut. A request whose checkout timed out is 529 (D14). The rollback case is
+//! gated by `AGENTD_PG_TESTS=1`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -61,7 +62,7 @@ async fn a_request_whose_checkout_timed_out_answers_529_overloaded_error() {
             StatusCode::INTERNAL_SERVER_ERROR
         }),
     );
-    let (st, body) = get_once(deadline::bounded(waited, Duration::from_secs(5)), "/busy").await;
+    let (st, body) = get_once(waited.layer(axum::middleware::from_fn(deadline::shed)), "/busy").await;
     assert_eq!(st.as_u16(), 529);
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(body["error"]["type"], "overloaded_error");

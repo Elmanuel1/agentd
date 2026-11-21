@@ -10,7 +10,8 @@
 //! 4. [`methods`]: HEAD and unserved methods are 405s with the live body; an
 //!    unknown path is the live 404 (`request_id: null`, live auth/08),
 //! 5. [`limits`]: each module's body cap, a 413 above it, and [`deadline`]:
-//!    each module's request deadline, a 504 past it,
+//!    each module's request deadline, a 504 past it, and around auth and
+//!    every route a 529 for a request whose database checkout timed out,
 //! 6. [`telemetry::http`]: a span and a duration sample per request, inside
 //!    the request id so both carry it.
 //!
@@ -67,6 +68,7 @@ pub fn wrap(
         .route_layer(from_fn(contract::version))
         .route_layer(from_fn(methods::reject_head))
         .route_layer(from_fn_with_state(credentials, auth::auth))
+        .route_layer(from_fn(deadline::shed))
         .fallback(|| async { shared::unknown_route_response() })
         .layer(from_fn_with_state(metrics, telemetry::http::observe))
         .layer(from_fn(request_id::request_id))

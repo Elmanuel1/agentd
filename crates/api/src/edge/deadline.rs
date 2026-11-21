@@ -3,8 +3,8 @@
 //! a transaction it held is rolled back: its connection is marked broken and
 //! the pool discards it (DEP-13), and `statement_timeout` ends a statement
 //! still running on the server. A stream returns its head at once, so its
-//! body is never cut. A request whose database checkout timed out answers
-//! 529 `overloaded_error` (D14).
+//! body is never cut. [`shed`], around every route and its auth, answers 529
+//! `overloaded_error` for a request whose database checkout timed out (D14).
 
 use std::time::Duration;
 
@@ -20,23 +20,27 @@ pub fn bounded(routes: Router, deadline: Duration) -> Router {
 }
 
 async fn within(State(deadline): State<Duration>, req: Request, next: Next) -> Response {
-    match tokio::time::timeout(deadline, shared::overload::watched(next.run(req))).await {
-        Ok((response, false)) => response,
-        Ok((response, true)) if !response.status().is_server_error() => response,
-        Ok((_, true)) => {
+    let Ok(response) = tokio::time::timeout(deadline, next.run(req)).await else {
+        crate::telemetry::edge::rejected("timeout");
+        tracing::info!(
+            ms = deadline.as_millis(),
+            "edge: a request passed its deadline before its response started"
+        );
+        return wire_response(&ApiError::timeout(format!(
+            "the response did not start within {} ms",
+            deadline.as_millis()
+        )));
+    };
+    response
+}
+
+/// A request whose database checkout timed out is 529, whatever 5xx its auth or route made of it.
+pub async fn shed(req: Request, next: Next) -> Response {
+    match shared::overload::watched(next.run(req)).await {
+        (response, true) if response.status().is_server_error() => {
             crate::telemetry::edge::rejected("overloaded");
             wire_response(&ApiError::of(ErrorType::Overloaded, "no database connection came free in time"))
         }
-        Err(_) => {
-            crate::telemetry::edge::rejected("timeout");
-            tracing::info!(
-                ms = deadline.as_millis(),
-                "edge: a request passed its deadline before its response started"
-            );
-            wire_response(&ApiError::timeout(format!(
-                "the response did not start within {} ms",
-                deadline.as_millis()
-            )))
-        }
+        (response, _) => response,
     }
 }

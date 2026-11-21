@@ -1,6 +1,6 @@
 //! The edge's refusals: `agentd.http.rejected` by `reason` (`rate_limited`,
-//! `timeout`), and `agentd.http.rate_limit_unchecked`, requests admitted with
-//! Valkey slow or down.
+//! `timeout`, `overloaded`), and `agentd.http.rate_limit_unchecked`, requests
+//! admitted with Valkey slow or down.
 
 use std::sync::OnceLock;
 
