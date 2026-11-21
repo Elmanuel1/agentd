@@ -49,8 +49,7 @@ impl NativeChangeHandler for HistoryRecorder {
         let recorded = async {
             let position = change.position.as_ref().ok_or_else(|| missing("no log position"))?;
             let row = change.after.as_ref().ok_or_else(|| missing("no row after"))?;
-            self.log.record(&self.table, op, position, row).await?;
-            redact::scrub(self.log.as_ref(), &self.table, row).await
+            self.log.record(&self.table, op, position, row, redact::held(&self.table, row)).await
         };
         settle(recorded.await, change, &self.applied)
     }
