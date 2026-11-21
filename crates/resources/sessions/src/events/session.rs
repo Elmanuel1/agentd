@@ -38,8 +38,8 @@ pub enum SessionEvent {
     Usage {
         /// Cumulative usage.
         usage: Usage,
-        /// The budget, `null` when the session has none.
-        #[serde(default)]
+        /// The budget, left out when the session has none, as live sends it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<Budget>,
     },
     /// The session was deleted; the last event on its stream.

@@ -183,6 +183,10 @@ fn budget_reached_and_usage_snapshots_match_the_sdk() {
         r#"{"type":"session.usage","usage":{"list_cost":{"amount":"12","currency":"USD"}}}"#,
     )
     .unwrap();
-    let EventPayload::Session(SessionEvent::Usage { usage, budget: None }) = reported else { panic!() };
+    let EventPayload::Session(SessionEvent::Usage { usage, budget: None }) = reported.clone() else {
+        panic!()
+    };
     assert_eq!(usage.list_cost, Some(shared::MonetaryAmount::usd(12)));
+    // Live's snapshot of a session with no budget has no `budget` key (probe, 2026-11-11).
+    assert!(serde_json::to_value(&reported).unwrap().get("budget").is_none());
 }

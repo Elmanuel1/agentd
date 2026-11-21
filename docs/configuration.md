@@ -179,10 +179,18 @@ session `requires_action`. A deployment's fire whose agent names an MCP host
 its environment blocks creates no session: its run records
 `mcp_egress_blocked_error` and the deployment pauses.
 
-A session's list cost adds each call's provider-reported cost, rounded up to
-the cent so a budget is never passed by rounding. A session whose budget is
-spent, or that ran a model with no list price, stops its turn with
-`budget_reached` before its next call.
+A session's list cost adds each model call's cost at list price. A
+Messages API call is priced as the model that served it, at Anthropic's
+[list prices](https://platform.claude.com/docs/en/about-claude/pricing) for
+input, 5-minute cache writes, cache reads and output; Claude Haiku 5.5 takes
+its higher rates for a prompt over 100,000 tokens. An OpenAI-compatible call
+takes the cost its provider reports. The budget is checked before each call
+against the exact cost so far, and `usage.list_cost` reports it rounded to
+the nearest cent. A session whose exact cost has reached its budget, or that
+ran a model with no list price, stops its turn with `budget_reached` before
+its next call. A budgeted session cannot be created when its agent, or a
+roster agent or advisor of it, names a Messages API model with no list
+price (an `AGENTD_MODELS` extra): the create is a 400 that names the model.
 
 ## S3 credentials
 
