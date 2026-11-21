@@ -81,7 +81,7 @@ SH-51 are not used.
 | SH-9 | W | If a step fails, then the loop shall make it due again after a random wait from 0 to the smaller of 5 minutes and 5 s × 2^(failures before this one), and shall reset the count when the step commits. |
 | SH-24 | U | The loop shall wake a watch only for its own session's events, and an idle claimer only when a step becomes due. |
 | SH-25 | U | The loop shall reuse an MCP server's HTTP client for 5 minutes. |
-| SH-26 | W | If an MCP reply exceeds 16 MiB, then the loop shall fail the call as an unreachable server. |
+| SH-26 | W | If an MCP reply to `initialize` or `tools/list` exceeds 16 MiB, then the loop shall fail the call as an unreachable server. |
 | SH-47 | W | If a model provider fails 5 calls in a row from one replica with a retryable error, then the loop shall make no call to it from that replica for 30 s, or until its `retry-after` if later, and then let one call through. |
 | SH-48 | S | While a provider's breaker is open, the loop shall wait in each step's retry without spending a try, inside the step's deadline. |
 | SH-53 | W | If a step is over its workspace budget, then the loop shall make it due after the time left in the budget window plus a random 0 to 60 s. |
@@ -426,7 +426,9 @@ next turn after a `session.error` marked `retrying` (MC-14, live's behaviour); n
   DNS and the address check run again), at most 1,024 entries (built like the key cache). `Guard::with_user_agent`
   lets the webhook sender keep `Claude-Platform`; MCP keeps `Claude-User`. This lands in PR 1, before the sender uses
   it.
-- Replies are read chunk by chunk up to 16 MiB (a constant); over it the call fails as an unreachable server does.
+- Replies are read chunk by chunk up to 16 MiB (a constant). Over it, an `initialize` or `tools/list` call fails as an
+  unreachable server does; a `tools/call` reply streams to a session output file and the model gets a note naming it,
+  as the security work's large-output rule sets (D28).
 
 ### Lists (P2)
 
@@ -699,7 +701,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
     provider gets no call for 30 s and steps wait, not fail", "a retry-after longer than 30 s holds the breaker open",
     "one success closes it", "a step whose deadline passes while open ends with retries_exhausted as today".
 11. **MCP reply cap** (SH-26). `engine/src/mcp/reply.rs` (new, the capped read); `mcp/client.rs` (199) calls it, net
-    down. Test: "a reply over 16 MiB fails the call".
+    down. Test: "an `initialize` or `tools/list` reply over 16 MiB fails the call". The `tools/call` path is the
+    security work's `mcp/output.rs`.
 12. **Pool and wiring** (SH-19, SH-35, SH-44): `config/store.rs` default 16; `api/src/cli/webhooks.rs`
     (new, `agentd webhooks enable`: `UPDATE webhook_endpoint_states SET disabled_at = NULL, disabled_reason = NULL,
     failing_since = NULL WHERE endpoint_key = $1 AND org_id = $2`) and one arm in

@@ -24,6 +24,7 @@ api.anthropic.com. Each row names who decided and when.
 | D25 | Postgres sets `processed_at`, from `clock_timestamp()` after the session's append lock, so one session's values grow in commit order and the events list's tail has no gaps. | User, 2026-11-19 ("Stamp in Postgres") |
 | D26 | The webhook claim token is `claim_seq bigint not null default 0` on `webhook_deliveries`, added in V24: each claim raises it by one, nothing lowers it, and every outcome, release and drop is fenced on it, so a clock step cannot make two claims share a token. | User, 2026-11-19 ("Add claim_seq") |
 | D27 | agentd sets no rate limit before auth; the docs require a per-address limit in front of agentd (load balancer, WAF or ingress), and refused keys are counted by `agentd.security.failures`. | User, 2026-11-21 |
+| D28 | An oversized `tools/call` reply is never failed: output over 100,000 characters goes to a session output file and the model gets a preview naming it, and a reply over 16 MiB streams to that file, as the security work sets. Only `initialize` and `tools/list` keep the 16 MiB cap that fails the call. | User, 2026-11-21: "You can't just fail it." |
 
 ## Matched to live
 
