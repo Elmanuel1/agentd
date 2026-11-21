@@ -19,6 +19,7 @@ use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::keys::{KeyError, KeySource};
 use shared::ttl::TtlMap;
 use shared::{AuthContext, BackendError};
+use tokio::time::Instant;
 
 /// How long a resolved key is kept.
 const TTL: Duration = Duration::from_secs(60);
@@ -80,14 +81,16 @@ impl KeySource for CachedKeys {
             return Ok(Some(ctx));
         }
         (self.report)("miss");
-        let before = self.revokes();
+        // The TTL counts from the read's start, so a read in flight during a lost revoke still expires
+        // within 60 s of it (SH-18).
+        let (before, started) = (self.revokes(), Instant::now());
         let found = self.inner.resolve(key).await?;
-        if let Some(ctx) = &found {
-            let revokes = self.revokes.lock().unwrap_or_else(PoisonError::into_inner);
-            if *revokes == before {
-                self.keys.insert(digest, ctx.clone());
-            }
+        // Held through the insert, so a revoke cannot land between the check and the insert.
+        let revokes = self.revokes.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(ctx) = found.as_ref().filter(|_| *revokes == before) {
+            self.keys.insert_since(digest, ctx.clone(), started);
         }
+        drop(revokes);
         Ok(found)
     }
 }
@@ -108,7 +111,6 @@ impl std::fmt::Debug for KeyRevokes {
 }
 
 impl KeyRevokes {
-    /// Publishing through `broadcast`.
     pub fn new(broadcast: Arc<dyn Broadcast>) -> Self {
         Self { broadcast }
     }
@@ -119,8 +121,8 @@ impl NativeChangeHandler for KeyRevokes {
         Source::Table("api_keys".into())
     }
 
-    /// A failed publish is handled again, since a lost revoke would keep the key working for up to 60 s.
     async fn handle(&self, change: &Change) -> Result<(), BackendError> {
+        // A failed publish is handled again: a lost revoke keeps the key working for up to 60 s.
         let Some(row) = change.after.as_ref().filter(|_| change.op == ChangeOp::Update) else {
             return Ok(());
         };

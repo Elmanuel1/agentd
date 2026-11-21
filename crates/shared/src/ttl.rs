@@ -35,12 +35,17 @@ impl<K: Eq + Hash, V: Clone> TtlMap<K, V> {
 
     /// Keep `value` under `key` from now on.
     pub fn insert(&self, key: K, value: V) {
+        self.insert_since(key, value, Instant::now());
+    }
+
+    /// Keep `value` under `key`, its `ttl` counted from `since`.
+    pub fn insert_since(&self, key: K, value: V, since: Instant) {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         if entries.len() >= self.cap && !entries.contains_key(&key) {
             entries.retain(|_, (at, _)| at.elapsed() < self.ttl);
         }
         if entries.len() < self.cap || entries.contains_key(&key) {
-            entries.insert(key, (Instant::now(), value));
+            entries.insert(key, (since, value));
         }
     }
 
