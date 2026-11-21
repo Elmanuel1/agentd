@@ -83,6 +83,8 @@ impl Loop {
             }
         }
         running.abort_all();
+        // Each aborted step stops at its next await; none may still be writing once another replica can claim it.
+        while running.join_next().await.is_some() {}
         let left: Vec<Claim> = held.into_values().collect();
         match self.stores.steps.release_all(&self.settings.owner, &left).await {
             Ok(n) => {

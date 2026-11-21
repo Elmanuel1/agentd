@@ -72,6 +72,23 @@ async fn a_read_that_started_before_a_disable_and_completes_11_s_later_is_discar
     assert!(health.fresh() && health.disabled("a"));
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_disable_made_while_a_read_runs_survives_that_read() {
+    let states = Arc::new(SlowStates::default());
+    let health = Arc::new(crate::sender::health::Health::new(states.clone()));
+    *states.delay.lock() = Duration::from_secs(2);
+    let reading = tokio::spawn({
+        let health = health.clone();
+        async move { health.refresh().await }
+    });
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let endpoint = Configured { endpoint_key: "a".into(), org_id: "org_1".into(), digest: "d".into() };
+    health.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    reading.await.unwrap().unwrap();
+    assert!(health.disabled("a"), "the read began before the disable and did not see it");
+}
+
 #[tokio::test]
 async fn a_delivery_with_under_15_s_of_claim_left_is_released_unsent() {
     let (url, got, addr) = receiver(StatusCode::OK).await;

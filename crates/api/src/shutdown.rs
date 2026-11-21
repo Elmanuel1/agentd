@@ -32,7 +32,7 @@ impl Shutdown {
 
     /// Signal every loop, then wait for the draining tasks until `deadline`; any still running is aborted.
     pub async fn run(mut self, deadline: Instant) {
-        let _ = self.stop.send(true);
+        self.stop.send_replace(true);
         let all = futures::future::join_all(self.draining.iter_mut());
         if tokio::time::timeout_at(deadline, all).await.is_err() {
             tracing::warn!("shutdown: the grace ended with work still running; it is stopped");
