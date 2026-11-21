@@ -79,3 +79,16 @@ impl StoreConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pool_holds_16_connections_and_bounds_each_statement_to_30_s_by_default() {
+        // SH-10, SH-19 (S-8).
+        let url = |k: &str| (k == "DATABASE_URL").then(|| "postgres://agentd@db:5432/agentd".to_owned());
+        let StoreConfig::Postgres { pool, .. } = StoreConfig::from_lookup(&url).unwrap();
+        assert_eq!((pool.max_size, pool.statement_timeout), (16, std::time::Duration::from_secs(30)));
+    }
+}

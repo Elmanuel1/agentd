@@ -33,13 +33,8 @@ fn defaults_select_postgres_s3_and_aws_secrets() {
     assert_eq!(c.secrets, SecretsConfig::AwsSm(AwsSecretsConfig::new("agentd", "alias/agentd")));
     assert!(c.keys.runtime.is_empty() && c.keys.anthropic.is_none() && c.keys.openrouter.is_none());
     assert_eq!(c.work.api_base_url, "http://agentd:8080");
-    let StoreConfig::Postgres { pool, .. } = &c.store;
     let seconds = std::time::Duration::from_secs;
-    assert_eq!(
-        (c.request_timeout, c.agent_loop.grace, pool.statement_timeout),
-        (seconds(60), seconds(25), seconds(30))
-    );
-    assert_eq!(pool.max_size, 16, "S-8");
+    assert_eq!((c.request_timeout, c.agent_loop.grace), (seconds(60), seconds(25)));
 }
 
 #[test]
