@@ -57,9 +57,6 @@ impl Dispatch {
         let Some(endpoint) = self.webhooks.endpoint(key) else {
             return self.drop_unsent(&c.claim, "the endpoint is not configured").await;
         };
-        if self.health.disabled(key) {
-            return self.drop_unsent(&c.claim, "the endpoint is disabled").await;
-        }
         let url = reqwest::Url::parse(&c.endpoint_url);
         let client = match url.as_ref().map_err(|_| NetError::Url) {
             Ok(url) => self.guard.client(url, TIMEOUT).await,
@@ -68,6 +65,10 @@ impl Dispatch {
         if let Err(NetError::Internal(addr)) = &client {
             self.disable(endpoint, DisabledReason::PrivateAddress, addr).await;
             return self.drop_unsent(&c.claim, "the endpoint resolves to a non-public address").await;
+        }
+        // Checked after the address lookup, which can wait on DNS while a state read disables it.
+        if self.health.disabled(key) {
+            return self.drop_unsent(&c.claim, "the endpoint is disabled").await;
         }
         let ready = self.health.fresh() && deadline.saturating_duration_since(Instant::now()) >= MARGIN;
         if !ready || self.breakers.pass(&key.to_owned()) != Pass::Go {

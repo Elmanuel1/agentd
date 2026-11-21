@@ -193,6 +193,8 @@ async fn twenty_claimers_started_together_claim_every_row_once() {
                 }
             })
         });
+        // Every claimer is spawned before any is awaited, or the barrier never fills.
+        let claimers: Vec<_> = claimers.collect();
         let mut all: Vec<String> = Vec::new();
         for c in claimers {
             all.extend(c.await.unwrap());
@@ -404,12 +406,15 @@ async fn two_replicas_send_a_delivery_once() {
 async fn a_disabled_endpoint_gets_no_post_and_its_rows_drop_when_due() {
     let Some(db) = db().await else { return };
     let (url, got, addr) = receiver(StatusCode::OK, Duration::ZERO).await;
-    let endpoint = configured("ep_off", "d1");
+    let key = format!("ep_{}", common::stamp());
+    // The real digest, so the sender's own boot configure keeps the disable.
+    let hooks = hooks(&[(key.as_str(), url.as_str())]);
+    let endpoint = hooks.endpoint(&key).unwrap().configured();
     db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
     assert!(db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap());
     assert!(!db.store.disable(&endpoint, DisabledReason::Failing).await.unwrap(), "disabled once");
-    let ids = insert(&db.pg, "ep_off", &url, 2).await;
-    let sender = start(&db, hooks(&[("ep_off", &url)]), vec![addr]);
+    let ids = insert(&db.pg, &key, &url, 2).await;
+    let sender = start(&db, hooks, vec![addr]);
     until("the drops", async || row(&db.pg, &ids[1]).await["dropped_at"].is_string()).await;
     assert!(got.lock().is_empty());
     assert_eq!(row(&db.pg, &ids[0]).await["last_error"], "the endpoint is disabled");
@@ -524,6 +529,17 @@ async fn a_failure_after_a_2xx_starts_the_run_at_that_failure() {
     .await
     .unwrap();
     assert!(age.seconds < 60.0, "the run starts at the failure, not 100 h back: {}", age.seconds);
+}
+
+#[tokio::test]
+async fn a_late_answer_from_an_old_url_or_secret_changes_nothing() {
+    let Some(db) = db().await else { return };
+    let key = format!("ep_{}", common::stamp());
+    db.store.configure(&[configured(&key, "d2")]).await.unwrap();
+    assert!(!db.store.disable(&configured(&key, "d1"), DisabledReason::Redirect).await.unwrap());
+    assert!(!db.store.failed(&configured(&key, "d1")).await.unwrap());
+    assert!(!db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == key), "not disabled");
+    assert!(!failing(&db, &key).await, "no run of failures");
 }
 
 #[tokio::test]

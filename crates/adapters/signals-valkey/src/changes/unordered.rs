@@ -1,8 +1,9 @@
 //! An unordered stream: what stopped replicas left, then new entries, read
-//! 16 at a time and handled together, so a batch takes as long as its
-//! slowest entry and ends well inside the 60 s after which another replica
-//! claims what is pending.
+//! 16 at a time and handled together. Each entry is acknowledged as it
+//! finishes, so a fast one is never left pending behind a slow one past the
+//! 60 s after which another replica claims it.
 
+use futures::StreamExt;
 use redis::streams::StreamId;
 use redis::{AsyncCommands, RedisResult};
 
@@ -28,19 +29,19 @@ impl ValkeyChanges {
     }
 }
 
-/// Handle `entries` together, acknowledging those that need no more handling.
+/// Handle `entries` together, acknowledging each that needs no more handling as it finishes.
 async fn handle(
     conn: &mut Conn,
     stream: &str,
     handler: &dyn Consumer,
     entries: Vec<StreamId>,
 ) -> RedisResult<()> {
-    let handled = futures::future::join_all(entries.iter().map(|e| handler.consume(e))).await;
-    let done: Vec<&str> =
-        entries.iter().zip(handled).filter(|(_, ok)| *ok).map(|(e, _)| e.id.as_str()).collect();
-    if done.is_empty() {
-        return Ok(());
+    let mut handling: futures::stream::FuturesUnordered<_> =
+        entries.iter().map(|e| async move { (e.id.as_str(), handler.consume(e).await) }).collect();
+    while let Some((id, done)) = handling.next().await {
+        if done {
+            let _: usize = conn.xack(stream, GROUP, &[id]).await?;
+        }
     }
-    let _: usize = conn.xack(stream, GROUP, &done).await?;
     Ok(())
 }

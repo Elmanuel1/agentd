@@ -1,7 +1,7 @@
 //! A circuit breaker per dependency, kept by each replica in memory (D4): 5
-//! failures in a row open it for 30 s, or longer when the dependency asked to
-//! be left alone that long; then one call goes through, and its answer closes
-//! the breaker or opens it again.
+//! failures in a row open it for 30 s, or longer, up to 5 minutes, when the
+//! dependency asked to be left alone that long; then one call goes through, and
+//! its answer closes the breaker or opens it again.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -14,6 +14,9 @@ use tokio::time::Instant;
 pub const FAILURES: u32 = 5;
 /// How long an opened breaker stays open, at least.
 pub const OPEN: Duration = Duration::from_secs(30);
+/// The longest a dependency's own hold keeps the breaker open: one tenant's `retry-after` stops a
+/// shared provider for every tenant on the replica.
+pub const LONGEST: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -94,10 +97,13 @@ impl<K: Eq + Hash + Clone> Breakers<K> {
             *state = State::Closed(failures);
             return false;
         }
-        let open = hold.map_or(OPEN, |h| h.max(OPEN));
-        let opened = !matches!(*state, State::Open(_));
-        // A retry-after past what an Instant holds is nonsense; it gets the default hold.
-        *state = State::Open(Instant::now().checked_add(open).unwrap_or_else(|| Instant::now() + OPEN));
+        let until = Instant::now() + hold.map_or(OPEN, |h| h.clamp(OPEN, LONGEST));
+        let (opened, until) = match *state {
+            // A failure that lands while it is open never shortens a longer hold.
+            State::Open(held) => (false, held.max(until)),
+            State::Closed(_) | State::Probing(_) => (true, until),
+        };
+        *state = State::Open(until);
         opened
     }
 }
@@ -141,13 +147,15 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_hold_past_what_an_instant_holds_gets_the_default_hold() {
+    async fn a_hold_is_at_most_5_minutes_and_a_later_failure_never_shortens_it() {
         let b = Breakers::default();
         for _ in 0..FAILURES {
             b.failed(&"p", Some(Duration::MAX));
         }
-        assert!(matches!(b.pass(&"p"), Pass::Until(_)));
-        tokio::time::advance(OPEN).await;
+        b.failed(&"p", None);
+        tokio::time::advance(LONGEST - Duration::from_secs(1)).await;
+        assert!(matches!(b.pass(&"p"), Pass::Until(_)), "held for the 5 minutes, not the later 30 s");
+        tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(b.pass(&"p"), Pass::Go);
     }
 }
