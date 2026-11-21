@@ -5,9 +5,11 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
+mod broadcast;
 mod budget;
 mod changes;
 mod fires;
+mod rate;
 mod trim;
 mod valkey;
 
@@ -18,10 +20,12 @@ use redis::{AsyncCommands, RedisError};
 use sessions::signals::{CAPACITY, NativeSignals, Signal};
 use sessions::types::SessionId;
 use shared::{BackendError, WorkspaceId};
-use tokio::sync::broadcast;
+use tokio::sync::broadcast as channel;
 
+pub use broadcast::ValkeyBroadcast;
 pub use budget::ValkeyBudget;
 pub use changes::ValkeyChanges;
+pub use rate::ValkeyRateCounter;
 pub use valkey::Valkey;
 
 /// The one channel every session's signals go on.
@@ -36,7 +40,7 @@ const PUBLISH_WAIT: Duration = Duration::from_millis(200);
 #[derive(Clone)]
 pub struct ValkeySignals {
     publisher: valkey::Shared,
-    received: broadcast::Sender<Signal>,
+    received: channel::Sender<Signal>,
 }
 
 impl std::fmt::Debug for ValkeySignals {
@@ -50,7 +54,7 @@ impl ValkeySignals {
     /// first used, so a replica starts while Valkey is down.
     pub fn connect(valkey: &Valkey) -> Result<Self, RedisError> {
         let publisher = valkey.shared()?;
-        let received = broadcast::channel(CAPACITY).0;
+        let received = channel::channel(CAPACITY).0;
         tokio::spawn(subscribe(valkey.clone(), received.clone()));
         Ok(Self { publisher, received })
     }
@@ -65,14 +69,14 @@ impl NativeSignals for ValkeySignals {
         published.await.map_err(BackendError::new)?.map_err(BackendError::new)
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<Signal> {
+    fn subscribe(&self) -> channel::Receiver<Signal> {
         self.received.subscribe()
     }
 }
 
 /// Hand every signal on [`CHANNEL`] to `received`, connecting again after
 /// [`RECONNECT`] whenever the connection drops.
-async fn subscribe(valkey: Valkey, received: broadcast::Sender<Signal>) {
+async fn subscribe(valkey: Valkey, received: channel::Sender<Signal>) {
     let mut retry = tokio::time::interval(RECONNECT);
     // After a long subscription, one attempt at once, then one per RECONNECT.
     retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

@@ -83,6 +83,7 @@ fn app() -> Router {
         },
         Arc::from(vec![]),
         Arc::new(api::telemetry::Metrics::global()),
+        None,
     )
 }
 

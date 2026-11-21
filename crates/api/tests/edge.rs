@@ -128,6 +128,10 @@ async fn create(ApiJson(body): ApiJson<serde_json::Value>) -> Result<Response, R
 }
 
 fn app() -> Router {
+    app_limited(None)
+}
+
+fn app_limited(limits: Option<edge::rate::Limits>) -> Router {
     let mut keys = StaticKeySource::default();
     keys.register(KEY, "org_e", "wrkspc_e", "apikey_e");
     let mut admin_keys = StaticAdminKeys::default();
@@ -139,7 +143,12 @@ fn app() -> Router {
         .route("/v1/environments/{id}/work/poll", get(writer))
         .route("/v1/environments/{id}/work/{work}", get(writer))
         .route("/v1/environments/{id}/work/{work}/ack", axum::routing::post(writer))
-        .route("/v1/organizations/me", get(writer));
+        .route("/v1/organizations/me", get(writer))
+        .route("/v1/agents", axum::routing::post(writer))
+        .route("/v1/agents/{id}", get(writer))
+        .route("/v1/memory_stores", get(writer))
+        .route("/v1/skills", get(writer))
+        .route("/v1/sessions/{id}/events", axum::routing::post(writer));
     let routes = edge::limits::bounded(routes, BodyLimit { api: "Things", max_mb: 1 });
     edge::wrap(
         routes,
@@ -155,6 +164,7 @@ fn app() -> Router {
         },
         Arc::from(vec![BetaGate::managed(&["/v1/things"])]),
         Arc::new(api::telemetry::Metrics::global()),
+        limits,
     )
 }
 
@@ -460,4 +470,82 @@ async fn a_work_token_is_refused_once_its_item_is_stopped() {
     }
     let other = send(bearer("/v1/sessions/sesn_2", &mint("sesn_1"))).await;
     assert_eq!(other.status, StatusCode::UNAUTHORIZED, "another session's route");
+}
+
+/// A counter whose every check fails, as with Valkey down.
+struct Down;
+
+impl shared::ports::rate::NativeRateCounter for Down {
+    async fn hit(&self, _: &str, _: &str) -> Result<shared::ports::rate::Counted, shared::BackendError> {
+        Err(shared::BackendError::new(std::io::Error::other("valkey down")))
+    }
+}
+
+fn limited(counter: Arc<dyn shared::ports::rate::RateCounter>) -> Router {
+    app_limited(Some(edge::rate::Limits::new(counter)))
+}
+
+async fn hit(app: &Router, method: &str, path: &str) -> Sent {
+    let req = get_req(path).method(method).header("x-api-key", KEY).body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    Sent { status, headers, body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null) }
+}
+
+#[tokio::test]
+async fn the_301st_create_in_a_window_answers_429_with_retry_after() {
+    // SH-13.
+    let app = limited(Arc::new(shared::ports::rate::LocalRateCounter::default()));
+    for _ in 0..300 {
+        assert_eq!(hit(&app, "POST", "/v1/agents").await.status, StatusCode::OK);
+    }
+    let refused = hit(&app, "POST", "/v1/agents").await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.body["error"]["type"], "rate_limit_error");
+    let after: u64 = refused.headers["retry-after"].to_str().unwrap().parse().unwrap();
+    assert!((1..=60).contains(&after), "{after}");
+    assert_eq!(refused.headers["anthropic-ratelimit-requests-remaining"], "0");
+}
+
+#[tokio::test]
+async fn reads_share_one_bucket_and_memory_stores_have_their_own() {
+    // SH-13, DEP-1, DEP-4.
+    let app = limited(Arc::new(shared::ports::rate::LocalRateCounter::default()));
+    for n in 0..1_200 {
+        let path = if n % 2 == 0 { "/v1/agents/agent_1" } else { "/v1/sessions/sesn_1" };
+        assert_eq!(hit(&app, "GET", path).await.status, StatusCode::OK, "read {n}");
+    }
+    assert_eq!(hit(&app, "GET", "/v1/sessions/sesn_1").await.status, StatusCode::TOO_MANY_REQUESTS);
+    let stores = hit(&app, "GET", "/v1/memory_stores").await;
+    assert_eq!(stores.status, StatusCode::OK);
+    assert_eq!(stores.headers["anthropic-ratelimit-requests-limit"], "30000");
+}
+
+#[tokio::test]
+async fn events_send_and_skills_are_not_limited_and_a_read_carries_live_s_headers() {
+    // SH-14, DEP-1, DEP-4.
+    let app = limited(Arc::new(shared::ports::rate::LocalRateCounter::default()));
+    for (method, path) in [("POST", "/v1/sessions/sesn_1/events"), ("GET", "/v1/skills")] {
+        let sent = hit(&app, method, path).await;
+        assert!(!sent.headers.contains_key("anthropic-ratelimit-requests-limit"), "{path}");
+    }
+    let read = hit(&app, "GET", "/v1/agents/agent_1").await;
+    let h = |name: &str| read.headers[name].to_str().unwrap().to_owned();
+    assert_eq!(
+        (h("anthropic-ratelimit-requests-limit"), h("anthropic-ratelimit-requests-remaining")),
+        ("1200".into(), "1199".into())
+    );
+    let reset = chrono::DateTime::parse_from_rfc3339(&h("anthropic-ratelimit-requests-reset")).unwrap();
+    let left = reset.timestamp() - Timestamp::now().as_datetime().timestamp();
+    assert!((59..=60).contains(&left), "{left}");
+}
+
+#[tokio::test]
+async fn with_the_counter_down_a_request_is_admitted() {
+    // SH-15.
+    let app = limited(Arc::new(Down));
+    let sent = hit(&app, "POST", "/v1/agents").await;
+    assert_eq!(sent.status, StatusCode::OK);
+    assert!(!sent.headers.contains_key("anthropic-ratelimit-requests-limit"));
 }
