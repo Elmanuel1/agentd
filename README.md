@@ -43,7 +43,12 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
 **Swappable ports:** `SchedulerPort`
 (Postgres, or Temporal Schedules; every sink writes its occurrences to the Postgres fire queue), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
 `BlobStore` (S3), `SecretStore`, `KeySource`, `HistoryLog`, storage traits per entity
-(in-memory/Postgres). The binary picks one backend per port from config at
+(in-memory/Postgres). Holders keep each port as `Arc<dyn Port>`. A port with a
+native twin, such as `BlobStore` and `NativeBlobStore` (`shared::ports::blobs`),
+is implemented through the twin: a backend writes plain `async fn` methods that
+return `Send` futures, and the blanket `impl<T: NativeBlobStore> BlobStore for T`
+boxes each call (`shared::ports::BoxFuture`), so the backend is held as
+`Arc<dyn BlobStore>`. The binary picks one backend per port from config at
 boot (`Backends::from_config`). A resource crate contributes a `Module`: its
 routes and the `FireHandler`s for its scheduled work. `AppState::build`
 assembles every resource's module except dreams, so the dreams routes are not
