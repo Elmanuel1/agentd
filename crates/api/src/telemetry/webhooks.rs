@@ -109,3 +109,72 @@ impl SenderMetrics for Gauged {
         self.read.lock().unwrap_or_else(PoisonError::into_inner).disabled.clone_from(by_reason);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    use super::*;
+
+    fn label<'a>(attributes: impl Iterator<Item = &'a KeyValue>) -> String {
+        attributes.map(|kv| kv.value.to_string()).collect()
+    }
+
+    /// Each point of `name`: its attribute values joined, and its value.
+    fn points(out: &InMemoryMetricExporter, name: &str) -> Vec<(String, String)> {
+        let finished = out.get_finished_metrics().unwrap();
+        let mut points: Vec<(String, String)> = finished
+            .iter()
+            .flat_map(|rm| rm.scope_metrics())
+            .flat_map(|s| s.metrics())
+            .filter(|m| m.name() == name)
+            .flat_map(|m| match m.data() {
+                AggregatedMetrics::U64(MetricData::Sum(s)) => {
+                    s.data_points().map(|p| (label(p.attributes()), p.value().to_string())).collect()
+                }
+                AggregatedMetrics::F64(MetricData::Gauge(g)) => {
+                    g.data_points().map(|p| (label(p.attributes()), p.value().to_string())).collect()
+                }
+                AggregatedMetrics::I64(MetricData::Gauge(g)) => {
+                    g.data_points().map(|p| (label(p.attributes()), p.value().to_string())).collect()
+                }
+                _ => vec![],
+            })
+            .collect();
+        points.sort();
+        points
+    }
+
+    #[test]
+    fn each_signal_in_the_metrics_table_is_exported_with_its_labels() {
+        let out = InMemoryMetricExporter::default();
+        let meters =
+            SdkMeterProvider::builder().with_reader(PeriodicReader::builder(out.clone()).build()).build();
+        let metrics = WebhookMetrics::on(&meters.meter("test"), "agentd-1");
+        metrics.delivery("delivered");
+        metrics.delivery("delivered");
+        metrics.delivery("dropped");
+        metrics.breaker_opened();
+        metrics.claimed(5);
+        metrics.oldest_due(Some(Duration::from_secs(90)));
+        metrics.disabled(&HashMap::from([(DisabledReason::Redirect, 2)]));
+        meters.force_flush().unwrap();
+
+        let owned = |v: &[(&str, &str)]| {
+            v.iter().map(|(k, n)| ((*k).to_owned(), (*n).to_owned())).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            points(&out, "agentd.webhooks.deliveries"),
+            owned(&[("delivered", "2"), ("dropped", "1")])
+        );
+        assert_eq!(points(&out, "agentd.webhooks.breaker_opened"), owned(&[("", "1")]));
+        assert_eq!(points(&out, "agentd.webhooks.claims"), owned(&[("agentd-1", "5")]));
+        assert_eq!(points(&out, "agentd.webhooks.oldest_due_age"), owned(&[("", "90")]));
+        assert_eq!(
+            points(&out, "agentd.webhooks.endpoints_disabled"),
+            owned(&[("failing", "0"), ("private_address", "0"), ("redirect", "2")])
+        );
+    }
+}

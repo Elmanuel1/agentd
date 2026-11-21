@@ -1,4 +1,4 @@
-//! Sending from the rows (SH-1 to SH-4, SH-29 to SH-34, SH-36, SH-52): the
+//! Sending from the rows (SH-1 to SH-4, SH-29 to SH-36, SH-52): the
 //! claim and its fences on Postgres, and senders over it. Every test claims
 //! from the whole table, so they take turns, and each first drops the rows
 //! earlier binaries left due.
@@ -474,4 +474,23 @@ async fn a_changed_url_re_enables_at_boot_and_an_unchanged_config_keeps_it_disab
     assert!(disabled().await, "an unchanged config keeps it disabled");
     db.store.configure(&[configured(&key, "d2")]).await.unwrap();
     assert!(!disabled().await, "a changed URL or secret enables it");
+}
+
+#[tokio::test]
+async fn the_operator_enable_clears_a_disable_and_its_failing_time_in_its_org_only() {
+    let Some(db) = db().await else { return };
+    let endpoint = configured(&format!("ep_{}", common::stamp()), "d1");
+    db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
+    assert!(!db.store.failed(&endpoint).await.unwrap());
+    db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
+    let state =
+        async || db.store.read().await.unwrap().into_iter().find(|s| s.endpoint_key == endpoint.endpoint_key);
+    assert!(!db.store.enable("org_other", &endpoint.endpoint_key).await.unwrap(), "another org's endpoint");
+    assert!(state().await.is_some_and(|s| s.disabled.is_some() && s.failing_since.is_some()));
+    assert!(db.store.enable("org_hooks", &endpoint.endpoint_key).await.unwrap());
+    assert_eq!(state().await, None, "neither disabled nor failing");
+    assert!(
+        !db.store.enable("org_hooks", "ep_never_sent").await.unwrap(),
+        "an endpoint agentd never sent to"
+    );
 }
