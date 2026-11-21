@@ -72,10 +72,14 @@ async fn a_refused_attempt_waits_by_its_backoff_and_the_third_drops() {
 #[test]
 fn the_second_wait_is_30_to_60_s() {
     for _ in 0..100 {
-        assert!(matches!(send::retry_or_drop(2), Next::Retry(w) if (30..=60).contains(&w.as_secs())));
-        assert!(matches!(send::retry_or_drop(1), Next::Retry(w) if (15..=30).contains(&w.as_secs())));
+        assert!(
+            matches!(crate::sender::send::retry_or_drop(2), Next::Retry(w) if (30..=60).contains(&w.as_secs()))
+        );
+        assert!(
+            matches!(crate::sender::send::retry_or_drop(1), Next::Retry(w) if (15..=30).contains(&w.as_secs()))
+        );
     }
-    assert_eq!(send::retry_or_drop(3), Next::Dropped);
+    assert_eq!(crate::sender::send::retry_or_drop(3), Next::Dropped);
 }
 
 #[tokio::test]

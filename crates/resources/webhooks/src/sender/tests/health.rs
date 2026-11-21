@@ -48,7 +48,7 @@ impl NativeEndpointStates for SlowStates {
 #[tokio::test(start_paused = true)]
 async fn a_failed_or_late_state_read_stops_posts_once_the_last_good_read_is_11_s_old() {
     let states = Arc::new(SlowStates::default());
-    let health = health::Health::new(states.clone());
+    let health = crate::sender::health::Health::new(states.clone());
     assert!(!health.fresh(), "nothing is sent before the first read");
     health.refresh().await.unwrap();
     assert!(health.fresh());
@@ -66,7 +66,7 @@ async fn a_failed_or_late_state_read_stops_posts_once_the_last_good_read_is_11_s
 #[tokio::test(start_paused = true)]
 async fn a_read_that_started_before_a_disable_and_completes_11_s_later_is_discarded() {
     let states = Arc::new(SlowStates::default());
-    let health = health::Health::new(states.clone());
+    let health = crate::sender::health::Health::new(states.clone());
     *states.delay.lock() = Duration::from_secs(11);
     assert!(health.refresh().await.is_err(), "discarded");
     assert!(!health.fresh());
@@ -84,9 +84,9 @@ async fn a_read_that_started_before_a_disable_and_completes_11_s_later_is_discar
 async fn a_delivery_with_under_15_s_of_claim_left_is_released_unsent() {
     let (url, got, addr) = receiver(StatusCode::OK).await;
     let (queue, states) = (Arc::new(Queue::default()), Arc::new(States::default()));
-    let health = Arc::new(health::Health::new(states));
+    let health = Arc::new(crate::sender::health::Health::new(states));
     health.refresh().await.unwrap();
-    let send = send::Dispatch {
+    let send = crate::sender::send::Dispatch {
         guard: Guard::allowing(vec![addr]),
         webhooks: hooks(&url),
         queue: queue.clone(),
@@ -111,7 +111,7 @@ async fn a_run_of_failures_that_cannot_be_ended_keeps_the_read_and_is_ended_by_t
     let since = Timestamp::now();
     let row = EndpointState { endpoint_key: "a".into(), failing_since: Some(since), disabled: None };
     states.inner.rows.lock().push(row);
-    let health = health::Health::new(states.clone());
+    let health = crate::sender::health::Health::new(states.clone());
     tokio::time::sleep(Duration::from_millis(5)).await;
     health.delivered("a").await.unwrap();
     states.clears_fail.store(true, Ordering::SeqCst);
