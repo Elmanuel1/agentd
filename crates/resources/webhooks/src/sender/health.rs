@@ -100,6 +100,7 @@ impl Health {
             snapshot.pending.entry(key.clone()).or_insert((why, 0)).1 += 1;
         }
         let disabled = self.states.disable(endpoint, why).await;
+        // Under one lock, so no read lands between the pending count falling and the disable being kept.
         let mut snapshot = self.snapshot();
         let left = snapshot.pending.get_mut(key).map(|(_, n)| {
             *n = n.saturating_sub(1);
@@ -108,8 +109,8 @@ impl Health {
         if left == Some(0) {
             snapshot.pending.remove(key);
         }
-        drop(snapshot);
-        self.mark(key, why);
+        snapshot.disabled.insert(key.clone(), why);
+        snapshot.written.insert(key.clone(), (why, Instant::now()));
         disabled
     }
 
