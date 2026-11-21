@@ -470,6 +470,11 @@ Keyset, token still `page_<base64>`, one statement per page each:
   `SELECT seq ... ORDER BY seq OFFSET 10000 LIMIT 1` gives the bound, then `DELETE ... AND seq < $3`. When the bound
   query returns no row, at most 10,000 remain, and the `DELETE` runs without the bound.
 - Expired files: listed and their metadata readable for 30 days, content 404 (L5).
+- Versioned buckets: a blob delete leaves the old version behind a marker, and agentd never reads or deletes
+  versions. The docs require a lifecycle rule on a versioned bucket that expires noncurrent versions and delete
+  markers after 7 days, the default recovery window (D29). In that window an operator can restore a mistaken delete
+  by hand; after it the bytes are gone. A deployment may set its own window and states it in its privacy policy.
+  As live, there is no undelete API.
 - `fire_claims` keeps the scheduler's own hourly sweep (DS-15, the scheduler's scope; one row per fire, far fewer than
   deliveries). Follow-up F-6 moves it into this sweeper, so there is one way.
 - V27, `create index concurrently`, one file:
