@@ -26,6 +26,7 @@ api.anthropic.com. Each row names who decided and when.
 | D27 | agentd sets no rate limit before auth; the docs require a per-address limit in front of agentd (load balancer, WAF or ingress), and refused keys are counted by `agentd.security.failures`. | User, 2026-11-21 |
 | D28 | An oversized `tools/call` reply is never failed: output over 100,000 characters goes to a session output file and the model gets a preview naming it, and a reply over 16 MiB streams to that file, as the security work sets. Only `initialize` and `tools/list` keep the 16 MiB cap that fails the call. | User, 2026-11-21: "You can't just fail it." |
 | D29 | On a versioned bucket, the docs require a lifecycle rule that expires noncurrent versions after 7 days, the default recovery window; no archive tier and no undelete API (live: deleted files "cannot be recovered"). The sweeper keeps one delete per blob. | User, 2026-11-21: "Yes, 7 days" |
+| D30 | A webhook signing secret decodes to at least 24 bytes (the Standard Webhooks minimum) or agentd refuses to start; the endpoint digest stays a plain SHA-256. A long secret resists guessing from both the stored digest and a signed message; an HMAC of the digest would cover only the first. | User, 2026-11-21: "Long secrets only" |
 
 ## Matched to live
 

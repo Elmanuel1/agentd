@@ -22,7 +22,7 @@
 | the loop | the engine worker that claims and runs steps | SH-7 to SH-9, SH-24 to SH-26, SH-47, SH-48, SH-53 |
 | the sweeper | the retention job | SH-37 to SH-41 |
 | the blob store | S3 or the local store | SH-21 |
-| agentd | the process as a whole (statements, keys, lists, shutdown, metrics) | SH-10, SH-17, SH-19, SH-28, SH-36, SH-42, SH-44 |
+| agentd | the process as a whole (statements, keys, lists, shutdown, metrics) | SH-10, SH-17, SH-19, SH-28, SH-36, SH-42, SH-44, SH-49 |
 | the operator command | `agentd webhooks` | SH-35 |
 
 **Terms:**
@@ -40,7 +40,7 @@
 
 Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](dependencies.md). The decision record:
 [ADR 0001](adr/0001-webhooks-sent-from-rows.md). SH-3 supersedes runtime-parity H-3; SH-1 to SH-4 narrow H-4 and
-D51 ([runtime-parity requirements](../runtime-parity/requirements.md)). SH-41 bounds how E-2 deletes. IDs SH-49 to
+D51 ([runtime-parity requirements](../runtime-parity/requirements.md)). SH-41 bounds how E-2 deletes. IDs SH-50 and
 SH-51 are not used.
 
 **Build order:** the spec, then code PR 1 (commits 1 to 13), then code PR 2 (commits 1 to 6), stacked with `gh stack`.
@@ -62,6 +62,7 @@ SH-51 are not used.
 | SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more shall start no POST until a read succeeds. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
+| SH-49 | W | If an endpoint's signing secret decodes to fewer than 24 bytes, then agentd shall refuse to start and name the endpoint by its id. |
 | SH-43 | E | When the webhook sender disables an endpoint, the webhook sender shall log one `ERROR` naming the org, the endpoint id and the reason, and not the endpoint URL. |
 | SH-52 | U | The webhook sender shall deliver more webhooks a second with each added instance, and shall send a delivery again only when its outcome was not recorded before its claim expired. |
 
@@ -259,7 +260,10 @@ Authentication, TLS verification and credential refresh failures are counted by 
   - disabling logs `ERROR` once (a person must act) with the org, the endpoint id and the reason; the URL is left out,
     so a token in its query string never reaches the log;
   - re-enable (D6): `agentd webhooks enable <org> <endpoint>`, or a change to the endpoint's URL or secret in
-    `AGENTD_WEBHOOK_ENDPOINTS`, seen at boot by its SHA-256 digest (the secret itself is not stored).
+    `AGENTD_WEBHOOK_ENDPOINTS`, seen at boot by its SHA-256 digest (the secret itself is not stored);
+  - a signing secret decodes to at least 24 bytes, the Standard Webhooks minimum, or agentd refuses to start
+    (SH-49, D30). A secret that long cannot be guessed from the stored digest or from a signed message, so the
+    digest stays a plain SHA-256.
 - **Shutdown.** At SIGTERM the instance stops claiming; sends in flight finish within the grace; a claim left behind
   expires in 60 s and another instance sends it.
 - **Not added, with reasons**: a per-endpoint rate limit (live states none); secret rotation with several signatures (live gives one secret per endpoint; Standard Webhooks
@@ -592,11 +596,11 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
 
 ## Plan of PRs
 
-### Code PR 1: correctness under load (one session; about 70 files; SH-1 to SH-21, SH-25, SH-26, SH-29 to SH-36, SH-42 to SH-44, SH-47, SH-48, SH-52, SH-53)
+### Code PR 1: correctness under load (one session; about 70 files; SH-1 to SH-21, SH-25, SH-26, SH-29 to SH-36, SH-42 to SH-44, SH-47 to SH-49, SH-52, SH-53)
 
 1. **Client cache** (SH-20, SH-25). `shared/src/net/clients.rs` (new, the map); `net.rs` uses it and gains
    `with_user_agent`. Tests: "two calls to one host reuse a client", "after 5 min the address is checked again".
-2. **Webhook sender** (SH-1 to SH-4, SH-29 to SH-34, SH-36, SH-43). `V24__webhook_endpoint_states.sql`.
+2. **Webhook sender** (SH-1 to SH-4, SH-29 to SH-34, SH-36, SH-43, SH-49). `V24__webhook_endpoint_states.sql`.
    `webhooks/src/sender.rs` (177) becomes `sender.rs` (feed handler: publishes the wake), `sender/claim.rs` (wake
    subscription, 1 s backstop, 50 ms fold, queue store, senders), `sender/senders.rs` (free senders, breaker state per
    endpoint), `sender/breaker.rs`, `sender/send.rs` (guard client, sign, POST, outcome: queue store, health, metrics),
