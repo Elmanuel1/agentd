@@ -4,7 +4,8 @@
 //! them in the consumer group `agentd`. An entry is acknowledged once its handler succeeds; an entry left
 //! pending by a replica that stopped is claimed by another after [`RECLAIM_MS`], and each stream is
 //! trimmed of what every group has acknowledged ([`crate::trim`]). An ordered handler's stream is read
-//! by one replica at a time, which holds a lease in Valkey, in entry order, stopping at a failure.
+//! by one replica at a time, which holds a lease in Valkey ([`lease`]), in entry order, stopping at a
+//! failure or a lost lease; an unordered one is handled 16 entries at a time ([`unordered`]).
 
 use shared::ports::BoxFuture;
 use std::future::Future;
@@ -14,15 +15,17 @@ use std::time::Duration;
 use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,
 };
-use redis::{AsyncCommands, RedisResult, SetExpiry, SetOptions};
+use redis::{AsyncCommands, RedisResult};
 use shared::ports::changes::{self, ChangeHandler};
 use shared::ports::fire::FireRegistry;
 
 use crate::fires::Fires;
 use crate::trim::{self, Keep};
-use crate::valkey::{Conn, Valkey};
+use crate::valkey::{Conn, Shared, Valkey};
 
+mod lease;
 mod native;
+mod unordered;
 pub(crate) use native::NativeConsumer;
 
 /// The consumer group every replica reads in.
@@ -31,9 +34,9 @@ const GROUP: &str = "agentd";
 const RECLAIM_MS: usize = 60_000;
 /// How long a read waits for new entries.
 const BLOCK_MS: usize = 5_000;
-/// Entries one read takes.
+/// Entries one ordered read takes.
 const BATCH: usize = 100;
-/// An ordered stream's lease, renewed on every pass.
+/// An ordered stream's lease, extended before each entry and every 10 s while one runs.
 const LEASE_MS: u64 = 30_000;
 /// The pause after a connection or handler failure.
 const BACKOFF: Duration = Duration::from_secs(1);
@@ -104,36 +107,43 @@ impl ValkeyChanges {
             Err(e) if e.code() != Some("BUSYGROUP") => return Err(e),
             _ => {}
         }
+        let ticker = self.valkey.shared()?;
         loop {
             match handler.ordered() {
-                true => self.ordered_pass(&mut conn, stream, handler).await?,
+                true => self.ordered_pass(&mut conn, &ticker, stream, handler).await?,
                 false => self.pass(&mut conn, stream, handler).await?,
             }
         }
     }
 
-    /// Claim what stopped replicas left and handle it, then read new entries
-    /// and handle those: a failed read never drops what was claimed.
-    async fn pass(&self, conn: &mut Conn, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
-        let stale = self.claim(conn, stream, RECLAIM_MS).await?;
-        handle(conn, stream, handler, stale).await?;
-        let fresh = self.read(conn, stream).await?;
-        handle(conn, stream, handler, fresh).await
-    }
-
     /// Under the lease only: every pending entry, then new ones, in order,
-    /// stopping at the first failure so nothing overtakes it.
-    async fn ordered_pass(&self, conn: &mut Conn, stream: &str, handler: &dyn Consumer) -> RedisResult<()> {
-        if !self.lease(conn, stream).await? {
+    /// stopping at the first failure so nothing overtakes it, and at a lost
+    /// lease, whose new holder handles the entry again.
+    async fn ordered_pass(
+        &self,
+        conn: &mut Conn,
+        ticker: &Shared,
+        stream: &str,
+        handler: &dyn Consumer,
+    ) -> RedisResult<()> {
+        let lease = lease::Lease { key: format!("agentd:lease:{stream}"), me: &self.consumer };
+        if !lease.take(conn).await? {
             tokio::time::sleep(Duration::from_millis(LEASE_MS / 3)).await;
             return Ok(());
         }
-        let mut entries = self.claim(conn, stream, 0).await?;
+        let mut entries = self.claim(conn, stream, 0, BATCH).await?;
         if entries.is_empty() {
-            entries = self.read(conn, stream).await?;
+            entries = self.read(conn, stream, BATCH).await?;
         }
         for entry in entries {
-            if !handler.consume(&entry).await {
+            if !lease.extend(conn).await? {
+                return Ok(());
+            }
+            let Some(handled) = lease.hold(ticker, handler.consume(&entry)).await else {
+                tracing::warn!(%stream, "changes: the stream's lease was lost mid-entry; its new holder handles it");
+                return Ok(());
+            };
+            if !handled {
                 tokio::time::sleep(BACKOFF).await;
                 return Ok(());
             }
@@ -142,48 +152,24 @@ impl ValkeyChanges {
         Ok(())
     }
 
-    /// Take or renew the stream's lease; `false` when another replica holds it.
-    async fn lease(&self, conn: &mut Conn, stream: &str) -> RedisResult<bool> {
-        let key = format!("agentd:lease:{stream}");
-        let held: Option<String> = conn.get(&key).await?;
-        if held.as_deref() == Some(self.consumer.as_str()) {
-            let _: bool = conn.pexpire(&key, i64::try_from(LEASE_MS).unwrap_or(i64::MAX)).await?;
-            return Ok(true);
-        }
-        let options = SetOptions::default()
-            .conditional_set(redis::ExistenceCheck::NX)
-            .with_expiration(SetExpiry::PX(LEASE_MS));
-        let taken: Option<String> = conn.set_options(&key, &self.consumer, options).await?;
-        Ok(taken.is_some())
-    }
-
-    async fn claim(&self, conn: &mut Conn, stream: &str, idle_ms: usize) -> RedisResult<Vec<StreamId>> {
-        let options = StreamAutoClaimOptions::default().count(BATCH);
+    async fn claim(
+        &self,
+        conn: &mut Conn,
+        stream: &str,
+        idle_ms: usize,
+        count: usize,
+    ) -> RedisResult<Vec<StreamId>> {
+        let options = StreamAutoClaimOptions::default().count(count);
         let reply: StreamAutoClaimReply =
             conn.xautoclaim_options(stream, GROUP, &self.consumer, idle_ms, "0", options).await?;
         Ok(reply.claimed)
     }
 
-    async fn read(&self, conn: &mut Conn, stream: &str) -> RedisResult<Vec<StreamId>> {
-        let options = StreamReadOptions::default().group(GROUP, &self.consumer).count(BATCH).block(BLOCK_MS);
+    async fn read(&self, conn: &mut Conn, stream: &str, count: usize) -> RedisResult<Vec<StreamId>> {
+        let options = StreamReadOptions::default().group(GROUP, &self.consumer).count(count).block(BLOCK_MS);
         let reply: StreamReadReply = conn.xread_options(&[stream], &[">"], &options).await?;
         Ok(reply.keys.into_iter().flat_map(|k| k.ids).collect())
     }
-}
-
-/// Handle each of `entries`, acknowledging those that need no more handling.
-async fn handle(
-    conn: &mut Conn,
-    stream: &str,
-    handler: &dyn Consumer,
-    entries: Vec<StreamId>,
-) -> RedisResult<()> {
-    for entry in entries {
-        if handler.consume(&entry).await {
-            let _: usize = conn.xack(stream, GROUP, &[&entry.id]).await?;
-        }
-    }
-    Ok(())
 }
 
 /// A table's changes, as Debezium writes them.
@@ -199,3 +185,6 @@ impl NativeConsumer for Changes {
         changes::deliver(self.0.as_ref(), value.as_deref(), &entry.id).await
     }
 }
+
+#[cfg(test)]
+mod tests;
