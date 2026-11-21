@@ -1,7 +1,7 @@
-//! signals-valkey: the sessions' change signals over Valkey pub/sub. Every
-//! replica publishes on one channel and holds one subscriber connection on
-//! it. Pub/sub keeps nothing and delivers at most once; a lost signal only
-//! waits for the stream's fallback timer.
+//! signals-valkey: the sessions' change signals over Valkey pub/sub, through
+//! [`ValkeyBroadcast`]. Every replica publishes on one channel and holds one
+//! subscriber connection on it. Pub/sub keeps nothing and delivers at most
+//! once; a lost signal only waits for the stream's fallback timer.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::panic))]
 
@@ -16,9 +16,11 @@ mod valkey;
 use std::time::Duration;
 
 use futures::StreamExt;
-use redis::{AsyncCommands, RedisError};
+use futures::stream::BoxStream;
+use redis::RedisError;
 use sessions::signals::{CAPACITY, NativeSignals, Signal};
 use sessions::types::SessionId;
+use shared::ports::broadcast::NativeBroadcast;
 use shared::{BackendError, WorkspaceId};
 use tokio::sync::broadcast as channel;
 
@@ -39,7 +41,7 @@ const PUBLISH_WAIT: Duration = Duration::from_millis(200);
 /// [`Signals`](sessions::signals::Signals) over Valkey.
 #[derive(Clone)]
 pub struct ValkeySignals {
-    publisher: valkey::Shared,
+    broadcast: ValkeyBroadcast,
     received: channel::Sender<Signal>,
 }
 
@@ -53,20 +55,17 @@ impl ValkeySignals {
     /// Signal through `valkey` and start the subscriber. Both connect when
     /// first used, so a replica starts while Valkey is down.
     pub fn connect(valkey: &Valkey) -> Result<Self, RedisError> {
-        let publisher = valkey.shared()?;
+        let broadcast = ValkeyBroadcast::connect(valkey)?;
         let received = channel::channel(CAPACITY).0;
-        tokio::spawn(subscribe(valkey.clone(), received.clone()));
-        Ok(Self { publisher, received })
+        tokio::spawn(relay(NativeBroadcast::subscribe(&broadcast, CHANNEL), received.clone()));
+        Ok(Self { broadcast, received })
     }
 }
 
 impl NativeSignals for ValkeySignals {
     async fn publish(&self, signal: &Signal) -> Result<(), BackendError> {
         let payload = format!("{} {}", signal.workspace.as_str(), signal.session);
-        let published = tokio::time::timeout(PUBLISH_WAIT, async {
-            self.publisher.get().await?.publish::<_, _, ()>(CHANNEL, payload).await
-        });
-        published.await.map_err(BackendError::new)?.map_err(BackendError::new)
+        NativeBroadcast::publish(&self.broadcast, CHANNEL, &payload).await
     }
 
     fn subscribe(&self) -> channel::Receiver<Signal> {
@@ -74,25 +73,11 @@ impl NativeSignals for ValkeySignals {
     }
 }
 
-/// Hand every signal on [`CHANNEL`] to `received`, connecting again after
-/// [`RECONNECT`] whenever the connection drops.
-async fn subscribe(valkey: Valkey, received: channel::Sender<Signal>) {
-    let mut retry = tokio::time::interval(RECONNECT);
-    // After a long subscription, one attempt at once, then one per RECONNECT.
-    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        retry.tick().await;
-        let subscribed = valkey.subscribe(CHANNEL).await;
-        let Ok(payloads) =
-            subscribed.inspect_err(|e| tracing::warn!(error = %e, "signals: could not subscribe on Valkey"))
-        else {
-            continue;
-        };
-        let mut signals = payloads.filter_map(|p| futures::future::ready(parse(&p)));
-        while let Some(signal) = signals.next().await {
-            let _ = received.send(signal);
-        }
-        tracing::warn!("signals: the Valkey subscription ended; connecting again");
+/// Hand every signal on [`CHANNEL`] to `received`.
+async fn relay(payloads: BoxStream<'static, String>, received: channel::Sender<Signal>) {
+    let mut signals = payloads.filter_map(|p| futures::future::ready(parse(&p)));
+    while let Some(signal) = signals.next().await {
+        let _ = received.send(signal);
     }
 }
 
