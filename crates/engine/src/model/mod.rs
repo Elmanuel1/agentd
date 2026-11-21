@@ -11,6 +11,7 @@ mod block;
 pub mod budget;
 mod list_cost;
 pub mod openai;
+pub mod price_feed;
 pub mod retry;
 pub mod router;
 mod windows;

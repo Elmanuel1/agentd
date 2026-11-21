@@ -118,6 +118,7 @@ step's 10 minute deadline.
 | `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
+| `AGENTD_MODEL_PRICES_URL` | `https://openrouter.ai/api/v1/models` | The model list Anthropic's list prices are read from, at start and every 5 minutes; empty, the built-in table alone |
 | `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
 | `AGENTD_COMPACTION_KEEP_RESULTS` | `3` | The newest tool results kept whole when clearing, from 3 to 5 |
 | `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` | `16000` | The most of one tool result a prompt carries; the stored event stays whole |
@@ -182,8 +183,13 @@ its environment blocks creates no session: its run records
 A session's list cost adds each model call's cost at list price. A
 Messages API call is priced as the model that served it, at Anthropic's
 [list prices](https://platform.claude.com/docs/en/about-claude/pricing) for
-input, 5-minute cache writes, cache reads and output; Claude Haiku 5.5 takes
-its higher rates for a prompt over 100,000 tokens. An OpenAI-compatible call
+input, 5-minute cache writes, cache reads and output, with a model's higher
+rates for a long prompt. Each replica reads the prices from the model list at
+`AGENTD_MODEL_PRICES_URL` (OpenRouter's public list, whose `anthropic/`
+entries carry Anthropic's rates) at start and every 5 minutes. A read that
+fails keeps the prices last read. A model the list lacks, and every model
+before the first read, takes the built-in table, which has Claude Haiku 5.5's
+higher rates for a prompt over 100,000 tokens. An OpenAI-compatible call
 takes the cost its provider reports. The budget is checked before each call
 against the exact cost so far, and `usage.list_cost` reports it rounded to
 the nearest cent. A session whose exact cost has reached its budget, or that

@@ -1,8 +1,26 @@
-//! Anthropic's list prices per model, as
+//! Anthropic's list prices per model: the latest [`Feed`] installed, and for
+//! a model it lacks, or before one is installed, the table here, as
 //! <https://platform.claude.com/docs/en/about-claude/pricing> states them on
 //! 2026-11-20. Every request agentd sends uses the 5-minute cache, the
 //! global inference region and standard speed, so those are the only rates
 //! kept.
+
+use std::sync::{Arc, RwLock};
+
+mod feed;
+
+pub use feed::Feed;
+
+/// The prices this process reads: reference data every replica fetches for
+/// itself, like the metrics global, so it is not threaded through each caller.
+static FEED: RwLock<Option<Arc<Feed>>> = RwLock::new(None);
+
+/// Price every later lookup from `feed`.
+pub fn install(feed: Feed) {
+    if let Ok(mut current) = FEED.write() {
+        *current = Some(Arc::new(feed));
+    }
+}
 
 /// A model's list rates, in thousandths of a US dollar per million tokens:
 /// one token at a rate of `r` costs `r` billionths of a dollar.
@@ -77,6 +95,10 @@ fn undated(model: &str) -> &str {
 #[must_use]
 pub fn list_price(model: &str, prompt_tokens: u64) -> Option<Price> {
     let id = undated(model);
+    let feed = FEED.read().ok().and_then(|f| f.clone());
+    if let Some(price) = feed.and_then(|f| f.price(id, prompt_tokens)) {
+        return Some(price);
+    }
     let (_, price) = LISTED.iter().find(|(listed, _)| *listed == id)?;
     match id == "claude-haiku-5-5" && prompt_tokens > HAIKU_5_5_LONG_PROMPT {
         true => Some(HAIKU_5_5_LONG),
@@ -115,6 +137,16 @@ mod tests {
         assert_eq!(list_price("claude-opus-4-5-20251101", 0), Some(OPUS_5));
         assert_eq!(list_price("claude-sonnet-5", 0), Some(SONNET_5));
         assert_eq!(list_price("claude-sonnet-5-5", 0), Some(SONNET_5_5));
+    }
+
+    #[test]
+    fn an_installed_feed_prices_its_models_and_the_table_the_rest() {
+        let list = serde_json::json!({"data": [{"id": "anthropic/claude-feed-only-1.0", "pricing": {
+            "prompt": "0.000002", "completion": "0.00001", "input_cache_read": "0.0000002",
+            "input_cache_write": "0.0000025"}}]});
+        install(Feed::parse(&list));
+        assert_eq!(list_price("claude-feed-only-1-0", 0).map(|p| p.input), Some(2_000));
+        assert_eq!(list_price("claude-haiku-4-5", 0), Some(HAIKU_4_5), "a model the feed lacks");
     }
 
     #[test]
