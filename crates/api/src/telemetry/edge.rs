@@ -1,7 +1,6 @@
-//! The edge's refusals and caches: `agentd.http.rejected` by `reason`
-//! (`rate_limited`, `timeout`), `agentd.http.rate_limit_unchecked`, requests
-//! admitted with Valkey slow or down, and `agentd.keys.cache` by `result`
-//! (`hit`, `miss`).
+//! The edge's refusals: `agentd.http.rejected` by `reason` (`rate_limited`,
+//! `timeout`), and `agentd.http.rate_limit_unchecked`, requests admitted with
+//! Valkey slow or down.
 
 use std::sync::OnceLock;
 
@@ -11,7 +10,6 @@ use opentelemetry::metrics::Counter;
 struct Instruments {
     rejected: Counter<u64>,
     unchecked: Counter<u64>,
-    keys: Counter<u64>,
 }
 
 fn instruments() -> &'static Instruments {
@@ -27,7 +25,6 @@ fn instruments() -> &'static Instruments {
                 .u64_counter("agentd.http.rate_limit_unchecked")
                 .with_description("Requests admitted without a rate check")
                 .build(),
-            keys: m.u64_counter("agentd.keys.cache").with_description("API key lookups, by result").build(),
         }
     })
 }
@@ -40,9 +37,4 @@ pub fn rejected(reason: &'static str) {
 /// A request was admitted without its rate check.
 pub fn rate_unchecked() {
     instruments().unchecked.add(1, &[]);
-}
-
-/// A key lookup was answered from the cache (`hit`) or from Postgres (`miss`).
-pub fn key_cache(result: &'static str) {
-    instruments().keys.add(1, &[KeyValue::new("result", result)]);
 }

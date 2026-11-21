@@ -17,7 +17,6 @@ use vaults::VaultsService;
 pub mod client;
 mod errors;
 mod probe;
-mod reply;
 pub mod server;
 mod servers;
 
