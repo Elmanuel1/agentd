@@ -153,10 +153,18 @@ fn a_secondary_threads_tool_calls_show_on_the_session_stream_and_its_other_work_
     assert!(used.on_thread_stream(Some(&thread)));
     assert!(used.thread_wire().get("session_thread_id").is_none());
     let said = Event {
-        session_thread_id: Some(thread),
+        session_thread_id: Some(thread.clone()),
         ..Event::new(EventPayload::Agent(AgentEvent::Message { content: vec![] }))
     };
     assert!(!said.on_session_stream());
+    let span = Event {
+        session_thread_id: Some(thread),
+        ..Event::new(EventPayload::Span(SpanEvent::ModelRequestStart {}))
+    };
+    assert!(
+        !span.on_session_stream(),
+        "live's primary stream shows a subagent's start and end, not its calls"
+    );
     if let EventPayload::Agent(AgentEvent::ToolUse { evaluation, .. }) = &mut used.payload {
         *evaluation = None;
     }
