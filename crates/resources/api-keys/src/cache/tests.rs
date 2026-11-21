@@ -25,11 +25,7 @@ impl KeySource for Store {
         if let Some(cache) = during {
             cache.revoke("apikey_1");
         }
-        Ok(Some(AuthContext {
-            org: OrgId::new("org_1"),
-            workspace: WorkspaceId::new("wrkspc_1"),
-            api_key_id: "apikey_1".into(),
-        }))
+        Ok(Some(tenant()))
     }
 }
 
@@ -37,14 +33,25 @@ fn cached(store: &Arc<Store>) -> Arc<CachedKeys> {
     Arc::new(CachedKeys::new(store.clone(), Arc::new(|_| {})))
 }
 
+fn tenant() -> AuthContext {
+    AuthContext {
+        org: OrgId::new("org_1"),
+        workspace: WorkspaceId::new("wrkspc_1"),
+        api_key_id: "apikey_1".into(),
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_cached_key_reads_postgres_once_until_its_ttl_or_its_revoke() {
     let store = Arc::new(Store::default());
-    let cache = cached(&store);
+    let reports = Arc::new(Mutex::new(Vec::new()));
+    let reported = reports.clone();
+    let cache = CachedKeys::new(store.clone(), Arc::new(move |r| reported.lock().unwrap().push(r)));
     for _ in 0..3 {
-        assert!(cache.resolve("sk-ant-api03-k").await.unwrap().is_some());
+        assert_eq!(cache.resolve("sk-ant-api03-k").await.unwrap(), Some(tenant()));
     }
     assert_eq!(store.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(*reports.lock().unwrap(), ["miss", "hit", "hit"]);
     tokio::time::advance(TTL).await;
     cache.resolve("sk-ant-api03-k").await.unwrap();
     assert_eq!(store.reads.load(Ordering::SeqCst), 2, "read again after the TTL");

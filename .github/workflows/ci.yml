@@ -260,14 +260,16 @@ jobs:
           if grep -qF "$AGENTD_TEST_KEY" agentd.log; then echo "the API key reached the log"; exit 1; fi
           if grep -qF "${AGENTD_SECRET_KEYS#*:}" agentd.log; then echo "a master key reached the log"; exit 1; fi
           ./target/debug/agentd keys list | grep -q "wrkspc_sdk"
-      - name: A revoked key is refused on the next request
+      - name: A revoked key is refused once the revoke reaches the key cache
         run: |
           call() { curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/v1/agents \
             -H "anthropic-version: 2023-06-01" -H "anthropic-beta: managed-agents-2026-04-01" -H "x-api-key: $AGENTD_TEST_KEY"; }
+          # A revoke reaches every replica's key cache through the change feed (SH-17).
+          refused() { for _ in $(seq 50); do test "$(call)" = 401 && return; sleep 0.1; done; return 1; }
           test "$(call)" = 200
           id=$(./target/debug/agentd keys list | awk -F '\t' '$3 == "wrkspc_sdk" && $4 == "active" { print $1 }')
           ./target/debug/agentd keys revoke "$id"
-          test "$(call)" = 401
+          refused
       - name: Archiving a workspace revokes its keys
         run: |
           admin() { curl -sf http://127.0.0.1:8080/v1/organizations/workspaces"$1" -X POST \
@@ -278,8 +280,9 @@ jobs:
           call() { curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/v1/agents \
             -H "anthropic-version: 2023-06-01" -H "anthropic-beta: managed-agents-2026-04-01" -H "x-api-key: $key"; }
           test "$(call)" = 200
+          refused() { for _ in $(seq 50); do test "$(call)" = 401 && return; sleep 0.1; done; return 1; }
           admin "/$ws/archive" '' | jq -e '.archived_at != null'
-          test "$(call)" = 401
+          refused
       - if: failure()
         run: |
           cat agentd.log model.log

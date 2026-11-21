@@ -66,10 +66,6 @@ impl CachedKeys {
             }
         })
     }
-
-    fn revokes(&self) -> u64 {
-        *self.revokes.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 }
 
 #[async_trait]
@@ -83,7 +79,8 @@ impl KeySource for CachedKeys {
         (self.report)("miss");
         // The TTL counts from the read's start, so a read in flight during a lost revoke still expires
         // within 60 s of it (SH-18).
-        let (before, started) = (self.revokes(), Instant::now());
+        let before = *self.revokes.lock().unwrap_or_else(PoisonError::into_inner);
+        let started = Instant::now();
         let found = self.inner.resolve(key).await?;
         // Held through the insert, so a revoke cannot land between the check and the insert.
         let revokes = self.revokes.lock().unwrap_or_else(PoisonError::into_inner);
