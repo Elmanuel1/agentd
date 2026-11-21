@@ -59,7 +59,7 @@ SH-51 are not used.
 | SH-31 | W | If every attempt to an endpoint has failed for 120 h, then the webhook sender shall disable it. |
 | SH-32 | E | When an endpoint answers 2xx, the webhook sender shall clear its failing time. |
 | SH-33 | S | While an endpoint's breaker is open on a replica and the endpoint is not disabled, the webhook sender on that replica shall claim none of its deliveries. |
-| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, unless that replica stalls between its pre-POST check and the POST, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more shall start no POST until a read succeeds. |
+| SH-34 | S | While an endpoint is disabled, the webhook sender shall start no POST to it on a replica later than 11 s after the disable, unless that replica stalls between its pre-POST check and the POST, and shall drop each of its deliveries without sending it when the delivery falls due; a replica whose last good endpoint state read is 11 s old or more at its pre-POST check shall start no POST until a read succeeds. |
 | SH-35 | E | When an operator runs `agentd webhooks enable <org> <endpoint>`, the operator command shall re-enable the endpoint and clear its failing time. |
 | SH-36 | E | When agentd starts with an endpoint whose URL or secret digest differs from the stored one, agentd shall re-enable it and store the new digest. |
 | SH-49 | W | If an endpoint's signing secret decodes to fewer than 24 bytes, then agentd shall refuse to start and name the endpoint by its id. |
@@ -201,7 +201,7 @@ Authentication, TLS verification and credential refresh failures are counted by 
   process that stalls between them starts its POST late by the stall, the same exception the claim allows. Before each POST the sender checks that its last good state read is under 11 s old, its age
   counted from when that read started (its snapshot can be no newer); a read that is already 11 s old when it
   completes is discarded. When a read fails or runs late past that, the replica releases its claims unsent and starts no POST until a read succeeds, so
-  stale state never sends to a disabled endpoint.
+  no POST passes the check on stale state; only a stall after the check can start one late.
 - **The claim token is `claim_seq`** (D26), a counter on the row that each claim raises by one and nothing ever
   lowers: no two claims of a row share a token, whether the earlier one expired or was released, and no clock is
   involved. `claimed_until` only says when the claim expires. Every later write for the claim (outcome, release,
