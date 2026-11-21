@@ -209,7 +209,11 @@ credential keeps a secret. Reads are not cached.
 
 Our `cloud` runtime swaps `environment_variable` values in at egress from
 Secrets Manager or Parameter Store, never from Postgres, so a deployment that
-runs that swap uses `aws_sm` or `aws_ssm`.
+runs that swap uses `aws_sm` or `aws_ssm`. With `AGENTD_SECRETS` resolved to
+`postgres` and `AGENTD_RUNTIME_KEYS` set, agentd logs one `WARN` at boot
+saying that `environment_variable` credentials in cloud sessions are not
+swapped; it still starts, since each environment, not the configuration, says
+whether it is `cloud`.
 
 ### Postgres
 
