@@ -79,3 +79,12 @@ async fn a_step_whose_deadline_passes_while_open_fails_without_a_call() {
     assert!(short.window(&flaky, "claude-haiku-4-5").await.is_err(), "ends as today, retries exhausted");
     assert_eq!(flaky.calls.lock().unwrap().len(), 5, "no call while open");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_retry_after_past_what_an_instant_holds_ends_the_call_at_once() {
+    let flaky = Flaky::new(1, ModelError::RetryAfter("429".into(), Duration::MAX));
+    let started = Instant::now();
+    assert!(retry(Duration::from_secs(600)).window(&flaky, "claude-haiku-4-5").await.is_err());
+    assert_eq!(Instant::now(), started, "no wait");
+    assert_eq!(flaky.calls.lock().unwrap().len(), 1);
+}

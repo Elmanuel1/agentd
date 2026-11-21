@@ -15,6 +15,7 @@ struct SlowStates {
     inner: States,
     delay: Mutex<Duration>,
     failing: std::sync::atomic::AtomicBool,
+    disable_delay: Mutex<Duration>,
 }
 
 impl NativeEndpointStates for SlowStates {
@@ -33,6 +34,8 @@ impl NativeEndpointStates for SlowStates {
         NativeEndpointStates::failed(&self.inner, e).await
     }
     async fn disable(&self, e: &Configured, why: DisabledReason) -> Result<bool, BackendError> {
+        let delay = *self.disable_delay.lock();
+        tokio::time::sleep(delay).await;
         NativeEndpointStates::disable(&self.inner, e, why).await
     }
 }
@@ -87,6 +90,25 @@ async fn a_disable_made_while_a_read_runs_survives_that_read() {
     tokio::time::advance(Duration::from_secs(2)).await;
     reading.await.unwrap().unwrap();
     assert!(health.disabled("a"), "the read began before the disable and did not see it");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_that_runs_while_a_disable_is_written_does_not_undo_it() {
+    let states = Arc::new(SlowStates::default());
+    let health = Arc::new(crate::sender::health::Health::new(states.clone()));
+    *states.disable_delay.lock() = Duration::from_secs(2);
+    let endpoint = Configured { endpoint_key: "a".into(), org_id: "org_1".into(), digest: "d".into() };
+    let disabling = tokio::spawn({
+        let (health, endpoint) = (health.clone(), endpoint.clone());
+        async move { health.disable(&endpoint, DisabledReason::Redirect).await }
+    });
+    // Let the disable start its write before the read.
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    health.refresh().await.unwrap();
+    tokio::time::advance(Duration::from_secs(2)).await;
+    disabling.await.unwrap().unwrap();
+    assert!(health.disabled("a"), "the disable is kept once its write returns");
 }
 
 #[tokio::test]
