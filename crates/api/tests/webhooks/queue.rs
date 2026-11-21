@@ -544,3 +544,34 @@ async fn the_operator_enable_clears_a_disable_and_its_failing_time() {
     assert_eq!(state().await, None, "neither disabled nor failing");
     assert!(!db.store.enable("ep_never_sent").await.unwrap(), "an endpoint agentd never sent to");
 }
+
+#[tokio::test]
+async fn agentd_webhooks_enable_succeeds_for_a_disabled_endpoint_and_fails_for_one_never_sent_to() {
+    // SH-35, through the command.
+    let Some(db) = db().await else { return };
+    let (sent, never) = (format!("ep_{}", common::stamp()), format!("ep_{}", common::stamp()));
+    let endpoints = json!([
+        {"id": sent, "organization_id": "org_hooks", "url": "https://hooks.agentd.test/a", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"},
+        {"id": never, "organization_id": "org_hooks", "url": "https://hooks.agentd.test/b", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}
+    ])
+    .to_string();
+    let env = |k: &str| match k {
+        "AGENTD_WEBHOOK_ENDPOINTS" => Some(endpoints.clone()),
+        "AGENTD_API_BASE_URL" => Some("http://agentd:8080".into()),
+        "AGENTD_WORK_TOKEN_KEYS" => Some("k1:000102030405060708090a0b0c0d0e0f".into()),
+        "AGENTD_PLACEHOLDER_KEYS" => Some("k1:101112131415161718191a1b1c1d1e1f".into()),
+        "AGENTD_API_KEY_PEPPERS" => Some("p1:202122232425262728292a2b2c2d2e2f".into()),
+        "AGENTD_SECRET_KEYS" => {
+            Some("k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into())
+        }
+        other => std::env::var(other).ok(),
+    };
+    let config = api::config::Config::from_lookup(env).unwrap();
+    let endpoint = configured(&sent, "d1");
+    db.store.configure(std::slice::from_ref(&endpoint)).await.unwrap();
+    db.store.disable(&endpoint, DisabledReason::Redirect).await.unwrap();
+    let enable = |key: &str| ["enable".to_owned(), "org_hooks".to_owned(), key.to_owned()];
+    assert_eq!(api::cli::webhooks::webhooks(&config, &enable(&sent)).await, std::process::ExitCode::SUCCESS);
+    assert!(!db.store.read().await.unwrap().iter().any(|s| s.endpoint_key == sent));
+    assert_eq!(api::cli::webhooks::webhooks(&config, &enable(&never)).await, std::process::ExitCode::FAILURE);
+}

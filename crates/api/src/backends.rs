@@ -175,8 +175,7 @@ impl Backends {
                 (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))
             }
         };
-        let signals: Arc<dyn Signals> =
-            Arc::new(ValkeySignals::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?);
+        let signals: Arc<dyn Signals> = Arc::new(ValkeySignals::over(broadcast.as_ref().clone()));
         let admin = Arc::new(AdminKeysService::new(stores.admin_keys.clone(), peppers.clone()));
         let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
         let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), peppers)

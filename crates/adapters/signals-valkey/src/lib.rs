@@ -55,10 +55,14 @@ impl ValkeySignals {
     /// Signal through `valkey` and start the subscriber. Both connect when
     /// first used, so a replica starts while Valkey is down.
     pub fn connect(valkey: &Valkey) -> Result<Self, RedisError> {
-        let broadcast = ValkeyBroadcast::connect(valkey)?;
+        Ok(Self::over(ValkeyBroadcast::connect(valkey)?))
+    }
+
+    /// Signal over `broadcast`, sharing its publisher connection, and start the subscriber.
+    pub fn over(broadcast: ValkeyBroadcast) -> Self {
         let received = channel::channel(CAPACITY).0;
         tokio::spawn(relay(NativeBroadcast::subscribe(&broadcast, CHANNEL), received.clone()));
-        Ok(Self { broadcast, received })
+        Self { broadcast, received }
     }
 }
 

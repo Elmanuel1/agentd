@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
 use shared::{ApiError, ErrorType, wire_response};
@@ -34,10 +35,13 @@ async fn within(State(deadline): State<Duration>, req: Request, next: Next) -> R
     response
 }
 
-/// A request whose database checkout timed out is 529, whatever 5xx its auth or route made of it.
+/// A request whose database checkout timed out is 529, whatever 5xx its auth or route made of it; a 504
+/// stays a 504, already counted as a timeout.
 pub async fn shed(req: Request, next: Next) -> Response {
     match shared::overload::watched(next.run(req)).await {
-        (response, true) if response.status().is_server_error() => {
+        (response, true)
+            if response.status().is_server_error() && response.status() != StatusCode::GATEWAY_TIMEOUT =>
+        {
             crate::telemetry::edge::rejected("overloaded");
             wire_response(&ApiError::of(ErrorType::Overloaded, "no database connection came free in time"))
         }

@@ -69,6 +69,24 @@ async fn a_request_whose_checkout_timed_out_answers_529_overloaded_error() {
 }
 
 #[tokio::test]
+async fn a_request_that_waited_out_and_then_passed_its_deadline_stays_a_504() {
+    let late = Router::new().route(
+        "/late",
+        get(|| async {
+            shared::overload::waited_out();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            "late"
+        }),
+    );
+    let app =
+        deadline::bounded(late, Duration::from_millis(100)).layer(axum::middleware::from_fn(deadline::shed));
+    let (st, body) = get_once(app, "/late").await;
+    assert_eq!(st, StatusCode::GATEWAY_TIMEOUT);
+    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["error"]["type"], "timeout_error");
+}
+
+#[tokio::test]
 async fn a_handler_past_the_deadline_has_its_transaction_rolled_back() {
     if std::env::var("AGENTD_PG_TESTS").as_deref() != Ok("1") {
         return;

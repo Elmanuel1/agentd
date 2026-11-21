@@ -103,7 +103,7 @@ impl SenderMetrics for WebhookMetrics {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use opentelemetry::metrics::MeterProvider as _;
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
@@ -115,7 +115,7 @@ mod tests {
     }
 
     /// Each point of `name`: its attribute values joined, and its value.
-    fn points(out: &InMemoryMetricExporter, name: &str) -> Vec<(String, String)> {
+    pub(crate) fn points(out: &InMemoryMetricExporter, name: &str) -> Vec<(String, String)> {
         let finished = out.get_finished_metrics().unwrap();
         let mut points: Vec<(String, String)> = finished
             .iter()

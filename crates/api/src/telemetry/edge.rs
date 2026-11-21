@@ -5,18 +5,16 @@
 use std::sync::OnceLock;
 
 use opentelemetry::KeyValue;
-use opentelemetry::metrics::Counter;
+use opentelemetry::metrics::{Counter, Meter};
 
 struct Instruments {
     rejected: Counter<u64>,
     unchecked: Counter<u64>,
 }
 
-fn instruments() -> &'static Instruments {
-    static ONCE: OnceLock<Instruments> = OnceLock::new();
-    ONCE.get_or_init(|| {
-        let m = opentelemetry::global::meter("agentd");
-        Instruments {
+impl Instruments {
+    fn on(m: &Meter) -> Self {
+        Self {
             rejected: m
                 .u64_counter("agentd.http.rejected")
                 .with_description("Requests refused, by reason")
@@ -26,15 +24,58 @@ fn instruments() -> &'static Instruments {
                 .with_description("Requests admitted without a rate check")
                 .build(),
         }
-    })
+    }
+
+    fn rejected(&self, reason: &'static str) {
+        self.rejected.add(1, &[KeyValue::new("reason", reason)]);
+    }
+
+    fn unchecked(&self) {
+        self.unchecked.add(1, &[]);
+    }
+}
+
+fn instruments() -> &'static Instruments {
+    static ONCE: OnceLock<Instruments> = OnceLock::new();
+    ONCE.get_or_init(|| Instruments::on(&opentelemetry::global::meter("agentd")))
 }
 
 /// A request was refused for `reason`.
 pub fn rejected(reason: &'static str) {
-    instruments().rejected.add(1, &[KeyValue::new("reason", reason)]);
+    instruments().rejected(reason);
 }
 
 /// A request was admitted without its rate check.
 pub fn rate_unchecked() {
-    instruments().unchecked.add(1, &[]);
+    instruments().unchecked();
+}
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::metrics::MeterProvider as _;
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
+
+    use super::*;
+    use crate::telemetry::webhooks::tests::points;
+
+    #[test]
+    fn each_refusal_counts_by_its_reason_and_an_unchecked_admission_counts_once() {
+        let out = InMemoryMetricExporter::default();
+        let meters =
+            SdkMeterProvider::builder().with_reader(PeriodicReader::builder(out.clone()).build()).build();
+        let i = Instruments::on(&meters.meter("test"));
+        for reason in ["rate_limited", "rate_limited", "timeout", "overloaded"] {
+            i.rejected(reason);
+        }
+        i.unchecked();
+        meters.force_flush().unwrap();
+        let owned = |v: &[(&str, &str)]| {
+            v.iter().map(|(k, n)| ((*k).to_owned(), (*n).to_owned())).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            points(&out, "agentd.http.rejected"),
+            owned(&[("overloaded", "1"), ("rate_limited", "2"), ("timeout", "1")])
+        );
+        assert_eq!(points(&out, "agentd.http.rate_limit_unchecked"), owned(&[("", "1")]));
+    }
 }
