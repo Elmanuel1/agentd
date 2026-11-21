@@ -44,7 +44,11 @@ pub async fn spawn(
     let budget: Arc<dyn ModelBudget> = match c.rpm.or(c.itpm) {
         Some(_) => {
             let streams = &config.streams;
-            let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster);
+            let valkey = Valkey::open_trusting(
+                &streams.valkey_url,
+                streams.valkey_cluster,
+                streams.valkey_ca.as_deref(),
+            );
             let budget = valkey.and_then(|v| ValkeyBudget::connect(&v, c.rpm, c.itpm));
             Arc::new(budget.map_err(|e| BootError::Loop(e.to_string()))?)
         }

@@ -33,6 +33,11 @@ tracing = { workspace = true }
 futures = { workspace = true }
 diesel = { workspace = true }
 diesel-async = { workspace = true }
+tokio-postgres = { workspace = true }
+tokio-postgres-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+percent-encoding = { workspace = true }
 deadpool = { workspace = true }
 aws-lc-rs = { workspace = true }
 zeroize = { workspace = true }

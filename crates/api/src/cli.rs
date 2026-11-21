@@ -19,7 +19,8 @@ use shared::ports::secrets::ExposeSecret;
 use store_postgres::{PgApiKeysStore, PgBackend};
 
 pub use self::command::{KeysCommand, Kind};
-use crate::config::{Config, StoreConfig};
+use crate::backends::postgres::primary;
+use crate::config::Config;
 
 /// How to call it.
 pub const USAGE: &str = "usage: agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]
@@ -36,8 +37,7 @@ pub async fn keys(config: &Config, args: &[String]) -> ExitCode {
 
 /// The database and peppers every key command works with.
 pub(crate) async fn backend(config: &Config) -> Result<(PgBackend, Arc<PepperRing>), String> {
-    let StoreConfig::Postgres { url, .. } = &config.store;
-    let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
+    let pg = primary(&config.store).await.map_err(|e| e.to_string())?;
     Ok((pg, Arc::new(PepperRing::from_ring(&config.keys.peppers))))
 }
 

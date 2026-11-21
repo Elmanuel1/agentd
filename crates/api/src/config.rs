@@ -144,6 +144,7 @@ fn endpoint(get: &impl Fn(&str) -> Option<String>, var: &'static str) -> Result<
 
 mod blobs;
 mod hooks;
+mod kafka;
 mod keys;
 mod role;
 mod scheduler;
@@ -154,13 +155,14 @@ mod telemetry;
 mod work;
 
 pub use blobs::BlobsConfig;
+pub use kafka::{KafkaAuth, KafkaConfig};
 pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};
 pub use scheduler::SchedulerConfig;
 pub use secrets::SecretsConfig;
-pub use store::StoreConfig;
+pub use store::{PgAuth, StoreConfig};
 pub use streams::StreamsConfig;
-pub use telemetry::TelemetryConfig;
+pub use telemetry::{OtlpHttps, TelemetryConfig};
 pub use work::WorkConfig;
 
 #[cfg(test)]

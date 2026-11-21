@@ -23,6 +23,7 @@ futures = { workspace = true }
 
 [dev-dependencies]
 store-postgres = { workspace = true }
+test-support = { workspace = true }
 
 [lints]
 workspace = true

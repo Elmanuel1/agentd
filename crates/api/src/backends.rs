@@ -7,7 +7,7 @@ use std::sync::Arc;
 use blobs_s3::{BlobError, S3BlobStore};
 
 mod feed;
-mod postgres;
+pub(crate) mod postgres;
 mod scheduler;
 mod secrets;
 mod stores;
@@ -140,20 +140,20 @@ impl Backends {
         let secrets = secrets::Secrets::connect(&config.secrets, &metrics).await?;
         let peppers = Arc::new(PepperRing::from_ring(&config.keys.peppers));
         let streams = &config.streams;
-        let valkey = Valkey::open(&streams.valkey_url, streams.valkey_cluster)
-            .map_err(|e| BootError::Signals(e.to_string()))?;
+        let valkey =
+            Valkey::open_trusting(&streams.valkey_url, streams.valkey_cluster, streams.valkey_ca.as_deref())
+                .map_err(|e| BootError::Signals(e.to_string()))?;
         let broadcast =
             Arc::new(ValkeyBroadcast::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?);
         let mut shutdown = Shutdown::default();
         let counter = ValkeyRateCounter::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?;
         let limits = crate::edge::rate::Limits::new(Arc::new(counter));
         let (stores, load, keys, fires, sources) = match &config.store {
-            StoreConfig::Postgres { url, read_url, pool } => {
+            store @ StoreConfig::Postgres { .. } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
                 let hooks = config.webhooks.clone();
                 let outside = postgres::Outside { blobs, secrets };
-                let pg =
-                    postgres::connect(url, read_url.as_deref(), *pool, retention, &metrics, outside).await?;
+                let pg = postgres::connect(store, retention, &metrics, outside).await?;
                 let queue = PgFireClaims::new(pg.backend.clone());
                 let meter = opentelemetry::global::meter("agentd");
                 let scheduling = SchedulerMetrics::new(&meter);
@@ -161,7 +161,7 @@ impl Backends {
                 let registry = FireRegistry::new(Arc::new(queue.clone()));
                 let fires = Arc::new(registry.counting_enqueued(move |n| delivered.enqueued(n)));
                 let sink = scheduler::Sink::connect(&config.scheduler, &pg.backend).await?;
-                let feed = feed::ChangeFeed::from_config(streams, &valkey);
+                let feed = feed::ChangeFeed::from_config(streams, &valkey).await;
                 let instance = format!("agentd-{}", uuid::Uuid::new_v4());
                 let sending = telemetry::webhooks::WebhookMetrics::on(&meter, &instance);
                 let wake = webhooks::start(hooks, &pg.backend, broadcast.clone(), sending, &mut shutdown);

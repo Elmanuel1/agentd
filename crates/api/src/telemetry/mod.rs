@@ -23,6 +23,7 @@ pub mod db;
 pub mod edge;
 pub mod feed;
 pub mod http;
+mod otlp;
 pub mod ports;
 pub mod retention;
 pub mod scheduler;
@@ -32,7 +33,6 @@ pub mod webhooks;
 use opentelemetry::metrics::{Histogram, Meter, UpDownCounter};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::{LogExporter, MetricExporter, SpanExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -41,6 +41,8 @@ use tracing_subscriber::filter::{LevelFilter, filter_fn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+
+use crate::config::TelemetryConfig;
 
 /// Histogram buckets in seconds (the OpenTelemetry HTTP semantic conventions'
 /// advice). The SDK's defaults are sized for milliseconds, which would put
@@ -119,7 +121,8 @@ impl Drop for Telemetry {
 /// metric and log pipelines (the meter provider as the global one; spans
 /// reach the tracer through the `tracing` layer). Logs
 /// still go to stdout; over OTLP they carry the trace and span ids.
-pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
+pub fn init(config: &TelemetryConfig) -> Result<Telemetry, String> {
+    let json = config.json_logs;
     // RUST_LOG picks the logs, on stdout and over OTLP alike; it does not
     // pick the spans, so quieter logs never switch tracing off.
     let log_filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -138,17 +141,15 @@ pub fn init(otlp: bool, json: bool) -> Result<Telemetry, String> {
             .boxed()
     };
     let mut telemetry = Telemetry::default();
-    let otel = if otlp {
+    let otel = if config.otlp {
         let resource = Resource::builder().with_service_name("agentd").build();
-        let spans = SpanExporter::builder().with_tonic().build().map_err(|e| e.to_string())?;
+        let (spans, metrics, logs) = otlp::exporters(config)?;
         let tracer =
             SdkTracerProvider::builder().with_batch_exporter(spans).with_resource(resource.clone()).build();
-        let metrics = MetricExporter::builder().with_tonic().build().map_err(|e| e.to_string())?;
         let meter = SdkMeterProvider::builder()
             .with_periodic_exporter(metrics)
             .with_resource(resource.clone())
             .build();
-        let logs = LogExporter::builder().with_tonic().build().map_err(|e| e.to_string())?;
         let logger = SdkLoggerProvider::builder().with_batch_exporter(logs).with_resource(resource).build();
         opentelemetry::global::set_meter_provider(meter.clone());
         opentelemetry::global::set_text_map_propagator(

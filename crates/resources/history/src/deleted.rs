@@ -54,8 +54,7 @@ impl NativeChangeHandler for DeletedRecorder {
                 row.insert(writer.into(), message.get(writer).cloned().unwrap_or(Value::Null));
             }
             let row = Value::Object(row);
-            self.log.record(table, HistoryOp::Delete, position, &row).await?;
-            redact::scrub(self.log.as_ref(), table, &row).await
+            self.log.record(table, HistoryOp::Delete, position, &row, redact::held(table, &row)).await
         };
         settle(recorded.await, change, &self.applied)
     }

@@ -62,6 +62,8 @@ async fn with_temporal_the_built_in_tick_does_not_run_and_with_postgres_it_does(
         address,
         namespace: "default".into(),
         task_queue: format!("agentd-sink-test-{}", chrono::Utc::now().timestamp_micros()),
+        api_key: None,
+        server_ca: None,
     };
     let spec = due_schedule(&pg, "temporal").await;
     let sink = Sink::connect(&SchedulerConfig::Temporal(temporal), &pg).await.unwrap();
