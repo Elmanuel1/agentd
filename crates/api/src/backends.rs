@@ -19,11 +19,12 @@ pub use stores::Stores;
 use crate::telemetry::ports::Observed;
 use crate::telemetry::scheduler::SchedulerMetrics;
 use crate::telemetry::{self, Metrics};
-use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
+use api_keys::{AdminKeysService, ApiKeysService, CachedKeys, EnvironmentKeysService, KeyRevokes, REVOKED};
 use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
 use shared::hash::KeyRing;
 use shared::ports::blobs::BlobStore;
+use shared::ports::broadcast::Broadcast;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::SecretError;
@@ -169,9 +170,12 @@ impl Backends {
                 let mut handlers = history::recorders(log, telemetry::feed::apply_delay(&meter));
                 handlers.push(Arc::new(ScheduleOutbox::new(sink.port())));
                 handlers.push(wake);
+                handlers.push(Arc::new(KeyRevokes::new(broadcast.clone())));
                 drop(feed.spawn(handlers));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
+                let keys = Arc::new(CachedKeys::new(keys, Arc::new(telemetry::edge::key_cache)));
+                drop(keys.clone().listen(broadcast.subscribe(REVOKED)));
                 (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))
             }
         };

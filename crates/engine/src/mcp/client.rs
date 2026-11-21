@@ -123,8 +123,7 @@ impl Rpc {
             s => return Err(Failure::Status(s.as_u16())),
         }
         let headers = reply.headers().clone();
-        let text = reply.text().await.map_err(|_| Failure::Unreachable)?;
-        Ok((headers, text))
+        Ok((headers, super::reply::read(reply).await?))
     }
 
     /// Send `method` and wait for its answer.
@@ -136,18 +135,7 @@ impl Rpc {
         if let Some(s) = headers.get(SESSION).and_then(|v| v.to_str().ok()) {
             self.session = Some(s.to_owned());
         }
-        let streamed = headers
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|t| t.starts_with("text/event-stream"));
-        let messages = match streamed {
-            true => events(&text),
-            false => match serde_json::from_str::<Value>(&text) {
-                Ok(Value::Array(all)) => all,
-                Ok(one) => vec![one],
-                Err(_) => Vec::new(),
-            },
-        };
+        let messages = super::reply::messages(&headers, &text);
         let mut answer = Answer::default();
         let mut answered = false;
         for m in messages {
@@ -169,36 +157,5 @@ impl Rpc {
     /// Send the notification `method`, which has no answer.
     pub async fn notify(&mut self, method: &str) -> Result<(), Failure> {
         self.post(&json!({"jsonrpc": "2.0", "method": method})).await.map(drop)
-    }
-}
-
-/// The JSON messages of an event stream's `data` fields.
-fn events(text: &str) -> Vec<Value> {
-    text.split("\n\n")
-        .flat_map(|chunk| chunk.split("\r\n\r\n"))
-        .filter_map(|event| {
-            let data: Vec<&str> = event
-                .lines()
-                .filter_map(|l| l.strip_prefix("data:"))
-                .map(|d| d.strip_prefix(' ').unwrap_or(d))
-                .collect();
-            (!data.is_empty()).then(|| serde_json::from_str(&data.join("\n")).ok()).flatten()
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_event_stream_yields_each_data_message() {
-        let text = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n\
-                    id: 2\ndata: {\"jsonrpc\":\"2.0\",\n data: \"id\":1,\"result\":{}}\n\n";
-        let got = events(text);
-        assert_eq!(got.len(), 1, "a data line that does not start the field is not one");
-        assert_eq!(got[0]["method"], "notifications/tools/list_changed");
-        let split = "data: {\"jsonrpc\":\"2.0\",\ndata: \"id\":1,\"result\":{}}\n\n";
-        assert_eq!(events(split)[0]["id"], 1);
     }
 }

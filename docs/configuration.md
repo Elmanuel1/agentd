@@ -741,6 +741,12 @@ store routes send `anthropic-ratelimit-requests-limit`, `-remaining` and
 `-reset`. When Valkey does not answer within 200 ms the request is admitted and
 counted in `agentd.http.rate_limit_unchecked`.
 
+An API key resolved in the last 60 s answers without a Postgres read, up to
+10,000 keys per replica. A revoke, from the API or `agentd keys revoke`,
+reaches every replica within a second through the change feed's `api_keys`
+handler and Valkey `agentd:keys`; if that message is lost, the key stops
+working within 60 s.
+
 ## Telemetry
 
 | Variable | Default | Meaning |
