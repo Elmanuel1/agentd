@@ -173,9 +173,9 @@ impl Backends {
                 handlers.push(Arc::new(KeyRevokes::new(broadcast.clone())));
                 drop(feed.spawn(handlers));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
-                let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
-                let keys = Arc::new(CachedKeys::new(keys, Arc::new(telemetry::edge::key_cache)));
+                let keys = Arc::new(CachedKeys::new(Arc::new(keys), Arc::new(telemetry::edge::key_cache)));
                 drop(keys.clone().listen(broadcast.subscribe(REVOKED)));
+                let keys: Arc<dyn KeySource> = Arc::new(Observed::new(keys, metrics.clone()));
                 (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))
             }
         };
