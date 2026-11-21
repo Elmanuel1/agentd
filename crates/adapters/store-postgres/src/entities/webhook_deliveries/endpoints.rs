@@ -3,8 +3,8 @@
 //! holds one row per configured endpoint. A 2xx ends a run of failures with
 //! its outcome (`queue.rs`).
 
-use diesel::QueryableByName;
 use diesel::sql_types::{Array, Bool, Nullable, Text};
+use diesel::{OptionalExtension, QueryableByName};
 use diesel_async::RunQueryDsl;
 use shared::BackendError;
 use webhooks::states::{Configured, DisabledReason, EndpointState, NativeEndpointStates};
@@ -73,9 +73,11 @@ impl NativeEndpointStates for PgWebhooks {
     }
 
     async fn failed(&self, endpoint: &Configured) -> Result<bool, BackendError> {
+        // Both writes match the stored digest, so a late answer from an endpoint's old URL or secret
+        // changes nothing on the endpoint as it is configured now.
         let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
         // One statement, so `now()` is this failure's time: `disabled_at = now()` only when it disabled it.
-        let disabled: Disabled = diesel::sql_query(
+        let disabled: Option<Disabled> = diesel::sql_query(
             "INSERT INTO webhook_endpoint_states (endpoint_key, org_id, failing_since, config_digest)
              VALUES ($1, $2, now(), $3)
              ON CONFLICT (endpoint_key) DO UPDATE SET
@@ -86,6 +88,7 @@ impl NativeEndpointStates for PgWebhooks {
                disabled_reason = CASE WHEN webhook_endpoint_states.failing_since < now() - interval '120 hours'
                  THEN coalesce(webhook_endpoint_states.disabled_reason, 'failing')
                  ELSE webhook_endpoint_states.disabled_reason END
+             WHERE webhook_endpoint_states.config_digest = excluded.config_digest
              RETURNING coalesce(disabled_at = now(), false) AS newly",
         )
         .bind::<Text, _>(&endpoint.endpoint_key)
@@ -93,18 +96,20 @@ impl NativeEndpointStates for PgWebhooks {
         .bind::<Text, _>(&endpoint.digest)
         .get_result(&mut conn)
         .await
+        .optional()
         .map_err(BackendError::new)?;
-        Ok(disabled.newly)
+        Ok(disabled.is_some_and(|d| d.newly))
     }
 
     async fn disable(&self, endpoint: &Configured, why: DisabledReason) -> Result<bool, BackendError> {
         let mut conn = self.backend.diesel.write().await.map_err(BackendError::new)?;
-        let disabled: Disabled = diesel::sql_query(
+        let disabled: Option<Disabled> = diesel::sql_query(
             "INSERT INTO webhook_endpoint_states (endpoint_key, org_id, config_digest, disabled_at, disabled_reason)
              VALUES ($1, $2, $3, now(), $4)
              ON CONFLICT (endpoint_key) DO UPDATE SET
                disabled_at = coalesce(webhook_endpoint_states.disabled_at, now()),
                disabled_reason = coalesce(webhook_endpoint_states.disabled_reason, excluded.disabled_reason)
+             WHERE webhook_endpoint_states.config_digest = excluded.config_digest
              RETURNING disabled_at = now() AS newly",
         )
         .bind::<Text, _>(&endpoint.endpoint_key)
@@ -113,8 +118,9 @@ impl NativeEndpointStates for PgWebhooks {
         .bind::<Text, _>(why.as_str())
         .get_result(&mut conn)
         .await
+        .optional()
         .map_err(BackendError::new)?;
-        Ok(disabled.newly)
+        Ok(disabled.is_some_and(|d| d.newly))
     }
 }
 

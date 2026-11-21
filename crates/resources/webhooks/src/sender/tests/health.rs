@@ -106,6 +106,7 @@ async fn a_read_that_runs_while_a_disable_is_written_does_not_undo_it() {
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(1)).await;
     health.refresh().await.unwrap();
+    assert!(health.disabled("a"), "kept while its write is pending");
     tokio::time::advance(Duration::from_secs(2)).await;
     disabling.await.unwrap().unwrap();
     assert!(health.disabled("a"), "the disable is kept once its write returns");

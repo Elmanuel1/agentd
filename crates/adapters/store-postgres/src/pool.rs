@@ -109,6 +109,10 @@ impl PgBackend {
             // so a stalled database cannot hold a checkout past it.
             .create_timeout(Some(settings.wait))
             .recycle_timeout(Some(settings.wait))
+            // A request dropped mid-transaction (past its deadline) returns a connection still holding
+            // its locks; the pool discards it at its next checkout, which closes it and rolls back.
+            // Taking the newest first makes that the very next checkout.
+            .queue_mode(deadpool::managed::QueueMode::Lifo)
             .runtime(deadpool::Runtime::Tokio1)
             .build()
             .map_err(|e| PgError::Connect(e.to_string()))?;

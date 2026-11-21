@@ -49,7 +49,7 @@ impl Retry {
     ) -> Result<ModelResponse, ModelError> {
         let started = Instant::now();
         let provider = super::ModelProvider::of(&req.model).name();
-        let answer = self.attempts(provider, || client.complete(req.clone())).await;
+        let answer = self.attempts(provider, Some(&self.breakers), || client.complete(req.clone())).await;
         let outcome = if answer.is_ok() { "ok" } else { "error" };
         crate::metrics::model_call(provider, started.elapsed().as_secs_f64(), outcome);
         answer
@@ -57,14 +57,20 @@ impl Retry {
 
     /// `model`'s window, read with the same retries as a call, so a
     /// transient failure of the provider's model list does not fail a turn.
+    /// It leaves the provider's breaker alone: a window can come from cache,
+    /// so its answer says nothing of whether completions recovered.
     pub async fn window(&self, client: &dyn ModelClient, model: &str) -> Result<u64, ModelError> {
-        self.attempts(super::ModelProvider::of(model).name(), || client.window(model)).await
+        self.attempts(super::ModelProvider::of(model).name(), None, || client.window(model)).await
     }
 
     /// Wait while `provider`'s breaker holds calls, inside `end`; an error once `end` would pass first.
-    async fn admitted(&self, provider: &'static str, end: Instant) -> Result<(), ModelError> {
+    async fn admitted(
+        breakers: &Breakers<&'static str>,
+        provider: &'static str,
+        end: Instant,
+    ) -> Result<(), ModelError> {
         loop {
-            let until = match self.breakers.pass(&provider) {
+            let until = match breakers.pass(&provider) {
                 Pass::Go => return Ok(()),
                 Pass::Until(until) => until,
                 Pass::Probing => Instant::now() + PROBE_WAIT,
@@ -78,7 +84,13 @@ impl Retry {
         }
     }
 
-    async fn attempts<T, F, Fut>(&self, provider: &'static str, try_once: F) -> Result<T, ModelError>
+    /// Try until an answer, counting each on `breakers` when given.
+    async fn attempts<T, F, Fut>(
+        &self,
+        provider: &'static str,
+        breakers: Option<&Breakers<&'static str>>,
+        try_once: F,
+    ) -> Result<T, ModelError>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, ModelError>>,
@@ -87,30 +99,33 @@ impl Retry {
         let mut backoff = self.first;
         let mut tried = 0;
         loop {
-            self.admitted(provider, end).await?;
+            if let Some(b) = breakers {
+                Self::admitted(b, provider, end).await?;
+            }
             tried += 1;
             let left = end.saturating_duration_since(Instant::now());
             let answer = tokio::time::timeout(left, try_once()).await;
             let error = match answer {
                 Ok(Ok(response)) => {
-                    self.breakers.succeeded(&provider);
+                    succeeded(breakers, provider);
                     return Ok(response);
                 }
                 Ok(Err(e @ ModelError::Fatal(_))) => {
-                    self.breakers.succeeded(&provider);
+                    succeeded(breakers, provider);
                     return Err(e);
                 }
                 Ok(Err(e)) => e,
-                Err(_) => return Err(ModelError::Retryable("the step's deadline passed".into())),
+                Err(_) => {
+                    // A provider that never answers counts as failing too.
+                    failed(breakers, provider, None);
+                    return Err(ModelError::Retryable("the step's deadline passed".into()));
+                }
             };
             let floor = match &error {
                 ModelError::RetryAfter(_, after) => *after,
                 _ => Duration::ZERO,
             };
-            if self.breakers.failed(&provider, Some(floor).filter(|f| !f.is_zero())) {
-                crate::metrics::model_breaker_opened(provider);
-                tracing::warn!(provider, "loop: the provider failed 5 calls in a row; steps wait for it");
-            }
+            failed(breakers, provider, Some(floor).filter(|f| !f.is_zero()));
             let jitter = Duration::from_millis(rand::rng().random_range(0..=millis(backoff)));
             let wait = jitter.max(floor);
             if tried >= self.attempts || Instant::now().checked_add(wait).is_none_or(|at| at >= end) {
@@ -119,6 +134,20 @@ impl Retry {
             tokio::time::sleep(wait).await;
             backoff = backoff.saturating_mul(2);
         }
+    }
+}
+
+fn succeeded(breakers: Option<&Breakers<&'static str>>, provider: &'static str) {
+    if let Some(b) = breakers {
+        b.succeeded(&provider);
+    }
+}
+
+/// Count a failed attempt on `breakers`, when given.
+fn failed(breakers: Option<&Breakers<&'static str>>, provider: &'static str, hold: Option<Duration>) {
+    if breakers.is_some_and(|b| b.failed(&provider, hold)) {
+        crate::metrics::model_breaker_opened(provider);
+        tracing::warn!(provider, "loop: the provider failed 5 calls in a row; steps wait for it");
     }
 }
 

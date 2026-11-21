@@ -31,6 +31,7 @@ impl Loop {
         let mut woken = self.signals.subscribe();
         let mut running = JoinSet::new();
         let mut held: HashMap<Id, Claim> = HashMap::new();
+        let mut unstarted = None;
         while !*stop.borrow() {
             while let Some(done) = running.try_join_next_with_id() {
                 held.remove(&done.map_or_else(|e| e.id(), |(id, ())| id));
@@ -44,6 +45,11 @@ impl Loop {
             };
             let s = &self.settings;
             let claim = match self.stores.steps.claim(&s.owner, s.lease_seconds(), s.per_workspace).await {
+                // A claim that returns after the stop is released with the running steps, not started.
+                Ok(Some(claim)) if *stop.borrow() => {
+                    unstarted = Some(claim);
+                    break;
+                }
                 Ok(Some(claim)) => claim,
                 Ok(None) => {
                     drop(permit);
@@ -68,14 +74,14 @@ impl Loop {
             });
             held.insert(id.id(), claim);
         }
-        self.drain(running, held).await;
+        self.drain(running, held, unstarted).await;
     }
 
-    async fn drain(&self, mut running: JoinSet<()>, mut held: HashMap<Id, Claim>) {
+    async fn drain(&self, mut running: JoinSet<()>, mut held: HashMap<Id, Claim>, unstarted: Option<Claim>) {
         let deadline = Instant::now() + self.settings.grace.saturating_sub(RELEASE);
         loop {
             match tokio::time::timeout_at(deadline, running.join_next_with_id()).await {
-                Ok(None) => return,
+                Ok(None) => break,
                 Ok(Some(done)) => {
                     held.remove(&done.map_or_else(|e| e.id(), |(id, ())| id));
                 }
@@ -85,7 +91,10 @@ impl Loop {
         running.abort_all();
         // Each aborted step stops at its next await; none may still be writing once another replica can claim it.
         while running.join_next().await.is_some() {}
-        let left: Vec<Claim> = held.into_values().collect();
+        let left: Vec<Claim> = held.into_values().chain(unstarted).collect();
+        if left.is_empty() {
+            return;
+        }
         match self.stores.steps.release_all(&self.settings.owner, &left).await {
             Ok(n) => {
                 crate::metrics::released(n);

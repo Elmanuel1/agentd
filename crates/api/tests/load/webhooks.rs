@@ -71,8 +71,8 @@ async fn receiver(seen: Arc<Seen>, delay: Option<Duration>) -> (String, std::net
 struct Claims(AtomicUsize);
 
 impl SenderMetrics for Claims {
-    fn claimed(&self, _: usize) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+    fn claimed(&self, n: usize) {
+        self.0.fetch_add(n, Ordering::Relaxed);
     }
 }
 
@@ -225,6 +225,11 @@ async fn the_sender_scales_with_instances() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let elapsed = started.elapsed();
+        assert_eq!(
+            (answered(&fast_ids), answered(&noisy_ids)),
+            (fast_ids.len(), noisy_ids.len()),
+            "every delivery to a live receiver arrived within 10 minutes"
+        );
         let delays = |ids: &[String]| {
             let (first, at) = (seen.first.lock(), inserted.lock());
             let mut d: Vec<Duration> = ids

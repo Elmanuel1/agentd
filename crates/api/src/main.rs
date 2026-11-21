@@ -92,7 +92,11 @@ async fn main() -> ExitCode {
     });
     let mut server = tokio::spawn(serve.into_future());
     tokio::select! {
-        served = &mut server => return ended(served),
+        served = &mut server => {
+            // The server can finish first at SIGTERM with no request open; the backends still drain.
+            shutdown.run(tokio::time::Instant::now() + config.agent_loop.grace).await;
+            return ended(served);
+        }
         () = stopping.notified() => {}
     }
     // HTTP, the loop and the webhook sender drain at once, inside one grace (SH-42). An open event

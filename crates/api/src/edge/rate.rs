@@ -93,12 +93,15 @@ pub async fn limit(State(limits): State<Limits>, req: Request, next: Next) -> Re
             return next.run(req).await;
         }
     };
+    // The reset is when the window counted here ends, however long the handler takes.
+    let reset =
+        Timestamp::now().as_datetime() + chrono::TimeDelta::from_std(counted.resets_in).unwrap_or_default();
     let mut response = match counted.count > bucket.limit {
         true => refused(counted),
         false => next.run(req).await,
     };
     if bucket.headers {
-        add_headers(&mut response, bucket, counted);
+        add_headers(&mut response, bucket, counted, reset);
     }
     response
 }
@@ -114,9 +117,12 @@ fn refused(counted: Counted) -> Response {
     response
 }
 
-fn add_headers(response: &mut Response, bucket: Bucket, counted: Counted) {
-    let left = chrono::TimeDelta::from_std(counted.resets_in).unwrap_or_default();
-    let reset = Timestamp::now().as_datetime() + left;
+fn add_headers(
+    response: &mut Response,
+    bucket: Bucket,
+    counted: Counted,
+    reset: chrono::DateTime<chrono::Utc>,
+) {
     let values = [
         ("anthropic-ratelimit-requests-limit", bucket.limit.to_string()),
         ("anthropic-ratelimit-requests-remaining", bucket.limit.saturating_sub(counted.count).to_string()),

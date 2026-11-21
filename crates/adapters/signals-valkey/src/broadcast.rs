@@ -51,19 +51,25 @@ impl NativeBroadcast for ValkeyBroadcast {
 
 /// Hand every payload on `channel` to `heard` until it is dropped, connecting again after [`RECONNECT`].
 async fn listen(valkey: Valkey, channel: String, heard: tokio::sync::mpsc::Sender<String>) {
+    // A dropped subscription ends the task at once, idle or not, and its subscriber connection with it.
+    tokio::select! {
+        () = heard.closed() => {}
+        () = relay(&valkey, &channel, &heard) => {}
+    }
+}
+
+async fn relay(valkey: &Valkey, channel: &str, heard: &tokio::sync::mpsc::Sender<String>) {
     let mut retry = tokio::time::interval(RECONNECT);
     retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    while !heard.is_closed() {
+    loop {
         retry.tick().await;
-        let Ok(mut payloads) = valkey.subscribe(&channel).await.inspect_err(
+        let Ok(mut payloads) = valkey.subscribe(channel).await.inspect_err(
             |e| tracing::warn!(%channel, error = %e, "broadcast: could not subscribe on Valkey"),
         ) else {
             continue;
         };
         while let Some(payload) = payloads.next().await {
-            if heard.try_send(payload).is_err() && heard.is_closed() {
-                return;
-            }
+            let _ = heard.try_send(payload);
         }
         tracing::warn!(%channel, "broadcast: the Valkey subscription ended; connecting again");
     }

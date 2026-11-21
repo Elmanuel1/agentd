@@ -80,8 +80,8 @@ impl Guard {
     }
 
     /// A client for `url`'s host: pinned to the addresses checked when it
-    /// was built, no redirects, `timeout` per request, sending the guard's
-    /// `user-agent` (live's MCP client: `Claude-User`).
+    /// was built, no redirects, no proxy, `timeout` per request, sending the
+    /// guard's `user-agent` (live's MCP client: `Claude-User`).
     pub async fn client(&self, url: &reqwest::Url, timeout: Duration) -> Result<reqwest::Client, NetError> {
         let (host, port) = host_port(url)?;
         let key = (host, port, timeout, self.user_agent);
@@ -93,6 +93,8 @@ impl Guard {
             .user_agent(self.user_agent)
             .resolve_to_addrs(&host, &addrs)
             .redirect(reqwest::redirect::Policy::none())
+            // A proxy would resolve the host itself and skip the pinned, checked addresses.
+            .no_proxy()
             .timeout(timeout)
             .build()
             .map_err(|e| NetError::Client(e.to_string()))?;

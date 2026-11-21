@@ -33,8 +33,8 @@ and any one of them can stop at any time.
 - At least two `api` replicas behind the load balancer and two `loop` replicas, or two `all` replicas.
 
 Each replica opens up to `AGENTD_DB_POOL_SIZE` (16) connections per pool, a primary and an optional read pool,
-so Postgres `max_connections` must be at least replicas × 32 + 20, or a pooler (PgBouncer in transaction mode)
-sits in front.
+so Postgres `max_connections` must be at least replicas × pools × `AGENTD_DB_POOL_SIZE` + 20 (replicas × 32 + 20
+at the default with a read pool), or a pooler (PgBouncer in transaction mode) sits in front.
 
 A `self_hosted` environment's tools run on the customer's worker (`ant beta:worker poll` or the SDK's
 `EnvironmentWorker`), which polls the environment's work queue.
@@ -79,7 +79,7 @@ restart. Events emitted while it was disabled are not sent.
 | `agentd.webhooks.deliveries` with outcome `dropped` | above 0 for a configured endpoint | an endpoint refused three attempts, or is disabled: check the endpoint, its secret and `agentd.webhooks.endpoints_disabled` |
 | `agentd.webhooks.oldest_due_age` (max across replicas) | above 5 minutes | due deliveries wait for a sender: the receivers are slow; add replicas, each adds 256 senders |
 | `agentd.webhooks.endpoints_disabled` (max across replicas) | above 0 | an endpoint is disabled: read its `ERROR` line, fix it, then `agentd webhooks enable` |
-| `agentd.http.rate_limit_unchecked` | above 0 for 5 minutes | Valkey does not answer rate checks in 200 ms, so requests are not limited: check Valkey |
+| `agentd.http.rate_limit_unchecked` | any increase over 5 minutes (it is a counter) | Valkey does not answer rate checks in 200 ms, so requests are not limited: check Valkey |
 | `agentd.retention.last_success` | older than 15 minutes while retention is set | retention stopped: read its `warn` lines |
 | `agentd.scheduler.fires.due` (max across replicas) | above 0 for 5 minutes | due fires wait: the workers are failing or behind; read the `fires:` log lines and `agentd.scheduler.fires` with outcome `retried` |
 | `agentd.scheduler.fire.lag` p99 | over 60 s | fires start late: check the database's load and the fire handlers' `warn` lines |
