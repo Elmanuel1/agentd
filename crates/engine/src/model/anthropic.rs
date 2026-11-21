@@ -163,10 +163,10 @@ pub fn parse(v: &Value) -> ModelResponse {
         input_tokens: n(u, "/input_tokens"),
         output_tokens: n(u, "/output_tokens"),
     };
-    // A compaction reports its tokens per iteration, with zeros at the top.
-    for it in crate::json::at(u, "/iterations").as_array().into_iter().flatten() {
-        usage.input_tokens += n(it, "/input_tokens");
-        usage.output_tokens += n(it, "/output_tokens");
+    // The top level leaves compaction out; the iterations' sum is the call's total.
+    if let Some(its) = crate::json::at(u, "/iterations").as_array().filter(|a| !a.is_empty()) {
+        usage.input_tokens = its.iter().map(|it| n(it, "/input_tokens")).sum();
+        usage.output_tokens = its.iter().map(|it| n(it, "/output_tokens")).sum();
     }
     let cost = super::list_cost::of(crate::json::at(v, "/model").as_str().unwrap_or_default(), &usage);
     ModelResponse { content, stop, usage, thought, cost }

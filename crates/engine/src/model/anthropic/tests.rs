@@ -161,3 +161,15 @@ fn a_response_is_priced_as_the_model_that_served_it() {
     assert!((cost - (0.001 + 0.001 + 0.001 + 0.0005)).abs() < 1e-12, "{cost}");
     assert_eq!(reply("claude-mythos-preview").cost, None, "a model with no list price");
 }
+
+#[test]
+fn a_reply_with_iterations_counts_each_iteration_once() {
+    // The compaction docs' example: the top level is the message iteration, compaction left out.
+    let reply = parse(&json!({
+        "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 23000, "output_tokens": 1000, "iterations": [
+            {"type": "compaction", "input_tokens": 180000, "output_tokens": 3500},
+            {"type": "message", "input_tokens": 23000, "output_tokens": 1000}]},
+    }));
+    assert_eq!((reply.usage.input_tokens, reply.usage.output_tokens), (203_000, 4_500));
+}
