@@ -1,9 +1,14 @@
 //! Where agentd itself may connect on a tenant's behalf (an MCP server, an
 //! OAuth token endpoint): public addresses only, pinned at lookup so a second
 //! resolution cannot swap in an internal one, with redirects never followed.
+//! A client is reused for its host for 5 minutes; then the host is resolved
+//! and checked again.
 
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
+
+use crate::ttl::TtlMap;
 
 /// Why a guarded connection was refused before any byte was sent.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -24,25 +29,45 @@ pub enum NetError {
 
 /// The `user-agent` live's MCP client sends.
 const USER_AGENT: &str = "Claude-User";
+/// How long a client is reused before its host is resolved and checked again.
+const CLIENT_TTL: Duration = Duration::from_secs(300);
+/// Clients kept per guard.
+const CLIENTS: usize = 1_024;
+
+/// A cached client's host, port, timeout and user agent.
+type ClientKey = (String, u16, Duration, &'static str);
 
 /// Builds HTTP clients pinned to a host's public addresses. `allowed` names
 /// internal addresses that may still be reached: none in production, the
-/// test servers' own sockets in tests.
-#[derive(Debug, Clone, Default)]
+/// test servers' own sockets in tests. Clones share the client cache.
+#[derive(Debug, Clone)]
 pub struct Guard {
     allowed: Vec<SocketAddr>,
+    user_agent: &'static str,
+    clients: Arc<TtlMap<ClientKey, reqwest::Client>>,
+}
+
+impl Default for Guard {
+    fn default() -> Self {
+        Self::allowing(Vec::new())
+    }
 }
 
 impl Guard {
     /// A guard that also lets `allowed` through.
     pub fn allowing(allowed: Vec<SocketAddr>) -> Self {
-        Self { allowed }
+        let clients = Arc::new(TtlMap::new(CLIENT_TTL, CLIENTS));
+        Self { allowed, user_agent: USER_AGENT, clients }
+    }
+
+    /// The same guard sending `user_agent`, with a cache of its own.
+    pub fn with_user_agent(&self, user_agent: &'static str) -> Self {
+        Self { user_agent, ..Self::allowing(self.allowed.clone()) }
     }
 
     /// `url`'s host and port, resolved and checked.
     pub async fn resolve(&self, url: &reqwest::Url) -> Result<(String, Vec<SocketAddr>), NetError> {
-        let host = url.host_str().ok_or(NetError::Url)?.trim_matches(['[', ']']).to_owned();
-        let port = url.port_or_known_default().ok_or(NetError::Url)?;
+        let (host, port) = host_port(url)?;
         let addrs: Vec<SocketAddr> =
             tokio::net::lookup_host((host.as_str(), port)).await.map_err(|_| NetError::Unresolved)?.collect();
         if addrs.is_empty() {
@@ -54,19 +79,31 @@ impl Guard {
         Ok((host, addrs))
     }
 
-    /// A client for `url` alone: its host pinned to the addresses just
-    /// checked, no redirects, `timeout` per request, sending live's
-    /// `user-agent: Claude-User`.
+    /// A client for `url`'s host: pinned to the addresses checked when it
+    /// was built, no redirects, `timeout` per request, sending the guard's
+    /// `user-agent` (live's MCP client: `Claude-User`).
     pub async fn client(&self, url: &reqwest::Url, timeout: Duration) -> Result<reqwest::Client, NetError> {
+        let (host, port) = host_port(url)?;
+        let key = (host, port, timeout, self.user_agent);
+        if let Some(client) = self.clients.get(&key) {
+            return Ok(client);
+        }
         let (host, addrs) = self.resolve(url).await?;
-        reqwest::Client::builder()
-            .user_agent(USER_AGENT)
+        let client = reqwest::Client::builder()
+            .user_agent(self.user_agent)
             .resolve_to_addrs(&host, &addrs)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
             .build()
-            .map_err(|e| NetError::Client(e.to_string()))
+            .map_err(|e| NetError::Client(e.to_string()))?;
+        self.clients.insert(key, client.clone());
+        Ok(client)
     }
+}
+
+fn host_port(url: &reqwest::Url) -> Result<(String, u16), NetError> {
+    let host = url.host_str().ok_or(NetError::Url)?.trim_matches(['[', ']']).to_owned();
+    Ok((host, url.port_or_known_default().ok_or(NetError::Url)?))
 }
 
 /// The host `url` names, when it parses.
@@ -178,5 +215,28 @@ mod tests {
         assert!(allowed.resolve(&other).await.is_err());
         let metadata: reqwest::Url = "http://169.254.169.254/latest".parse().unwrap();
         assert!(matches!(allowed.resolve(&metadata).await, Err(NetError::Internal(_))));
+    }
+
+    /// The guard's client for `url`, and whether it came from the cache.
+    async fn cached(guard: &Guard, url: &reqwest::Url) -> bool {
+        let key = (url.host_str().unwrap().to_owned(), url.port().unwrap(), TIMEOUT, guard.user_agent);
+        let hit = guard.clients.get(&key).is_some();
+        guard.client(url, TIMEOUT).await.unwrap();
+        hit
+    }
+
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[tokio::test(start_paused = true)]
+    async fn two_calls_to_one_host_reuse_a_client_and_after_5_min_the_address_is_checked_again() {
+        let url: reqwest::Url = "http://127.0.0.1:9/mcp".parse().unwrap();
+        let guard = Guard::allowing(vec!["127.0.0.1:9".parse().unwrap()]);
+        assert!(!cached(&guard, &url).await);
+        let other: reqwest::Url = "http://127.0.0.1:9/other".parse().unwrap();
+        assert!(cached(&guard.clone(), &other).await, "a clone shares the cache");
+        tokio::time::advance(CLIENT_TTL).await;
+        assert!(!cached(&guard, &url).await, "resolved and checked again");
+        let platform = guard.with_user_agent("Claude-Platform");
+        assert!(!cached(&platform, &url).await, "another user agent builds its own");
     }
 }
