@@ -16,10 +16,11 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use secrets_aws::{AwsSecretStore, AwsSecretsConfig};
-use store_postgres::{PgBackend, PgSecretStore, PgVaultsStore, Resealed};
+use store_postgres::{PgSecretStore, PgVaultsStore, Resealed};
 
 use super::command::as_operator;
-use crate::config::{Config, SecretsConfig, StoreConfig};
+use crate::backends::postgres::primary;
+use crate::config::{Config, SecretsConfig};
 
 /// How to call it.
 pub const USAGE: &str = "usage: agentd vault-secrets tag|reseal";
@@ -46,9 +47,8 @@ async fn outcome(config: &Config, args: &[String]) -> (Vec<String>, ExitCode) {
         }),
         ("tag", _) => (vec![NOTHING_TO_TAG.into()], ExitCode::SUCCESS),
         ("reseal", SecretsConfig::Postgres(keys)) => {
-            let StoreConfig::Postgres { url, .. } = &config.store;
             let resealed = async {
-                let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
+                let pg = primary(&config.store).await.map_err(|e| e.to_string())?;
                 PgSecretStore::new(pg, keys.clone()).reseal().await.map_err(|e| e.to_string())
             };
             resealed.await.map_or_else(error, |r| report(&r))
@@ -67,8 +67,7 @@ fn failed(line: String) -> (Vec<String>, ExitCode) {
 
 async fn tag(config: &Config, aws: &AwsSecretsConfig) -> Result<usize, String> {
     let secrets = AwsSecretStore::connect(aws).await.map_err(|e| e.to_string())?;
-    let StoreConfig::Postgres { url, .. } = &config.store;
-    let pg = PgBackend::connect(url).await.map_err(|e| e.to_string())?;
+    let pg = primary(&config.store).await.map_err(|e| e.to_string())?;
     let vaults = PgVaultsStore::new(pg, Arc::new(secrets.clone()));
     let keys = vaults.environment_variable_secrets().await.map_err(|e| e.to_string())?;
     for key in &keys {

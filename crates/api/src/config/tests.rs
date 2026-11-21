@@ -179,6 +179,7 @@ fn aws_secret_options_come_from_config() {
     }
 }
 
+mod connections;
 mod keys;
 mod scheduler;
 mod secrets;

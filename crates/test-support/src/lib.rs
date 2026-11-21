@@ -4,6 +4,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+mod tls;
+pub use tls::TlsFront;
+
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use shared::ports::keys::{AdminKeySource, EnvironmentGrant, EnvironmentKeySource, KeyError, KeySource};

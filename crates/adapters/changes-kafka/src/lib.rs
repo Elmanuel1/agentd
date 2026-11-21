@@ -16,13 +16,17 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer};
 use rdkafka::error::KafkaError;
 use shared::ports::ScheduleSpec;
 use shared::ports::changes::{self, ChangeHandler};
 use shared::ports::fire::{self, FireRegistry};
 
+mod client;
 mod retry;
+
+pub use client::KafkaClient;
+use client::KafkaConsumer;
 
 /// The pause before a failed record, or a failed read, is tried again.
 const BACKOFF: Duration = Duration::from_secs(1);
@@ -37,6 +41,7 @@ pub struct KafkaChanges {
     brokers: String,
     prefix: String,
     max_poll_interval: Duration,
+    client: KafkaClient,
 }
 
 /// What reads one topic.
@@ -69,7 +74,19 @@ impl KafkaChanges {
     /// The topics of Debezium's `prefix` (its `topic.prefix`) on the Kafka at
     /// `brokers` (`host:port,…`).
     pub fn new(brokers: &str, prefix: &str) -> Self {
-        Self { brokers: brokers.to_owned(), prefix: prefix.to_owned(), max_poll_interval: MAX_POLL_INTERVAL }
+        Self {
+            brokers: brokers.to_owned(),
+            prefix: prefix.to_owned(),
+            max_poll_interval: MAX_POLL_INTERVAL,
+            client: KafkaClient::default(),
+        }
+    }
+
+    /// Reaching the cluster as `client` says (TLS, SASL).
+    #[must_use]
+    pub fn with_client(mut self, client: KafkaClient) -> Self {
+        self.client = client;
+        self
     }
 
     /// With librdkafka's `max.poll.interval.ms` at `interval` instead of 300 s.
@@ -99,7 +116,9 @@ impl KafkaChanges {
 
     async fn run(self, topic: String, reader: Reader) {
         loop {
-            if let Err(e) = self.serve(&topic, &reader).await {
+            if let Err(e) = self.client.ready().await {
+                tracing::warn!(%topic, error = %e, "changes: no OAUTHBEARER token; trying again");
+            } else if let Err(e) = self.serve(&topic, &reader).await {
                 tracing::warn!(%topic, error = %e, "changes: the topic read failed; reconnecting");
             }
             tokio::time::sleep(BACKOFF).await;
@@ -107,7 +126,9 @@ impl KafkaChanges {
     }
 
     async fn serve(&self, topic: &str, reader: &Reader) -> Result<(), KafkaError> {
-        let consumer: StreamConsumer = ClientConfig::new()
+        let mut config = ClientConfig::new();
+        self.client.apply(&mut config);
+        let consumer: KafkaConsumer = config
             .set("bootstrap.servers", &self.brokers)
             .set("group.id", format!("agentd.{topic}"))
             .set("enable.auto.commit", "false")
@@ -117,7 +138,7 @@ impl KafkaChanges {
             // A join moves only the partitions balance needs (a one-partition topic stays with its holder);
             // a moved partition's attempt ends uncommitted, for its next owner to read.
             .set("partition.assignment.strategy", "cooperative-sticky")
-            .create()?;
+            .create_with_context(self.client.context())?;
         consumer.subscribe(&[topic])?;
         loop {
             let record = consumer.recv().await?;

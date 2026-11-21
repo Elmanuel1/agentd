@@ -5,17 +5,18 @@
 //! a revoked partition ends the attempt with nothing committed.
 
 use rdkafka::Message;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::Consumer;
 use rdkafka::error::KafkaResult;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::{Offset, TopicPartitionList};
 
+use crate::client::KafkaConsumer;
 use crate::{BACKOFF, Reader};
 
 /// Hand `record` to `reader` until it takes it: `true` once it does, `false`
 /// when its partition was revoked, so its next owner reads it again.
 pub(crate) async fn until_taken(
-    consumer: &StreamConsumer,
+    consumer: &KafkaConsumer,
     record: &BorrowedMessage<'_>,
     reader: &Reader,
     id: &str,
@@ -29,7 +30,7 @@ pub(crate) async fn until_taken(
 }
 
 async fn keep_trying(
-    consumer: &StreamConsumer,
+    consumer: &KafkaConsumer,
     record: &BorrowedMessage<'_>,
     reader: &Reader,
     id: &str,
@@ -67,7 +68,7 @@ async fn keep_trying(
 }
 
 /// Whether `record`'s partition is no longer assigned to this consumer.
-fn revoked(consumer: &StreamConsumer, record: &BorrowedMessage<'_>, id: &str) -> KafkaResult<bool> {
+fn revoked(consumer: &KafkaConsumer, record: &BorrowedMessage<'_>, id: &str) -> KafkaResult<bool> {
     let gone = consumer.assignment()?.find_partition(record.topic(), record.partition()).is_none();
     if gone {
         tracing::warn!(%id, "changes: the record's partition was revoked; its next owner reads it again");
@@ -79,7 +80,7 @@ fn revoked(consumer: &StreamConsumer, record: &BorrowedMessage<'_>, id: &str) ->
 /// to `other` itself, or past `retrying` when `other` is from its partition
 /// (`retrying` again, or a record behind it), which the retry commits.
 fn hold_back(
-    consumer: &StreamConsumer,
+    consumer: &KafkaConsumer,
     retrying: &BorrowedMessage<'_>,
     other: &BorrowedMessage<'_>,
 ) -> KafkaResult<()> {

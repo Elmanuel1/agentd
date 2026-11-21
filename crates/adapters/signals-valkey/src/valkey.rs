@@ -10,11 +10,11 @@ use std::time::Duration;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use redis::aio::{ConnectionLike, ConnectionManager, ConnectionManagerConfig, MultiplexedConnection};
-use redis::cluster::{ClusterClient, ClusterClientBuilder, ClusterConfig};
+use redis::cluster::{ClusterClientBuilder, ClusterConfig};
 use redis::cluster_async::ClusterConnection;
 use redis::{
     AsyncConnectionConfig, Client, Cmd, Pipeline, ProtocolVersion, PushKind, RedisError, RedisFuture,
-    RedisResult, Value,
+    RedisResult, TlsCertificates, Value,
 };
 
 mod cluster;
@@ -28,6 +28,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Clone)]
 pub struct Valkey {
     url: String,
+    root_cert: Option<Vec<u8>>,
     node: Node,
 }
 
@@ -48,11 +49,22 @@ impl Valkey {
     /// The Valkey at `url`, a cluster's configuration endpoint when `cluster`.
     /// Nothing connects until first used, so a replica starts while Valkey is down.
     pub fn open(url: &str, cluster: bool) -> Result<Self, RedisError> {
-        let node = match cluster {
-            true => Node::Cluster(Arc::new(Cluster::new(cluster_client(url)?))),
-            false => Node::Single(Box::new(Client::open(url)?)),
+        Self::open_trusting(url, cluster, None)
+    }
+
+    /// [`Self::open`], a `rediss://` server's certificate chaining to the PEM
+    /// file `ca` when one is given, else to the operating system's roots.
+    pub fn open_trusting(url: &str, cluster: bool, ca: Option<&str>) -> Result<Self, RedisError> {
+        let root_cert = ca.map(std::fs::read).transpose()?;
+        let node = match (cluster, &root_cert) {
+            (true, _) => Node::Cluster(Arc::new(Cluster::new(cluster_builder(url, &root_cert).build()?))),
+            (false, Some(pem)) => {
+                let certs = TlsCertificates { client_tls: None, root_cert: Some(pem.clone()) };
+                Node::Single(Box::new(Client::build_with_tls(url, certs)?))
+            }
+            (false, None) => Node::Single(Box::new(Client::open(url)?)),
         };
-        Ok(Self { url: url.to_owned(), node })
+        Ok(Self { url: url.to_owned(), root_cert, node })
     }
 
     /// A connection of its own, for blocking reads.
@@ -91,10 +103,7 @@ impl Valkey {
             }
             Node::Cluster(..) => {
                 let (pushes, received) = tokio::sync::mpsc::unbounded_channel();
-                let client = ClusterClientBuilder::new([self.url.as_str()])
-                    .use_protocol(ProtocolVersion::RESP3)
-                    .push_sender(pushes)
-                    .build()?;
+                let client = cluster_builder(&self.url, &self.root_cert).push_sender(pushes).build()?;
                 let mut conn = client.get_async_connection().await?;
                 conn.subscribe(channel).await?;
                 // The stream holds the connection, and with it the subscription.
@@ -114,8 +123,12 @@ impl Valkey {
     }
 }
 
-fn cluster_client(url: &str) -> Result<ClusterClient, RedisError> {
-    ClusterClientBuilder::new([url]).use_protocol(ProtocolVersion::RESP3).build()
+fn cluster_builder(url: &str, root_cert: &Option<Vec<u8>>) -> ClusterClientBuilder {
+    let builder = ClusterClientBuilder::new([url]).use_protocol(ProtocolVersion::RESP3);
+    match root_cert {
+        Some(pem) => builder.certs(TlsCertificates { client_tls: None, root_cert: Some(pem.clone()) }),
+        None => builder,
+    }
 }
 
 /// A connection the commands run on.

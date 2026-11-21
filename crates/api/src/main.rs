@@ -43,7 +43,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    let _telemetry = match api::telemetry::init(config.telemetry.otlp, config.telemetry.json_logs) {
+    let _telemetry = match api::telemetry::init(&config.telemetry) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("telemetry: {e}");

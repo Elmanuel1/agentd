@@ -9,6 +9,8 @@
 //! buffer still bounds how many it delivers after an outage) and the fire
 //! queue skips one whose following occurrence is due.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
+
 use async_trait::async_trait;
 use shared::ports::{FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort};
 use temporalio_client::schedules::{
@@ -16,21 +18,12 @@ use temporalio_client::schedules::{
     ScheduleOverlapPolicy, ScheduleSpec as TemporalSpec, UnpauseScheduleOptions,
 };
 use temporalio_client::tonic::Code;
-use temporalio_client::{Client, ClientOptions, Connection, ConnectionOptions, RpcOptions, Url};
+use temporalio_client::{Client, ClientOptions, Connection, RpcOptions};
 
+mod connection;
 mod workflow;
+pub use connection::TemporalConfig;
 pub use workflow::{FireWorkflow, Occurrence, spawn_worker};
-
-/// Where agentd reaches Temporal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TemporalConfig {
-    /// The frontend, `http://host:7233`.
-    pub address: String,
-    /// The namespace the schedules live in.
-    pub namespace: String,
-    /// The task queue agentd's worker polls.
-    pub task_queue: String,
-}
 
 /// [`SchedulerPort`] over Temporal Schedules.
 #[derive(Clone)]
@@ -45,7 +38,7 @@ impl std::fmt::Debug for TemporalScheduler {
     }
 }
 
-fn unavailable(e: impl std::fmt::Display) -> SchedulerError {
+pub(crate) fn unavailable(e: impl std::fmt::Display) -> SchedulerError {
     SchedulerError::Unavailable(e.to_string())
 }
 
@@ -66,9 +59,7 @@ fn refused(target: &FireTarget, e: ScheduleError) -> SchedulerError {
 impl TemporalScheduler {
     /// Connect to the Temporal `config` names.
     pub async fn connect(config: TemporalConfig) -> Result<Self, SchedulerError> {
-        let url = Url::parse(&config.address).map_err(unavailable)?;
-        let connection =
-            Connection::connect(ConnectionOptions::new(url).build()).await.map_err(unavailable)?;
+        let connection = Connection::connect(config.connection()?).await.map_err(unavailable)?;
         let client = Client::new(connection, ClientOptions::new(config.namespace.clone()).build())
             .map_err(unavailable)?;
         Ok(Self { client, config })

@@ -2,9 +2,10 @@
 # Debian trixie, so the binary links against the glibc it runs with.
 FROM rust:1.100-slim-trixie AS builder
 WORKDIR /build
-# make and a C++ compiler: the Kafka client builds librdkafka, whose configure needs both. protoc and
-# the well-known protobuf types: the Temporal SDK compiles its protobuf definitions.
+# make and a C++ compiler: the Kafka client builds librdkafka, whose configure needs both, and OpenSSL's
+# headers for its TLS. protoc and the well-known protobuf types: the Temporal SDK compiles its protobuf definitions.
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config make g++ protobuf-compiler libprotobuf-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -12,7 +13,8 @@ COPY conformance ./conformance
 RUN cargo build --release --locked -p api
 
 FROM debian:trixie-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+# libssl3t64: librdkafka's TLS links the system OpenSSL, which trusts the same CA store.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3t64 && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 agentd
 USER agentd
 COPY --from=builder /build/target/release/agentd /usr/local/bin/agentd

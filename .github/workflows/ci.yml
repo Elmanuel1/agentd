@@ -26,8 +26,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+      - name: Install protoc and the well-known protobuf types (the Temporal SDK's build), and OpenSSL's headers (librdkafka's TLS)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev libssl-dev
       - run: cargo fmt --all --check
       # clippy.toml's banned macros warn until the #[async_trait] uses are migrated.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings --force-warn clippy::disallowed_macros
@@ -69,6 +69,13 @@ jobs:
       AGENTD_KAFKA_BROKERS: localhost:9092
       AGENTD_TEMPORAL_ADDRESS: http://localhost:7233
       TEMPORAL_CLI_VERSION: "1.10.1"
+      # The TLS servers' test CA (docker/tls/certs.sh), and the rediss:// Valkey it signs.
+      AGENTD_PG_TLS_CA: /tmp/agentd-tls/ca.pem
+      AGENTD_KAFKA_TLS_CA: /tmp/agentd-tls/ca.pem
+      AGENTD_VALKEY_TLS_URL: rediss://localhost:6390
+      AGENTD_VALKEY_TLS_CA: /tmp/agentd-tls/ca.pem
+      AGENTD_TEMPORAL_TLS_CA: /tmp/agentd-tls/ca.pem
+      AGENTD_OTLP_TLS_CA: /tmp/agentd-tls/ca.pem
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
@@ -78,8 +85,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+      - name: Install protoc and the well-known protobuf types (the Temporal SDK's build), and OpenSSL's headers (librdkafka's TLS)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev libssl-dev
       - name: Migrate the schema with Flyway
         run: |
           docker run --rm --network host \
@@ -93,6 +100,11 @@ jobs:
         run: docker/debezium/start-ci.sh "${{ job.services.postgres.id }}" kafka localhost:9092
       - name: Start a one-node Valkey cluster, for the cluster-mode tests
         run: docker/valkey/start-cluster.sh 7001
+      - name: Start a Postgres, a Kafka and a Valkey that serve TLS, signed by a test CA
+        run: |
+          docker/postgres/start-tls.sh /tmp/agentd-tls
+          docker/kafka/start-secure.sh /tmp/agentd-tls
+          docker/valkey/start-tls.sh /tmp/agentd-tls
       - name: Start a Temporal dev server, for the Temporal scheduler sink's tests
         run: |
           curl -sfL "https://github.com/temporalio/cli/releases/download/v${TEMPORAL_CLI_VERSION}/temporal_cli_${TEMPORAL_CLI_VERSION}_linux_amd64.tar.gz" | sudo tar -xz -C /usr/local/bin temporal
@@ -167,8 +179,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Install protoc and the well-known protobuf types, which the Temporal SDK's build needs
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+      - name: Install protoc and the well-known protobuf types (the Temporal SDK's build), and OpenSSL's headers (librdkafka's TLS)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev libssl-dev
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
