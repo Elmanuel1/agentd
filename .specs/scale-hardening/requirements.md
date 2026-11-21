@@ -83,7 +83,7 @@ SH-51 are not used.
 | SH-24 | U | The loop shall wake a watch only for its own session's events, and an idle claimer only when a step becomes due. |
 | SH-25 | U | The loop shall reuse an MCP server's HTTP client for 5 minutes. |
 | SH-26 | W | If an MCP reply to `initialize` or `tools/list` exceeds 16 MiB, then the loop shall fail the call as an unreachable server. |
-| SH-47 | W | If a model provider fails 5 calls in a row from one replica with a retryable error, then the loop shall make no call to it from that replica for 30 s, or until its `retry-after` if later, and then let one call through. |
+| SH-47 | W | If a model provider fails 5 calls in a row from one replica with a retryable error, then the loop shall make no call to it from that replica for 30 s, or until its `retry-after` if later but at most 5 minutes, and then let one call through. |
 | SH-48 | S | While a provider's breaker is open, the loop shall wait in each step's retry without spending a try, inside the step's deadline. |
 | SH-53 | W | If a step is over its workspace budget, then the loop shall make it due after the time left in the budget window plus a random 0 to 60 s. |
 
@@ -351,7 +351,9 @@ Authentication, TLS verification and credential refresh failures are counted by 
 - Revocation comes from the change feed: `api_keys` is already on Debezium's feed (R7). A handler for `api_keys`
   updates that set `revoked_at` publishes the key id on Valkey `agentd:keys`; every replica drops it. This covers the
   API, `agentd keys revoke` (R8) and a workspace's keys alike, with no Valkey connection in the CLI. If the message is
-  lost, the TTL bounds acceptance to 60 s (D8).
+  lost, the TTL bounds acceptance to 60 s (D8). The change feed runs all of a table's handlers (here history's
+  `api_keys` recorder and the revoke handler) on one reader, so each sees every change of the table; every handler
+  runs even when another fails.
 - A miss cannot cache a key revoked while it read: the cache keeps an invalidation counter, a lookup reads it before
   its Postgres read, and the insert happens only if the counter has not moved. Revokes are rare, so a revoke anywhere
   only stops caching for the misses in flight at that moment.
@@ -405,7 +407,8 @@ next turn after a `session.error` marked `retrying` (MC-14, live's behaviour); n
 
 - **Model breaker**, per provider per replica, in memory (design skill exception). 5 retryable failures in a row
   (408, 409, 429, 5xx, transport), across all steps on the replica, open it for 30 s, or until the provider's
-  `retry-after` if later. While open, a step's retry does not call the provider and does not fail: it waits until the
+  `retry-after` if later, capped at 5 minutes so one long `retry-after` cannot hold a provider for every tenant on
+  the replica. While open, a step's retry does not call the provider and does not fail: it waits until the
   breaker lets calls through again, and that wait counts as backoff, spends none of the step's 5 tries, and stays
   inside the step's 600 s deadline. After the open time one call goes through; a success closes the breaker, a
   failure opens it again. Steps keep live's end: only a step whose tries or deadline run out ends its turn with
@@ -732,7 +735,7 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
     2 and 3 instances, on Kafka and on Valkey Streams. Measures delivered webhooks a second per instance count, delay
     from insert to first attempt (p50, p99), claims a second against Postgres, and that no delivery is sent twice. It
     also records how far the noisy organization delays the others, which is the input F-7 needs. The results table
-    goes on the PR.
+    goes on the PR. It runs once, last, after the code PRs pass review; no CI job runs it (user, 2026-11-21).
 
 ### Code PR 2: speed and growth (one session, stacked on PR 1; about 45 files; SH-22 to SH-24, SH-27, SH-28, SH-37 to SH-41, SH-45, SH-46)
 
@@ -792,7 +795,7 @@ Chosen where live is silent.
 | S3 attempt / operation | 30 s / 50 s | operation below the request deadline |
 | Key cache | 10,000 entries, 60 s | bounded memory; D8 |
 | MCP clients / reply cap | 1,024, 5 min / 16 MiB | 160 × live's 100,000-character threshold |
-| Model breaker | 5 failures, 30 s or `retry-after` | the same shape as the webhook breaker |
+| Model breaker | 5 failures, 30 s or `retry-after` up to 5 min | the same shape as the webhook breaker |
 | Delivered / dropped retention | 24 h / 30 days | D24: 24 h covers a feed replay; sizing below |
 | Memory versions kept past 30 days | the current version of each live memory | L4's "recent versions" with no count: the smallest reading that keeps every live memory readable |
 
