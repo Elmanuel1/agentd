@@ -2,8 +2,6 @@
 //! The binary reads it from its environment once, through
 //! [`Config::from_lookup`]; nothing else in agentd reads the environment.
 
-use blobs_s3::S3Config;
-
 /// Everything the binary needs to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -35,13 +33,8 @@ pub struct Config {
     pub webhooks: std::sync::Arc<::webhooks::Webhooks>,
     /// The scheduler sink (`AGENTD_SCHEDULER`).
     pub scheduler: SchedulerConfig,
-}
-
-/// `AGENTD_BLOBS`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BlobsConfig {
-    /// `s3`.
-    S3(S3Config),
+    /// `AGENTD_REQUEST_TIMEOUT_MS` (60,000): how long a response may take to start; files take 15 min.
+    pub request_timeout: std::time::Duration,
 }
 
 /// A configuration value agentd cannot boot with.
@@ -58,10 +51,7 @@ impl Config {
     /// Read the configuration through `get`, which returns a variable's value.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let store = StoreConfig::from_lookup(&get)?;
-        let blobs = match selector(&get, "AGENTD_BLOBS", "s3").as_str() {
-            "s3" => BlobsConfig::S3(s3_config(&get)?),
-            other => return Err(unknown("AGENTD_BLOBS", other)),
-        };
+        let blobs = blobs::from_lookup(&get)?;
         let secrets = secrets::from_lookup(&get)?;
         let keys = KeysConfig::from_lookup(&get)?;
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
@@ -82,6 +72,8 @@ impl Config {
         let agent_loop = LoopConfig::from_lookup(&get)?;
         let webhooks = hooks::from_lookup(&get)?;
         let scheduler = SchedulerConfig::from_lookup(&get)?;
+        let request_timeout =
+            std::time::Duration::from_millis(number(&get, "AGENTD_REQUEST_TIMEOUT_MS", 60_000)?);
         Ok(Self {
             addr,
             store,
@@ -96,6 +88,7 @@ impl Config {
             agent_loop,
             webhooks,
             scheduler,
+            request_timeout,
         })
     }
 
@@ -157,19 +150,7 @@ fn endpoint(get: &impl Fn(&str) -> Option<String>, var: &'static str) -> Result<
     }
 }
 
-fn s3_config(get: &impl Fn(&str) -> Option<String>) -> Result<S3Config, ConfigError> {
-    let endpoint = endpoint(get, "AGENTD_AWS_ENDPOINT")?;
-    Ok(S3Config {
-        bucket: get("AGENTD_BLOB_BUCKET").unwrap_or_else(|| "agentd-artifacts".into()),
-        region: get("AGENTD_S3_REGION"),
-        path_style: flag(get, "AGENTD_S3_PATH_STYLE", endpoint.is_some())?,
-        endpoint,
-        role_arn: get("AGENTD_S3_ROLE_ARN"),
-        create_bucket: flag(get, "AGENTD_S3_CREATE_BUCKET", false)?,
-        location_constraint: get("AGENTD_S3_LOCATION_CONSTRAINT"),
-    })
-}
-
+mod blobs;
 mod hooks;
 mod kafka;
 mod keys;
@@ -181,6 +162,7 @@ mod streams;
 mod telemetry;
 mod work;
 
+pub use blobs::BlobsConfig;
 pub use kafka::{KafkaAuth, KafkaConfig};
 pub use keys::KeysConfig;
 pub use role::{LoopConfig, Role};

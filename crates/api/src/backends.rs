@@ -11,6 +11,7 @@ pub(crate) mod postgres;
 mod scheduler;
 mod secrets;
 mod stores;
+mod webhooks;
 
 pub use postgres::FireSources;
 pub use stores::Stores;
@@ -26,14 +27,11 @@ use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::SecretError;
-use signals_valkey::{Valkey, ValkeySignals};
-use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgHistoryLog, ScheduleOutbox};
-use webhooks::WebhookSender;
+use signals_valkey::{Valkey, ValkeyBroadcast, ValkeyRateCounter, ValkeySignals};
+use store_postgres::{PgError, PgFireClaims, PgHistoryLog, ScheduleOutbox};
 
 use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
-
-/// The spacing of a webhook's attempts: live retries about 31 s apart (H-3).
-const WEBHOOK_RETRY: std::time::Duration = std::time::Duration::from_secs(31);
+use crate::shutdown::Shutdown;
 
 /// One backend per port.
 pub struct Backends {
@@ -65,7 +63,11 @@ pub struct Backends {
     /// Where agentd itself may connect for a tenant: MCP servers, token endpoints.
     pub guard: shared::net::Guard,
     /// Each organization's webhook endpoints.
-    pub webhooks: Arc<webhooks::Webhooks>,
+    pub webhooks: Arc<::webhooks::Webhooks>,
+    /// What stops at SIGTERM, and the work that drains after it.
+    pub shutdown: Shutdown,
+    /// What the edge applies to every module.
+    pub edge: crate::edge::EdgeSettings,
 }
 
 /// The deployment's own keys, from its configuration.
@@ -140,6 +142,11 @@ impl Backends {
         let valkey =
             Valkey::open_trusting(&streams.valkey_url, streams.valkey_cluster, streams.valkey_ca.as_deref())
                 .map_err(|e| BootError::Signals(e.to_string()))?;
+        let broadcast =
+            Arc::new(ValkeyBroadcast::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?);
+        let mut shutdown = Shutdown::default();
+        let counter = ValkeyRateCounter::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?;
+        let limits = crate::edge::rate::Limits::new(Arc::new(counter));
         let (stores, load, keys, fires, sources) = match &config.store {
             store @ StoreConfig::Postgres { .. } => {
                 let retention = config.streams.retention.filter(|_| role.serves_api());
@@ -154,29 +161,29 @@ impl Backends {
                 let fires = Arc::new(registry.counting_enqueued(move |n| delivered.enqueued(n)));
                 let sink = scheduler::Sink::connect(&config.scheduler, &pg.backend).await?;
                 let feed = feed::ChangeFeed::from_config(streams, &valkey).await;
-                let sender =
-                    WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
-                        .map_err(BootError::Signals)?;
+                let instance = format!("agentd-{}", uuid::Uuid::new_v4());
+                let sending = telemetry::webhooks::WebhookMetrics::on(&meter, &instance);
+                let wake = webhooks::start(hooks, &pg.backend, broadcast.clone(), sending, &mut shutdown);
                 drop(telemetry::feed::watch(&meter, pg.backend.diesel.clone(), &streams.changes_slot));
                 let log = Arc::new(PgHistoryLog::load(pg.backend.clone()).await?);
                 let mut handlers = history::recorders(log, telemetry::feed::apply_delay(&meter));
                 handlers.push(Arc::new(ScheduleOutbox::new(sink.port())));
-                handlers.push(Arc::new(sender));
+                handlers.push(wake);
                 drop(feed.spawn(handlers));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))
             }
         };
-        let signals: Arc<dyn Signals> =
-            Arc::new(ValkeySignals::connect(&valkey).map_err(|e| BootError::Signals(e.to_string()))?);
+        let signals: Arc<dyn Signals> = Arc::new(ValkeySignals::over(broadcast.as_ref().clone()));
         let admin = Arc::new(AdminKeysService::new(stores.admin_keys.clone(), peppers.clone()));
         let admin_keys: Arc<dyn AdminKeySource> = Arc::new(Observed::new(admin, metrics.clone()));
         let environment_keys = EnvironmentKeysService::new(stores.environment_keys.clone(), peppers)
             .with_runtime_keys(&config.keys.runtime);
         let system = SystemKeys::from(&config.work);
         if role.runs_loop() {
-            drop(crate::agent_loop::spawn(config, &stores, signals.clone(), &system).await?);
+            let stop = shutdown.signal();
+            shutdown.drain(crate::agent_loop::spawn(config, &stores, signals.clone(), &system, stop).await?);
         }
         let extra_models = config.extra_models.clone();
         let environment_keys: Arc<dyn EnvironmentKeySource> = Arc::new(environment_keys);
@@ -195,6 +202,8 @@ impl Backends {
             role,
             guard: shared::net::Guard::default(),
             webhooks: config.webhooks.clone(),
+            shutdown,
+            edge: crate::edge::EdgeSettings { request_timeout: config.request_timeout, limits: Some(limits) },
         })
     }
 }

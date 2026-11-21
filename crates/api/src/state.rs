@@ -41,6 +41,8 @@ pub struct AppState {
     pub environment_keys: Arc<dyn EnvironmentKeySource>,
     /// What work tokens reach.
     pub work: WorkAccess,
+    /// What the edge applies to every module.
+    pub edge: crate::edge::EdgeSettings,
 }
 
 impl std::fmt::Debug for AppState {
@@ -72,6 +74,8 @@ impl AppState {
             role,
             guard,
             webhooks,
+            shutdown: _,
+            edge,
         } = backends;
         let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
@@ -139,7 +143,7 @@ impl AppState {
             false => Vec::new(),
         };
         let work = WorkAccess { tokens: work.tokens().clone(), items: stores.work_reads, grants: reach };
-        Ok(Self { keys, admin_keys, environment_keys, modules, metrics, work })
+        Ok(Self { keys, admin_keys, environment_keys, modules, metrics, work, edge })
     }
 }
 

@@ -107,6 +107,8 @@ fn app(
         role: streaming.role,
         guard: streaming.guard,
         webhooks: streaming.webhooks,
+        shutdown: api::shutdown::Shutdown::default(),
+        edge: api::edge::EdgeSettings::default(),
     };
     build_router(AppState::build(backends).unwrap())
 }

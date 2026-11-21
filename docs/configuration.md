@@ -37,8 +37,11 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_CHANGES_PREFIX` | `agentd` | Debezium's `topic.prefix`: agentd reads the change feed's tables from `<prefix>.public.<table>`, the delete messages from `<prefix>.message` and an external scheduler's fires from `<prefix>.fires` |
 | `AGENTD_CHANGES_SLOT` | `agentd_changes` | Debezium's replication slot, which every replica reads every 10 s into the `agentd.feed.slot.*` gauges (`docs/history.md`) |
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
-| `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
-| `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
+| `AGENTD_DB_POOL_SIZE` | `16` | Postgres connections per pool on each replica; set Postgres `max_connections` to at least replicas × 32 + 20, or put a pooler in front (`docs/operations.md`) |
+| `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it a request answers 529 `overloaded_error` instead of queueing |
+| `AGENTD_DB_STATEMENT_TIMEOUT_MS` | `30000` | How long one statement may run on the database (`statement_timeout` on every connection); every connection also ends a transaction left idle for 60 s |
+| `AGENTD_REQUEST_TIMEOUT_MS` | `60000` | How long a response may take to start; past it the request answers 504 `timeout_error` and its open transaction is rolled back. Files routes take 15 minutes. A stream's body is not cut. Set it below the load balancer's idle timeout |
+| `AGENTD_SHUTDOWN_GRACE_MS` | `25000` | How long agentd drains after SIGTERM: requests, running steps and webhook sends finish in parallel inside it; set it below the platform's kill timeout (Kubernetes: 30 s) |
 | `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |
 | `AGENTD_S3_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Bucket region |
 | `AGENTD_AWS_ENDPOINT` | unset (AWS S3) | Custom S3 endpoint (MinIO, LocalStack): `https://` to any host, or `http://` only to a loopback address, `localhost` or a single-label container name |
@@ -46,13 +49,15 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_S3_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
 | `AGENTD_S3_CREATE_BUCKET` | `0` | Create the bucket at boot when it is missing |
 | `AGENTD_S3_LOCATION_CONSTRAINT` | the region on AWS S3 (none in `us-east-1`); none with a custom endpoint | The location constraint a created bucket gets, for an S3-compatible store that names locations its own way |
+| `AGENTD_S3_ATTEMPT_TIMEOUT_MS` | `30000` | The longest one S3 attempt may take; connecting takes at most 3 s |
+| `AGENTD_S3_OPERATION_TIMEOUT_MS` | `50000` | The longest one S3 operation may take, its retries included; kept below the request deadline |
 | `AGENTD_API_KEY_PEPPERS` | required | `<id>:<hex>,…`: the peppers every API key digest is keyed with (see [Keys from the environment](#keys-from-the-environment)) |
 | `AGENTD_WORK_TOKEN_KEYS` | required | `<id>:<hex>,…`: the first signs work tokens, every one verifies them |
 | `AGENTD_PLACEHOLDER_KEYS` | required | `<id>:<hex>,…`: the same, for the placeholders of `environment_variable` credentials |
 | `AGENTD_RUNTIME_KEYS` | unset (no runtime key) | agentd's runtime keys, `sk-ant-oat01-…`, comma separated, the current one first |
 | `AGENTD_ANTHROPIC_API_KEY` | unset (no Anthropic models) | The loop's key for the Messages API |
 | `AGENTD_OPENROUTER_API_KEY` | unset (no OpenAI-compatible models) | The loop's key for the API at `AGENTD_MODEL_BASE_URL` |
-| `AGENTD_WEBHOOK_ENDPOINTS` | unset (no webhook is sent) | Each organization's webhook endpoints, a JSON array of `{"id", "organization_id", "url", "secret": "whsec_…", "enabled"}` (see [Webhooks](#webhooks)) |
+| `AGENTD_WEBHOOK_ENDPOINTS` | unset (no webhook is sent) | Each organization's webhook endpoints, a JSON array of `{"id", "organization_id", "url", "secret": "whsec_…", "enabled"}`; each secret decodes to at least 24 bytes, or agentd refuses to start and names the endpoint (see [Webhooks](#webhooks)) |
 | `RUST_LOG` | `info` | Log level |
 
 
@@ -687,15 +692,54 @@ credential it archives, `vault.deleted` with one `vault_credential.deleted` for
 each of its credentials, archived ones included, `vault_credential.created`,
 `vault_credential.archived`, `vault_credential.deleted`), and
 `vault_credential.refresh_failed`. Each delivery is a `webhook_deliveries` row
-written in the commit of the change it reports, one per endpoint. The change
-feed hands each new row to the sender, which posts live's body
+written in the commit of the change it reports, one per endpoint.
+
+Every replica sends from the rows. The change feed's handler only publishes a
+wake on Valkey `agentd:webhooks` for each new row; on a wake, at most once every
+50 ms, and every second without one, each replica claims up to 100 due rows
+(`FOR NO KEY UPDATE SKIP LOCKED`) for 60 s, with up to 256 sends in flight, so
+each added replica adds sending capacity. A send posts live's body
 (`{"type": "event", "id": "whe_…", "created_at", "data": {…}}`) signed with
 Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature`, keyed
-with the endpoint's `whsec_` secret) and `user-agent: Claude-Platform`. A
-delivery not answered 2xx is sent twice more, 31 s apart, each attempt signed
-anew under the same `webhook-id`, then dropped; the row records
-`delivered_at` or `dropped_at`. Delivery is at least once, so a receiver
-dedupes on `webhook-id`.
+with the endpoint's `whsec_` secret) and `user-agent: Claude-Platform`, through
+the egress guard (public addresses only, no redirects, 10 s timeout). A
+delivery not answered 2xx is sent again 15 to 30 s later, then 30 to 60 s
+later, each attempt signed anew under the same `webhook-id`, and dropped after
+its third attempt; the row records `delivered_at` or `dropped_at`, and
+`last_status` and `last_error`. A delivery whose outcome is not recorded before
+its claim expires (its replica stopped after the POST) is sent again by another
+replica with the same `webhook-id`, so a receiver dedupes on `webhook-id`.
+
+Each endpoint's health is shared in `webhook_endpoint_states`. A 3xx or an
+address that resolves to a non-public IP disables the endpoint at once; 120 h
+of failed attempts with no 2xx between disables it too, and a 2xx ends the run.
+A disable logs one `ERROR` with the organization, endpoint and reason; every
+replica sees it within 10 s, starts no POST to the endpoint from then on, and
+drops each of its deliveries unsent when it falls due (live does not replay
+them). On each replica, 5 failures in a row open the endpoint's breaker for
+30 s, during which its deliveries wait unclaimed. `agentd webhooks enable
+<org_id> <endpoint_id>` enables an endpoint again; so does a change to its URL
+or secret in `AGENTD_WEBHOOK_ENDPOINTS`, seen at boot.
+
+## Rate limits
+
+As live, each organization's requests are counted per bucket in a fixed 60 s
+window that starts at the window's first request, on Valkey
+(`agentd:rate:<org>:<bucket>`):
+
+| Bucket | Limit a minute | Routes |
+|---|---|---|
+| create | 300 | `POST /v1/agents`, `POST /v1/sessions`, `POST /v1/environments` |
+| read | 1,200 | every `GET` under `/v1/agents`, `/v1/sessions`, `/v1/vaults`, `/v1/deployments`, `/v1/deployment_runs` |
+| memory stores | 30,000 | `GET /v1/memory_stores` |
+| files | 500 | every route under `/v1/files` |
+
+Everything else is not limited, `POST /v1/sessions/{id}/events`, environments
+reads and skills among it. Past a limit the answer is 429 `rate_limit_error`
+with `retry-after`, the seconds left in the window. The create, read and memory
+store routes send `anthropic-ratelimit-requests-limit`, `-remaining` and
+`-reset`. When Valkey does not answer within 200 ms the request is admitted and
+counted in `agentd.http.rate_limit_unchecked`.
 
 ## Telemetry
 

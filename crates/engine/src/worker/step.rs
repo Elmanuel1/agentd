@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
-use sessions::steps::{Claim, StepEnd};
+use sessions::steps::{Claim, StepEnd, Wait};
 use sessions::store::StoreError;
 use sessions::types::SessionStatus;
 use shared::BackendError;
@@ -27,12 +27,13 @@ use crate::turn::history::{Kept, Unanswered};
 
 impl Loop {
     /// Run `claim`'s step; a step that fails goes back on the queue for a
-    /// retry after a pause.
+    /// retry after a wait that grows with its failures in a row.
     pub(super) async fn step(&self, claim: Claim) {
         crate::metrics::claimed(claim.waited_ms);
         let Err(e) = self.kept(&claim, self.run(&claim)).await else { return };
+        crate::metrics::step_failed();
         tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
-        if let Err(e) = self.stores.steps.defer(&claim, 5).await {
+        if let Err(e) = self.stores.steps.defer(&claim, Wait::Failed).await {
             tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
         }
     }

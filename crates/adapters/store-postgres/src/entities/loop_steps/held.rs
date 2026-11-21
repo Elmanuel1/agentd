@@ -16,6 +16,9 @@ use super::{HELD, KEY};
 use crate::entities::webhook_deliveries::status_changed;
 use crate::{PgBackend, diesel_be, enum_str, pool_be, to_doc};
 
+mod defer;
+pub(super) use defer::defer;
+
 /// The step's events and session changes, after the held step was checked.
 async fn land(
     c: &mut AsyncPgConnection,
@@ -150,7 +153,7 @@ pub(super) async fn commit(
                 };
                 let released = match deleted {
                     0 => held(
-                        format!("UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE {HELD}"),
+                        format!("UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now(), failures = 0 WHERE {HELD}"),
                         claim,
                     )
                     .execute(c)
@@ -168,20 +171,4 @@ pub(super) async fn commit(
             })
         .await
         .or_else(lost)
-}
-
-/// See `Steps::defer`.
-pub(super) async fn defer(backend: &PgBackend, claim: &Claim, seconds: i64) -> Result<(), StoreError> {
-    let mut conn = backend.diesel.write().await.map_err(pool_be)?;
-    held(
-            format!(
-                "UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now() + make_interval(secs => $5) WHERE {HELD}"
-            ),
-            claim,
-        )
-        .bind::<BigInt, _>(seconds)
-        .execute(&mut conn)
-        .await
-        .map(drop)
-        .map_err(diesel_be)
 }

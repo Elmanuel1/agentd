@@ -48,6 +48,9 @@ impl DieselPgPool {
         let conn = tokio::time::timeout(self.deadline, self.inner.get())
             .await
             .unwrap_or(Err(PoolError::Timeout(deadpool::managed::TimeoutType::Wait)));
+        if matches!(conn, Err(PoolError::Timeout(_))) {
+            shared::overload::waited_out();
+        }
         if started.elapsed() > SLOW_CHECKOUT {
             let at = u64::try_from(self.slow.since.elapsed().as_millis()).unwrap_or(u64::MAX);
             self.slow.last.store(at.saturating_add(1), Ordering::Relaxed);

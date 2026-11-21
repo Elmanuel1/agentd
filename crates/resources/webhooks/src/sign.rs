@@ -22,6 +22,10 @@ impl SigningSecret {
         let key = secret.strip_prefix("whsec_").unwrap_or(secret);
         STANDARD.decode(key).ok().filter(|k| !k.is_empty()).map(Self)
     }
+
+    pub(crate) fn key(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 /// The `webhook-signature` of `body` sent as `id` at `timestamp` (seconds).

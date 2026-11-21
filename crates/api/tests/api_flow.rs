@@ -29,6 +29,11 @@ fn enabled() -> bool {
 /// the integration env isn't configured (test skips). Unique tenants per call
 /// isolate the shared DB.
 async fn app() -> Option<Router> {
+    Some(build_router(state().await?))
+}
+
+/// The state [`app`] routes over.
+async fn state() -> Option<AppState> {
     if !enabled() {
         return None;
     }
@@ -62,8 +67,22 @@ async fn app() -> Option<Router> {
         role: api::config::Role::All,
         guard: shared::net::Guard::default(),
         webhooks: std::sync::Arc::default(),
+        shutdown: api::shutdown::Shutdown::default(),
+        edge: api::edge::EdgeSettings::default(),
     };
-    Some(build_router(AppState::build(backends).unwrap()))
+    Some(AppState::build(backends).unwrap())
+}
+
+#[tokio::test]
+async fn files_take_15_minutes_to_start_a_response_and_every_other_module_the_deployment_s_deadline() {
+    // SH-11.
+    let Some(state) = state().await else { return };
+    let deadlines: Vec<(&str, Option<std::time::Duration>)> =
+        state.modules.iter().map(|m| (m.body_limit.api, m.deadline)).collect();
+    for (api, deadline) in deadlines {
+        let want = (api == "Files").then(|| std::time::Duration::from_secs(900));
+        assert_eq!(deadline, want, "{api}");
+    }
 }
 
 /// A test bucket on the emulator at `AGENTD_AWS_ENDPOINT`, created on connect.

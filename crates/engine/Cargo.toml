@@ -28,6 +28,8 @@ opentelemetry = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

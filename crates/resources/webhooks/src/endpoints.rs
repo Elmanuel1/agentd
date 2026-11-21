@@ -5,9 +5,11 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use super::event::{Delivery, EventKind, body};
 use super::sign::SigningSecret;
+use super::states::Configured;
 
 /// One configured endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,18 @@ pub struct Endpoint {
     pub url: String,
     /// What signs them.
     pub secret: SigningSecret,
+}
+
+impl Endpoint {
+    /// Its state row's identity: a change to its URL or secret changes the digest (D6).
+    pub fn configured(&self) -> Configured {
+        let mut digest = Sha256::new();
+        digest.update(self.url.as_bytes());
+        digest.update([0]);
+        digest.update(self.secret.key());
+        let digest = hex::encode(digest.finalize());
+        Configured { endpoint_key: self.key.clone(), org_id: self.organization_id.clone(), digest }
+    }
 }
 
 #[derive(Deserialize)]
@@ -37,6 +51,9 @@ fn enabled() -> bool {
     true
 }
 
+/// The fewest bytes a signing secret decodes to (D30).
+const MIN_SECRET: usize = 24;
+
 /// Why `AGENTD_WEBHOOK_ENDPOINTS` did not read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EndpointsError {
@@ -46,6 +63,9 @@ pub enum EndpointsError {
     /// A secret that is not `whsec_<base64>`.
     #[error("endpoint {0}: the secret is not whsec_<base64>")]
     Secret(String),
+    /// A secret that decodes to fewer than 24 bytes, the Standard Webhooks minimum (SH-49).
+    #[error("endpoint {0}: the secret decodes to fewer than 24 bytes")]
+    ShortSecret(String),
     /// Two endpoints with one id.
     #[error("endpoint {0} is listed twice")]
     Duplicate(String),
@@ -66,6 +86,9 @@ impl Webhooks {
         for r in raw.into_iter().filter(|r| r.enabled) {
             let secret =
                 SigningSecret::parse(&r.secret).ok_or_else(|| EndpointsError::Secret(r.id.clone()))?;
+            if secret.key().len() < MIN_SECRET {
+                return Err(EndpointsError::ShortSecret(r.id));
+            }
             let e = Endpoint { key: r.id, organization_id: r.organization_id, url: r.url, secret };
             if hooks.by_key.insert(e.key.clone(), e.clone()).is_some() {
                 return Err(EndpointsError::Duplicate(e.key));
@@ -83,6 +106,11 @@ impl Webhooks {
     /// The endpoint keyed `key`, when it is still configured.
     pub fn endpoint(&self, key: &str) -> Option<&Endpoint> {
         self.by_key.get(key)
+    }
+
+    /// Every configured endpoint.
+    pub fn all(&self) -> impl Iterator<Item = &Endpoint> {
+        self.by_key.values()
     }
 
     /// One delivery of `kind` about `id` to each of `org`'s endpoints, all
@@ -109,8 +137,8 @@ mod tests {
     #[test]
     fn endpoints_read_by_organization_and_disabled_ones_are_left_out() {
         let json = r#"[
-            {"id": "a", "organization_id": "org_1", "url": "https://a.test/hook", "secret": "whsec_c2VjcmV0"},
-            {"id": "b", "organization_id": "org_1", "url": "https://b.test/hook", "secret": "whsec_c2VjcmV0", "enabled": false}
+            {"id": "a", "organization_id": "org_1", "url": "https://a.test/hook", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"},
+            {"id": "b", "organization_id": "org_1", "url": "https://b.test/hook", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw", "enabled": false}
         ]"#;
         let hooks = Webhooks::parse(json).unwrap();
         let sent = hooks.deliveries("org_1", "wrkspc_1", EventKind::SessionIdled, "sesn_1");
@@ -125,5 +153,19 @@ mod tests {
             Err(EndpointsError::Secret(_))
         ));
         assert!(Webhooks::parse("{}").is_err());
+    }
+
+    #[test]
+    fn a_secret_under_24_bytes_is_refused_by_its_endpoint_id() {
+        // SH-49: "secret" is 6 bytes; the Standard Webhooks vector's secret is 24.
+        let one = |secret: &str| {
+            Webhooks::parse(&format!(
+                r#"[{{"id":"ep_1","organization_id":"o","url":"u","secret":"{secret}"}}]"#
+            ))
+        };
+        let refused = one("whsec_c2VjcmV0").unwrap_err();
+        assert_eq!(refused, EndpointsError::ShortSecret("ep_1".into()));
+        assert_eq!(refused.to_string(), "endpoint ep_1: the secret decodes to fewer than 24 bytes");
+        assert!(one("whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw").is_ok());
     }
 }

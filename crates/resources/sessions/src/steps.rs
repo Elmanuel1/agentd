@@ -75,6 +75,15 @@ pub enum StepEnd {
     Requeue,
 }
 
+/// When a step released unrun is due again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// In this many seconds.
+    Seconds(i64),
+    /// It failed: after a random wait that doubles with its failures in a row (SH-9).
+    Failed,
+}
+
 /// The rows the queue holds, as the gauges count them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StepCounts {
@@ -112,8 +121,14 @@ pub trait Steps: Send + Sync {
         end: StepEnd,
         write: StepWrite<'a>,
     ) -> BoxFuture<'a, Result<bool, StoreError>>;
-    /// Release the step unrun, due again in `seconds`.
-    fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>>;
+    /// Release the step unrun, due again as `wait` says.
+    fn defer<'a>(&'a self, claim: &'a Claim, wait: Wait) -> BoxFuture<'a, Result<(), StoreError>>;
+    /// Release every one of `claims` `owner` still holds, due at once; how many.
+    fn release_all<'a>(
+        &'a self,
+        owner: &'a str,
+        claims: &'a [Claim],
+    ) -> BoxFuture<'a, Result<u64, StoreError>>;
     /// The queue's rows, counted.
     fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>>;
 }
@@ -138,7 +153,12 @@ pub trait NativeSteps: Send + Sync {
         end: StepEnd,
         write: StepWrite<'_>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
-    fn defer(&self, claim: &Claim, seconds: i64) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn defer(&self, claim: &Claim, wait: Wait) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn release_all(
+        &self,
+        owner: &str,
+        claims: &[Claim],
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
     fn counts(&self) -> impl Future<Output = Result<StepCounts, StoreError>> + Send;
 }
 
@@ -167,8 +187,15 @@ impl<T: NativeSteps> Steps for T {
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
         Box::pin(NativeSteps::commit(self, claim, end, write))
     }
-    fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>> {
-        Box::pin(NativeSteps::defer(self, claim, seconds))
+    fn defer<'a>(&'a self, claim: &'a Claim, wait: Wait) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(NativeSteps::defer(self, claim, wait))
+    }
+    fn release_all<'a>(
+        &'a self,
+        owner: &'a str,
+        claims: &'a [Claim],
+    ) -> BoxFuture<'a, Result<u64, StoreError>> {
+        Box::pin(NativeSteps::release_all(self, owner, claims))
     }
     fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>> {
         Box::pin(NativeSteps::counts(self))

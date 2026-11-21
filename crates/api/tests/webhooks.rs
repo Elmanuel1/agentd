@@ -1,10 +1,12 @@
 //! Webhook deliveries through HTTP: each lands in the commit of the change it
-//! reports, with live's body (H-1, H-6, U3). Gated by `AGENTD_PG_TESTS=1` and
-//! `AGENTD_AWS_ENDPOINT`.
+//! reports, with live's body (H-1, H-6, U3); and their sending from the rows
+//! ([`queue`]). Gated by `AGENTD_PG_TESTS=1` and `AGENTD_AWS_ENDPOINT`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
+#[path = "webhooks/queue.rs"]
+mod queue;
 
 use std::sync::Arc;
 
@@ -15,7 +17,7 @@ use webhooks::Webhooks;
 
 /// The rig's app, its sessions and vaults sending to one endpoint of the rig's organization.
 fn sending(rig: &Rig) -> axum::Router {
-    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_c2VjcmV0"}]);
+    let json = json!([{"id": "e1", "organization_id": rig.org, "url": "https://hooks.agentd.test/in", "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"}]);
     let webhooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
     rig.replica(&rig.stores, Streaming { webhooks, ..Streaming::default() })
 }
@@ -127,72 +129,4 @@ async fn vault_and_credential_writes_send_live_s_lifecycle_events() {
     let deleted = sent(&rig, c["id"].as_str().unwrap()).await;
     assert_eq!(kinds(&deleted), ["vault_credential.created", "vault_credential.deleted"]);
     assert_eq!(deleted[1]["data"]["vault_id"], w.as_str());
-}
-
-#[tokio::test]
-async fn a_pending_delivery_is_sent_by_a_sender_started_after_it_was_written() {
-    // H-4: the row is written in the change's commit; a replica that starts
-    // later sends it when the feed hands it over, and records its end.
-    use axum::routing::post;
-    use shared::ports::changes::{Change, ChangeHandler, ChangeOp};
-    let Some(rig) = Rig::new().await else { return };
-    let got = Arc::new(parking_lot::Mutex::new(0));
-    let seen = got.clone();
-    let receiver = axum::Router::new().route(
-        "/in",
-        post(move || async move {
-            *seen.lock() += 1;
-            StatusCode::OK
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/in", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, receiver).await.ok() });
-    let json = json!([{"id": "e1", "organization_id": rig.org, "url": url, "secret": "whsec_c2VjcmV0"}]);
-    let hooks = Arc::new(Webhooks::parse(&json.to_string()).unwrap());
-    let app = rig.replica(&rig.stores, Streaming { webhooks: hooks.clone(), ..Streaming::default() });
-    let (_, vault) = common::send_to(
-        &app,
-        common::request("POST", "/v1/vaults", Auth::Key(KEY), Some(json!({"display_name": "v"}))),
-    )
-    .await;
-    let v = vault["id"].as_str().unwrap();
-
-    #[derive(diesel::QueryableByName)]
-    struct Pending {
-        #[diesel(sql_type = diesel::sql_types::Jsonb)]
-        row: Value,
-    }
-    let q = diesel::sql_query(
-        "SELECT to_jsonb(d) AS row FROM webhook_deliveries d WHERE body::jsonb->'data'->>'id' = $1",
-    )
-    .bind::<diesel::sql_types::Text, _>(v);
-    let mut conn = rig.pg.diesel.get().await.unwrap();
-    let rows: Vec<Pending> = diesel_async::RunQueryDsl::load(q, &mut *conn).await.unwrap();
-    assert_eq!(rows.len(), 1, "the delivery waits in Postgres");
-    assert!(rows[0].row["delivered_at"].is_null());
-
-    let marks = store_postgres::PgDeliveryMarks::new(rig.pg.clone());
-    let sender = webhooks::WebhookSender::new(hooks, marks, std::time::Duration::from_millis(10)).unwrap();
-    let change = Change {
-        table: "webhook_deliveries".into(),
-        op: ChangeOp::Insert,
-        position: None,
-        before: None,
-        after: Some(rows[0].row.clone()),
-    };
-    sender.handle(&change).await.unwrap();
-    assert_eq!(*got.lock(), 1);
-    let rows: Vec<Pending> = diesel_async::RunQueryDsl::load(
-        diesel::sql_query(
-            "SELECT to_jsonb(d) AS row FROM webhook_deliveries d WHERE body::jsonb->'data'->>'id' = $1",
-        )
-        .bind::<diesel::sql_types::Text, _>(v),
-        &mut *conn,
-    )
-    .await
-    .unwrap();
-    let row = &rows[0].row;
-    assert!(row["delivered_at"].is_string(), "its end is recorded");
-    assert_eq!((&row["dropped_at"], &row["attempt"]), (&Value::Null, &json!(1)));
 }

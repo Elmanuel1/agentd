@@ -13,8 +13,9 @@ pub enum StoreConfig {
         url: String,
         /// `AGENTD_PG_READ_URL`: a read replica the events list reads, when set.
         read_url: Option<String>,
-        /// `AGENTD_DB_POOL_SIZE` connections (default 10), each caller waiting
-        /// at most `AGENTD_DB_POOL_WAIT_MS` (default 5000) for one.
+        /// `AGENTD_DB_POOL_SIZE` connections (default 16, S-8), each caller waiting
+        /// at most `AGENTD_DB_POOL_WAIT_MS` (default 5000) for one, each
+        /// statement running at most `AGENTD_DB_STATEMENT_TIMEOUT_MS` (default 30000).
         pool: PoolSettings,
         /// `AGENTD_PG_AUTH`: how each connection, to both URLs, logs in.
         auth: PgAuth,
@@ -55,8 +56,13 @@ impl StoreConfig {
                 })?,
                 read_url: get("AGENTD_PG_READ_URL").filter(|u| !u.is_empty()),
                 pool: PoolSettings {
-                    max_size: number(get, "AGENTD_DB_POOL_SIZE", 10)?,
+                    max_size: number(get, "AGENTD_DB_POOL_SIZE", 16)?,
                     wait: std::time::Duration::from_millis(number(get, "AGENTD_DB_POOL_WAIT_MS", 5000)?),
+                    statement_timeout: std::time::Duration::from_millis(number(
+                        get,
+                        "AGENTD_DB_STATEMENT_TIMEOUT_MS",
+                        30_000,
+                    )?),
                 },
                 auth: match selector(get, "AGENTD_PG_AUTH", "password").as_str() {
                     "password" => PgAuth::Password,
@@ -71,5 +77,18 @@ impl StoreConfig {
             }),
             other => Err(unknown("AGENTD_STORE", other)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pool_holds_16_connections_and_bounds_each_statement_to_30_s_by_default() {
+        // SH-10, SH-19 (S-8).
+        let url = |k: &str| (k == "DATABASE_URL").then(|| "postgres://agentd@db:5432/agentd".to_owned());
+        let StoreConfig::Postgres { pool, .. } = StoreConfig::from_lookup(&url).unwrap();
+        assert_eq!((pool.max_size, pool.statement_timeout), (16, std::time::Duration::from_secs(30)));
     }
 }

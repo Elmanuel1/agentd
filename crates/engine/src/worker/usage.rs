@@ -1,7 +1,7 @@
 //! What a model call costs the session, and its budget (L-16, L-18).
 
 use serde_json::Value;
-use sessions::steps::Claim;
+use sessions::steps::{Claim, Wait};
 use sessions::types::Session;
 use shared::BackendError;
 use shared::{MonetaryAmount, Usage};
@@ -91,7 +91,7 @@ impl Loop {
                 1
             }
         };
-        self.stores.steps.defer(claim, wait).await.map_err(BackendError::new)?;
+        self.stores.steps.defer(claim, Wait::Seconds(wait)).await.map_err(BackendError::new)?;
         Ok(false)
     }
 }

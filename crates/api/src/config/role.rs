@@ -52,6 +52,8 @@ pub struct LoopConfig {
     pub model_base_url: String,
     /// A step's model deadline (10 min); its lease is 2 min longer.
     pub deadline: Duration,
+    /// `AGENTD_SHUTDOWN_GRACE_MS` (25,000): how long everything gets to finish after SIGTERM.
+    pub grace: Duration,
     /// `AGENTD_COMPACTION_CLEAR_AT` (100000), `AGENTD_COMPACTION_KEEP_RESULTS`
     /// (3, from 3 to 5) and `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` (16000).
     pub compaction: engine::turn::compact::Compaction,
@@ -84,6 +86,7 @@ impl LoopConfig {
             model_base_url: get("AGENTD_MODEL_BASE_URL")
                 .unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
             deadline: Duration::from_secs(600),
+            grace: Duration::from_millis(number(get, "AGENTD_SHUTDOWN_GRACE_MS", 25_000)?),
             compaction: compaction(get)?,
         })
     }

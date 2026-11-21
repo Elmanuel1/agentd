@@ -29,11 +29,14 @@ pub struct PoolSettings {
     pub max_size: usize,
     /// The longest wait for a free connection.
     pub wait: std::time::Duration,
+    /// The longest one statement may run (`statement_timeout`).
+    pub statement_timeout: std::time::Duration,
 }
 
 impl Default for PoolSettings {
     fn default() -> Self {
-        Self { max_size: 10, wait: std::time::Duration::from_secs(5) }
+        let statement_timeout = std::time::Duration::from_secs(30);
+        Self { max_size: 10, wait: std::time::Duration::from_secs(5), statement_timeout }
     }
 }
 
@@ -73,11 +76,19 @@ impl PgBackend {
             let target = target.clone();
             let observe = observe.clone();
             Box::pin(async move {
-                let mut conn = target.establish().await.inspect_err(|e| {
+                let failed = |e: &diesel::ConnectionError| {
                     if let Some(observe) = &observe {
                         observe.connect_failed(e);
                     }
-                })?;
+                };
+                let mut conn = target.establish().await.inspect_err(failed)?;
+                let ms = settings.statement_timeout.as_millis();
+                let bounds =
+                    format!("SET statement_timeout = {ms}; SET idle_in_transaction_session_timeout = '60s'");
+                diesel_async::SimpleAsyncConnection::batch_execute(&mut conn, &bounds)
+                    .await
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)
+                    .inspect_err(failed)?;
                 if let Some(observe) = &observe {
                     conn.set_instrumentation(observe.statements());
                 }
@@ -98,6 +109,10 @@ impl PgBackend {
             // so a stalled database cannot hold a checkout past it.
             .create_timeout(Some(settings.wait))
             .recycle_timeout(Some(settings.wait))
+            // A request dropped mid-transaction (past its deadline) returns a connection still holding
+            // its locks; the pool discards it at its next checkout, which closes it and rolls back.
+            // Taking the newest first makes that the very next checkout.
+            .queue_mode(deadpool::managed::QueueMode::Lifo)
             .runtime(deadpool::Runtime::Tokio1)
             .build()
             .map_err(|e| PgError::Connect(e.to_string()))?;

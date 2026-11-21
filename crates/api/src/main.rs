@@ -2,8 +2,9 @@
 //!
 //! Boot: read [`Config`] from the environment, connect the backends it
 //! selects, assemble the app, and serve. `agentd keys …`, `agentd
-//! admin-keys …` and `agentd environment-keys …` manage keys, and `agentd
-//! vault-secrets tag|reseal` maintains vault secrets, instead ([`api::cli`]). Records and blobs live
+//! admin-keys …` and `agentd environment-keys …` manage keys, `agentd
+//! vault-secrets tag|reseal` maintains vault secrets, and `agentd webhooks
+//! enable` re-enables a disabled endpoint, instead ([`api::cli`]). Records and blobs live
 //! in Postgres and object storage. Every replica's event streams read the log,
 //! signalled through Valkey (`AGENTD_VALKEY_URL`), and every replica claims
 //! due schedules from Postgres.
@@ -36,10 +37,11 @@ async fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "vault-secrets" => {
             return api::cli::vault_secrets::vault_secrets(&config, rest).await;
         }
+        Some((cmd, rest)) if cmd == "webhooks" => return api::cli::webhooks::webhooks(&config, rest).await,
         Some(_) => {
             let cli = api::cli::USAGE;
             let (env, vault) = (api::cli::environment_keys::USAGE, api::cli::vault_secrets::USAGE);
-            eprintln!("{cli}\n{env}\n{vault}");
+            eprintln!("{cli}\n{env}\n{vault}\n{}", api::cli::webhooks::USAGE);
             return ExitCode::FAILURE;
         }
     }
@@ -59,13 +61,14 @@ async fn main() -> ExitCode {
              or aws_ssm, so environment_variable credentials in cloud sessions are not swapped"
         );
     }
-    let backends = match Backends::from_config(&config).await {
+    let mut backends = match Backends::from_config(&config).await {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "backend connect failed");
             return ExitCode::FAILURE;
         }
     };
+    let shutdown = std::mem::take(&mut backends.shutdown);
     let app = match AppState::build(backends) {
         Ok(state) => build_router(state),
         Err(e) => {
@@ -83,35 +86,50 @@ async fn main() -> ExitCode {
     tracing::info!(addr = %config.addr, "agentd listening");
     let stopping = std::sync::Arc::new(tokio::sync::Notify::new());
     let signal = stopping.clone();
-    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
-        shutdown().await;
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown_signal().await;
         signal.notify_one();
     });
-    // An open event stream never ends on its own, so draining is capped;
-    // past it the streams are dropped and the telemetry still flushes.
-    let drained = async {
-        stopping.notified().await;
-        tokio::time::sleep(DRAIN).await;
-        tracing::warn!(seconds = DRAIN.as_secs(), "drain timed out; closing open streams");
-    };
+    let mut server = tokio::spawn(serve.into_future());
     tokio::select! {
-        served = server => {
-            if let Err(e) = served {
-                tracing::error!(error = %e, "server error");
-                return ExitCode::FAILURE;
-            }
+        served = &mut server => {
+            // The server can finish first at SIGTERM with no request open; the backends still drain.
+            shutdown.run(tokio::time::Instant::now() + config.agent_loop.grace).await;
+            return ended(served);
         }
-        () = drained => {}
+        () = stopping.notified() => {}
     }
-    ExitCode::SUCCESS
+    // HTTP, the loop and the webhook sender drain at once, inside one grace (SH-42). An open event
+    // stream never ends on its own, so past the grace it is dropped and the telemetry still flushes.
+    let deadline = tokio::time::Instant::now() + config.agent_loop.grace;
+    let (served, ()) = tokio::join!(tokio::time::timeout_at(deadline, &mut server), shutdown.run(deadline));
+    match served {
+        Ok(served) => ended(served),
+        Err(_) => {
+            server.abort();
+            tracing::warn!(ms = config.agent_loop.grace.as_millis(), "drain timed out; closing open streams");
+            ExitCode::SUCCESS
+        }
+    }
 }
 
-/// How long in-flight requests get to finish after a shutdown signal.
-const DRAIN: std::time::Duration = std::time::Duration::from_secs(10);
+fn ended(served: Result<std::io::Result<()>, tokio::task::JoinError>) -> ExitCode {
+    match served {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "server error");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "the server task failed");
+            ExitCode::FAILURE
+        }
+    }
+}
 
 /// SIGTERM or Ctrl-C: stop accepting, finish in-flight requests, then return
 /// so the telemetry guard flushes the last spans, logs and metrics.
-async fn shutdown() {
+async fn shutdown_signal() {
     let interrupt = async {
         let _ = tokio::signal::ctrl_c().await;
     };

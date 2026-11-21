@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use blobs_s3::S3Config;
 use secrets_aws::AwsSecretsConfig;
 
 use super::*;
@@ -32,6 +33,8 @@ fn defaults_select_postgres_s3_and_aws_secrets() {
     assert_eq!(c.secrets, SecretsConfig::AwsSm(AwsSecretsConfig::new("agentd", "alias/agentd")));
     assert!(c.keys.runtime.is_empty() && c.keys.anthropic.is_none() && c.keys.openrouter.is_none());
     assert_eq!(c.work.api_base_url, "http://agentd:8080");
+    let seconds = std::time::Duration::from_secs;
+    assert_eq!((c.request_timeout, c.agent_loop.grace), (seconds(60), seconds(25)));
 }
 
 #[test]
@@ -96,6 +99,8 @@ fn s3_options_come_from_config() {
         ("AGENTD_S3_ROLE_ARN", "arn:aws:iam::123456789012:role/agentd"),
         ("AGENTD_S3_CREATE_BUCKET", "true"),
         ("AGENTD_S3_LOCATION_CONSTRAINT", "eu-west-1-standard"),
+        ("AGENTD_S3_ATTEMPT_TIMEOUT_MS", "20000"),
+        ("AGENTD_S3_OPERATION_TIMEOUT_MS", "40000"),
     ])
     .unwrap();
     assert_eq!(
@@ -108,6 +113,8 @@ fn s3_options_come_from_config() {
             role_arn: Some("arn:aws:iam::123456789012:role/agentd".into()),
             create_bucket: true,
             location_constraint: Some("eu-west-1-standard".into()),
+            attempt_timeout: std::time::Duration::from_secs(20),
+            operation_timeout: std::time::Duration::from_secs(40),
         })
     );
     let c = config(&[("AGENTD_AWS_ENDPOINT", "http://m"), ("AGENTD_S3_PATH_STYLE", "0")]).unwrap();

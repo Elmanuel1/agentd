@@ -8,6 +8,7 @@ pub mod admin_keys;
 mod command;
 pub mod environment_keys;
 pub mod vault_secrets;
+pub mod webhooks;
 
 use std::process::ExitCode;
 use std::sync::Arc;
