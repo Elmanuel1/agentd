@@ -114,6 +114,14 @@ pub trait Steps: Send + Sync {
     ) -> BoxFuture<'a, Result<bool, StoreError>>;
     /// Release the step unrun, due again in `seconds`.
     fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>>;
+    /// Release the failed step unrun, after a random wait that doubles with its failures in a row.
+    fn defer_failed<'a>(&'a self, claim: &'a Claim) -> BoxFuture<'a, Result<(), StoreError>>;
+    /// Release every one of `claims` `owner` still holds, due at once; how many.
+    fn release_all<'a>(
+        &'a self,
+        owner: &'a str,
+        claims: &'a [Claim],
+    ) -> BoxFuture<'a, Result<u64, StoreError>>;
     /// The queue's rows, counted.
     fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>>;
 }
@@ -139,6 +147,12 @@ pub trait NativeSteps: Send + Sync {
         write: StepWrite<'_>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
     fn defer(&self, claim: &Claim, seconds: i64) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn defer_failed(&self, claim: &Claim) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn release_all(
+        &self,
+        owner: &str,
+        claims: &[Claim],
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send;
     fn counts(&self) -> impl Future<Output = Result<StepCounts, StoreError>> + Send;
 }
 
@@ -169,6 +183,16 @@ impl<T: NativeSteps> Steps for T {
     }
     fn defer<'a>(&'a self, claim: &'a Claim, seconds: i64) -> BoxFuture<'a, Result<(), StoreError>> {
         Box::pin(NativeSteps::defer(self, claim, seconds))
+    }
+    fn defer_failed<'a>(&'a self, claim: &'a Claim) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(NativeSteps::defer_failed(self, claim))
+    }
+    fn release_all<'a>(
+        &'a self,
+        owner: &'a str,
+        claims: &'a [Claim],
+    ) -> BoxFuture<'a, Result<u64, StoreError>> {
+        Box::pin(NativeSteps::release_all(self, owner, claims))
     }
     fn counts(&self) -> BoxFuture<'_, Result<StepCounts, StoreError>> {
         Box::pin(NativeSteps::counts(self))

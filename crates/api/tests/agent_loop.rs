@@ -119,6 +119,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// A test's loop worker; it stops when the test ends, passed or not.
 struct Worker {
     task: tokio::task::JoinHandle<()>,
+    stop: tokio::sync::watch::Sender<bool>,
     _turn: tokio::sync::MutexGuard<'static, ()>,
 }
 
@@ -195,6 +196,8 @@ struct Tune {
     lease: Duration,
     /// The step queue it claims from, when not the rig's.
     queue: Option<Arc<dyn sessions::steps::Steps>>,
+    /// How long its steps get after the stop signal.
+    grace: Duration,
 }
 
 impl Default for Tune {
@@ -209,6 +212,7 @@ impl Default for Tune {
             mcp_timeout: None,
             lease: Duration::from_secs(60),
             queue: None,
+            grace: Duration::from_secs(25),
         }
     }
 }
@@ -253,7 +257,7 @@ impl NativeSessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue } = tune;
+    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue, grace } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -275,10 +279,17 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
         mcp,
         webhooks: hooks,
     };
-    let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
+    let retry = Retry {
+        attempts: 3,
+        first: Duration::from_millis(10),
+        deadline: Duration::from_secs(20),
+        ..Retry::default()
+    };
     let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
-    let settings = Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, steps };
-    (app, Worker { task: Loop::new(stores, models, signals, settings).spawn(), _turn: turn })
+    let settings =
+        Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, steps, grace };
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    (app, Worker { task: Loop::new(stores, models, signals, settings).spawn(stopping), stop, _turn: turn })
 }
 
 async fn session(app: &Router, env: &str, tools: Value) -> String {
@@ -737,6 +748,32 @@ async fn a_step_over_the_model_budget_waits_without_calling_the_model() {
 }
 
 #[tokio::test]
+async fn a_step_running_at_sigterm_is_released_due_at_once_when_the_grace_ends() {
+    // SH-7, SH-8: the worker claims nothing more, waits out the grace, then
+    // releases the step it still runs, due at once.
+    let Some(rig) = Rig::new().await else { return };
+    let model = Scripted::new(vec![Say::Hold]);
+    let tune = Tune { grace: Duration::from_secs(2), ..Tune::default() };
+    let (app, mut worker) = worker(&rig, model.clone(), tune).await;
+    let env = rig.environment("cloud").await;
+    let s = session(&app, &env, json!([])).await;
+    send(&app, &s, message("think for a while")).await;
+    for _ in 0..100 {
+        if !model.asked.lock().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(step_of(&s).await.unwrap().leased);
+    let stopped = tokio::time::Instant::now();
+    worker.stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), &mut worker.task).await.unwrap().unwrap();
+    assert!(stopped.elapsed() < Duration::from_secs(3), "inside the grace: {:?}", stopped.elapsed());
+    let step = step_of(&s).await.expect("the step stays queued");
+    assert!(!step.leased && step.due_in <= 0, "due at once, not after its lease: {}", step.due_in);
+}
+
+#[tokio::test]
 async fn a_loop_replica_serves_no_route() {
     // R-1: only `api` and `all` replicas serve the API.
     let Some(rig) = Rig::new().await else { return };
@@ -759,7 +796,11 @@ async fn a_step_that_cannot_read_its_session_goes_back_on_the_queue() {
     send(&app, &s, message("hi")).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let step = step_of(&s).await.expect("the step stays queued");
-    assert!(!step.leased && (3..=5).contains(&step.due_in), "due in {}s", step.due_in);
+    assert!(
+        !step.leased && (-1..=5).contains(&step.due_in),
+        "a first failure waits up to 5 s: {}s",
+        step.due_in
+    );
     assert!(model.asked.lock().is_empty());
 }
 

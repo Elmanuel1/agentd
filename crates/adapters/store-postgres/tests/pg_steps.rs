@@ -626,3 +626,74 @@ async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
         .count();
     assert_eq!(count, 1);
 }
+
+#[derive(diesel::QueryableByName)]
+struct Waiting {
+    #[diesel(sql_type = diesel::sql_types::Double)]
+    wait: f64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    failures: i64,
+}
+
+async fn waiting(pg: &PgBackend, id: &SessionId) -> Waiting {
+    let mut conn = pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query(
+        "SELECT extract(epoch FROM due_at - now())::float8 AS wait, failures FROM loop_steps WHERE session_id = $1",
+    )
+    .bind::<diesel::sql_types::Text, _>(id.as_str());
+    diesel_async::RunQueryDsl::get_result(q, &mut conn).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_failed_step_waits_at_most_5_s_the_waits_grow_cap_at_5_min_and_a_commit_resets_them() {
+    // SH-9.
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    let ws = uniq_ws("backoff");
+    let s = r.session(&ws).await;
+    r.wake(&ws, &s.id).await;
+    let mut longest = Vec::new();
+    for failures in 0..9_u32 {
+        let mut conn = r.pg.diesel.get().await.unwrap();
+        diesel_async::RunQueryDsl::execute(
+            diesel::sql_query("UPDATE loop_steps SET due_at = now() WHERE session_id = $1")
+                .bind::<diesel::sql_types::Text, _>(s.id.as_str()),
+            &mut conn,
+        )
+        .await
+        .unwrap();
+        let c = r.claim_of("w", 60, &s.id).await.unwrap();
+        r.steps.defer_failed(&c).await.unwrap();
+        let w = waiting(&r.pg, &s.id).await;
+        let cap = f64::from(5 * 2_u32.pow(failures.min(6))).min(300.0);
+        assert!(
+            (-1.0..=cap + 1.0).contains(&w.wait),
+            "failure {failures}: waits {} of at most {cap}",
+            w.wait
+        );
+        assert_eq!(w.failures, i64::from(failures) + 1);
+        longest.push(cap);
+    }
+    assert_eq!((longest[0], longest[1], longest[8]), (5.0, 10.0, 300.0));
+    let mut conn = r.pg.diesel.get().await.unwrap();
+    diesel_async::RunQueryDsl::execute(
+        diesel::sql_query("UPDATE loop_steps SET due_at = now() WHERE session_id = $1")
+            .bind::<diesel::sql_types::Text, _>(s.id.as_str()),
+        &mut conn,
+    )
+    .await
+    .unwrap();
+    let c = r.claim_of("w", 60, &s.id).await.unwrap();
+    let write = StepWrite {
+        read: &[],
+        at: Timestamp::now(),
+        events: &[],
+        engine: &[],
+        session: &unchanged,
+        deliveries: None,
+    };
+    assert!(r.steps.commit(&c, StepEnd::Again, write).await.unwrap());
+    assert_eq!(waiting(&r.pg, &s.id).await.failures, 0, "a commit resets the count");
+}

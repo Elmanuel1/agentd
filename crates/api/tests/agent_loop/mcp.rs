@@ -782,6 +782,14 @@ impl NativeSteps for FailOnce {
         self.0.defer(claim, seconds).await
     }
 
+    async fn defer_failed(&self, claim: &Claim) -> Result<(), StoreError> {
+        self.0.defer_failed(claim).await
+    }
+
+    async fn release_all(&self, owner: &str, claims: &[Claim]) -> Result<u64, StoreError> {
+        self.0.release_all(owner, claims).await
+    }
+
     async fn counts(&self) -> Result<StepCounts, StoreError> {
         self.0.counts().await
     }

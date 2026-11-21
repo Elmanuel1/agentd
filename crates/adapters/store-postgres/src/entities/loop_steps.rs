@@ -31,6 +31,7 @@ pub(super) const HELD: &str = "workspace_id = $1 AND session_id = $2 AND lease_o
 
 mod claim;
 mod held;
+mod release;
 mod rows;
 
 use self::rows::Counts;
@@ -86,6 +87,14 @@ impl NativeSteps for PgSteps {
 
     async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError> {
         held::defer(&self.backend, claim, seconds).await
+    }
+
+    async fn defer_failed(&self, claim: &Claim) -> Result<(), StoreError> {
+        held::defer_failed(&self.backend, claim).await
+    }
+
+    async fn release_all(&self, owner: &str, claims: &[Claim]) -> Result<u64, StoreError> {
+        release::release_all(&self.backend, owner, claims).await
     }
 
     async fn counts(&self) -> Result<StepCounts, StoreError> {

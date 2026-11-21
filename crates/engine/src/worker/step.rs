@@ -27,12 +27,13 @@ use crate::turn::history::{Kept, Unanswered};
 
 impl Loop {
     /// Run `claim`'s step; a step that fails goes back on the queue for a
-    /// retry after a pause.
+    /// retry after a wait that grows with its failures in a row.
     pub(super) async fn step(&self, claim: Claim) {
         crate::metrics::claimed(claim.waited_ms);
         let Err(e) = self.kept(&claim, self.run(&claim)).await else { return };
+        crate::metrics::step_failed();
         tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
-        if let Err(e) = self.stores.steps.defer(&claim, 5).await {
+        if let Err(e) = self.stores.steps.defer_failed(&claim).await {
             tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
         }
     }
