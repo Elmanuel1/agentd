@@ -256,7 +256,10 @@ Authentication, TLS verification and credential refresh failures are counted by 
     outcome, so the end of a run never waits on a replica's memory or survives its crash. On a healthy endpoint the
     clear matches no row (a primary-key probe, no write). A failure after that 2xx starts a new run at its own
     time. A failure written on another replica in the milliseconds before the clear commits is cleared with the
-    run; the next failure starts it again, so the 120 h disable comes later by at most one retry gap;
+    run; the endpoint's next failure starts it again, so the 120 h disable waits for that failure (if the cleared
+    failure was a delivery's last attempt, the next one comes with a later delivery, or never if none fails). When
+    the old run is already past 120 h, that concurrent failure can disable the endpoint just before the 2xx commits;
+    the clear does not re-enable it, and it stays disabled until `agentd webhooks enable` or a config change (D6);
   - every replica reads the failing and disabled sets every 10 s, so a disable reaches all replicas within 10 s;
   - disabling logs `ERROR` once (a person must act) with the org, the endpoint id and the reason; the URL is left out,
     so a token in its query string never reaches the log;
