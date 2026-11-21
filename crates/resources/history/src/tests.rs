@@ -5,12 +5,12 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use shared::ports::changes::{Change, ChangeHandler, ChangeOp, Position, Source};
-use shared::ports::history::{HistoryError, HistoryOp, NativeHistoryLog};
+use shared::ports::history::{HeldVersion, HistoryError, HistoryOp, NativeHistoryLog};
 use shared::{BackendError, Timestamp};
 
 use super::*;
 
-/// Keeps what it is told to record; fails while `failing` is set.
+/// Keeps what it is told to record and the version each row holds; fails while `failing` is set.
 #[derive(Default)]
 struct Kept {
     recorded: Mutex<Vec<(String, HistoryOp, u64, Value)>>,
@@ -29,6 +29,7 @@ impl NativeHistoryLog for Kept {
         op: HistoryOp,
         at: &Position,
         row: &Value,
+        holds: Option<HeldVersion<'_>>,
     ) -> Result<(), HistoryError> {
         if *self.failing.lock() {
             return Err(HistoryError::Backend(BackendError::new(std::io::Error::other("down"))));
@@ -37,16 +38,9 @@ impl NativeHistoryLog for Kept {
             return Err(HistoryError::Unrecordable(format!("{table} has no history table")));
         }
         self.recorded.lock().push((table.to_owned(), op, at.lsn, row.clone()));
-        Ok(())
-    }
-
-    async fn scrub_memory_content(
-        &self,
-        workspace: &str,
-        store: &str,
-        version: &str,
-    ) -> Result<(), HistoryError> {
-        self.scrubbed.lock().push((workspace.to_owned(), store.to_owned(), version.to_owned()));
+        if let Some(h) = holds {
+            self.scrubbed.lock().push((h.workspace.to_owned(), h.store.to_owned(), h.version.to_owned()));
+        }
         Ok(())
     }
 }
@@ -97,7 +91,7 @@ async fn an_insert_and_an_update_are_recorded_and_a_delete_event_is_not() {
     vaults.handle(&change("vaults", ChangeOp::Delete, 30, None)).await.unwrap();
     let ops: Vec<(HistoryOp, u64)> = kept.recorded.lock().iter().map(|r| (r.1, r.2)).collect();
     assert_eq!(ops, [(HistoryOp::Insert, 10), (HistoryOp::Update, 20)]);
-    assert!(kept.scrubbed.lock().is_empty(), "only memory rows are scrubbed");
+    assert!(kept.scrubbed.lock().is_empty(), "only memory rows hold a version");
     assert_eq!(*applied.lock(), 2);
 }
 
@@ -135,7 +129,7 @@ async fn a_store_failure_is_handled_again_and_an_unrecordable_change_is_passed_o
 }
 
 #[tokio::test]
-async fn a_memory_version_s_update_is_scrubbed_once_it_is_recorded() {
+async fn a_memory_version_s_update_is_recorded_holding_its_version() {
     let Fixture { kept, handlers, .. } = fixture();
     let versions = handler(&handlers, &Source::Table("memory_versions".into()));
     let row = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "version_id": "memver_1"});
@@ -148,7 +142,7 @@ async fn a_memory_version_s_update_is_scrubbed_once_it_is_recorded() {
 }
 
 #[tokio::test]
-async fn a_memory_head_s_delete_is_scrubbed_once_it_is_recorded() {
+async fn a_memory_head_s_delete_is_recorded_holding_its_head_version() {
     let Fixture { kept, handlers, .. } = fixture();
     let head = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "head_version_id": "memver_1"});
     let content = json!({"table": "memories", "actor": "apikey_a", "request_id": "req_a", "row": head});

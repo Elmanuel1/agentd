@@ -43,6 +43,17 @@ pub enum HistoryError {
     Unrecordable(String),
 }
 
+/// A memory version whose content a recorded row may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldVersion<'a> {
+    /// Its workspace.
+    pub workspace: &'a str,
+    /// Its memory store.
+    pub store: &'a str,
+    /// The version's id.
+    pub version: &'a str,
+}
+
 /// Where history is kept.
 pub trait HistoryLog: Send + Sync {
     /// The tables it keeps a history of.
@@ -50,21 +61,17 @@ pub trait HistoryLog: Send + Sync {
     /// Record `row` as `table`'s change at `position`, once however often it
     /// is recorded. An insert's or update's row is as the feed encodes it
     /// (Debezium's JSON); a delete's is Postgres's own `to_jsonb` of the row.
+    /// When the row `holds` a memory version, it commits with that version's
+    /// scrub, one recording of the version at a time: once history holds the
+    /// version's redaction, no history row of the version, nor of any head of
+    /// its memory that held it, keeps its content.
     fn record<'a>(
         &'a self,
         table: &'a str,
         op: HistoryOp,
         position: &'a Position,
         row: &'a Value,
-    ) -> BoxFuture<'a, Result<(), HistoryError>>;
-    /// When history records memory version `version` of `store` as redacted,
-    /// remove its content from the version's history and from the history of
-    /// every head of its memory that held it; otherwise change nothing.
-    fn scrub_memory_content<'a>(
-        &'a self,
-        workspace: &'a str,
-        store: &'a str,
-        version: &'a str,
+        holds: Option<HeldVersion<'a>>,
     ) -> BoxFuture<'a, Result<(), HistoryError>>;
 }
 
@@ -77,12 +84,7 @@ pub trait NativeHistoryLog: Send + Sync {
         op: HistoryOp,
         position: &Position,
         row: &Value,
-    ) -> impl Future<Output = Result<(), HistoryError>> + Send;
-    fn scrub_memory_content(
-        &self,
-        workspace: &str,
-        store: &str,
-        version: &str,
+        holds: Option<HeldVersion<'_>>,
     ) -> impl Future<Output = Result<(), HistoryError>> + Send;
 }
 
@@ -96,15 +98,8 @@ impl<T: NativeHistoryLog> HistoryLog for T {
         op: HistoryOp,
         position: &'a Position,
         row: &'a Value,
+        holds: Option<HeldVersion<'a>>,
     ) -> BoxFuture<'a, Result<(), HistoryError>> {
-        Box::pin(NativeHistoryLog::record(self, table, op, position, row))
-    }
-    fn scrub_memory_content<'a>(
-        &'a self,
-        workspace: &'a str,
-        store: &'a str,
-        version: &'a str,
-    ) -> BoxFuture<'a, Result<(), HistoryError>> {
-        Box::pin(NativeHistoryLog::scrub_memory_content(self, workspace, store, version))
+        Box::pin(NativeHistoryLog::record(self, table, op, position, row, holds))
     }
 }

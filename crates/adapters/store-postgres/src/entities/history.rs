@@ -1,17 +1,18 @@
 //! The history store on Postgres: one table per tracked table in the schema
 //! `history` (V17), which is the one list of tracked tables. Its tables and
 //! column types are read once at boot; a change is one insert, decoded by
-//! column type from the feed's encoding.
+//! column type from the feed's encoding, committed with its memory version's
+//! scrub when it holds one.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use diesel::QueryableByName;
 use diesel::sql_types::{Jsonb, Text};
-use diesel_async::{AsyncConnection, RunQueryDsl};
+use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use serde_json::Value;
 use shared::ports::changes::Position;
-use shared::ports::history::{HistoryError, HistoryOp, NativeHistoryLog};
+use shared::ports::history::{HeldVersion, HistoryError, HistoryOp, NativeHistoryLog};
 
 use crate::{PgBackend, PgError, diesel_be, pool_be};
 
@@ -79,6 +80,7 @@ impl NativeHistoryLog for PgHistoryLog {
         op: HistoryOp,
         position: &Position,
         row: &Value,
+        holds: Option<HeldVersion<'_>>,
     ) -> Result<(), HistoryError> {
         let (table, columns) = self
             .tables
@@ -95,56 +97,63 @@ impl NativeHistoryLog for PgHistoryLog {
         row.insert("tx_id".into(), position.tx_id.into());
         row.insert("op".into(), op.as_str().into());
         row.insert("committed_at".into(), position.committed_at.to_wire().into());
-        // A plain checkout: a history row carries its change's writer, never the connection's.
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be::<HistoryError>)?;
-        diesel::sql_query(format!(
+        let insert = format!(
             "INSERT INTO history.{table} SELECT * FROM jsonb_populate_record(NULL::history.{table}, $1)
              ON CONFLICT DO NOTHING"
-        ))
-        .bind::<Jsonb, _>(Value::Object(row))
-        .execute(&mut *conn)
-        .await
-        .map(drop)
-        .map_err(diesel_be)
-    }
-
-    async fn scrub_memory_content(
-        &self,
-        workspace: &str,
-        store: &str,
-        version: &str,
-    ) -> Result<(), HistoryError> {
-        // `r` is the version's redaction as history recorded it; without one, nothing changes.
-        const CLEARED: &str = r#"'{"content_sha256": null, "content_size_bytes": null, "path": null}'"#;
-        const REDACTED: &str = "r.workspace_id = $1 AND r.store_id = $2 AND r.version_id = $3
-                                AND jsonb_typeof(r.doc->'redacted_at') = 'string'";
+        );
+        let row = Value::Object(row);
+        // A plain checkout: a history row carries its change's writer, never the connection's.
         let mut conn = self.backend.diesel.get().await.map_err(pool_be::<HistoryError>)?;
+        let Some(held) = holds else {
+            let inserted = diesel::sql_query(insert).bind::<Jsonb, _>(row).execute(&mut *conn).await;
+            return inserted.map(drop).map_err(diesel_be);
+        };
         conn.transaction::<_, diesel::result::Error, _>(async move |c| {
-            diesel::sql_query(format!(
-                "UPDATE history.memory_versions h SET doc = h.doc || {CLEARED}
-                       FROM history.memory_versions r
-                      WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
-                        AND h.version_id = r.version_id"
-            ))
-            .bind::<Text, _>(workspace)
-            .bind::<Text, _>(store)
-            .bind::<Text, _>(version)
+            // The versions' and the heads' recorders run at once: unserialized, a redaction and a
+            // row holding its version could each commit unseen by the other's scrub.
+            diesel::sql_query(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/' || $2 || '/' || $3, 0))",
+            )
+            .bind::<Text, _>(held.workspace)
+            .bind::<Text, _>(held.store)
+            .bind::<Text, _>(held.version)
             .execute(c)
             .await?;
-            diesel::sql_query(format!(
-                "UPDATE history.memories h SET path = NULL, doc = h.doc || {CLEARED}
-                       FROM history.memory_versions r
-                      WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
-                        AND h.memory_id = r.memory_id AND h.head_version_id = r.version_id"
-            ))
-            .bind::<Text, _>(workspace)
-            .bind::<Text, _>(store)
-            .bind::<Text, _>(version)
-            .execute(c)
-            .await
-            .map(drop)
+            diesel::sql_query(insert).bind::<Jsonb, _>(row).execute(c).await?;
+            scrub(c, held).await
         })
         .await
         .map_err(diesel_be)
     }
+}
+
+/// Clear `held`'s content from history when history holds its redaction; otherwise change nothing.
+async fn scrub(c: &mut AsyncPgConnection, held: HeldVersion<'_>) -> Result<(), diesel::result::Error> {
+    // `r` is the version's redaction as history recorded it.
+    const CLEARED: &str = r#"'{"content_sha256": null, "content_size_bytes": null, "path": null}'"#;
+    const REDACTED: &str = "r.workspace_id = $1 AND r.store_id = $2 AND r.version_id = $3
+                            AND jsonb_typeof(r.doc->'redacted_at') = 'string'";
+    diesel::sql_query(format!(
+        "UPDATE history.memory_versions h SET doc = h.doc || {CLEARED}
+               FROM history.memory_versions r
+              WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
+                AND h.version_id = r.version_id"
+    ))
+    .bind::<Text, _>(held.workspace)
+    .bind::<Text, _>(held.store)
+    .bind::<Text, _>(held.version)
+    .execute(c)
+    .await?;
+    diesel::sql_query(format!(
+        "UPDATE history.memories h SET path = NULL, doc = h.doc || {CLEARED}
+               FROM history.memory_versions r
+              WHERE {REDACTED} AND h.workspace_id = r.workspace_id AND h.store_id = r.store_id
+                AND h.memory_id = r.memory_id AND h.head_version_id = r.version_id"
+    ))
+    .bind::<Text, _>(held.workspace)
+    .bind::<Text, _>(held.store)
+    .bind::<Text, _>(held.version)
+    .execute(c)
+    .await
+    .map(drop)
 }
