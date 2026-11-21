@@ -80,7 +80,7 @@ impl NativeHistoryLog for PgHistoryLog {
         op: HistoryOp,
         position: &Position,
         row: &Value,
-        holds: Option<HeldVersion<'_>>,
+        held: Option<HeldVersion<'_>>,
     ) -> Result<(), HistoryError> {
         let (table, columns) = self
             .tables
@@ -104,7 +104,7 @@ impl NativeHistoryLog for PgHistoryLog {
         let row = Value::Object(row);
         // A plain checkout: a history row carries its change's writer, never the connection's.
         let mut conn = self.backend.diesel.get().await.map_err(pool_be::<HistoryError>)?;
-        let Some(held) = holds else {
+        let Some(version) = held else {
             let inserted = diesel::sql_query(insert).bind::<Jsonb, _>(row).execute(&mut *conn).await;
             return inserted.map(drop).map_err(diesel_be);
         };
@@ -114,13 +114,13 @@ impl NativeHistoryLog for PgHistoryLog {
             diesel::sql_query(
                 "SELECT pg_advisory_xact_lock(hashtextextended($1 || '/' || $2 || '/' || $3, 0))",
             )
-            .bind::<Text, _>(held.workspace)
-            .bind::<Text, _>(held.store)
-            .bind::<Text, _>(held.version)
+            .bind::<Text, _>(version.workspace)
+            .bind::<Text, _>(version.store)
+            .bind::<Text, _>(version.version)
             .execute(c)
             .await?;
             diesel::sql_query(insert).bind::<Jsonb, _>(row).execute(c).await?;
-            scrub(c, held).await
+            scrub(c, version).await
         })
         .await
         .map_err(diesel_be)

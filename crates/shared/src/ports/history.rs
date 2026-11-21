@@ -58,20 +58,15 @@ pub struct HeldVersion<'a> {
 pub trait HistoryLog: Send + Sync {
     /// The tables it keeps a history of.
     fn tables(&self) -> Vec<String>;
-    /// Record `row` as `table`'s change at `position`, once however often it
-    /// is recorded. An insert's or update's row is as the feed encodes it
-    /// (Debezium's JSON); a delete's is Postgres's own `to_jsonb` of the row.
-    /// When the row `holds` a memory version, it commits with that version's
-    /// scrub, one recording of the version at a time: once history holds the
-    /// version's redaction, no history row of the version, nor of any head of
-    /// its memory that held it, keeps its content.
+    /// Record `row` once however often it is recorded; a row that holds a
+    /// memory version commits with that version's scrub.
     fn record<'a>(
         &'a self,
         table: &'a str,
         op: HistoryOp,
         position: &'a Position,
         row: &'a Value,
-        holds: Option<HeldVersion<'a>>,
+        held: Option<HeldVersion<'a>>,
     ) -> BoxFuture<'a, Result<(), HistoryError>>;
 }
 
@@ -84,7 +79,7 @@ pub trait NativeHistoryLog: Send + Sync {
         op: HistoryOp,
         position: &Position,
         row: &Value,
-        holds: Option<HeldVersion<'_>>,
+        held: Option<HeldVersion<'_>>,
     ) -> impl Future<Output = Result<(), HistoryError>> + Send;
 }
 
@@ -98,8 +93,8 @@ impl<T: NativeHistoryLog> HistoryLog for T {
         op: HistoryOp,
         position: &'a Position,
         row: &'a Value,
-        holds: Option<HeldVersion<'a>>,
+        held: Option<HeldVersion<'a>>,
     ) -> BoxFuture<'a, Result<(), HistoryError>> {
-        Box::pin(NativeHistoryLog::record(self, table, op, position, row, holds))
+        Box::pin(NativeHistoryLog::record(self, table, op, position, row, held))
     }
 }

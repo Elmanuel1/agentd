@@ -14,7 +14,7 @@ use super::*;
 #[derive(Default)]
 struct Kept {
     recorded: Mutex<Vec<(String, HistoryOp, u64, Value)>>,
-    scrubbed: Mutex<Vec<(String, String, String)>>,
+    held: Mutex<Vec<(String, String, String)>>,
     failing: Mutex<bool>,
 }
 
@@ -29,7 +29,7 @@ impl NativeHistoryLog for Kept {
         op: HistoryOp,
         at: &Position,
         row: &Value,
-        holds: Option<HeldVersion<'_>>,
+        held: Option<HeldVersion<'_>>,
     ) -> Result<(), HistoryError> {
         if *self.failing.lock() {
             return Err(HistoryError::Backend(BackendError::new(std::io::Error::other("down"))));
@@ -38,8 +38,8 @@ impl NativeHistoryLog for Kept {
             return Err(HistoryError::Unrecordable(format!("{table} has no history table")));
         }
         self.recorded.lock().push((table.to_owned(), op, at.lsn, row.clone()));
-        if let Some(h) = holds {
-            self.scrubbed.lock().push((h.workspace.to_owned(), h.store.to_owned(), h.version.to_owned()));
+        if let Some(h) = held {
+            self.held.lock().push((h.workspace.to_owned(), h.store.to_owned(), h.version.to_owned()));
         }
         Ok(())
     }
@@ -91,7 +91,7 @@ async fn an_insert_and_an_update_are_recorded_and_a_delete_event_is_not() {
     vaults.handle(&change("vaults", ChangeOp::Delete, 30, None)).await.unwrap();
     let ops: Vec<(HistoryOp, u64)> = kept.recorded.lock().iter().map(|r| (r.1, r.2)).collect();
     assert_eq!(ops, [(HistoryOp::Insert, 10), (HistoryOp::Update, 20)]);
-    assert!(kept.scrubbed.lock().is_empty(), "only memory rows hold a version");
+    assert!(kept.held.lock().is_empty(), "only memory rows hold a version");
     assert_eq!(*applied.lock(), 2);
 }
 
@@ -135,10 +135,7 @@ async fn a_memory_version_s_update_is_recorded_holding_its_version() {
     let row = json!({"workspace_id": "wrkspc_1", "store_id": "memstore_1", "version_id": "memver_1"});
     versions.handle(&change("memory_versions", ChangeOp::Update, 60, Some(row.clone()))).await.unwrap();
     assert_eq!(*kept.recorded.lock(), [("memory_versions".to_owned(), HistoryOp::Update, 60, row)]);
-    assert_eq!(
-        *kept.scrubbed.lock(),
-        [("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned())]
-    );
+    assert_eq!(*kept.held.lock(), [("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned())]);
 }
 
 #[tokio::test]
@@ -152,10 +149,7 @@ async fn a_memory_head_s_delete_is_recorded_holding_its_head_version() {
     recorded["actor"] = json!("apikey_a");
     recorded["request_id"] = json!("req_a");
     assert_eq!(*kept.recorded.lock(), [("memories".to_owned(), HistoryOp::Delete, 70, recorded)]);
-    assert_eq!(
-        *kept.scrubbed.lock(),
-        [("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned())]
-    );
+    assert_eq!(*kept.held.lock(), [("wrkspc_1".to_owned(), "memstore_1".to_owned(), "memver_1".to_owned())]);
 }
 
 /// The tables V17 makes in the schema `history`.
