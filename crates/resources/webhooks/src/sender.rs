@@ -1,186 +1,142 @@
-//! Sending a delivery: the change feed hands each new `webhook_deliveries`
-//! row here, and its first attempt runs then. A delivery not answered 2xx is
-//! sent again twice, about 31 s apart, on a task of its own so the feed keeps
-//! moving, each attempt signed anew with its own `webhook-timestamp` and the
-//! same `webhook-id`, then dropped (H-3). The first attempt is delivered at
-//! least once; a replica that stops during the retries leaves the row with
-//! neither `delivered_at` nor `dropped_at`.
+//! Sending deliveries from their rows (ADR 0001). The change feed's handler
+//! only wakes the instances: for each new `webhook_deliveries` row it
+//! publishes one message on [`WAKE`] and returns, so a slow endpoint never
+//! holds the feed. Every instance runs one claim loop over the table.
+//! Delivery is bounded retries with possible duplicate POSTs: a delivery
+//! whose outcome is not recorded before its 60 s claim expires is sent again
+//! with the same `webhook-id`, unless its claims have lapsed three times.
 
-use shared::ports::BoxFuture;
-use std::future::Future;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+use shared::BackendError;
+use shared::breaker::Breakers;
+use shared::net::Guard;
+use shared::ports::broadcast::Broadcast;
 use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
-use shared::{BackendError, Timestamp};
+use tokio::sync::watch;
 
 use super::endpoints::Webhooks;
-use super::sign::sign;
+use super::queue::DeliveryQueue;
+use super::states::{DisabledReason, EndpointStates};
 
-/// The attempts a delivery gets.
-const ATTEMPTS: i64 = 3;
-/// How long one attempt may take.
-const TIMEOUT: Duration = Duration::from_secs(10);
-/// Deliveries retried at once per replica.
-const RETRYING: usize = 256;
+mod claim;
+mod health;
+mod send;
+#[cfg(test)]
+mod tests;
 
-/// Where a delivery's end is recorded.
-pub trait DeliveryMarks: Send + Sync {
-    /// The delivery was answered 2xx on attempt `attempt`.
-    fn delivered<'a>(
-        &'a self,
-        webhook_id: &'a str,
-        endpoint_key: &'a str,
-        attempt: i64,
-    ) -> BoxFuture<'a, Result<(), BackendError>>;
-    /// The delivery was dropped after `attempt` attempts.
-    fn dropped<'a>(
-        &'a self,
-        webhook_id: &'a str,
-        endpoint_key: &'a str,
-        attempt: i64,
-    ) -> BoxFuture<'a, Result<(), BackendError>>;
+/// The channel a new delivery wakes every instance's claim loop on.
+pub const WAKE: &str = "agentd:webhooks";
+/// The `user-agent` live's webhooks carry (D22).
+const USER_AGENT: &str = "Claude-Platform";
+
+/// The sender's signals; each defaults to nothing.
+pub trait SenderMetrics: Send + Sync {
+    /// A delivery's outcome was recorded: `delivered`, `retried` or `dropped`.
+    fn delivery(&self, _outcome: &'static str) {}
+    /// An endpoint's breaker opened on this replica.
+    fn breaker_opened(&self) {}
+    /// This replica claimed `n` deliveries.
+    fn claimed(&self, _n: usize) {}
+    /// How long the longest-waiting due delivery has waited, none when nothing is due.
+    fn oldest_due(&self, _age: Option<Duration>) {}
+    /// The disabled endpoints, by reason.
+    fn disabled(&self, _by_reason: &HashMap<DisabledReason, usize>) {}
 }
 
-/// What an adapter implements to provide [`DeliveryMarks`]; the methods are documented there.
-pub trait NativeDeliveryMarks: Send + Sync {
-    fn delivered(
-        &self,
-        webhook_id: &str,
-        endpoint_key: &str,
-        attempt: i64,
-    ) -> impl Future<Output = Result<(), BackendError>> + Send;
-    fn dropped(
-        &self,
-        webhook_id: &str,
-        endpoint_key: &str,
-        attempt: i64,
-    ) -> impl Future<Output = Result<(), BackendError>> + Send;
-}
+/// Reports nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoMetrics;
 
-impl<T: NativeDeliveryMarks> DeliveryMarks for T {
-    fn delivered<'a>(
-        &'a self,
-        webhook_id: &'a str,
-        endpoint_key: &'a str,
-        attempt: i64,
-    ) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(NativeDeliveryMarks::delivered(self, webhook_id, endpoint_key, attempt))
-    }
-    fn dropped<'a>(
-        &'a self,
-        webhook_id: &'a str,
-        endpoint_key: &'a str,
-        attempt: i64,
-    ) -> BoxFuture<'a, Result<(), BackendError>> {
-        Box::pin(NativeDeliveryMarks::dropped(self, webhook_id, endpoint_key, attempt))
-    }
-}
+impl SenderMetrics for NoMetrics {}
 
-/// Posts deliveries to their endpoints.
+/// The change feed's handler for `webhook_deliveries`: a new row wakes the senders.
 #[derive(Clone)]
-pub struct WebhookSender {
-    http: reqwest::Client,
-    webhooks: Arc<Webhooks>,
-    marks: Arc<dyn DeliveryMarks>,
-    spacing: Duration,
-    retrying: Arc<tokio::sync::Semaphore>,
+pub struct DeliveryWake {
+    wakes: Arc<dyn Broadcast>,
 }
 
-impl std::fmt::Debug for WebhookSender {
+impl std::fmt::Debug for DeliveryWake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebhookSender").field("spacing", &self.spacing).finish_non_exhaustive()
+        f.debug_struct("DeliveryWake").finish_non_exhaustive()
     }
 }
 
-impl WebhookSender {
-    /// A sender to `webhooks`' endpoints, recording each end in `marks`,
-    /// attempts `spacing` apart (live: about 31 s).
-    pub fn new(
-        webhooks: Arc<Webhooks>,
-        marks: Arc<dyn DeliveryMarks>,
-        spacing: Duration,
-    ) -> Result<Self, String> {
-        let http = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent("Claude-Platform")
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| e.to_string())?;
-        Ok(Self { http, webhooks, marks, spacing, retrying: Arc::new(tokio::sync::Semaphore::new(RETRYING)) })
-    }
-
-    async fn attempt(&self, id: &str, url: &str, body: &str, secret: &super::SigningSecret) -> bool {
-        let ts = Timestamp::now().as_datetime().timestamp();
-        let sent = self
-            .http
-            .post(url)
-            .header("content-type", "application/json")
-            .header("webhook-id", id)
-            .header("webhook-timestamp", ts.to_string())
-            .header("webhook-signature", sign(secret, id, ts, body))
-            .body(body.to_owned())
-            .send()
-            .await;
-        sent.is_ok_and(|r| r.status().is_success())
+impl DeliveryWake {
+    /// Waking through `wakes`.
+    pub fn new(wakes: Arc<dyn Broadcast>) -> Self {
+        Self { wakes }
     }
 }
 
-impl NativeChangeHandler for WebhookSender {
+impl NativeChangeHandler for DeliveryWake {
     fn source(&self) -> Source {
         Source::Table("webhook_deliveries".into())
     }
 
-    /// A new row is sent; its own marks (updates) are not changes to send.
-    /// An endpoint no longer configured drops the delivery.
+    /// The claim, the outcome and the sweep's delete are changes too; only an insert wakes.
+    /// A lost wake costs at most the 1 s poll, so a failed publish is not retried.
     async fn handle(&self, change: &Change) -> Result<(), BackendError> {
-        let Some(row) = change.after.as_ref().filter(|_| change.op == ChangeOp::Insert) else {
+        let inserted = change.op == ChangeOp::Insert && change.after.as_ref().is_some_and(Value::is_object);
+        if !inserted {
             return Ok(());
-        };
-        let field = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or_default();
-        let (id, key, url, body) =
-            (field("webhook_id"), field("endpoint_key"), field("endpoint_url"), field("body"));
-        let Some(endpoint) = self.webhooks.endpoint(key) else {
-            return self.marks.dropped(id, key, 0).await;
-        };
-        if self.attempt(id, url, body, &endpoint.secret).await {
-            return self.marks.delivered(id, key, 1).await;
         }
-        let (me, delivery) = (self.clone(), [id, key, url, body].map(str::to_owned));
-        let secret = endpoint.secret.clone();
-        tokio::spawn(async move {
-            let Ok(_held) = me.retrying.clone().acquire_owned().await else { return };
-            let [id, key, url, body] = delivery;
-            let outcome = me.retry(&id, &key, &url, &body, &secret).await;
-            if let Err(e) = outcome {
-                tracing::warn!(webhook_id = %id, error = %e, "webhooks: a delivery's end could not be recorded");
-            }
-        });
+        if let Err(e) = self.wakes.publish(WAKE, "").await {
+            tracing::warn!(error = %e, "webhooks: a new delivery could not wake the senders; the poll finds it");
+        }
         Ok(())
     }
 }
 
-impl WebhookSender {
-    /// The attempts after the first, `spacing` apart, then the delivery's end.
-    async fn retry(
-        &self,
-        id: &str,
-        key: &str,
-        url: &str,
-        body: &str,
-        secret: &super::SigningSecret,
-    ) -> Result<(), BackendError> {
-        for attempt in 2..=ATTEMPTS {
-            tokio::time::sleep(self.spacing).await;
-            if self.attempt(id, url, body, secret).await {
-                return self.marks.delivered(id, key, attempt).await;
-            }
-        }
-        tracing::info!(webhook_id = %id, endpoint = %key, "webhooks: a delivery was dropped after its attempts");
-        self.marks.dropped(id, key, ATTEMPTS).await
+/// One instance's sender: the claim loop and the sends it starts.
+pub struct WebhookSender {
+    claims: claim::ClaimLoop,
+}
+
+impl std::fmt::Debug for WebhookSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookSender").finish_non_exhaustive()
     }
 }
 
-#[cfg(test)]
-mod tests;
+/// What a sender reads, writes and listens on.
+pub struct SenderPorts {
+    /// The delivery rows.
+    pub queue: Arc<dyn DeliveryQueue>,
+    /// The endpoints' shared states.
+    pub states: Arc<dyn EndpointStates>,
+    /// Where new deliveries wake it.
+    pub wakes: Arc<dyn Broadcast>,
+    /// What it reports.
+    pub metrics: Arc<dyn SenderMetrics>,
+}
+
+impl std::fmt::Debug for SenderPorts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SenderPorts").finish_non_exhaustive()
+    }
+}
+
+impl WebhookSender {
+    /// A sender to `webhooks`' endpoints through `guard`, sending live's `user-agent: Claude-Platform`.
+    pub fn new(webhooks: Arc<Webhooks>, guard: &Guard, ports: SenderPorts) -> Self {
+        let health = Arc::new(health::Health::new(ports.states));
+        let send = send::Send {
+            guard: guard.with_user_agent(USER_AGENT),
+            webhooks,
+            queue: ports.queue,
+            health,
+            metrics: ports.metrics,
+            breakers: Breakers::default(),
+        };
+        Self { claims: claim::ClaimLoop { send: Arc::new(send), wakes: ports.wakes } }
+    }
+
+    /// Claim and send until `stop` turns true, then finish the sends in flight.
+    pub async fn run(self, stop: watch::Receiver<bool>) {
+        self.claims.run(stop).await;
+    }
+}

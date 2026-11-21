@@ -5085,6 +5085,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "futures",
  "hex",
  "hmac",
  "parking_lot 0.13.0",

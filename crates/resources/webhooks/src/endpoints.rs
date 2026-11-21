@@ -5,9 +5,11 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use super::event::{Delivery, EventKind, body};
 use super::sign::SigningSecret;
+use super::states::Configured;
 
 /// One configured endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,18 @@ pub struct Endpoint {
     pub url: String,
     /// What signs them.
     pub secret: SigningSecret,
+}
+
+impl Endpoint {
+    /// Its state row's identity: a change to its URL or secret changes the digest (D6).
+    pub fn configured(&self) -> Configured {
+        let mut digest = Sha256::new();
+        digest.update(self.url.as_bytes());
+        digest.update([0]);
+        digest.update(self.secret.key());
+        let digest = hex::encode(digest.finalize());
+        Configured { endpoint_key: self.key.clone(), org_id: self.organization_id.clone(), digest }
+    }
 }
 
 #[derive(Deserialize)]
@@ -83,6 +97,11 @@ impl Webhooks {
     /// The endpoint keyed `key`, when it is still configured.
     pub fn endpoint(&self, key: &str) -> Option<&Endpoint> {
         self.by_key.get(key)
+    }
+
+    /// Every configured endpoint.
+    pub fn all(&self) -> impl Iterator<Item = &Endpoint> {
+        self.by_key.values()
     }
 
     /// One delivery of `kind` about `id` to each of `org`'s endpoints, all
