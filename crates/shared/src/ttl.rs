@@ -18,7 +18,6 @@ pub struct TtlMap<K, V> {
 }
 
 impl<K: Eq + Hash, V: Clone> TtlMap<K, V> {
-    /// An empty map.
     pub fn new(ttl: Duration, cap: usize) -> Self {
         Self { ttl, cap, entries: Mutex::new(HashMap::new()) }
     }

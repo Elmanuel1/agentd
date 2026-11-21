@@ -18,7 +18,6 @@ pub struct PgWebhooks {
 }
 
 impl PgWebhooks {
-    /// Over `backend`.
     pub fn new(backend: PgBackend) -> Self {
         Self { backend }
     }

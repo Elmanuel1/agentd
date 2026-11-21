@@ -61,7 +61,6 @@ impl std::fmt::Debug for Limits {
 }
 
 impl Limits {
-    /// Counting in `counter`.
     pub fn new(counter: Arc<dyn RateCounter>) -> Self {
         Self { counter, warned_at: Arc::new(AtomicI64::new(i64::MIN)) }
     }

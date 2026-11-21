@@ -21,6 +21,7 @@ pub struct WebhookMetrics {
     breakers: Counter<u64>,
     claims: Counter<u64>,
     instance: KeyValue,
+    read: Arc<Mutex<Read>>,
 }
 
 /// What the gauges last read.
@@ -59,45 +60,36 @@ impl WebhookMetrics {
                 }
             })
             .build();
-        Arc::new(Gauged {
-            counters: Self {
-                deliveries: meter
-                    .u64_counter("agentd.webhooks.deliveries")
-                    .with_description("Deliveries, by outcome")
-                    .build(),
-                breakers: meter
-                    .u64_counter("agentd.webhooks.breaker_opened")
-                    .with_description("An endpoint's breaker opened on this replica")
-                    .build(),
-                claims: meter
-                    .u64_counter("agentd.webhooks.claims")
-                    .with_description("Deliveries claimed, by instance")
-                    .build(),
-                instance: KeyValue::new("instance", instance.to_owned()),
-            },
+        Arc::new(Self {
+            deliveries: meter
+                .u64_counter("agentd.webhooks.deliveries")
+                .with_description("Deliveries, by outcome")
+                .build(),
+            breakers: meter
+                .u64_counter("agentd.webhooks.breaker_opened")
+                .with_description("An endpoint's breaker opened on this replica")
+                .build(),
+            claims: meter
+                .u64_counter("agentd.webhooks.claims")
+                .with_description("Deliveries claimed, by instance")
+                .build(),
+            instance: KeyValue::new("instance", instance.to_owned()),
             read,
         })
     }
 }
 
-struct Gauged {
-    counters: WebhookMetrics,
-    read: Arc<Mutex<Read>>,
-}
-
-impl SenderMetrics for Gauged {
+impl SenderMetrics for WebhookMetrics {
     fn delivery(&self, outcome: &'static str) {
-        self.counters.deliveries.add(1, &[KeyValue::new("outcome", outcome)]);
+        self.deliveries.add(1, &[KeyValue::new("outcome", outcome)]);
     }
 
     fn breaker_opened(&self) {
-        self.counters.breakers.add(1, &[]);
+        self.breakers.add(1, &[]);
     }
 
     fn claimed(&self, n: usize) {
-        self.counters
-            .claims
-            .add(u64::try_from(n).unwrap_or(u64::MAX), std::slice::from_ref(&self.counters.instance));
+        self.claims.add(u64::try_from(n).unwrap_or(u64::MAX), std::slice::from_ref(&self.instance));
     }
 
     fn oldest_due(&self, age: Option<Duration>) {

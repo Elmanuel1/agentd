@@ -44,6 +44,17 @@ pub enum Next {
     Dropped,
 }
 
+impl Next {
+    /// Its `outcome` label on `agentd.webhooks.deliveries`.
+    pub fn outcome(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::Retry(_) => "retried",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
 /// One POST's answer, recorded on the row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempted {

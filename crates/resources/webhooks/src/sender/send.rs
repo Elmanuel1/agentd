@@ -38,7 +38,7 @@ enum Answer {
 }
 
 /// Sends claimed deliveries.
-pub(crate) struct Send {
+pub(crate) struct Dispatch {
     pub(crate) guard: Guard,
     pub(crate) webhooks: Arc<Webhooks>,
     pub(crate) queue: Arc<dyn DeliveryQueue>,
@@ -47,7 +47,7 @@ pub(crate) struct Send {
     pub(crate) breakers: Breakers<String>,
 }
 
-impl Send {
+impl Dispatch {
     /// Deliver `c`, whose claim this replica holds until `deadline`.
     pub(crate) async fn deliver(&self, c: Claimed, deadline: Instant) {
         let key = c.claim.endpoint_key.as_str();
@@ -102,7 +102,7 @@ impl Send {
             }
         };
         match self.queue.record(&c.claim, &attempted).await {
-            Ok(true) => self.metrics.delivery(outcome(attempted.next)),
+            Ok(true) => self.metrics.delivery(attempted.next.outcome()),
             Ok(false) => {
                 tracing::info!(webhook_id = %c.claim.webhook_id, "webhooks: a newer claim holds the delivery; its outcome is not recorded")
             }
@@ -193,12 +193,4 @@ pub(crate) fn retry_or_drop(attempt: i64) -> Next {
     let base = BACKOFF.saturating_mul(2u32.saturating_pow(doublings));
     let half = base / 2;
     Next::Retry(half + half.mul_f64(rand::rng().random_range(0.0..=1.0)))
-}
-
-fn outcome(next: Next) -> &'static str {
-    match next {
-        Next::Delivered => "delivered",
-        Next::Retry(_) => "retried",
-        Next::Dropped => "dropped",
-    }
 }

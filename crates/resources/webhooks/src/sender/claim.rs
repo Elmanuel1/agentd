@@ -15,7 +15,7 @@ use tokio::time::Instant;
 
 use super::WAKE;
 use super::health::Health;
-use super::send::Send;
+use super::send::Dispatch;
 use crate::endpoints::Webhooks;
 use crate::states::Configured;
 
@@ -34,7 +34,7 @@ const READ_EVERY: Duration = Duration::from_secs(10);
 
 /// One instance's claim loop.
 pub(crate) struct ClaimLoop {
-    pub(crate) send: Arc<Send>,
+    pub(crate) send: Arc<Dispatch>,
     pub(crate) wakes: Arc<dyn shared::ports::broadcast::Broadcast>,
 }
 
@@ -105,7 +105,7 @@ async fn listen(mut wakes: futures::stream::BoxStream<'static, String>, woken: A
 /// Every 10 s: store the configured endpoints until that succeeds once,
 /// read the endpoint states, and report the oldest due delivery and the
 /// disabled endpoints.
-async fn read_states(send: Arc<Send>) {
+async fn read_states(send: Arc<Dispatch>) {
     let configured: Vec<Configured> = send.webhooks.all().map(crate::Endpoint::configured).collect();
     let mut stored = false;
     let mut every = tokio::time::interval(READ_EVERY);
@@ -119,7 +119,9 @@ async fn read_states(send: Arc<Send>) {
         }
         send.metrics.disabled(&send.health.disabled_by_reason());
         match send.queue.oldest_due().await {
-            Ok(due) => send.metrics.oldest_due(due.map(age)),
+            Ok(due) => send.metrics.oldest_due(due.map(|due| {
+                (Timestamp::now().as_datetime() - due.as_datetime()).to_std().unwrap_or_default()
+            })),
             Err(e) => tracing::warn!(error = %e, "webhooks: the oldest due delivery could not be read"),
         }
     }
@@ -136,8 +138,4 @@ async fn configure(webhooks: &Webhooks, health: &Health, configured: &[Configure
             false
         }
     }
-}
-
-fn age(due: Timestamp) -> Duration {
-    (Timestamp::now().as_datetime() - due.as_datetime()).to_std().unwrap_or_default()
 }

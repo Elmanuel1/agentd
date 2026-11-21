@@ -47,7 +47,6 @@ pub trait SenderMetrics: Send + Sync {
     fn disabled(&self, _by_reason: &HashMap<DisabledReason, usize>) {}
 }
 
-/// Reports nothing.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoMetrics;
 
@@ -66,7 +65,6 @@ impl std::fmt::Debug for DeliveryWake {
 }
 
 impl DeliveryWake {
-    /// Waking through `wakes`.
     pub fn new(wakes: Arc<dyn Broadcast>) -> Self {
         Self { wakes }
     }
@@ -77,13 +75,13 @@ impl NativeChangeHandler for DeliveryWake {
         Source::Table("webhook_deliveries".into())
     }
 
-    /// The claim, the outcome and the sweep's delete are changes too; only an insert wakes.
-    /// A lost wake costs at most the 1 s poll, so a failed publish is not retried.
     async fn handle(&self, change: &Change) -> Result<(), BackendError> {
+        // The claim, the outcome and the sweep's delete are changes too; only an insert wakes.
         let inserted = change.op == ChangeOp::Insert && change.after.as_ref().is_some_and(Value::is_object);
         if !inserted {
             return Ok(());
         }
+        // A lost wake costs at most the 1 s poll, so a failed publish is not retried.
         if let Err(e) = self.wakes.publish(WAKE, "").await {
             tracing::warn!(error = %e, "webhooks: a new delivery could not wake the senders; the poll finds it");
         }
@@ -124,7 +122,7 @@ impl WebhookSender {
     /// A sender to `webhooks`' endpoints through `guard`, sending live's `user-agent: Claude-Platform`.
     pub fn new(webhooks: Arc<Webhooks>, guard: &Guard, ports: SenderPorts) -> Self {
         let health = Arc::new(health::Health::new(ports.states));
-        let send = send::Send {
+        let send = send::Dispatch {
             guard: guard.with_user_agent(USER_AGENT),
             webhooks,
             queue: ports.queue,

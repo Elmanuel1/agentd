@@ -44,7 +44,8 @@ impl Health {
         self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Read the shared states, then end each run of failures this replica saw a 2xx after.
+    /// Read the shared states, then end each run of failures this replica saw a 2xx after; a run
+    /// that cannot be ended stays in the snapshot until a later read ends it.
     pub(crate) async fn refresh(&self) -> Result<(), BackendError> {
         let started = Instant::now();
         let rows = self.states.read().await?;
@@ -62,8 +63,14 @@ impl Health {
             failing.iter().filter(|(k, s)| ok_after(k, s)).map(|(k, s)| (k.clone(), *s)).collect()
         };
         for (key, since) in ended {
-            self.states.clear_failing(&key, since).await?;
-            failing.remove(&key);
+            match self.states.clear_failing(&key, since).await {
+                Ok(()) => {
+                    failing.remove(&key);
+                }
+                Err(e) => {
+                    tracing::warn!(endpoint = %key, error = %e, "webhooks: an endpoint's failing time could not be cleared; the next read tries again")
+                }
+            }
         }
         *self.snapshot() = Snapshot { read_at: Some(started), failing, disabled };
         Ok(())

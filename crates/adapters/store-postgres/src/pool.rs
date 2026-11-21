@@ -40,14 +40,6 @@ impl Default for PoolSettings {
     }
 }
 
-/// Every new connection's bounds: a statement runs at most the pool's
-/// statement timeout, and a transaction left idle is ended after 60 s (SH-10).
-async fn bounded(conn: &mut AsyncPgConnection, settings: PoolSettings) -> diesel::QueryResult<()> {
-    let ms = settings.statement_timeout.as_millis();
-    let sql = format!("SET statement_timeout = {ms}; SET idle_in_transaction_session_timeout = '60s'");
-    diesel_async::SimpleAsyncConnection::batch_execute(conn, &sql).await
-}
-
 impl PgBackend {
     /// Connect using `database_url` (or `DATABASE_URL`), pooled with the
     /// default [`PoolSettings`].
@@ -90,7 +82,10 @@ impl PgBackend {
                     }
                 };
                 let mut conn = target.establish().await.inspect_err(failed)?;
-                bounded(&mut conn, settings)
+                let ms = settings.statement_timeout.as_millis();
+                let bounds =
+                    format!("SET statement_timeout = {ms}; SET idle_in_transaction_session_timeout = '60s'");
+                diesel_async::SimpleAsyncConnection::batch_execute(&mut conn, &bounds)
                     .await
                     .map_err(diesel::ConnectionError::CouldntSetupConfiguration)
                     .inspect_err(failed)?;
