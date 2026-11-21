@@ -212,7 +212,9 @@ async fn a_redaction_recorded_while_its_version_s_rows_are_leaves_none_of_its_co
             log.record("memory_versions", HistoryOp::Insert, &first, &inserted, held(&store, &version)),
             log.record("memories", HistoryOp::Insert, &second, &head, held(&store, &version)),
         );
-        (a.unwrap(), b.unwrap(), c.unwrap());
+        a.unwrap();
+        b.unwrap();
+        c.unwrap();
         let kept_rows = rows(&pg, kept, &store).await;
         let cleared = |r: &Value| r.as_object().is_some_and(|o| o.values().all(Value::is_null));
         assert_eq!(kept_rows.len(), 3, "round {round}");
@@ -228,9 +230,15 @@ async fn a_scrub_that_fails_leaves_no_row_of_its_recording() {
     let (pg, log) = log().await;
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
-    let joiner = if url.contains('?') { '&' } else { '?' };
-    let impatient =
-        PgBackend::connect(&format!("{url}{joiner}options=-c%20lock_timeout%3D200ms")).await.unwrap();
+    // DATABASE_URL may be a URI or a keyword string; each takes the option its own way.
+    let impatient = match url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        true => {
+            let joiner = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{joiner}options=-c%20lock_timeout%3D200ms")
+        }
+        false => format!("{url} options='-c lock_timeout=200ms'"),
+    };
+    let impatient = PgBackend::connect(&impatient).await.unwrap();
     let impatient = PgHistoryLog::load(impatient).await.unwrap();
     let s = stamp();
     let (store, memory, version) = (format!("memstore_f{s}"), format!("mem_f{s}"), format!("memver_f{s}"));
