@@ -11,6 +11,7 @@
 use std::process::ExitCode;
 
 use api::{AppState, Backends, Config, build_router};
+use shared::ports::secrets::ExposeSecret;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -66,6 +67,10 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(key) = &config.keys.anthropic {
+        let (key, url) = (key.expose_secret().to_owned(), config.agent_loop.anthropic_base_url.clone());
+        drop(engine::model::model_list::spawn(key, url, backends.models.clone()));
+    }
     let app = match AppState::build(backends) {
         Ok(state) => build_router(state),
         Err(e) => {

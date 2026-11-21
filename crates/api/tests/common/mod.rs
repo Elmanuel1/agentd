@@ -100,7 +100,7 @@ fn app(
         },
         fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(pg.clone())))),
         fire_sources: None,
-        extra_models: Vec::new(),
+        models: shared::limits::ModelCatalog::default_catalog(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: streaming.signals,
         load: streaming.load,
