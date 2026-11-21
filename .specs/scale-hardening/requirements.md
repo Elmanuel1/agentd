@@ -260,7 +260,8 @@ Authentication, TLS verification and credential refresh failures are counted by 
     failure was a delivery's last attempt, the next one comes with a later delivery, or never if none fails). When
     the old run is already past 120 h, that concurrent failure can disable the endpoint just before the 2xx commits;
     the clear does not re-enable it, and it stays disabled until `agentd webhooks enable` or a config change (D6);
-  - every replica reads the failing and disabled sets every 10 s, so a disable reaches all replicas within 10 s;
+  - every replica reads the disabled set every 10 s, so a disable reaches all replicas within 10 s; nothing reads
+    which endpoints are failing, so the read leaves them out;
   - disabling logs `ERROR` once (a person must act) with the org, the endpoint id and the reason; the URL is left out,
     so a token in its query string never reaches the log;
   - re-enable (D6): `agentd webhooks enable <org> <endpoint>`, or a change to the endpoint's URL or secret in
@@ -633,7 +634,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
      $4 WHERE webhook_id = $1 AND endpoint_key = $2 AND claim_seq = $3`; also used for a disabled endpoint's rows.
    - `queue.rs`, outcome: `UPDATE webhook_deliveries SET attempt = attempt + 1, {delivered_at = now() | dropped_at =
      now() | next_attempt_at = now() + make_interval(secs => $4)}, claimed_until = NULL, last_status = $5, last_error
-     = $6 WHERE webhook_id = $1 AND endpoint_key = $2 AND claim_seq = $3`.
+     = $6 WHERE webhook_id = $1 AND endpoint_key = $2 AND claim_seq = $3`. A retry or a drop is this one statement,
+     with no transaction; a 2xx runs it and the clear below in one transaction.
    - `queue.rs`, oldest due: `SELECT min(next_attempt_at) FROM webhook_deliveries WHERE delivered_at IS NULL AND
      dropped_at IS NULL`.
    - `endpoints.rs`, failure: `INSERT INTO webhook_endpoint_states (endpoint_key, org_id, failing_since,
@@ -650,9 +652,8 @@ The build rechecks every count on current `main`; a file that crosses 200 gets i
      coalesce(webhook_endpoint_states.disabled_reason, excluded.disabled_reason)`.
    - `endpoints.rs`, every 2xx, in the outcome's transaction: `UPDATE webhook_endpoint_states SET failing_since =
      NULL WHERE endpoint_key = $1 AND failing_since IS NOT NULL`.
-   - `endpoints.rs`, every 10 s: `SELECT endpoint_key, failing_since IS NOT NULL AS failing, disabled_at IS NOT NULL
-     AS disabled FROM webhook_endpoint_states WHERE failing_since IS NOT NULL OR disabled_at IS NOT NULL` (one row per
-     endpoint; the table is small).
+   - `endpoints.rs`, every 10 s: `SELECT endpoint_key, disabled_reason FROM webhook_endpoint_states WHERE disabled_at
+     IS NOT NULL` (one row per disabled endpoint; the table is small).
    - `endpoints.rs`, boot: `INSERT INTO webhook_endpoint_states (endpoint_key, org_id, config_digest) SELECT * FROM
      unnest($1::text[], $2::text[], $3::text[]) ON CONFLICT (endpoint_key) DO UPDATE SET org_id = excluded.org_id,
      config_digest = excluded.config_digest, disabled_at = CASE WHEN webhook_endpoint_states.config_digest =
