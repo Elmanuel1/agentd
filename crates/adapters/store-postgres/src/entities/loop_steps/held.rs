@@ -17,7 +17,7 @@ use crate::entities::webhook_deliveries::status_changed;
 use crate::{PgBackend, diesel_be, enum_str, pool_be, to_doc};
 
 mod defer;
-pub(super) use defer::{defer, defer_failed};
+pub(super) use defer::defer;
 
 /// The step's events and session changes, after the held step was checked.
 async fn land(

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
-use sessions::steps::{Claim, StepEnd};
+use sessions::steps::{Claim, StepEnd, Wait};
 use sessions::store::StoreError;
 use sessions::types::SessionStatus;
 use shared::BackendError;
@@ -33,7 +33,7 @@ impl Loop {
         let Err(e) = self.kept(&claim, self.run(&claim)).await else { return };
         crate::metrics::step_failed();
         tracing::warn!(session = %claim.session, error = %e, "loop: the step failed; it runs again");
-        if let Err(e) = self.stores.steps.defer_failed(&claim).await {
+        if let Err(e) = self.stores.steps.defer(&claim, Wait::Failed).await {
             tracing::warn!(session = %claim.session, error = %e, "loop: could not release the step");
         }
     }

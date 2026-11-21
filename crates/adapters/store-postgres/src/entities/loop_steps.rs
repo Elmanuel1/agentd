@@ -3,7 +3,7 @@
 //! session's append lock first, as every append does, so the two never wait
 //! on each other in a cycle.
 
-use ::sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite};
+use ::sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite, Wait};
 use ::sessions::store::{StoreError, Wake};
 use ::sessions::types::SessionId;
 use diesel::sql_types::Text;
@@ -85,12 +85,8 @@ impl NativeSteps for PgSteps {
         held::commit(&self.backend, claim, end, write).await
     }
 
-    async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError> {
-        held::defer(&self.backend, claim, seconds).await
-    }
-
-    async fn defer_failed(&self, claim: &Claim) -> Result<(), StoreError> {
-        held::defer_failed(&self.backend, claim).await
+    async fn defer(&self, claim: &Claim, wait: Wait) -> Result<(), StoreError> {
+        held::defer(&self.backend, claim, wait).await
     }
 
     async fn release_all(&self, owner: &str, claims: &[Claim]) -> Result<u64, StoreError> {

@@ -3,7 +3,7 @@
 //! and stays due, so the next step calls the model with them (MC-25).
 
 use sessions::events::{AgentEvent, Event, EventId, SessionEvent};
-use sessions::steps::{Claim, StepEnd};
+use sessions::steps::{Claim, StepEnd, Wait};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
 
@@ -83,6 +83,6 @@ impl Loop {
     /// Release the step unrun, due again in a second, while another worker
     /// refreshes a credential's token (MC-20, MC-23).
     pub(super) async fn defer_refresh(&self, claim: &Claim) -> Result<(), BackendError> {
-        self.stores.steps.defer(claim, 1).await.map_err(BackendError::new)
+        self.stores.steps.defer(claim, Wait::Seconds(1)).await.map_err(BackendError::new)
     }
 }

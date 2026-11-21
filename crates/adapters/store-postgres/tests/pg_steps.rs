@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sessions::events::{AgentEvent, Event, EventPayload, UserEvent};
-use sessions::steps::{Claim, StepEnd, StepWrite, Steps};
+use sessions::steps::{Claim, StepEnd, StepWrite, Steps, Wait};
 use sessions::store::{Append, SessionEventLog, SessionEventReads, SessionsStore, Wake};
 use sessions::types::{Session, SessionId, SessionStatus};
 use shared::{OrgId, Timestamp, WorkspaceId};
@@ -91,7 +91,7 @@ impl Rig {
             if c.session == *id {
                 return Some(c);
             }
-            self.steps.defer(&c, 0).await.unwrap();
+            self.steps.defer(&c, Wait::Seconds(0)).await.unwrap();
         }
         None
     }
@@ -134,7 +134,7 @@ async fn a_client_event_queues_its_session_once_and_two_claimers_never_take_one_
         let Some(c) = c.await.unwrap() else { continue };
         // Another test's step goes back at once.
         if c.session != s.id {
-            r.steps.defer(&c, 0).await.unwrap();
+            r.steps.defer(&c, Wait::Seconds(0)).await.unwrap();
             continue;
         }
         ours.push(c);
@@ -381,7 +381,7 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
         let Some(c) = r.steps.claim("w2", 60, 1).await.unwrap() else { continue };
         seen_b |= c.session == b.id;
         seen_o |= c.session == o.id;
-        r.steps.defer(&c, 0).await.unwrap();
+        r.steps.defer(&c, Wait::Seconds(0)).await.unwrap();
         if seen_o {
             break;
         }
@@ -523,7 +523,7 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
     let held = r.claim_of("w1", 60, &a.id).await.unwrap();
     r.claim_of("w1", 1, &b.id).await.unwrap();
     let later = r.claim_of("w1", 60, &c.id).await.unwrap();
-    r.steps.defer(&later, 60).await.unwrap();
+    r.steps.defer(&later, Wait::Seconds(60)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     r.wake(&other, &o.id).await;
     let mut seen_o = false;
@@ -531,7 +531,7 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
         let Some(claim) = r.steps.claim("w2", 60, 1).await.unwrap() else { continue };
         assert_ne!(claim.session, b.id, "the busy workspace's lapsed step waits");
         seen_o |= claim.session == o.id;
-        r.steps.defer(&claim, 0).await.unwrap();
+        r.steps.defer(&claim, Wait::Seconds(0)).await.unwrap();
         if seen_o {
             break;
         }
@@ -665,7 +665,7 @@ async fn a_failed_step_waits_at_most_5_s_the_waits_grow_cap_at_5_min_and_a_commi
         .await
         .unwrap();
         let c = r.claim_of("w", 60, &s.id).await.unwrap();
-        r.steps.defer_failed(&c).await.unwrap();
+        r.steps.defer(&c, Wait::Failed).await.unwrap();
         let w = waiting(&r.pg, &s.id).await;
         let cap = f64::from(5 * 2_u32.pow(failures.min(6))).min(300.0);
         assert!(

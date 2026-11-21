@@ -12,7 +12,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite, Steps};
+use sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite, Steps, Wait};
 use sessions::store::StoreError;
 use shared::net::Guard;
 
@@ -778,12 +778,8 @@ impl NativeSteps for FailOnce {
         self.0.commit(claim, end, write).await
     }
 
-    async fn defer(&self, claim: &Claim, seconds: i64) -> Result<(), StoreError> {
-        self.0.defer(claim, seconds).await
-    }
-
-    async fn defer_failed(&self, claim: &Claim) -> Result<(), StoreError> {
-        self.0.defer_failed(claim).await
+    async fn defer(&self, claim: &Claim, wait: Wait) -> Result<(), StoreError> {
+        self.0.defer(claim, wait).await
     }
 
     async fn release_all(&self, owner: &str, claims: &[Claim]) -> Result<u64, StoreError> {
