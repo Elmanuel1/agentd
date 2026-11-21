@@ -32,6 +32,7 @@ pub async fn spawn(
     stores: &Stores,
     signals: Arc<dyn Signals>,
     system: &SystemKeys,
+    stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<tokio::task::JoinHandle<()>, BootError> {
     let c = &config.agent_loop;
     let key = |k: &Option<SecretString>| k.as_ref().map(|k| k.expose_secret().to_owned());
@@ -74,6 +75,7 @@ pub async fn spawn(
         lease: c.deadline + LEASE_MARGIN,
         per_workspace: c.per_workspace,
         steps: c.steps,
+        grace: c.grace,
     };
-    Ok(Loop::new(loop_stores, models, signals, settings).spawn())
+    Ok(Loop::new(loop_stores, models, signals, settings).spawn(stop))
 }

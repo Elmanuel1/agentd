@@ -9,7 +9,6 @@ use files::FilesService;
 use sessions::signals::{Signal, Signals};
 use sessions::steps::Steps;
 use sessions::store::{SessionEventLog, SessionsStore};
-use tokio::sync::Semaphore;
 use work::WorkService;
 
 use crate::model::ModelClient;
@@ -17,6 +16,7 @@ use crate::model::budget::ModelBudget;
 use crate::model::retry::Retry;
 
 mod compact;
+mod drain;
 mod grade;
 mod keep;
 mod mcp;
@@ -34,9 +34,6 @@ mod turn;
 mod usage;
 mod watch;
 mod write;
-
-/// How long an idle worker waits for a signal before it looks again.
-const IDLE: Duration = Duration::from_secs(1);
 
 /// The stores a step reads and writes.
 #[derive(Clone)]
@@ -98,6 +95,8 @@ pub struct Settings {
     pub per_workspace: i64,
     /// Steps this worker runs at once (`AGENTD_STEPS_PER_WORKER`).
     pub steps: usize,
+    /// How long running steps get after the stop signal (`AGENTD_SHUTDOWN_GRACE_MS`).
+    pub grace: Duration,
 }
 
 impl Settings {
@@ -126,40 +125,6 @@ impl Loop {
     /// streams through `signals`.
     pub fn new(stores: Stores, models: Models, signals: Arc<dyn Signals>, settings: Settings) -> Self {
         Self { stores, models, signals, settings }
-    }
-
-    /// Claim and run steps until the task is aborted.
-    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
-        let me = Arc::new(self);
-        tokio::spawn(async move {
-            let permits = Arc::new(Semaphore::new(me.settings.steps));
-            let mut woken = me.signals.subscribe();
-            loop {
-                let Ok(permit) = permits.clone().acquire_owned().await else { return };
-                let lease = me.settings.lease_seconds();
-                let claimed =
-                    me.stores.steps.claim(&me.settings.owner, lease, me.settings.per_workspace).await;
-                let claim = match claimed {
-                    Ok(Some(claim)) => claim,
-                    Ok(None) => {
-                        drop(permit);
-                        let _ = tokio::time::timeout(IDLE, woken.recv()).await;
-                        continue;
-                    }
-                    Err(e) => {
-                        drop(permit);
-                        tracing::warn!(error = %e, "loop: could not claim a step");
-                        tokio::time::sleep(IDLE).await;
-                        continue;
-                    }
-                };
-                let worker = me.clone();
-                tokio::spawn(async move {
-                    worker.step(claim).await;
-                    drop(permit);
-                });
-            }
-        })
     }
 
     /// Tell every replica's streams the session changed.
