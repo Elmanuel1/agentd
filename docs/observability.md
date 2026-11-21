@@ -27,8 +27,9 @@ set (`docs/configuration.md`). Logs always go to stdout too.
 
 Every boundary operation is covered: 49 route registrations plus the unknown-path fallback, every statement
 through the pool, all 3 operations of each of the 3 outbound ports, and every fire kind. Inside a request, time
-between boundaries is the request span's own time. Not covered: the schedule outbox's relay and the S3 SDK's
-internal retries (both log, but emit no metric).
+between boundaries is the request span's own time. Not covered: the schedule outbox's relay, the S3 SDK's
+internal retries and the list-price read from `AGENTD_MODEL_PRICES_URL` (`engine::model::price_feed`, at start and
+once a day, `warn` when a read fails); all three log, but emit no metric.
 
 A 5xx response body says only `Internal server error` (or `Overloaded` for a 529), as the live API does. The
 real cause stays on the server, in the `request failed` log line and the span.
