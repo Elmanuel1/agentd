@@ -15,8 +15,12 @@ async fn a_coordinator_waiting_on_a_tool_lets_its_delegate_run() {
     let env = rig.environment("self_hosted").await;
     let name = format!("helper-{}", common::stamp());
     let model = Scripted::new(vec![
-        Say::Tool("create_agent", json!({"agent_name": name, "task": "do it"})),
-        Say::Tool("lookup", json!({"k": 1})),
+        // One reply starts the helper and waits on the client; the helper then
+        // takes the next step while the coordinator waits.
+        Say::Calls(vec![
+            ("create_agent", json!({"agent_name": name, "task": "do it"})),
+            ("lookup", json!({"k": 1})),
+        ]),
         Say::Text("done by the helper"),
         Say::Text("all done"),
     ]);
@@ -36,14 +40,20 @@ async fn a_coordinator_waiting_on_a_tool_lets_its_delegate_run() {
     send(&app, &s, message("run it")).await;
     let events = events_until(&app, &s, "agent.thread_message_received", 2).await;
     let t = types(&events);
-    assert!(!t.contains(&"session.status_idle"), "the session runs while the helper works: {t:?}");
+    let replied = t.iter().rposition(|k| *k == "agent.thread_message_received").unwrap();
+    let idled = t.iter().position(|k| *k == "session.status_idle");
+    assert!(idled.is_none_or(|i| i > replied), "the session runs until the helper replies: {t:?}");
     let custom = events.iter().find(|e| e["type"] == "agent.custom_tool_use").unwrap().clone();
+    // With the helper done, the session idles on the coordinator's open call.
+    let waited = events_until(&app, &s, "session.status_idle", 1).await;
+    let idle = waited.iter().find(|e| e["type"] == "session.status_idle").unwrap();
+    assert_eq!(idle["stop_reason"], json!({"type": "requires_action", "event_ids": [custom["id"]]}));
     let answer = json!({"events": [{"type": "user.custom_tool_result", "custom_tool_use_id": custom["id"], "content": [{"type": "text", "text": "42"}]}]});
     let (st, body) = send(&app, &s, answer).await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let events = events_until(&app, &s, "session.status_idle", 1).await;
+    let events = events_until(&app, &s, "session.status_idle", 2).await;
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
-    assert_eq!(model.asked.lock().len(), 4);
+    assert_eq!(model.asked.lock().len(), 3);
 }
 
 #[tokio::test]

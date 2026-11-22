@@ -3,14 +3,15 @@
 //! starts a grading round; a turn that ends or waits while other threads
 //! still work idles only its thread; otherwise the session idles.
 
-use sessions::events::{Event, StopReason};
+use sessions::events::{Event, SessionEvent, StopReason};
 use sessions::steps::StepEnd;
 use sessions::types::{Session, SessionStatus};
 
 use super::grade::{active, begin};
 use super::reply::Led;
 use super::stall::{no_verdict, stalled};
-use super::team::{Thread, busy, reply, threads, unfinished};
+use super::status::{awaited, busy, unfinished};
+use super::team::{Thread, reply, threads};
 use super::turn::{Turn, thread_idle};
 use super::usage::final_text;
 use crate::model::ModelResponse;
@@ -75,4 +76,26 @@ pub(super) fn settle(
         }
         (None, _, _) => {}
     }
+}
+
+/// When no thread works and no round is open, the session idles, as on
+/// live: on the calls its threads wait for, else on the end of its turn.
+/// `None` while anything works, or once the session is idle.
+pub(super) fn quiet(session: &mut Session, log: &[Event]) -> Option<Vec<Event>> {
+    let all = threads(session, log);
+    let open = active(log).is_some_and(|o| o.open.is_some());
+    if session.status != SessionStatus::Running || open || all.iter().any(|t| busy(log, &t.id)) {
+        return None;
+    }
+    let event_ids: Vec<_> = all.iter().flat_map(|t| awaited(log, &t.id)).collect();
+    let stop = match event_ids.is_empty() {
+        true => StopReason::EndTurn {},
+        false => StopReason::RequiresAction { event_ids },
+    };
+    session.status = SessionStatus::Idle;
+    let primary = Thread::primary(session).turn();
+    Some(vec![
+        primary.event(SessionEvent::Usage { usage: session.usage.clone(), budget: session.budget.clone() }),
+        primary.event(SessionEvent::StatusIdle { stop_reason: stop }),
+    ])
 }

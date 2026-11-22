@@ -70,7 +70,7 @@ impl Loop {
         for skill in &agent.config.skills {
             let (SkillRef::Anthropic { version, .. } | SkillRef::Custom { version, .. }) = skill;
             match self.stores.skills.version_in(ws, skill.skill_id(), version).await {
-                Ok(v) => listed.push(SkillInfo { name: v.name, description: v.description }),
+                Ok(v) => listed.push(SkillInfo { name: v.directory, description: v.description }),
                 Err(e) => {
                     tracing::debug!(skill = skill.skill_id(), error = %e.message, "loop: a skill is not listed")
                 }

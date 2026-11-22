@@ -126,7 +126,9 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 // `send_to_agent` to it, each with live's result.
                 if ev.session_thread_id.is_none() {
                     let (thread, message) = (to_session_thread_id, texts(content));
-                    let (name, input, result) = if opened.insert(thread.to_string()) {
+                    let first = kept.get(&ev.id).and_then(|k| k["opened"].as_bool());
+                    let (name, input, result) = if first.unwrap_or_else(|| opened.insert(thread.to_string()))
+                    {
                         let agent = to_agent_name.as_deref().unwrap_or_default();
                         let input = serde_json::json!({"agent_name": agent, "task": message});
                         (delegation::CREATE_AGENT, input, delegation::created(thread, agent))

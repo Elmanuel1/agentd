@@ -364,7 +364,8 @@ async fn a_topic_made_after_the_reader_starts_is_read_without_a_reconnect() {
     let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
     let seen = Arc::new(Seen { table, fail_once: -1, failed: Mutex::new(false), seen: Mutex::new(vec![]) });
     let tasks = KafkaChanges::new(&brokers, "agentdtest").spawn(vec![seen.clone()]);
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let read = || String::from_utf8(logged.0.lock().unwrap().clone()).unwrap();
+    until(|| read().contains("the topic does not exist yet")).await;
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
     send(&producer, &format!("agentdtest.public.{table}"), table, 1, None).await;
     until(|| !seen.seen.lock().unwrap().is_empty()).await;

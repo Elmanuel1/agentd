@@ -5,11 +5,12 @@
 
 use agents::AgentSnapshot;
 use serde_json::Value;
-use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent, StopReason};
+use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent};
 use sessions::types::{Session, ThreadId, primary_thread_id};
 use shared::ContentBlock;
 
 use super::grade::Outcome;
+use super::status::{busy, parked};
 use super::turn::Turn;
 use crate::turn::delegation::{CREATE_AGENT, LIST_AGENTS, SEND_TO_AGENT, listing};
 
@@ -57,31 +58,6 @@ pub(super) fn threads(session: &Session, log: &[Event]) -> Vec<Thread> {
     std::iter::once(primary).chain(opened).collect()
 }
 
-/// A thread's last status in `log`: running (`Some(None)`), idle and why
-/// (`Some(Some(_))`), or none yet.
-fn status<'a>(log: &'a [Event], thread: &ThreadId) -> Option<Option<&'a StopReason>> {
-    log.iter().rev().filter(|e| e.session_thread_id.as_ref() == Some(thread)).find_map(|e| match &e.payload {
-        EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }) => Some(None),
-        EventPayload::Session(SessionEvent::ThreadStatusIdle { stop_reason, .. }) => Some(Some(stop_reason)),
-        _ => None,
-    })
-}
-
-/// A thread is at work: its last status in `log` is running.
-pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
-    matches!(status(log, thread), Some(None))
-}
-
-/// A thread is mid-turn: running, or idle on a call it waits for, not on
-/// the end of its turn.
-pub(super) fn unfinished(log: &[Event], thread: &ThreadId) -> bool {
-    match status(log, thread) {
-        Some(Some(reason)) => !matches!(reason, StopReason::EndTurn {}),
-        Some(None) => true,
-        None => false,
-    }
-}
-
 /// A coordinator's call to a roster tool: its `agent.tool_use` and what it
 /// leads to, in live's order.
 pub(super) fn delegate(
@@ -105,10 +81,10 @@ pub(super) fn delegate(
         })
     };
     if name == LIST_AGENTS {
-        let started: Vec<(ThreadId, String, bool)> = threads(session, log)
+        let started: Vec<(ThreadId, String, bool, Option<&str>)> = threads(session, log)
             .into_iter()
             .filter(|t| !t.primary)
-            .map(|t| (t.id.clone(), t.agent.config.name.clone(), busy(log, &t.id)))
+            .map(|t| (t.id.clone(), t.agent.config.name.clone(), busy(log, &t.id), parked(log, &t.id)))
             .collect();
         let result = answer(listing(&started, &roster(session)), false);
         return vec![call, result];
