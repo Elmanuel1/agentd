@@ -22,6 +22,7 @@ use api_keys::{AdminKeysService, ApiKeysService, EnvironmentKeysService};
 use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
 use shared::hash::KeyRing;
+use shared::limits::ModelCatalog;
 use shared::ports::blobs::BlobStore;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
@@ -52,8 +53,8 @@ pub struct Backends {
     /// What delivers fires, started once the handlers are registered; none
     /// in a rig that fires nothing.
     pub fire_sources: Option<FireSources>,
-    /// Model ids agents may name beyond the built-in ones (`AGENTD_MODELS`).
-    pub extra_models: Vec<String>,
+    /// The model ids agents may name: Anthropic's and the OpenAI-compatible API's.
+    pub models: ModelCatalog,
     /// The instruments every boundary records into.
     pub metrics: Arc<Metrics>,
     /// How replicas tell each other a session changed.
@@ -178,7 +179,7 @@ impl Backends {
         if role.runs_loop() {
             drop(crate::agent_loop::spawn(config, &stores, signals.clone(), &system).await?);
         }
-        let extra_models = config.extra_models.clone();
+        let models = ModelCatalog::default_catalog();
         let environment_keys: Arc<dyn EnvironmentKeySource> = Arc::new(environment_keys);
         Ok(Self {
             stores,
@@ -188,7 +189,7 @@ impl Backends {
             system,
             fires,
             fire_sources: Some(sources),
-            extra_models,
+            models,
             metrics,
             signals,
             load,

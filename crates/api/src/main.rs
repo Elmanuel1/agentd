@@ -66,6 +66,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    engine::model::model_list::spawn(&api::agent_loop::providers(&config), &backends.models);
     let app = match AppState::build(backends) {
         Ok(state) => build_router(state),
         Err(e) => {

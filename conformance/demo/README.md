@@ -30,7 +30,8 @@ Live, on the full inputs under `~/tosspaper-eval-data`, with
 `openai/gpt-6-luna` through OpenRouter:
 
 ```bash
-AGENTD_OPENROUTER_API_KEY="$(cat openrouter-key)" AGENTD_MODELS=openai/gpt-6-luna agentd &
+AGENTD_OPENROUTER_API_KEY="$(cat openrouter-key)" agentd > agentd.log 2>&1 &
+until grep 'the list is installed' agentd.log | grep -q openai_compat; do sleep 1; done
 OPENROUTER_API_KEY=<same key, read only for its spend> AGENTD_API_KEY=<key> \
   python conformance/demo/run_demo.py --out runs/agentd-2025-45-r1
 python conformance/demo/compare.py runs/agentd-2025-45-r1

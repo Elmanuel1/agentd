@@ -83,7 +83,7 @@ const LISTED: [(&str, Price); 21] = [
 ];
 
 /// `model` without a trailing `-YYYYMMDD` snapshot date.
-fn undated(model: &str) -> &str {
+pub(crate) fn undated(model: &str) -> &str {
     match model.rsplit_once('-') {
         Some((base, date)) if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => model,

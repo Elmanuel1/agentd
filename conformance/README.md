@@ -22,7 +22,8 @@ export AGENTD_TEST_ADMIN_KEY=$(agentd admin-keys create --org org_sdk --name sdk
 
 The Python runtime cases (`test_runtime.py`) also need the loop on the scripted model and the official
 worker: start `python conformance/mock_model.py --model mock/scripted conformance/fixtures/mock-model.json`,
-run agentd with `AGENTD_MODELS=mock/scripted` and `AGENTD_MODEL_BASE_URL=http://127.0.0.1:18766/v1`, put
+run agentd with `AGENTD_MODEL_BASE_URL=http://127.0.0.1:18766/v1` and any `AGENTD_OPENROUTER_API_KEY`, wait
+for its `the list is installed` log line for `openai_compat models`, put
 `ant` on the `PATH`, and set `AGENTD_TEST_WORKER=1`. Each case starts `ant beta:worker poll` on a
 `self_hosted` environment of its own, its key made with `agentd environment-keys create` for
 `AGENTD_TEST_ORG` and `AGENTD_TEST_WORKSPACE`. Cases that need a sandbox (mounted files, session outputs,

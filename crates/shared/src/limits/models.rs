@@ -1,7 +1,10 @@
 //! The models this deployment accepts, and the live error for one it does
 //! not.
 
+use std::sync::{Arc, RwLock};
+
 use crate::ApiError;
+use crate::prices::undated;
 
 /// `` `model.id`: model "gpt-4": model is not supported ``
 pub fn validate_model_supported<'a>(model_id: &'a str, catalog: &ModelCatalog) -> Result<&'a str, ApiError> {
@@ -12,47 +15,79 @@ pub fn validate_model_supported<'a>(model_id: &'a str, catalog: &ModelCatalog) -
     }
 }
 
-/// The set of model IDs this deployment will accept.
+/// The ids Anthropic's `GET /v1/models` lists on 2026-11-21. Live's agent
+/// create accepts exactly these and the undated alias of each dated one.
+const ANTHROPIC: [&str; 15] = [
+    "claude-fable-5-2",
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5",
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-opus-4-5-20251101",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-5-20250929",
+];
+
+/// The model ids this deployment accepts: Anthropic's, the built-in list
+/// until [`ModelCatalog::replace_anthropic`] installs the Models API's, and
+/// the `vendor/model` ids the OpenAI-compatible API lists, none until
+/// [`ModelCatalog::replace_openai_compat`] installs them. Every clone shares
+/// both lists.
 #[derive(Debug, Clone)]
 pub struct ModelCatalog {
-    models: Vec<String>,
+    anthropic: Arc<RwLock<Vec<String>>>,
+    openai_compat: Arc<RwLock<Vec<String>>>,
 }
 
 impl ModelCatalog {
-    /// Build from an explicit list.
-    #[must_use]
-    pub fn new(models: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self { models: models.into_iter().map(Into::into).collect() }
-    }
-
-    /// Default catalog mirroring currently-served Anthropic model aliases.
+    /// The built-in Anthropic list and no `vendor/model` id.
     #[must_use]
     pub fn default_catalog() -> Self {
-        Self::new([
-            "claude-fable-5",
-            "claude-sonnet-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-opus-4-5",
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
-        ])
+        let anthropic = with_aliases(ANTHROPIC.map(String::from));
+        Self { anthropic: Arc::new(RwLock::new(anthropic)), openai_compat: Arc::default() }
     }
 
-    /// The catalog with `extra` ids accepted as well.
-    #[must_use]
-    pub fn with(mut self, extra: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.models.extend(extra.into_iter().map(Into::into));
-        self
+    /// Accept exactly the `listed` Anthropic ids from now on, each dated one
+    /// with its undated alias.
+    pub fn replace_anthropic(&self, listed: impl IntoIterator<Item = String>) {
+        replace(&self.anthropic, with_aliases(listed));
+    }
+
+    /// Accept exactly the `listed` `vendor/model` ids from now on, each
+    /// variant (`:free`) only as listed.
+    pub fn replace_openai_compat(&self, listed: impl IntoIterator<Item = String>) {
+        replace(&self.openai_compat, listed.into_iter().collect());
     }
 
     /// Whether a model id is accepted.
     #[must_use]
     pub fn supports(&self, id: &str) -> bool {
-        self.models.iter().any(|m| m == id)
+        let list = if id.contains('/') { &self.openai_compat } else { &self.anthropic };
+        list.read().is_ok_and(|ids| ids.iter().any(|m| m == id))
     }
+}
+
+fn replace(list: &RwLock<Vec<String>>, ids: Vec<String>) {
+    if let Ok(mut current) = list.write() {
+        *current = ids;
+    }
+}
+
+fn with_aliases(listed: impl IntoIterator<Item = String>) -> Vec<String> {
+    listed
+        .into_iter()
+        .flat_map(|id| {
+            let alias = Some(undated(&id)).filter(|a| *a != id).map(str::to_owned);
+            std::iter::once(id).chain(alias)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -65,5 +100,41 @@ mod tests {
         let e = validate_model_supported("gpt-4", &cat).unwrap_err();
         assert_eq!(e.message, "`model.id`: model \"gpt-4\": model is not supported");
         assert!(validate_model_supported("claude-sonnet-4-6", &cat).is_ok());
+    }
+
+    #[test]
+    fn the_built_in_list_accepts_what_live_accepts() {
+        let cat = ModelCatalog::default_catalog();
+        for id in ["claude-haiku-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5"] {
+            assert!(cat.supports(id), "{id}");
+        }
+        for id in [
+            "claude-opus-4-1",
+            "claude-opus-4-20250514",
+            "claude-3-haiku-20240307",
+            "claude-haiku-5-5-20990101",
+            "claude-mythos-5-2",
+            "CLAUDE-HAIKU-5-5",
+            "anthropic/claude-haiku-4.5",
+        ] {
+            assert!(!cat.supports(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_replaced_list_is_what_every_clone_accepts() {
+        let cat = ModelCatalog::default_catalog();
+        let clone = cat.clone();
+        assert!(!clone.supports("openai/gpt-6-luna"), "no vendor/model id before a list is read");
+        cat.replace_anthropic(["claude-new-1".to_owned(), "claude-old-1-20250101".to_owned()]);
+        let listed = ["openai/gpt-6-luna", "qwen/qwen3.7-flash:free", "claude-listed-1"];
+        cat.replace_openai_compat(listed.map(String::from));
+        for id in ["claude-new-1", "claude-old-1-20250101", "claude-old-1", "openai/gpt-6-luna"] {
+            assert!(clone.supports(id), "{id}");
+        }
+        assert!(clone.supports("qwen/qwen3.7-flash:free"));
+        for id in ["claude-haiku-5-5", "qwen/qwen3.7-flash", "claude-listed-1"] {
+            assert!(!clone.supports(id), "{id}");
+        }
     }
 }
