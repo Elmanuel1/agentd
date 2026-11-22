@@ -13,19 +13,26 @@ async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdi
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let name = format!("helper-{}", common::stamp());
+    let coordinator = format!("coord-{}", common::stamp());
     let grade = json!({"result": "satisfied", "criteria": [{"criterion": "Poem", "met": true, "finding": "It is one."}]});
-    let model = Scripted::new(vec![
-        Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
-        Say::Text("done by the helper"),
-        Say::Text("the poem is written"),
-        Say::Text(Box::leak(grade.to_string().into_boxed_str())),
-        Say::Text("summary"),
+    let model = Scripted::per_agent(vec![
+        (
+            coordinator.clone(),
+            vec![
+                Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
+                Say::Text("the helper is on it"),
+                Say::Text("the poem is written"),
+                Say::Text("summary"),
+            ],
+        ),
+        (name.clone(), vec![Say::Text("done by the helper")]),
+        ("grader".to_owned(), vec![Say::Text(Box::leak(grade.to_string().into_boxed_str()))]),
     ]);
     let (app, _worker) = on_loop(&rig, model.clone()).await;
     let helper = json!({"name": name, "model": "claude-haiku-4-5"});
     let (_, helper) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(helper))).await;
     let coord = json!({
-        "name": format!("coord-{}", common::stamp()), "model": "claude-haiku-4-5",
+        "name": coordinator, "model": "claude-haiku-4-5",
         "multiagent": {"type": "coordinator", "agents": [{"type": "agent", "id": helper["id"], "version": helper["version"]}]},
     });
     let (st, coord) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(coord))).await;
@@ -46,8 +53,10 @@ async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdi
     assert_eq!(ends[0]["result"], "satisfied");
     assert_eq!(t.iter().filter(|k| **k == "session.status_idle").count(), 1, "{t:?}");
     let asked = model.asked.lock().clone();
-    assert_eq!(asked.len(), 5);
-    assert_eq!(asked[3].agent, "grader", "the grader grades the work the coordinator delivered");
+    assert!(
+        asked.iter().any(|r| r.agent == "grader"),
+        "the grader grades the work the coordinator delivered"
+    );
     let (_, got) = send_to(&app, request("GET", &format!("/v1/sessions/{s}"), Auth::Key(KEY), None)).await;
     assert_eq!(got["outcome_evaluations"][0]["result"], "satisfied");
 }
@@ -59,24 +68,27 @@ async fn a_round_waits_for_a_delegate_that_waits_on_a_tool() {
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("self_hosted").await;
     let name = format!("helper-{}", common::stamp());
+    let coordinator = format!("coord-{}", common::stamp());
     let grade = json!({"result": "satisfied", "criteria": [{"criterion": "Poem", "met": true, "finding": "It is one."}]});
-    let model = Scripted::new(vec![
-        // Each step goes to the thread that waited longest: the new helper,
-        // then the coordinator.
-        Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
-        Say::Tool("lookup", json!({"k": 1})),
-        Say::Text("waiting on the helper"),
-        Say::Text("done by the helper"),
-        Say::Text("the poem is written"),
-        Say::Text(Box::leak(grade.to_string().into_boxed_str())),
-        Say::Text("summary"),
+    let model = Scripted::per_agent(vec![
+        (
+            coordinator.clone(),
+            vec![
+                Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
+                Say::Text("waiting on the helper"),
+                Say::Text("the poem is written"),
+                Say::Text("summary"),
+            ],
+        ),
+        (name.clone(), vec![Say::Tool("lookup", json!({"k": 1})), Say::Text("done by the helper")]),
+        ("grader".to_owned(), vec![Say::Text(Box::leak(grade.to_string().into_boxed_str()))]),
     ]);
     let (app, _worker) = on_loop(&rig, model.clone()).await;
     let lookup = json!([{"type": "custom", "name": "lookup", "description": "Look a value up.", "input_schema": {"type": "object"}}]);
     let helper = json!({"name": name, "model": "claude-haiku-4-5", "tools": lookup});
     let (_, helper) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(helper))).await;
     let coord = json!({
-        "name": format!("coord-{}", common::stamp()), "model": "claude-haiku-4-5",
+        "name": coordinator, "model": "claude-haiku-4-5",
         "multiagent": {"type": "coordinator", "agents": [{"type": "agent", "id": helper["id"], "version": helper["version"]}]},
     });
     let (_, coord) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(coord))).await;

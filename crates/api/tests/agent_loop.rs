@@ -50,12 +50,15 @@ enum Say {
     Fail(ModelError),
 }
 
-/// Plays its script in order, then says "done"; records each request. A
+/// Plays its script in order, then says "done"; records each request. An
+/// agent with a script of its own (`per_agent`) plays that one, so threads
+/// that call the model at the same time each get their own lines. A
 /// compaction request is answered from `summaries` (a summary by default, or
 /// none) and takes no turn of the script.
 #[derive(Default)]
 struct Scripted {
     script: Mutex<VecDeque<Say>>,
+    agents: Mutex<std::collections::HashMap<String, VecDeque<Say>>>,
     asked: Mutex<Vec<ModelRequest>>,
     window: Mutex<u64>,
     summaries: Mutex<VecDeque<Option<&'static str>>>,
@@ -72,11 +75,19 @@ impl Scripted {
             ..Self::default()
         })
     }
+
+    /// Each agent, by name, plays its own script.
+    fn per_agent(scripts: Vec<(String, Vec<Say>)>) -> Arc<Self> {
+        let model = Self::new(Vec::new());
+        *model.agents.lock() = scripts.into_iter().map(|(name, script)| (name, script.into())).collect();
+        model
+    }
 }
 
 impl NativeModelClient for Scripted {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         let compacting = req.compact.is_some();
+        let agent = req.agent.clone();
         self.asked.lock().push(req);
         if compacting {
             let usage = ModelUsage { input_tokens: 50, output_tokens: 5, ..ModelUsage::default() };
@@ -87,7 +98,8 @@ impl NativeModelClient for Scripted {
             let stop = if content.is_empty() { StopKind::EndTurn } else { StopKind::Compaction };
             return Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.001) });
         }
-        let say = self.script.lock().pop_front().unwrap_or(Say::Text("done"));
+        let own = self.agents.lock().get_mut(&agent).and_then(VecDeque::pop_front);
+        let say = own.or_else(|| self.script.lock().pop_front()).unwrap_or(Say::Text("done"));
         let usage =
             ModelUsage { input_tokens: *self.input.lock(), output_tokens: 2, ..ModelUsage::default() };
         let (content, stop) = match say {
@@ -590,17 +602,25 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let name = format!("helper-{}", common::stamp());
-    let model = Scripted::new(vec![
-        // The new helper takes the step after the coordinator's call.
-        Say::Tool("create_agent", json!({"agent_name": name, "task": "do it"})),
-        Say::Text("done by the helper"),
-        Say::Text("all done"),
+    let coordinator = format!("coord-{}", common::stamp());
+    // The coordinator and its helper call the model at the same time, each
+    // playing its own script.
+    let model = Scripted::per_agent(vec![
+        (
+            coordinator.clone(),
+            vec![
+                Say::Tool("create_agent", json!({"agent_name": name, "task": "do it"})),
+                Say::Text("waiting"),
+                Say::Text("all done"),
+            ],
+        ),
+        (name.clone(), vec![Say::Text("done by the helper")]),
     ]);
     let (app, _worker) = on_loop(&rig, model.clone()).await;
     let helper = json!({"name": name, "model": "claude-haiku-4-5"});
     let (_, helper) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(helper))).await;
     let coord = json!({
-        "name": format!("coord-{}", common::stamp()), "model": "claude-haiku-4-5",
+        "name": coordinator, "model": "claude-haiku-4-5",
         "multiagent": {"type": "coordinator", "agents": [{"type": "agent", "id": helper["id"], "version": helper["version"]}]},
     });
     let (st, coord) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(coord))).await;
@@ -633,13 +653,10 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
         "the helper's events are on its thread: {page}"
     );
     let asked = model.asked.lock();
-    assert_eq!(asked.len(), 3);
-    assert_eq!(asked[1].agent, name, "the second call is the helper's");
-    let heard = asked[2]
-        .messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .any(|b| matches!(b, Block::Text { text } if text.starts_with("<agent-notification thread_id=") && text.contains(&format!("agent_name=\"{name}\""))));
+    assert!(asked.iter().any(|r| r.agent == name), "the helper calls the model");
+    let heard = asked.iter().filter(|r| r.agent == coordinator).any(|r| {
+        r.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Text { text } if text.starts_with("<agent-notification thread_id=") && text.contains(&format!("agent_name=\"{name}\""))))
+    });
     assert!(heard, "the coordinator hears the helper's reply");
 }
 
