@@ -28,7 +28,9 @@ pub(super) fn settle(
     let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
     let others =
         threads(session, &seen).into_iter().any(|t| !t.primary && t.id != turn.thread && busy(&seen, &t.id));
-    let outcome = active(&seen).filter(|o| o.open.is_none());
+    let active = active(&seen);
+    let grading = active.as_ref().is_some_and(|o| o.open.is_some());
+    let outcome = active.filter(|o| o.open.is_none());
     match (out.idle.take(), thread.primary, thread.grading.is_some()) {
         // The grader ended a step without its grade: the next step asks for
         // it, until the grader has stalled and the round fails.
@@ -44,12 +46,16 @@ pub(super) fn settle(
             out.events.extend(reply(turn, &primary, &final_text(r)));
             out.end = StepEnd::Again;
         }
-        // As on live: the round starts right after the reply, the thread still running.
-        (Some(StopReason::EndTurn {}), true, _) if outcome.is_some() => {
+        // As on live: the round starts right after the reply that ends the
+        // work, the thread still running; a reply while delegates still work
+        // is not the end of it.
+        (Some(StopReason::EndTurn {}), true, _) if outcome.is_some() && !others => {
             out.events.extend(outcome.map(|o| begin(&primary, &o)));
             out.end = StepEnd::Again;
         }
-        (Some(stop @ StopReason::EndTurn {}), true, _) if others => {
+        // The session never idles with delegates working or a round open: the
+        // grader runs, then the primary thread takes its verdict.
+        (Some(stop @ StopReason::EndTurn {}), true, _) if others || grading => {
             out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.end = StepEnd::Again;
         }
