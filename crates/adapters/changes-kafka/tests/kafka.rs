@@ -335,3 +335,20 @@ async fn a_record_whose_partition_is_revoked_mid_attempt_is_applied_once_by_its_
     );
     tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
 }
+
+#[tokio::test]
+async fn a_topic_made_after_the_reader_starts_is_read_without_a_reconnect() {
+    // A table with no change yet has no topic: the reader waits on the same
+    // subscription and reads the first record once Debezium writes it.
+    let Some(brokers) = brokers() else { return };
+    let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
+    let seen = Arc::new(Seen { table, fail_once: -1, failed: Mutex::new(false), seen: Mutex::new(vec![]) });
+    let tasks = KafkaChanges::new(&brokers, "agentdtest").spawn(vec![seen.clone()]);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(tasks.iter().all(|t| !t.is_finished()), "the reader waits for its topic");
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
+    send(&producer, &format!("agentdtest.public.{table}"), table, 1, None).await;
+    until(|| !seen.seen.lock().unwrap().is_empty()).await;
+    assert_eq!(*seen.seen.lock().unwrap(), vec![1]);
+    tasks.iter().for_each(tokio::task::JoinHandle::abort);
+}

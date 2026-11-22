@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use rdkafka::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{CommitMode, Consumer};
-use rdkafka::error::KafkaError;
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use shared::ports::ScheduleSpec;
 use shared::ports::changes::{self, ChangeHandler};
 use shared::ports::fire::{self, FireRegistry};
@@ -34,6 +34,8 @@ const BACKOFF: Duration = Duration::from_secs(1);
 const MAX_POLL_INTERVAL: Duration = Duration::from_secs(300);
 /// librdkafka's `session.timeout.ms` default, which may not pass `max.poll.interval.ms`.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(45);
+/// How often a consumer reads the cluster's topics again.
+const TOPIC_REFRESH: Duration = Duration::from_secs(10);
 
 /// Reads the change topics of one Kafka cluster.
 #[derive(Debug, Clone)]
@@ -138,10 +140,26 @@ impl KafkaChanges {
             // A join moves only the partitions balance needs (a one-partition topic stays with its holder);
             // a moved partition's attempt ends uncommitted, for its next owner to read.
             .set("partition.assignment.strategy", "cooperative-sticky")
+            // A topic made after the subscription is found within this time
+            // (librdkafka's default is 5 minutes).
+            .set("topic.metadata.refresh.interval.ms", TOPIC_REFRESH.as_millis().to_string())
             .create_with_context(self.client.context())?;
         consumer.subscribe(&[topic])?;
+        let mut waiting = false;
         loop {
-            let record = consumer.recv().await?;
+            let record = match consumer.recv().await {
+                // A table with no change yet has no topic: the same consumer
+                // stays subscribed, and the next metadata refresh finds the
+                // topic once Debezium writes it.
+                Err(KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition)) => {
+                    if !std::mem::replace(&mut waiting, true) {
+                        tracing::info!(%topic, "changes: the topic does not exist yet; waiting for its first record");
+                    }
+                    tokio::time::sleep(BACKOFF).await;
+                    continue;
+                }
+                read => read?,
+            };
             let id = format!("{}/{}@{}", record.topic(), record.partition(), record.offset());
             if retry::until_taken(&consumer, &record, reader, &id).await? {
                 consumer.commit_message(&record, CommitMode::Async)?;

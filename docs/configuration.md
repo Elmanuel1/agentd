@@ -83,8 +83,12 @@ which takes the session's work item:
 A roster thread's or the grader's built-in calls show on the session's stream
 with their `session_thread_id`, so the official worker runs them from it, and
 its results land on the call's thread. A coordinator's `send_to_agent` opens a
-roster thread that runs in later steps. An outcome is graded on the grader's
-own thread.
+roster thread that runs in later steps: a first send names the agent and its
+result gives the thread's id, and a follow-up names that id. An outcome is
+graded on the grader's own thread, in a round that starts when the primary
+thread ends a turn with no roster thread still working. The agent is told to
+work on the outcome on its own until the result is delivered, deciding by its
+instructions where the task is unclear, and gets each round's findings back.
 
 The loop calls the model itself, with one key per provider from the
 environment: `AGENTD_ANTHROPIC_API_KEY` and `AGENTD_OPENROUTER_API_KEY`. A
@@ -617,7 +621,10 @@ and pauses and moves back any partition that delivers a record meanwhile, so
 nothing behind the record is handled first. The group assigns partitions
 `cooperative-sticky`: a join moves only the partitions balance needs, so a
 one-partition topic stays with its holder, and a moved partition's attempt
-ends uncommitted, for its next owner to read. An ordered table's topic has one
+ends uncommitted, for its next owner to read. A topic that does not exist yet,
+a table with no change yet, is waited for on the same subscription: consumers
+read the cluster's topics every 10 s, so its first record is read soon after
+Debezium writes it. An ordered table's topic has one
 partition, which the group gives to one replica at a time. An external scheduler writes
 its fires to the topic `agentd.fires`, each record's value
 `{"spec": …, "scheduled_at": "<RFC 3339>"}`. The topics' retention trims them.

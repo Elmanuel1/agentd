@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rdkafka::client::{ClientContext, OAuthToken};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{ConsumerContext, StreamConsumer};
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use shared::BackendError;
 use shared::ports::credentials::{BearerToken, BearerTokenSource};
 use tokio::runtime::Handle;
@@ -102,6 +103,17 @@ pub(crate) struct Context {
 
 impl ClientContext for Context {
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
+
+    /// A subscribed topic that does not exist yet is a table with no change
+    /// yet, which the reader waits out, not a failure.
+    fn error(&self, error: KafkaError, reason: &str) {
+        match error {
+            KafkaError::Global(RDKafkaErrorCode::UnknownTopicOrPartition) => {
+                tracing::debug!(%error, reason, "changes: librdkafka: a subscribed topic does not exist yet")
+            }
+            _ => tracing::error!(%error, reason, "changes: librdkafka error"),
+        }
+    }
 
     /// librdkafka asks again at 80% of the lifetime it is given, and after a
     /// refused ask, so the token fetched now is in hand by the next ask, also
