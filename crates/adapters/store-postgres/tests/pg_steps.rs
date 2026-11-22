@@ -729,13 +729,13 @@ async fn a_thread_s_commit_and_its_session_s_delete_at_once_never_deadlock_and_l
 
 #[tokio::test]
 async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
-    // S-3: a thread's step reads its own events, the client events that
-    // answer its calls or none, the session's events and the outcome spans;
-    // the cost sum still counts every thread's calls.
+    // S-3: a thread's step reads its own events from its latest checkpoint,
+    // the session's events, the outcome spans and the client events that
+    // answer no call; the cost sum still counts every thread's calls.
     if !enabled() {
         return;
     }
-    use sessions::events::{SessionEvent, SpanEvent};
+    use sessions::events::{EventId, ModelUsage, SessionEvent, SpanEvent, SpanModelUsage};
     use sessions::types::ThreadId;
     let r = rig().await;
     let ws = uniq_ws("scope");
@@ -756,43 +756,76 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
         };
         on(tool.into(), Some(thread))
     };
+    // As the API appends it: an answer carries its call's thread.
     let answer = |to: &Event| {
         let result = UserEvent::ToolResult { tool_use_id: to.id.clone(), content: vec![], is_error: false };
-        on(result.into(), None)
+        on(result.into(), to.session_thread_id.as_ref())
+    };
+    let end = |thread| {
+        let tokens = ModelUsage {
+            input_tokens: 10,
+            cache_creation_input_tokens: 1,
+            output_tokens: 3,
+            ..ModelUsage::default()
+        };
+        let usage = SpanModelUsage { tokens, speed: None };
+        let span = SpanEvent::ModelRequestEnd {
+            model_request_start_id: EventId::generate(),
+            is_error: false,
+            model_usage: usage,
+        };
+        on(span.into(), Some(thread))
     };
     let (my_call, other_call) = (call(&mine), call(&other));
     let events = vec![
         on(SessionEvent::ThreadCreated { agent_name: "a".into() }.into(), Some(&mine)),
         on(AgentEvent::Message { content: vec![] }.into(), None),
+        on(AgentEvent::Message { content: vec![] }.into(), Some(&mine)),
         my_call.clone(),
         other_call.clone(),
         answer(&my_call),
         answer(&other_call),
         on(UserEvent::Message { content: vec![] }.into(), None),
         on(SpanEvent::ModelRequestStart {}.into(), Some(&other)),
+        end(&mine),
+        end(&other),
     ];
     let cost = |e: &Event, n: u64| (e.id.clone(), json!({"list_cost_nanos": n}));
-    let engine = [cost(&my_call, 5), cost(&other_call, 7)];
-    r.wake(&ws, &s.id).await;
-    let c = r.claim_of("w1", 60, &s.id).await.unwrap();
-    let write = StepWrite {
-        read: &[],
-        at: Timestamp::now(),
-        events: &events,
-        engine: &engine,
-        session: &unchanged,
-        deliveries: None,
-        wake: &[],
+    let commit = async |events: &[Event], engine: &[(EventId, serde_json::Value)]| {
+        r.wake(&ws, &s.id).await;
+        let c = r.claim_of("w1", 60, &s.id).await.unwrap();
+        let write = StepWrite {
+            read: &[],
+            at: Timestamp::now(),
+            events,
+            engine,
+            session: &unchanged,
+            deliveries: None,
+            wake: &[],
+        };
+        assert!(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
     };
-    r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
-    let ids = |read: Vec<(Event, Option<serde_json::Value>)>| -> Vec<sessions::events::EventId> {
-        read.into_iter().map(|(e, _)| e.id).filter(|id| events.iter().any(|x| x.id == *id)).collect()
+    commit(&events, &[cost(&events[9], 5), cost(&events[10], 7)]).await;
+    let ids = |read: Vec<(Event, Option<serde_json::Value>)>, of: &[Event]| -> Vec<usize> {
+        read.iter().filter_map(|(e, _)| of.iter().position(|x| x.id == e.id)).collect()
     };
-    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine)).await.unwrap());
-    let want: Vec<_> = [0, 2, 4, 6].iter().map(|&i| events[i].id.clone()).collect();
-    assert_eq!(read, want, "its creation, its call and answer, the client's message");
-    let primary = ids(r.log.thread_events(&ws, &s.id, None).await.unwrap());
-    let want: Vec<_> = [0, 1, 6].iter().map(|&i| events[i].id.clone()).collect();
-    assert_eq!(primary, want, "the primary's own events, no other thread's work or answers");
-    assert_eq!(r.log.engine_sum(&ws, &s.id, "list_cost_nanos").await.unwrap(), 12);
+    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine)).await.unwrap(), &events);
+    assert_eq!(read, [0, 2, 3, 5, 7, 9], "its creation, its events, its answer, the client's message");
+    let primary = ids(r.log.thread_events(&ws, &s.id, None).await.unwrap(), &events);
+    assert_eq!(primary, [0, 1, 7], "the primary's own events, no other thread's work or answers");
+    let calls = r.log.calls(&ws, &s.id, "list_cost_nanos").await.unwrap();
+    assert_eq!((calls.input_tokens, calls.output_tokens, calls.unpriced, calls.cost), (22, 6, 0, 12));
+    // A checkpoint covering through my call: the thread resumes from it.
+    let all = r.log.engine_events(&ws, &s.id).await.unwrap();
+    let seq =
+        all.iter().find(|(e, _)| e.id == my_call.id).and_then(|(_, k)| k.as_ref()?.get("seq")?.as_i64());
+    let compacted = on(AgentEvent::ThreadContextCompacted {}.into(), Some(&mine));
+    let kept = json!({"checkpoint": {"through": my_call.id.as_str(), "through_seq": seq.unwrap(), "model": "m", "summary": "s"}});
+    commit(std::slice::from_ref(&compacted), &[(compacted.id.clone(), kept)]).await;
+    let mut later = events.clone();
+    later.push(compacted);
+    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine)).await.unwrap(), &later);
+    assert_eq!(read, [0, 3, 5, 7, 9, 11], "from the covered call on, with the checkpoint");
+    let session = ids(r.log.step_events(&ws, &s.id).await.unwrap(), &later);
+    assert_eq!(session, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11], "each thread from its own checkpoint");
 }

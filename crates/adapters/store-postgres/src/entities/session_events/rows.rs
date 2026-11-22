@@ -37,7 +37,15 @@ pub(super) struct SeqDoc {
 }
 
 #[derive(diesel::QueryableByName)]
-pub(super) struct Sum {
+pub(super) struct CallsRow {
     #[diesel(sql_type = BigInt)]
-    pub(super) total: i64,
+    pub(super) cache_read: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) input: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) output: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) unpriced: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) cost: i64,
 }

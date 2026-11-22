@@ -1,16 +1,32 @@
 //! The reads only the loop makes: events with the `engine` object it stored
-//! beside them, which no API read serves.
+//! beside them, which no API read serves. A step reads each thread from its
+//! latest checkpoint, the snapshot the thread resumes from.
 
 use shared::WorkspaceId;
 use shared::ports::BoxFuture;
 use std::future::Future;
 
 use super::{NativeSessionEventReads, StoreError};
-use crate::events::Event;
+use crate::events::{Event, EventPayload, SpanEvent};
 use crate::types::{SessionId, ThreadId};
 
 /// Each event with the `engine` object the loop stored beside it.
 pub type EngineEvents = Vec<(Event, Option<serde_json::Value>)>;
+
+/// What a session's model calls add up to, every thread's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Calls {
+    /// Tokens read from the cache, by the calls that did not fail.
+    pub cache_read_input_tokens: u64,
+    /// Input tokens, cache writes included, by the calls that did not fail.
+    pub input_tokens: u64,
+    /// Output tokens, by the calls that did not fail.
+    pub output_tokens: u64,
+    /// The calls that did not fail with no cost kept beside them.
+    pub unpriced: u64,
+    /// The costs kept beside every call.
+    pub cost: u64,
+}
 
 /// A session's log as the loop reads it. A session that does not exist,
 /// which the caller has already read, has no events.
@@ -21,23 +37,32 @@ pub trait EngineReads: Send + Sync {
         ws: &'a WorkspaceId,
         session: &'a SessionId,
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
-    /// At least what one thread's step reads, oldest first: the thread's
-    /// events (`None` is the primary's), the client events that answer its
-    /// calls or answer none, every `session.*` event and the outcomes'
-    /// evaluation spans.
+    /// At least what the session's own step reads, oldest first: each
+    /// thread's events from its latest checkpoint's covered event, every
+    /// `session.*` event, the outcomes' evaluation spans and the client
+    /// events that answer no call.
+    fn step_events<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a SessionId,
+    ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
+    /// At least what one thread's step reads: as [`Self::step_events`], with
+    /// only this thread's own events (`None` is the primary's). An answer
+    /// carries its call's thread.
     fn thread_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
         thread: Option<&'a ThreadId>,
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
-    /// The sum of the numbers the session's `engine` objects hold at `key`.
-    fn engine_sum<'a>(
+    /// The session's `span.model_request_end`s added up, with the costs
+    /// their `engine` objects hold at `cost`.
+    fn calls<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
-        key: &'a str,
-    ) -> BoxFuture<'a, Result<u64, StoreError>>;
+        cost: &'a str,
+    ) -> BoxFuture<'a, Result<Calls, StoreError>>;
 }
 
 /// What an adapter implements to provide [`EngineReads`]; the methods are
@@ -56,6 +81,13 @@ pub trait NativeEngineReads: NativeSessionEventReads {
                 .collect())
         }
     }
+    fn step_events(
+        &self,
+        ws: &WorkspaceId,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<EngineEvents, StoreError>> + Send {
+        NativeEngineReads::engine_events(self, ws, session)
+    }
     fn thread_events(
         &self,
         ws: &WorkspaceId,
@@ -64,15 +96,29 @@ pub trait NativeEngineReads: NativeSessionEventReads {
     ) -> impl Future<Output = Result<EngineEvents, StoreError>> + Send {
         NativeEngineReads::engine_events(self, ws, session)
     }
-    fn engine_sum(
+    fn calls(
         &self,
         ws: &WorkspaceId,
         session: &SessionId,
-        key: &str,
-    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        cost: &str,
+    ) -> impl Future<Output = Result<Calls, StoreError>> + Send {
         async move {
             let events = NativeEngineReads::engine_events(self, ws, session).await?;
-            Ok(events.iter().filter_map(|(_, k)| k.as_ref()?.get(key)?.as_u64()).sum())
+            Ok(events.iter().fold(Calls::default(), |mut c, (e, kept)| {
+                let kept = kept.as_ref().and_then(|k| k.get(cost)?.as_u64());
+                c.cost += kept.unwrap_or_default();
+                if let EventPayload::Span(SpanEvent::ModelRequestEnd {
+                    model_usage, is_error: false, ..
+                }) = &e.payload
+                {
+                    let t = &model_usage.tokens;
+                    c.cache_read_input_tokens += t.cache_read_input_tokens;
+                    c.input_tokens += t.input_tokens + t.cache_creation_input_tokens;
+                    c.output_tokens += t.output_tokens;
+                    c.unpriced += u64::from(kept.is_none());
+                }
+                c
+            }))
         }
     }
 }
@@ -85,6 +131,13 @@ impl<T: NativeEngineReads> EngineReads for T {
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
         Box::pin(NativeEngineReads::engine_events(self, ws, session))
     }
+    fn step_events<'a>(
+        &'a self,
+        ws: &'a WorkspaceId,
+        session: &'a SessionId,
+    ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
+        Box::pin(NativeEngineReads::step_events(self, ws, session))
+    }
     fn thread_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
@@ -93,12 +146,12 @@ impl<T: NativeEngineReads> EngineReads for T {
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
         Box::pin(NativeEngineReads::thread_events(self, ws, session, thread))
     }
-    fn engine_sum<'a>(
+    fn calls<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
-        key: &'a str,
-    ) -> BoxFuture<'a, Result<u64, StoreError>> {
-        Box::pin(NativeEngineReads::engine_sum(self, ws, session, key))
+        cost: &'a str,
+    ) -> BoxFuture<'a, Result<Calls, StoreError>> {
+        Box::pin(NativeEngineReads::calls(self, ws, session, cost))
     }
 }

@@ -69,12 +69,21 @@ lease, so a session's threads call the model at the same time on any replica.
   once the primary thread has replied and no delegate is mid-turn, the session
   idles when no thread works, and its usage is the sum of every thread's
   calls. It calls no model.
-- **A thread's step.** It reads its thread's events, the client events that
-  answer its calls or none, the session's events and the outcomes' spans, not
-  the other threads' work. It builds one model call's prompt from them and
-  commits the call's start before the call, then the reply's events after it,
-  then wakes the session's step. The session's budget counts every thread's
-  calls.
+- **A thread's step.** It reads its own thread's events and the session-wide
+  events, not the other threads' work. It builds one model call's prompt from
+  them and commits the call's start before the call, then the reply's events
+  after it, then wakes the session's step.
+
+Each thread is a stream of the log (`session_events.thread_id`), and its
+latest compaction checkpoint is the snapshot it resumes from: a step reads a
+thread's events from the event the checkpoint covers through, never the
+events before it. The session-wide events are read whole: every `session.*`
+event, the outcomes' evaluation spans and the client events that answer no
+call (`user.message`, `user.interrupt`, `user.tool_confirmation`,
+`user.define_outcome`, `system.message`). An answer to a call carries the
+call's thread. The session's own step reads each thread this way; a thread's
+step reads only its own. Usage, cost and the budget are sums the database
+computes over every `span.model_request_end`, every thread's.
 
 A worker claims steps while its replica's memory is under
 `AGENTD_MEMORY_TARGET`, with no count of steps: the working set of its

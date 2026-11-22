@@ -58,7 +58,7 @@ impl Loop {
         let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
         let step = take(&log, &session, cloud, &rubrics, &kept, claim.thread.as_ref());
         if claim.thread.is_none() {
-            return self.session_step(claim, session, &log, &kept, step).await;
+            return self.session_step(claim, session, &log, step).await;
         }
         let mine = claim.thread.as_ref() == Some(&step.thread.id);
         if mine && step.history.unanswered.iter().any(Unanswered::for_loop) {
@@ -84,7 +84,7 @@ impl Loop {
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), None).await?;
             return Ok(());
         }
-        let before = self.cost_so_far(claim).await?;
+        let before = self.calls(claim).await?.cost;
         if over_budget(&session, before) {
             let mut events = answers;
             events.push(turn.lifecycle(thread_idle(&turn, StopReason::BudgetReached {})));

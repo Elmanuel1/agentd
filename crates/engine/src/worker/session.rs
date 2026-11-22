@@ -16,7 +16,6 @@ use super::take::{Interrupt, Taken, cut_off};
 use super::team::Thread;
 use super::turn::{batch, opening, thread_idle};
 use super::usage::tally;
-use crate::turn::history::Kept;
 
 impl Loop {
     pub(super) async fn session_step(
@@ -24,9 +23,9 @@ impl Loop {
         claim: &Claim,
         mut session: Session,
         log: &[Event],
-        kept: &Kept,
         step: Taken,
     ) -> Result<(), BackendError> {
+        let calls = self.calls(claim).await?;
         let Taken { taken, arrived, answers, allowed, read, interrupt, due, all, .. } = step;
         let primary = Thread::primary(&session).turn();
         if interrupt == Interrupt::Second {
@@ -40,7 +39,7 @@ impl Loop {
         // and the session idles.
         if interrupt != Interrupt::None {
             session.status = SessionStatus::Idle;
-            tally(&mut session, &read, kept);
+            tally(&mut session, &calls);
             let mut events: Vec<Event> = all.iter().flat_map(|(t, h)| cut_off(&t.turn(), h, log)).collect();
             let working = all.iter().filter(|(t, _)| !t.primary && unfinished(&read, &t.id));
             events.extend(working.map(|(t, _)| {
@@ -57,7 +56,7 @@ impl Loop {
             .into_iter()
             .filter(|id| all.iter().find(|(t, _)| t.id == *id).is_none_or(|(t, _)| !held(&seen, t)))
             .collect();
-        tally(&mut session, &seen, kept);
+        tally(&mut session, &calls);
         let mut running = Vec::new();
         let mut rest = answers;
         let (wake, end) = match due.is_empty() {

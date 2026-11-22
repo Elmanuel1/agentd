@@ -12,7 +12,7 @@ use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 mod engine;
 mod reads;
 
-pub use engine::{EngineEvents, EngineReads, NativeEngineReads};
+pub use engine::{Calls, EngineEvents, EngineReads, NativeEngineReads};
 pub use reads::{Head, NativeSessionEventReads, Pos, SessionEventReads, Tail};
 
 mod native;
