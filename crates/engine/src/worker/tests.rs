@@ -327,3 +327,30 @@ fn an_interrupted_delegate_resumes_on_the_answer_to_its_earlier_call() {
     log.push(on(answer.into()));
     assert!(!super::status::held(&log, &helper), "the answer to its call resumes it");
 }
+
+#[test]
+fn an_interrupt_from_an_earlier_turn_does_not_hold_a_thread_that_ended_a_new_one() {
+    // A needs_revision verdict after a later turn must still start a revision.
+    use sessions::events::{SessionEvent, StopReason};
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let at = |payload: EventPayload, thread: bool| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: thread.then(|| primary.id.clone()),
+        ..Event::new(payload)
+    };
+    let interrupt = || at(UserEvent::Interrupt {}.into(), false);
+    let running = || at(SessionEvent::ThreadStatusRunning { agent_name: "a".into() }.into(), true);
+    let idle = || {
+        let stop = SessionEvent::ThreadStatusIdle {
+            agent_name: "a".into(),
+            stop_reason: StopReason::EndTurn {},
+            stop_details: None,
+        };
+        at(stop.into(), true)
+    };
+    let earlier = vec![interrupt(), running(), idle()];
+    assert!(!super::status::held(&earlier, &primary), "the interrupt came before this turn");
+    let during = vec![running(), interrupt(), idle()];
+    assert!(super::status::held(&during, &primary), "the interrupt cut this turn");
+}

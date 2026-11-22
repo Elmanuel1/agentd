@@ -38,7 +38,15 @@ pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
     let interrupt = log.iter().rposition(|e| {
         e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
     });
-    let cut = stop.zip(interrupt).is_some_and(|(s, i)| i < s);
+    // Only an interrupt during the turn that stopped holds the thread: an
+    // earlier turn's does not.
+    let began = |s: usize| {
+        log.get(..s).unwrap_or_default().iter().rposition(|e| {
+            e.session_thread_id.as_ref() == Some(&thread.id)
+                && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }))
+        })
+    };
+    let cut = stop.zip(interrupt).is_some_and(|(s, i)| i < s && began(s).is_none_or(|b| i > b));
     let (Some(at), true) = (stop, cut || over(stopped(log, &thread.id))) else { return false };
     let scope = (!thread.primary).then(|| thread.id.clone());
     // Answers are matched to the thread's calls over the whole log, then
