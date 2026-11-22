@@ -67,9 +67,14 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Some(key) = &config.keys.anthropic {
-        let (key, url) = (key.expose_secret().to_owned(), config.agent_loop.anthropic_base_url.clone());
-        drop(engine::model::model_list::spawn(key, url, backends.models.clone()));
+    let (keys, urls, models) = (&config.keys, &config.agent_loop, &backends.models);
+    if let Some(key) = &keys.anthropic {
+        let (key, url) = (key.expose_secret().to_owned(), urls.anthropic_base_url.clone());
+        drop(engine::model::model_list::spawn_anthropic(key, url, models.clone()));
+    }
+    if let Some(key) = &keys.openrouter {
+        let (key, url) = (key.expose_secret().to_owned(), urls.model_base_url.clone());
+        drop(engine::model::model_list::spawn_openai_compat(key, url, models.clone()));
     }
     let app = match AppState::build(backends) {
         Ok(state) => build_router(state),

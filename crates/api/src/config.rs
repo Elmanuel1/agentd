@@ -19,9 +19,6 @@ pub struct Config {
     pub keys: KeysConfig,
     /// Where logs, traces and metrics go.
     pub telemetry: TelemetryConfig,
-    /// `AGENTD_MODELS`: the OpenAI-compatible `vendor/model` ids agents may
-    /// name, comma-separated; Anthropic's models need no entry.
-    pub extra_models: Vec<String>,
     /// `AGENTD_MODEL_PRICES_URL`: the model list Anthropic's list prices are
     /// read from, OpenRouter's when unset; empty, the built-in table alone.
     pub model_prices_url: Option<String>,
@@ -66,17 +63,6 @@ impl Config {
         let keys = KeysConfig::from_lookup(&get)?;
         let addr = get("AGENTD_ADDR").unwrap_or_else(|| "0.0.0.0:8080".into());
         let telemetry = TelemetryConfig::from_lookup(&get)?;
-        let extra_models: Vec<String> = get("AGENTD_MODELS")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if let Some(id) = extra_models.iter().find(|m| !m.contains('/')) {
-            let reason = format!("`{id}` is not a `vendor/model` id; Anthropic's models need no entry");
-            return Err(ConfigError { var: "AGENTD_MODELS", reason });
-        }
         let model_prices_url = get("AGENTD_MODEL_PRICES_URL").map_or_else(
             || Some("https://openrouter.ai/api/v1/models".into()),
             |u| Some(u).filter(|u| !u.is_empty()),
@@ -93,7 +79,6 @@ impl Config {
             secrets,
             keys,
             telemetry,
-            extra_models,
             model_prices_url,
             work,
             streams,

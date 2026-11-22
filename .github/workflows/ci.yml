@@ -164,8 +164,8 @@ jobs:
       AGENTD_ADDR: 0.0.0.0:8080
       AGENTD_BASE_URL: http://127.0.0.1:8080
       AGENTD_API_BASE_URL: http://127.0.0.1:8080
-      # The loop calls the scripted model as an OpenAI-compatible provider.
-      AGENTD_MODELS: mock/scripted
+      # The loop calls the scripted model as an OpenAI-compatible provider,
+      # whose model list names mock/scripted.
       AGENTD_MODEL_BASE_URL: http://127.0.0.1:18766/v1
       # Tools run on the official worker (`ant beta:worker poll`) on the runner.
       AGENTD_TEST_WORKER: "1"

@@ -1,6 +1,8 @@
-//! Keeps the Anthropic models agents may name current from the Messages
-//! API's model list (`GET /v1/models`): read at start and once a day. A read
-//! that fails keeps the models last read, or the built-in list before any.
+//! Keeps the models agents may name current from each provider's model
+//! list: the Messages API's (`GET /v1/models`) for Anthropic's ids, and the
+//! OpenAI-compatible API's (`GET /models`, OpenRouter's) for `vendor/model`
+//! ids, each read at start and once a day. A read that fails keeps the list
+//! last read: before any, Anthropic's built-in list and no `vendor/model` id.
 
 use std::time::Duration;
 
@@ -9,54 +11,83 @@ use shared::limits::ModelCatalog;
 
 use super::ModelError;
 use super::anthropic::AnthropicModel;
+use super::openai::OpenAiCompatModel;
 use super::windows::get as fetch;
 
-/// How often the list is read again.
+/// How often a list is read again.
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long one page's read may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Read the list at `base_url` with `api_key` now and once a day, for as
-/// long as the process runs, into `catalog`.
-pub fn spawn(api_key: String, base_url: String, catalog: ModelCatalog) -> tokio::task::JoinHandle<()> {
+/// Read the Messages API's list at `base_url` with `api_key` now and once a
+/// day, for as long as the process runs, into `catalog`.
+pub fn spawn_anthropic(
+    api_key: String,
+    base_url: String,
+    catalog: ModelCatalog,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let http = match reqwest::Client::builder().timeout(TIMEOUT).build() {
-            Ok(http) => http,
-            Err(e) => {
-                tracing::warn!(error = %e, "models: no HTTP client; the built-in Anthropic models stay");
-                return;
-            }
-        };
+        let Some(http) = client("anthropic") else { return };
         let api = AnthropicModel::new(http, api_key, base_url);
         loop {
-            match api.list_models().await {
-                Ok(ids) if !ids.is_empty() => {
-                    tracing::debug!(models = ids.len(), "models: Anthropic's model list read");
-                    catalog.replace_anthropic(ids);
-                }
-                Ok(_) => tracing::warn!("models: Anthropic's model list is empty; the models stay"),
-                Err(e) => {
-                    tracing::warn!(error = %e, "models: Anthropic's model list cannot be read; the models stay")
-                }
-            }
+            install("anthropic", api.list_models().await, |ids| catalog.replace_anthropic(ids));
             tokio::time::sleep(EVERY).await;
         }
     })
 }
 
+/// Read the OpenAI-compatible API's list at `base_url` with `api_key` now
+/// and once a day, for as long as the process runs, into `catalog`.
+pub fn spawn_openai_compat(
+    api_key: String,
+    base_url: String,
+    catalog: ModelCatalog,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Some(http) = client("openai_compat") else { return };
+        let api = OpenAiCompatModel::new(http, api_key, base_url);
+        loop {
+            let read = fetch(api.get("/models")).await.map(|list| ids(&list));
+            install("openai_compat", read, |ids| catalog.replace_openai_compat(ids));
+            tokio::time::sleep(EVERY).await;
+        }
+    })
+}
+
+fn client(provider: &str) -> Option<reqwest::Client> {
+    let built = reqwest::Client::builder().timeout(TIMEOUT).build();
+    built.inspect_err(|e| tracing::warn!(provider, error = %e, "models: no HTTP client")).ok()
+}
+
+fn install(provider: &str, read: Result<Vec<String>, ModelError>, replace: impl FnOnce(Vec<String>)) {
+    match read {
+        Ok(ids) if !ids.is_empty() => {
+            tracing::debug!(provider, models = ids.len(), "models: the list read");
+            replace(ids);
+        }
+        Ok(_) => tracing::warn!(provider, "models: the list is empty; the models stay"),
+        Err(e) => tracing::warn!(provider, error = %e, "models: the list cannot be read; the models stay"),
+    }
+}
+
+/// The ids of one page of a model list.
+fn ids(page: &Value) -> Vec<String> {
+    let listed = page.get("data").and_then(Value::as_array).into_iter().flatten();
+    listed.filter_map(|m| m.get("id").and_then(Value::as_str)).map(str::to_owned).collect()
+}
+
 impl AnthropicModel {
     /// Every id the Messages API lists, page by page.
     async fn list_models(&self) -> Result<Vec<String>, ModelError> {
-        let mut ids = Vec::new();
+        let mut all = Vec::new();
         let mut path = "/v1/models?limit=1000".to_owned();
         loop {
             let page = fetch(self.get(&path)).await?;
-            let listed = page.get("data").and_then(Value::as_array).into_iter().flatten();
-            ids.extend(listed.filter_map(|m| m.get("id").and_then(Value::as_str)).map(str::to_owned));
+            all.extend(ids(&page));
             let more = page.get("has_more").and_then(Value::as_bool) == Some(true);
             match page.get("last_id").and_then(Value::as_str).filter(|_| more) {
                 Some(last) => path = format!("/v1/models?limit=1000&after_id={last}"),
-                None => return Ok(ids),
+                None => return Ok(all),
             }
         }
     }
@@ -105,7 +136,7 @@ mod tests {
             }),
         );
         let catalog = ModelCatalog::default_catalog();
-        drop(spawn("k".into(), serve(app).await, catalog.clone()));
+        drop(spawn_anthropic("k".into(), serve(app).await, catalog.clone()));
         until(|| catalog.supports("claude-old-1")).await;
         for id in ["claude-new-1", "claude-old-1-20250101", "claude-old-1"] {
             assert!(catalog.supports(id), "{id}");
@@ -125,10 +156,27 @@ mod tests {
             }),
         );
         let catalog = ModelCatalog::default_catalog();
-        drop(spawn("k".into(), serve(app).await, catalog.clone()));
+        drop(spawn_anthropic("k".into(), serve(app).await, catalog.clone()));
         until(|| hits.load(Ordering::SeqCst) > 0).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert!(catalog.supports("claude-haiku-5-5"));
+    }
+
+    fn listed() -> serde_json::Value {
+        json!({"data": [{"id": "qwen/qwen3.7-flash:free", "context_length": 262144},
+            {"id": "openai/gpt-6-luna", "context_length": 400000}]})
+    }
+
+    #[tokio::test]
+    async fn the_openai_compatible_list_is_the_vendor_models_accepted() {
+        let app = Router::new().route("/api/v1/models", get(|| async { Json(listed()) }));
+        let catalog = ModelCatalog::default_catalog();
+        assert!(!catalog.supports("openai/gpt-6-luna"), "none before the first read");
+        drop(spawn_openai_compat("k".into(), format!("{}/api/v1", serve(app).await), catalog.clone()));
+        until(|| catalog.supports("openai/gpt-6-luna")).await;
+        assert!(catalog.supports("qwen/qwen3.7-flash:free"));
+        assert!(!catalog.supports("qwen/qwen3.7-flash"), "a variant only as listed");
+        assert!(catalog.supports("claude-haiku-5-5"), "Anthropic's list stays");
     }
 }

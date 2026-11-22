@@ -53,7 +53,7 @@ pub struct Backends {
     /// What delivers fires, started once the handlers are registered; none
     /// in a rig that fires nothing.
     pub fire_sources: Option<FireSources>,
-    /// The model ids agents may name: Anthropic's and `AGENTD_MODELS`.
+    /// The model ids agents may name: Anthropic's and the OpenAI-compatible API's.
     pub models: ModelCatalog,
     /// The instruments every boundary records into.
     pub metrics: Arc<Metrics>,
@@ -179,7 +179,7 @@ impl Backends {
         if role.runs_loop() {
             drop(crate::agent_loop::spawn(config, &stores, signals.clone(), &system).await?);
         }
-        let models = ModelCatalog::default_catalog().with(config.extra_models.clone());
+        let models = ModelCatalog::default_catalog();
         let environment_keys: Arc<dyn EnvironmentKeySource> = Arc::new(environment_keys);
         Ok(Self {
             stores,

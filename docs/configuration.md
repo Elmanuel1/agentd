@@ -94,14 +94,19 @@ OpenAI-compatible API at `AGENTD_MODEL_BASE_URL` (default
 Messages API at `AGENTD_ANTHROPIC_BASE_URL`.
 
 An agent or session may name the Anthropic models live accepts, and the
-`vendor/model` ids in `AGENTD_MODELS`. Live accepts each id its Models API
-(`GET /v1/models`) lists, and the undated alias of a dated one
+`vendor/model` ids the OpenAI-compatible API lists. Live accepts each id its
+Models API (`GET /v1/models`) lists, and the undated alias of a dated one
 (`claude-haiku-4-5` for `claude-haiku-4-5-20251001`). With
 `AGENTD_ANTHROPIC_API_KEY` set, each replica reads that list at
-`AGENTD_ANTHROPIC_BASE_URL` at start and once a day; a read that fails keeps
-the list last read. Without the key, and before the first read, agentd takes
-its built-in list, which matches live's on 2026-11-21. Any other id is a 400:
-`` `model.id`: model "gpt-4": model is not supported ``.
+`AGENTD_ANTHROPIC_BASE_URL` at start and once a day. Without the key, and
+before the first read, agentd takes its built-in list, which matches live's on
+2026-11-21. With `AGENTD_OPENROUTER_API_KEY` set, each replica reads the list
+at `AGENTD_MODEL_BASE_URL` (`GET /models`, OpenRouter's model list by default)
+at start and once a day, and accepts each id in it with a `/`, a variant
+(`qwen/qwen3.7-flash:free`) only as listed. Without the key, and before the
+first read, it accepts no `vendor/model` id: agentd builds in no list of
+them. A read that fails, or lists nothing, keeps the list last read. Any
+other id is a 400: `` `model.id`: model "gpt-4": model is not supported ``.
 
 A Messages API call asks for
 thinking: adaptive, or a budget of a quarter of the output cap for
@@ -127,9 +132,8 @@ step's 10 minute deadline.
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |
 | `AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM` | unset (no limit) | Requests and input tokens per provider and minute, shared by every replica in Valkey (`AGENTD_VALKEY_URL`); a step over it waits for the next minute. Without Valkey there is no limit |
-| `AGENTD_MODELS` | unset | The OpenAI-compatible `vendor/model` ids agents may name, comma-separated. An id without a `/` is refused at start: Anthropic's models need no entry |
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
-| `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
+| `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/`, and whose `GET /models` lists the `vendor/model` ids agents may name |
 | `AGENTD_MODEL_PRICES_URL` | `https://openrouter.ai/api/v1/models` | The model list Anthropic's list prices are read from, at start and once a day; empty, the built-in table alone |
 | `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
 | `AGENTD_COMPACTION_KEEP_RESULTS` | `3` | The newest tool results kept whole when clearing, from 3 to 5 |
