@@ -114,7 +114,7 @@ fn a_grader_grades_in_its_reply_and_the_round_ends_after_the_call_with_live_s_ex
         stop: StopKind::EndTurn,
         ..reply(&[])
     };
-    let events = lead(&Toolbox::read_only(), &graded, Some(&outcome));
+    let events = lead(&Toolbox::grader(), &graded, Some(&outcome));
     assert_eq!(types(&events), ["agent.message", "span.model_request_end", "span.outcome_evaluation_end"]);
     assert_eq!(events[2]["result"], "satisfied");
     assert_eq!(
@@ -225,4 +225,5 @@ fn the_thread_that_waited_longest_takes_the_step() {
     ];
     let taken = super::take::take(&log, &session, false, &Default::default(), &Default::default());
     assert_eq!(taken.thread.id, slow);
+    assert!(taken.more, "the fast one still awaits the model, so the step is not the last");
 }

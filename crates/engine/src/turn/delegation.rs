@@ -64,14 +64,14 @@ pub fn sent(thread: &ThreadId) -> String {
     json!({"delivered": true, "thread_id": thread, "queued": false, "note": SENT}).to_string()
 }
 
-/// `list_agents`'s result: each thread started, with whether it is at work,
-/// then the agents that may be started.
-pub fn listing(threads: &[(ThreadId, String, bool)], roster: &[&AgentSnapshot]) -> String {
+/// `list_agents`'s result: each thread started, with whether it is at work
+/// and what it waits for when parked, then the agents that may be started.
+pub fn listing(threads: &[(ThreadId, String, bool, Option<&str>)], roster: &[&AgentSnapshot]) -> String {
     let agents: Vec<_> = threads
         .iter()
-        .map(|(id, name, busy)| {
+        .map(|(id, name, busy, park)| {
             let status = if *busy { "RUNNING" } else { "IDLE" };
-            json!({"thread_id": id, "agent_name": name, "status": status, "parked": false, "park_reason": null})
+            json!({"thread_id": id, "agent_name": name, "status": status, "parked": park.is_some(), "park_reason": park})
         })
         .collect();
     let available: Vec<_> = roster

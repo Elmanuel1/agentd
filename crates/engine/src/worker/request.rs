@@ -32,7 +32,7 @@ impl Loop {
             false => &[],
         };
         let tools = match &thread.grading {
-            Some(_) => Toolbox::read_only(),
+            Some(_) => Toolbox::grader(),
             None => {
                 let mut tools = Toolbox::for_agent(agent, delegates);
                 tools.with_mcp(agent, mcp);
@@ -45,10 +45,7 @@ impl Loop {
             .effort
             .as_ref()
             .and_then(|e| serde_json::to_value(e).ok()?.as_str().map(str::to_owned));
-        let skills = match thread.grading {
-            Some(_) => Vec::new(),
-            None => self.skills(ws, agent).await,
-        };
+        let skills = self.skills(ws, agent).await;
         let request = ModelRequest {
             model: agent.config.model.id.clone(),
             agent: agent.config.name.clone(),
@@ -70,7 +67,7 @@ impl Loop {
         for skill in &agent.config.skills {
             let (SkillRef::Anthropic { version, .. } | SkillRef::Custom { version, .. }) = skill;
             match self.stores.skills.version_in(ws, skill.skill_id(), version).await {
-                Ok(v) => listed.push(SkillInfo { name: v.name, description: v.description }),
+                Ok(v) => listed.push(SkillInfo { name: v.directory, description: v.description }),
                 Err(e) => {
                     tracing::debug!(skill = skill.skill_id(), error = %e.message, "loop: a skill is not listed")
                 }

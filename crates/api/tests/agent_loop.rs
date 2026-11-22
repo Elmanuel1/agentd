@@ -591,8 +591,8 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
     let env = rig.environment("cloud").await;
     let name = format!("helper-{}", common::stamp());
     let model = Scripted::new(vec![
+        // The new helper takes the step after the coordinator's call.
         Say::Tool("create_agent", json!({"agent_name": name, "task": "do it"})),
-        Say::Text("waiting on the helper"),
         Say::Text("done by the helper"),
         Say::Text("all done"),
     ]);
@@ -633,9 +633,9 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
         "the helper's events are on its thread: {page}"
     );
     let asked = model.asked.lock();
-    assert_eq!(asked.len(), 4);
-    assert_eq!(asked[2].agent, name, "the third call is the helper's");
-    let heard = asked[3]
+    assert_eq!(asked.len(), 3);
+    assert_eq!(asked[1].agent, name, "the second call is the helper's");
+    let heard = asked[2]
         .messages
         .iter()
         .flat_map(|m| &m.content)

@@ -87,13 +87,14 @@ impl Toolbox {
         b
     }
 
-    /// Read-only toolset tools, for a grader. Allowed as `always_allow` says
-    /// so, since the session's worker runs a grader's calls from the
-    /// session's stream, which shows a thread's toolset calls by their
-    /// evaluation.
-    pub fn read_only() -> Self {
+    /// Every toolset tool, for a grader, so it can check the work by every
+    /// means the agent had. Allowed as `always_allow` says, so a call never
+    /// waits for a confirmation and the session's worker, which runs a
+    /// thread's toolset calls from the session's stream by their
+    /// evaluation, sees it.
+    pub fn grader() -> Self {
         let mut b = Self::default();
-        for name in specs::READ_ONLY {
+        for name in specs::TOOLSET {
             if let Some(spec) = specs::spec(name) {
                 b.add(spec, from_policy(PermissionPolicy::AlwaysAllow));
             }

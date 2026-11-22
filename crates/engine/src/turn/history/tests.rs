@@ -238,3 +238,22 @@ fn a_coordinator_s_sends_replay_as_live_s_tools_with_their_results() {
     assert_eq!((&results[0]["thread_id"], &results[0]["agent_name"]), (&json!(thread), &json!("helper")));
     assert_eq!((&results[1]["delivered"], &results[1]["queued"]), (&json!(true), &json!(false)));
 }
+
+#[test]
+fn a_follow_up_whose_opening_send_was_compacted_replays_as_send_to_agent() {
+    // The loop keeps beside each send whether it opened its thread, so a
+    // follow-up still replays as one with its thread's first send gone.
+    let thread = ThreadId::generate();
+    let again = ev(AgentEvent::ThreadMessageSent {
+        content: vec![ContentBlock::text("fix it")],
+        to_agent_name: Some("helper".into()),
+        to_session_thread_id: thread.clone(),
+    });
+    let kept = HashMap::from([(again.id.clone(), json!({"opened": false}))]);
+    let h = rebuild(&[&again], &HashMap::new(), &kept);
+    let call = h.messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
+        Block::ToolUse { name, input, .. } => Some((name.as_str(), input)),
+        _ => None,
+    });
+    assert_eq!(call, Some(("send_to_agent", &json!({"thread_id": thread, "message": "fix it"}))));
+}

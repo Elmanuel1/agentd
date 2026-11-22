@@ -16,7 +16,7 @@ use super::Loop;
 use super::compact::{Log, Opened};
 use super::reply::{Call, led};
 use super::rubrics;
-use super::settle::settle;
+use super::settle::{quiet, settle};
 use super::take::{Interrupt, Taken, cut_off, take};
 use super::turn::{batch, opening};
 use super::usage::{charged, over_budget, so_far, spent};
@@ -57,7 +57,7 @@ impl Loop {
         if step.interrupt == Interrupt::None && step.history.unanswered.iter().any(Unanswered::for_loop) {
             return self.call_mcp(claim, session, step).await;
         }
-        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt } = step;
+        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, more } = step;
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
             self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
@@ -74,7 +74,9 @@ impl Loop {
                 true => StepEnd::Requeue,
                 false => StepEnd::Done,
             };
-            self.commit(claim, end, &batch(taken, Vec::new(), answers), &session).await?;
+            let mut events = answers;
+            events.extend(quiet(&mut session, &read).unwrap_or_default());
+            self.commit(claim, end, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
         }
         let before = so_far(&kept);
@@ -170,7 +172,7 @@ impl Loop {
                     grading: thread.grading.as_ref(),
                 };
                 let mut out = led(&call, &reply);
-                settle(&mut out, &turn, &thread, &mut session, &read, &reply);
+                settle(&mut out, &turn, &thread, &mut session, &read, &reply, more);
                 if let Some(eval) = out.evaluation.take() {
                     session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
                     session.outcome_evaluations.push(eval);
