@@ -77,7 +77,10 @@ impl Loop {
                 Err(e) => {
                     drop(permit);
                     tracing::warn!(error = %e, "loop: could not claim a step");
-                    tokio::time::sleep(IDLE).await;
+                    tokio::select! {
+                        _ = stop.changed() => break,
+                        () = tokio::time::sleep(IDLE) => {}
+                    }
                     continue;
                 }
             };
