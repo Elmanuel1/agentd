@@ -9,6 +9,8 @@ mod common;
 mod compact;
 #[path = "agent_loop/mcp.rs"]
 mod mcp;
+#[path = "agent_loop/outcome.rs"]
+mod outcome;
 #[path = "agent_loop/stream.rs"]
 mod stream;
 
