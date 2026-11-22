@@ -26,6 +26,16 @@ pub use mcp::mcp;
 /// A claim's lease outlasts the step's model deadline by this much.
 const LEASE_MARGIN: Duration = Duration::from_secs(120);
 
+/// The model providers `config` sets a key for, each with its base URL.
+pub fn providers(config: &Config) -> ProviderConfig {
+    let c = &config.agent_loop;
+    let key = |k: &Option<SecretString>| k.as_ref().map(|k| k.expose_secret().to_owned());
+    ProviderConfig {
+        anthropic: key(&config.keys.anthropic).map(|k| (k, c.anthropic_base_url.clone())),
+        openai_compat: key(&config.keys.openrouter).map(|k| (k, c.model_base_url.clone())),
+    }
+}
+
 /// Start the loop workers `config` sets, over `stores`.
 pub async fn spawn(
     config: &Config,
@@ -34,12 +44,7 @@ pub async fn spawn(
     system: &SystemKeys,
 ) -> Result<tokio::task::JoinHandle<()>, BootError> {
     let c = &config.agent_loop;
-    let key = |k: &Option<SecretString>| k.as_ref().map(|k| k.expose_secret().to_owned());
-    let providers = ProviderConfig {
-        anthropic: key(&config.keys.anthropic).map(|k| (k, c.anthropic_base_url.clone())),
-        openai_compat: key(&config.keys.openrouter).map(|k| (k, c.model_base_url.clone())),
-    };
-    let client = ModelRouter::from_config(&providers).map_err(BootError::Loop)?;
+    let client = ModelRouter::from_config(&providers(config)).map_err(BootError::Loop)?;
     let budget: Arc<dyn ModelBudget> = match c.rpm.or(c.itpm) {
         Some(_) => {
             let streams = &config.streams;

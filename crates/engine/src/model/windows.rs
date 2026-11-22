@@ -8,7 +8,7 @@ use super::ModelError;
 use super::anthropic::AnthropicModel;
 use super::openai::OpenAiCompatModel;
 
-pub(super) async fn get(req: reqwest::RequestBuilder) -> Result<Value, ModelError> {
+async fn get(req: reqwest::RequestBuilder) -> Result<Value, ModelError> {
     let resp = req.send().await.map_err(|e| ModelError::Retryable(e.to_string()))?;
     let status = resp.status().as_u16();
     let retry_after = ModelError::retry_after(resp.headers());

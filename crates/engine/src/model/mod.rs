@@ -9,6 +9,7 @@ use std::future::Future;
 pub mod anthropic;
 mod block;
 pub mod budget;
+mod daily;
 mod list_cost;
 pub mod model_list;
 pub mod openai;

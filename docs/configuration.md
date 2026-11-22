@@ -105,7 +105,8 @@ at `AGENTD_MODEL_BASE_URL` (`GET /models`, OpenRouter's model list by default)
 at start and once a day, and accepts each id in it with a `/`, a variant
 (`qwen/qwen3.7-flash:free`) only as listed. Without the key, and before the
 first read, it accepts no `vendor/model` id: agentd builds in no list of
-them. A read that fails, or lists nothing, keeps the list last read. Any
+them. A read that fails, or lists nothing, keeps the list last read and is
+tried again a minute later. Any
 other id is a 400: `` `model.id`: model "gpt-4": model is not supported ``.
 
 A Messages API call asks for
@@ -203,7 +204,7 @@ input, 5-minute cache writes, cache reads and output, with a model's higher
 rates for a long prompt. Each replica reads the prices from the model list at
 `AGENTD_MODEL_PRICES_URL` (OpenRouter's public list, whose `anthropic/`
 entries carry Anthropic's rates) at start and once a day. A read that
-fails keeps the prices last read. To read new prices sooner, restart the
+fails keeps the prices last read and is tried again a minute later. To read new prices sooner, restart the
 replicas, for example `kubectl rollout restart deployment/<api>
 deployment/<loop>` for the API and loop deployments. A model the list lacks, and every model
 before the first read, takes the built-in table, which has Claude Haiku 5.5's
