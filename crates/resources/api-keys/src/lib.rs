@@ -9,16 +9,20 @@
 //! organization's admin keys ([`AdminKeysService`]) work the same way. Every
 //! digest is keyed with the current pepper of a [`shared::ports::keys::PepperRing`],
 //! and a key stored under an older pepper is found under it and moved.
+//! [`CachedKeys`] keeps resolved workspace keys for 60 s, dropping a key as
+//! soon as [`KeyRevokes`] hears of its revoke on the change feed.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
 pub mod admin;
+mod cache;
 pub mod environment;
 pub mod service;
 pub mod store;
 pub mod types;
 
 pub use admin::AdminKeysService;
+pub use cache::{CachedKeys, KeyRevokes, REVOKED, Report};
 pub use environment::EnvironmentKeysService;
 pub use service::ApiKeysService;
 pub use store::{AdminKeysStore, ApiKeysStore, EnvironmentKeysStore, KeyDigests, StoreError};

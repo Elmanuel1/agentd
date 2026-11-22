@@ -80,6 +80,7 @@ restart. Events emitted while it was disabled are not sent.
 | `agentd.webhooks.oldest_due_age` (max across replicas) | above 5 minutes | due deliveries wait for a sender: the receivers are slow; add replicas, each adds 256 senders |
 | `agentd.webhooks.endpoints_disabled` (max across replicas) | above 0 | an endpoint is disabled: read its `ERROR` line, fix it, then `agentd webhooks enable` |
 | `agentd.http.rate_limit_unchecked` | any increase over 5 minutes (it is a counter) | Valkey does not answer rate checks in 200 ms, so requests are not limited: check Valkey |
+| `agentd.keys.cache` hit ratio | below 0.9 | most requests read their key from Postgres: many distinct keys, or revokes clearing the cache |
 | `agentd.retention.last_success` | older than 15 minutes while retention is set | retention stopped: read its `warn` lines |
 | `agentd.scheduler.fires.due` (max across replicas) | above 0 for 5 minutes | due fires wait: the workers are failing or behind; read the `fires:` log lines and `agentd.scheduler.fires` with outcome `retried` |
 | `agentd.scheduler.fire.lag` p99 | over 60 s | fires start late: check the database's load and the fire handlers' `warn` lines |
