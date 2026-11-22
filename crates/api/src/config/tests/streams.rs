@@ -69,7 +69,12 @@ fn the_role_and_the_loop_s_settings_come_from_config() {
     let c = config(&[]).unwrap();
     assert_eq!(c.agent_loop.role, Role::All);
     assert!(c.agent_loop.role.runs_loop() && c.agent_loop.role.serves_api());
-    assert_eq!((c.agent_loop.per_workspace, c.agent_loop.attempts, c.agent_loop.steps), (32, 5, 256));
+    assert_eq!((c.agent_loop.per_workspace, c.agent_loop.attempts, c.agent_loop.memory_target), (32, 5, 800));
+    let half = config(&[("AGENTD_MEMORY_TARGET", "0.5")]).unwrap();
+    assert_eq!(half.agent_loop.memory_target, 500);
+    for bad in ["0", "1.5", "most"] {
+        assert_eq!(config(&[("AGENTD_MEMORY_TARGET", bad)]).unwrap_err().var, "AGENTD_MEMORY_TARGET");
+    }
     let api = config(&[("AGENTD_ROLE", "api")]).unwrap();
     assert!(!api.agent_loop.role.runs_loop(), "an api replica claims no step");
     let worker = config(&[("AGENTD_ROLE", "loop")]).unwrap();
