@@ -3,7 +3,7 @@
 //! session's own step (`session.rs`) takes the client's events and starts the
 //! threads, so a session's threads step at the same time.
 
-use sessions::events::{Event, SessionEvent, SpanEvent, StopReason};
+use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
 use sessions::steps::{Claim, StepEnd};
 use sessions::store::StoreError;
 use sessions::types::SessionStatus;
@@ -16,7 +16,7 @@ use super::reply::{Call, led};
 use super::rubrics;
 use super::settle::settle;
 use super::stall::abandoned;
-use super::status::arrived_for;
+use super::status::{arrived_for, busy};
 use super::take::{Taken, take};
 use super::turn::{batch, opening, thread_idle};
 use super::usage::{over_budget, so_far, spent};
@@ -69,7 +69,19 @@ impl Loop {
         // Nothing for this thread now (its work is done, or it is gone, as a
         // grader after its round): the session's step decides what follows.
         if !mine || !history.awaits_model() || session.status != SessionStatus::Running {
-            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), answers), None).await?;
+            // A session step that read the log before this thread's last
+            // commit may have started it again: it idles once more.
+            let mut events = answers;
+            if mine && busy(&read, &thread.id) {
+                let event_ids: Vec<EventId> =
+                    history.unanswered.iter().filter_map(|u| EventId::parse(&u.id).ok()).collect();
+                let stop = match event_ids.is_empty() {
+                    true => StopReason::EndTurn {},
+                    false => StopReason::RequiresAction { event_ids },
+                };
+                events.push(turn.lifecycle(thread_idle(&turn, stop)));
+            }
+            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), None).await?;
             return Ok(());
         }
         let before = so_far(&kept);
