@@ -60,10 +60,10 @@ impl ModelCatalog {
         replace(&self.anthropic, with_aliases(listed));
     }
 
-    /// Accept exactly the `listed` ids with a `/` as `vendor/model` ids from
-    /// now on, each variant (`:free`) only as listed.
+    /// Accept exactly the `listed` `vendor/model` ids from now on, each
+    /// variant (`:free`) only as listed.
     pub fn replace_openai_compat(&self, listed: impl IntoIterator<Item = String>) {
-        replace(&self.openai_compat, listed.into_iter().filter(|id| id.contains('/')).collect());
+        replace(&self.openai_compat, listed.into_iter().collect());
     }
 
     /// Whether a model id is accepted.

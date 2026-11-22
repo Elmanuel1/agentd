@@ -50,7 +50,7 @@ where
         loop {
             let wait = match read(http.clone()).await {
                 Ok(found) if !found.is_empty() => {
-                    tracing::debug!(list, "the list read");
+                    tracing::info!(list, "the list is installed");
                     install(found);
                     EVERY
                 }
@@ -88,6 +88,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+
+    #[tokio::test]
+    async fn a_response_over_the_cap_is_refused() {
+        let big = || async { vec![b' '; MAX_BYTES + 1] };
+        let app = axum::Router::new().route("/big", axum::routing::get(big));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/big", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+        let refused = json(reqwest::Client::new().get(url)).await.unwrap_err();
+        assert_eq!(refused, format!("the response is over {MAX_BYTES} bytes"));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_bad_read_is_tried_again_after_a_minute_and_a_good_one_after_a_day() {

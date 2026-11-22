@@ -229,7 +229,9 @@ jobs:
       - name: Start agentd
         run: |
           nohup ./target/debug/agentd > agentd.log 2>&1 &
-          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8080/ && exit 0; sleep 1; done
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8080/ && break; sleep 1; done
+          # mock/scripted is accepted once agentd has installed the scripted model's list.
+          for i in $(seq 1 120); do grep 'the list is installed' agentd.log | grep -q openai_compat && exit 0; sleep 1; done
           cat agentd.log; exit 1
       - name: Python SDK (anthropic 2.3.0)
         working-directory: conformance/python
