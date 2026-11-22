@@ -345,7 +345,7 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
     let s = r.session(&ws).await;
     r.wake(&ws, &s.id).await;
     let c = r.claim_of("w1", 60, &s.id).await.unwrap();
-    let before = r.log.head(&ws, &s.id).await.unwrap().seq;
+    let before = r.log.head(&ws, &s.id).await.unwrap().pos.seq;
     r.sessions.delete(&ws, &s.id).await.unwrap();
     assert!(
         !r.steps
@@ -366,7 +366,11 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
             .unwrap()
     );
     assert!(r.claim_of("w2", 60, &s.id).await.is_none());
-    assert_eq!(r.log.head(&ws, &s.id).await.unwrap().seq, before, "nothing appended for a deleted session");
+    assert_eq!(
+        r.log.head(&ws, &s.id).await.unwrap().pos.seq,
+        before,
+        "nothing appended for a deleted session"
+    );
 }
 
 #[tokio::test]

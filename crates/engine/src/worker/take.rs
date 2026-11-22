@@ -11,7 +11,6 @@ use shared::Timestamp;
 
 use super::grade::{active, conversation};
 use super::team::{Thread, threads};
-use super::turn::Turn;
 use crate::turn::compact::checkpoint;
 use crate::turn::history::{History, Kept, Unanswered, rebuild, thread_events};
 pub(super) use cut::cut_off;

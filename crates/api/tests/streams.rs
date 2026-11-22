@@ -298,7 +298,7 @@ async fn a_message_racing_a_delete_lands_before_it_or_is_refused_and_leaves_no_e
         outcomes.insert(sent.as_u16());
         let id = SessionId::parse(&session).unwrap();
         assert_eq!(
-            rig.stores.session_events.head(&ws, &id).await.unwrap().seq,
+            rig.stores.session_events.head(&ws, &id).await.unwrap().pos.seq,
             0,
             "no event outlives its session"
         );
