@@ -8,8 +8,7 @@ use super::{Say, Scripted, events_until, on_loop, send, types};
 
 #[tokio::test]
 async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdict() {
-    // L-5 with L-15: a coordinator reply while its helper still works is not
-    // the end of the work, so the round waits for the reply after the
+    // L-5 with L-15: the round starts on the coordinator's reply after the
     // helper's, and the session idles once, after the verdict.
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
@@ -17,7 +16,6 @@ async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdi
     let grade = json!({"result": "satisfied", "criteria": [{"criterion": "Poem", "met": true, "finding": "It is one."}]});
     let model = Scripted::new(vec![
         Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
-        Say::Text("waiting on the helper"),
         Say::Text("done by the helper"),
         Say::Text("the poem is written"),
         Say::Text(Box::leak(grade.to_string().into_boxed_str())),
@@ -48,8 +46,8 @@ async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdi
     assert_eq!(ends[0]["result"], "satisfied");
     assert_eq!(t.iter().filter(|k| **k == "session.status_idle").count(), 1, "{t:?}");
     let asked = model.asked.lock().clone();
-    assert_eq!(asked.len(), 6);
-    assert_eq!(asked[4].agent, "grader", "the grader grades the work the coordinator delivered");
+    assert_eq!(asked.len(), 5);
+    assert_eq!(asked[3].agent, "grader", "the grader grades the work the coordinator delivered");
     let (_, got) = send_to(&app, request("GET", &format!("/v1/sessions/{s}"), Auth::Key(KEY), None)).await;
     assert_eq!(got["outcome_evaluations"][0]["result"], "satisfied");
 }
@@ -63,9 +61,11 @@ async fn a_round_waits_for_a_delegate_that_waits_on_a_tool() {
     let name = format!("helper-{}", common::stamp());
     let grade = json!({"result": "satisfied", "criteria": [{"criterion": "Poem", "met": true, "finding": "It is one."}]});
     let model = Scripted::new(vec![
+        // Each step goes to the thread that waited longest: the new helper,
+        // then the coordinator.
         Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
-        Say::Text("waiting on the helper"),
         Say::Tool("lookup", json!({"k": 1})),
+        Say::Text("waiting on the helper"),
         Say::Text("done by the helper"),
         Say::Text("the poem is written"),
         Say::Text(Box::leak(grade.to_string().into_boxed_str())),

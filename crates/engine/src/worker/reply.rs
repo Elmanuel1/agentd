@@ -121,6 +121,15 @@ pub(super) fn led(c: &Call<'_>, r: &ModelResponse) -> Led {
                         .into_iter()
                         .partition(|e| matches!(e.payload, EventPayload::Agent(AgentEvent::ToolUse { .. })));
                 calls.extend(call);
+                // Kept beside each send: whether it opened its thread, so a
+                // replay after compaction still tells a start from a follow-up.
+                for (k, sent) in led.iter().enumerate().filter(|(_, e)| super::status::is_send(e)) {
+                    let opened = k
+                        .checked_sub(1)
+                        .and_then(|p| led.get(p))
+                        .is_some_and(|c| super::status::opens(c, sent));
+                    engine.push((sent.id.clone(), json!({ "opened": opened })));
+                }
                 after.extend(led);
                 continue;
             }

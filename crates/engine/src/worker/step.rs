@@ -16,7 +16,7 @@ use super::Loop;
 use super::compact::{Log, Opened};
 use super::reply::{Call, led};
 use super::rubrics;
-use super::settle::settle;
+use super::settle::{quiet, settle};
 use super::take::{Interrupt, Taken, cut_off, take};
 use super::turn::{batch, opening};
 use super::usage::{charged, over_budget, so_far, spent};
@@ -74,7 +74,9 @@ impl Loop {
                 true => StepEnd::Requeue,
                 false => StepEnd::Done,
             };
-            self.commit(claim, end, &batch(taken, Vec::new(), answers), &session).await?;
+            let mut events = answers;
+            events.extend(quiet(&mut session, &read).unwrap_or_default());
+            self.commit(claim, end, &batch(taken, Vec::new(), events), &session).await?;
             return Ok(());
         }
         let before = so_far(&kept);
