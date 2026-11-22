@@ -227,3 +227,30 @@ fn the_thread_that_waited_longest_takes_the_step() {
     assert_eq!(taken.thread.id, slow);
     assert!(taken.more, "the fast one still awaits the model, so the step is not the last");
 }
+
+#[test]
+fn a_thread_that_waits_while_another_is_ready_idles_alone() {
+    use sessions::events::StopReason;
+    use sessions::steps::StepEnd;
+    use sessions::types::SessionStatus;
+    let led = || super::reply::Led {
+        events: Vec::new(),
+        end: StepEnd::Done,
+        idle: Some(StopReason::RequiresAction { event_ids: Vec::new() }),
+        evaluation: None,
+        engine: Vec::new(),
+    };
+    let mut session = session();
+    session.status = SessionStatus::Running;
+    let thread = super::team::Thread::primary(&session);
+    let turn = thread.turn();
+    let r = reply(&[]);
+    let mut out = led();
+    super::settle::settle(&mut out, &turn, &thread, &mut session, &[], &r, true);
+    assert!(matches!(out.end, StepEnd::Again), "another thread is ready, so the step runs again");
+    assert_eq!(session.status, SessionStatus::Running);
+    assert_eq!(types(&wire(&out.events)), ["session.thread_status_idle"]);
+    let mut out = led();
+    super::settle::settle(&mut out, &turn, &thread, &mut session, &[], &r, false);
+    assert_eq!(session.status, SessionStatus::Idle, "with no other thread to run, the session idles");
+}

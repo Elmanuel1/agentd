@@ -57,7 +57,7 @@ impl Loop {
         if step.interrupt == Interrupt::None && step.history.unanswered.iter().any(Unanswered::for_loop) {
             return self.call_mcp(claim, session, step).await;
         }
-        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, more } = step;
+        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, more: ready } = step;
         let turn = thread.turn();
         if interrupt == Interrupt::Second {
             self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
@@ -172,7 +172,7 @@ impl Loop {
                     grading: thread.grading.as_ref(),
                 };
                 let mut out = led(&call, &reply);
-                settle(&mut out, &turn, &thread, &mut session, &read, &reply, more);
+                settle(&mut out, &turn, &thread, &mut session, &read, &reply, more || ready);
                 if let Some(eval) = out.evaluation.take() {
                     session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
                     session.outcome_evaluations.push(eval);
