@@ -136,11 +136,11 @@
    "content": [
     {
      "type": "tool_use",
-     "id": "toolu_send_to_agent",
-     "name": "send_to_agent",
+     "id": "toolu_create_agent",
+     "name": "create_agent",
      "input": {
       "agent_name": "rt-worker",
-      "message": "extract page 1"
+      "task": "extract page 1"
      }
     }
    ],

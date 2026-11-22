@@ -29,7 +29,7 @@ impl Loop {
         let tools = match &thread.grading {
             Some(_) => Toolbox::read_only(),
             None => {
-                let mut tools = Toolbox::for_agent(agent, coordinator);
+                let mut tools = Toolbox::for_agent(agent, delegates);
                 tools.with_mcp(agent, mcp);
                 tools
             }
@@ -43,7 +43,7 @@ impl Loop {
         let request = ModelRequest {
             model: agent.config.model.id.clone(),
             agent: agent.config.name.clone(),
-            system: system_prompt(agent, &[], delegates),
+            system: system_prompt(agent, &[]),
             messages,
             tools: tools.tools.clone(),
             max_tokens: self.models.max_tokens,

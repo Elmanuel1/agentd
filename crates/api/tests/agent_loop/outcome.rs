@@ -16,7 +16,7 @@ async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdi
     let name = format!("helper-{}", common::stamp());
     let grade = json!({"result": "satisfied", "criteria": [{"criterion": "Poem", "met": true, "finding": "It is one."}]});
     let model = Scripted::new(vec![
-        Say::Tool("send_to_agent", json!({"agent_name": name, "message": "write it"})),
+        Say::Tool("create_agent", json!({"agent_name": name, "task": "write it"})),
         Say::Text("waiting on the helper"),
         Say::Text("done by the helper"),
         Say::Text("the poem is written"),

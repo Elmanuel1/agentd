@@ -4,11 +4,11 @@
    "content": [
     {
      "type": "tool_use",
-     "id": "toolu_send_to_agent",
-     "name": "send_to_agent",
+     "id": "toolu_create_agent",
+     "name": "create_agent",
      "input": {
       "agent_name": "bid-extractor",
-      "message": "Document `5170ec87-b072-5b79-b2f5-ebadc7d57aba` (\"2025-45.pdf\", 68 pages). Extract per your instructions. Write the JSON to `/mnt/session/outputs/u0/bid-extractor-5170ec87-b072-5b79-b2f5-ebadc7d57aba.json`."
+      "task": "Document `5170ec87-b072-5b79-b2f5-ebadc7d57aba` (\"2025-45.pdf\", 68 pages). Extract per your instructions. Write the JSON to `/mnt/session/outputs/u0/bid-extractor-5170ec87-b072-5b79-b2f5-ebadc7d57aba.json`."
      }
     }
    ],
