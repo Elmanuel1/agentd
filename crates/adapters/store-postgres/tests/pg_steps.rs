@@ -674,3 +674,55 @@ async fn a_step_left_behind_by_a_deleted_session_ends_on_its_next_claim() {
     assert!(r.steps.commit(&c, StepEnd::Done, nothing).await.unwrap(), "a step with nothing to write ends");
     assert!(r.claim_of("w2", 60, &s.id).await.is_none(), "the step is gone");
 }
+
+#[tokio::test]
+async fn a_thread_s_commit_and_its_session_s_delete_at_once_never_deadlock_and_leave_no_step() {
+    // The commit wakes the session's own step while the delete removes the
+    // session: both finish, and any step the race leaves ends on its next
+    // claim, so no step outlives the session.
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    for round in 0..20 {
+        let ws = uniq_ws(&format!("race{round}"));
+        let s = r.session(&ws).await;
+        let thread = sessions::types::ThreadId::generate();
+        let mut conn = r.pg.diesel.get().await.unwrap();
+        let q = diesel::sql_query(
+            "INSERT INTO loop_steps (workspace_id, session_id, thread_id) VALUES ($1, $2, $3)",
+        )
+        .bind::<diesel::sql_types::Text, _>(ws.as_str())
+        .bind::<diesel::sql_types::Text, _>(s.id.as_str())
+        .bind::<diesel::sql_types::Text, _>(thread.as_str());
+        diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+        drop(conn);
+        let c = r.claim_of("w1", 60, &s.id).await.expect("the thread's step is due");
+        assert_eq!(c.thread.as_ref(), Some(&thread));
+        let nothing = StepWrite {
+            read: &[],
+            at: Timestamp::now(),
+            events: &[],
+            engine: &[],
+            session: &unchanged,
+            deliveries: None,
+            wake: &[],
+        };
+        let (committed, deleted) =
+            tokio::join!(r.steps.commit(&c, StepEnd::Done, nothing), r.sessions.delete(&ws, &s.id));
+        committed.expect("the commit ends without a deadlock");
+        deleted.expect("the delete ends without a deadlock");
+        while let Some(left) = r.claim_of("w2", 60, &s.id).await {
+            let w = StepWrite {
+                read: &[],
+                at: Timestamp::now(),
+                events: &[],
+                engine: &[],
+                session: &unchanged,
+                deliveries: None,
+                wake: &[],
+            };
+            assert!(r.steps.commit(&left, StepEnd::Done, w).await.unwrap(), "a step left behind ends");
+        }
+    }
+}

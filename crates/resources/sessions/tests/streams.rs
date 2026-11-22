@@ -357,7 +357,8 @@ async fn an_archived_stream_sends_every_page_before_it_ends() {
     let agent = || Event::new(EventPayload::Agent(AgentEvent::Message { content: vec![] }));
     let page: Vec<(i64, Event)> = (1..=1000).map(|seq| (seq, agent())).collect();
     let last = agent();
-    let rig = rig(Head::default(), true, vec![read(true, page), read(true, vec![(1001, last.clone())])]);
+    // Open before the session is archived, so its stream ends on the archive.
+    let rig = rig(Head::default(), false, vec![read(true, page), read(true, vec![(1001, last.clone())])]);
     let mut sub = rig.subscribe().await;
     rig.signal().await;
     let mut seen = false;
