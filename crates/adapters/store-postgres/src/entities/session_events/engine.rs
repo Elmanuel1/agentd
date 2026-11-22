@@ -33,30 +33,33 @@ const STEP: &str = "WITH cuts AS (
          THEN jsonb_set(e.doc, '{content}', '[]'::jsonb) ELSE e.doc END AS doc
      FROM session_events e
      LEFT JOIN cuts c ON c.thread_id = e.thread_id
+     LEFT JOIN session_events m ON e.event_type IN ('user.tool_result', 'user.custom_tool_result')
+       AND m.workspace_id = $1 AND m.session_id = $2 AND m.thread_id = $3
+       AND m.event_id = coalesce(e.doc->>'tool_use_id', e.doc->>'custom_tool_use_id')
      WHERE e.workspace_id = $1 AND e.session_id = $2 AND (
        (($3::text IS NULL OR e.thread_id = $3) AND ($4 OR e.seq >= coalesce(c.through, 0)))
        OR e.event_type LIKE 'session.%'
        OR e.event_type LIKE 'span.outcome_evaluation%'
        OR e.event_type IN ('user.message', 'user.interrupt', 'user.tool_confirmation',
                            'user.define_outcome', 'system.message')
-       OR (e.event_type IN ('user.tool_result', 'user.custom_tool_result')
-           AND coalesce(e.doc->>'tool_use_id', e.doc->>'custom_tool_use_id') IN (
-             SELECT m.event_id FROM session_events m
-             WHERE m.workspace_id = $1 AND m.session_id = $2 AND m.thread_id = $3)))
+       OR m.event_id IS NOT NULL)
      ORDER BY e.seq";
 
 /// The session's model calls added up; a cost is kept at `$3`.
 const CALLS: &str = "SELECT
-       coalesce(sum((u->>'cache_read_input_tokens')::bigint) FILTER (WHERE ok), 0)::bigint AS cache_read,
-       coalesce(sum((u->>'input_tokens')::bigint + coalesce((u->>'cache_creation_input_tokens')::bigint, 0))
-         FILTER (WHERE ok), 0)::bigint AS input,
-       coalesce(sum((u->>'output_tokens')::bigint) FILTER (WHERE ok), 0)::bigint AS output,
-       count(*) FILTER (WHERE ok AND NOT coalesce(engine ? $3, false)) AS unpriced,
-       coalesce(sum((engine->>$3)::bigint), 0)::bigint AS cost
-     FROM (SELECT doc->'model_usage' AS u, doc->'engine' AS engine,
-                  NOT coalesce((doc->>'is_error')::boolean, false) AS ok
-           FROM session_events
-           WHERE workspace_id = $1 AND session_id = $2 AND event_type = 'span.model_request_end') calls";
+       coalesce(sum((doc->'model_usage'->>'cache_read_input_tokens')::bigint) FILTER (WHERE {OK}), 0)::bigint
+         AS cache_read,
+       coalesce(sum((doc->'model_usage'->>'input_tokens')::bigint
+                    + coalesce((doc->'model_usage'->>'cache_creation_input_tokens')::bigint, 0))
+         FILTER (WHERE {OK}), 0)::bigint AS input,
+       coalesce(sum((doc->'model_usage'->>'output_tokens')::bigint) FILTER (WHERE {OK}), 0)::bigint AS output,
+       count(*) FILTER (WHERE {OK} AND NOT coalesce(doc->'engine' ? $3, false)) AS unpriced,
+       coalesce(sum((doc->'engine'->>$3)::bigint), 0)::bigint AS cost
+     FROM session_events
+     WHERE workspace_id = $1 AND session_id = $2 AND event_type = 'span.model_request_end'";
+
+/// A model call that did not fail.
+const OK: &str = "NOT coalesce((doc->>'is_error')::boolean, false)";
 
 /// Each event with its kept object, which names the event's `seq`, as a
 /// checkpoint records it.
@@ -128,7 +131,7 @@ impl NativeEngineReads for PgSessionEventLog {
 
     async fn calls(&self, ws: &WorkspaceId, id: &SessionId, cost: &str) -> Result<Calls, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let row: CallsRow = diesel::sql_query(CALLS)
+        let row: CallsRow = diesel::sql_query(CALLS.replace("{OK}", OK))
             .bind::<Text, _>(ws.as_str())
             .bind::<Text, _>(id.as_str())
             .bind::<Text, _>(cost)

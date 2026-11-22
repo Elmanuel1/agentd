@@ -6,7 +6,6 @@
 use std::future::Future;
 
 use sessions::steps::{Claim, StepWrite};
-use sessions::types::Session;
 use shared::{BackendError, Timestamp};
 
 use super::Loop;
@@ -19,7 +18,6 @@ impl Loop {
         step: impl Future<Output = Result<(), BackendError>>,
     ) -> Result<(), BackendError> {
         let (every, lease) = (self.settings.lease / 3, self.settings.lease_seconds());
-        let unchanged = |_: &mut Session| false;
         let renew = async {
             loop {
                 tokio::time::sleep(every).await;
@@ -28,7 +26,7 @@ impl Loop {
                     at: Timestamp::now(),
                     events: &[],
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 };

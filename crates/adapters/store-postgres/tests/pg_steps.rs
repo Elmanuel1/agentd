@@ -105,10 +105,6 @@ fn reply() -> Event {
     e
 }
 
-fn unchanged(_: &mut Session) -> bool {
-    false
-}
-
 fn running(s: &mut Session) -> bool {
     s.status = SessionStatus::Running;
     true
@@ -173,7 +169,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 at: Timestamp::now(),
                 events: std::slice::from_ref(&start),
                 engine: &[],
-                session: &running,
+                session: Some(&running),
                 deliveries: None,
                 wake: &[],
             },
@@ -193,7 +189,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 at: Timestamp::now(),
                 events: std::slice::from_ref(&last),
                 engine: &[],
-                session: &unchanged,
+                session: None,
                 deliveries: None,
                 wake: &[],
             },
@@ -234,7 +230,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                     at: Timestamp::now(),
                     events: none,
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 }
@@ -252,7 +248,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                     at: Timestamp::now(),
                     events: none,
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 }
@@ -270,7 +266,7 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                     at: Timestamp::now(),
                     events: &[reply()],
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 }
@@ -305,7 +301,7 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                     at: Timestamp::now(),
                     events: &[reply()],
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 }
@@ -325,7 +321,7 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                     at: Timestamp::now(),
                     events: &[],
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 }
@@ -359,7 +355,7 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
                     at: Timestamp::now(),
                     events: &[reply()],
                     engine: &[],
-                    session: &unchanged,
+                    session: None,
                     deliveries: None,
                     wake: &[],
                 }
@@ -411,7 +407,7 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
                 at: Timestamp::now(),
                 events: &[],
                 engine: &[],
-                session: &unchanged,
+                session: None,
                 deliveries: None,
                 wake: &[],
             },
@@ -468,7 +464,7 @@ async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() 
                 at: Timestamp::now(),
                 events: &[reply()],
                 engine: &[],
-                session: &unchanged,
+                session: None,
                 deliveries: None,
                 wake: &[],
             },
@@ -508,7 +504,7 @@ async fn the_counts_see_due_and_leased_steps() {
                 at: Timestamp::now(),
                 events: &[],
                 engine: &[],
-                session: &unchanged,
+                session: None,
                 deliveries: None,
                 wake: &[],
             },
@@ -566,7 +562,7 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
         at: Timestamp::now(),
         events: &[],
         engine: &[],
-        session: &unchanged,
+        session: None,
         deliveries: None,
         wake: &[],
     };
@@ -590,12 +586,12 @@ async fn what_a_step_keeps_beside_an_event_only_the_engine_read_returns() {
         at: Timestamp::now(),
         events: std::slice::from_ref(&said),
         engine: &kept,
-        session: &unchanged,
+        session: None,
         deliveries: None,
         wake: &[],
     };
     r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
-    let read = r.log.engine_events(&ws, &s.id).await.unwrap();
+    let read = r.log.step_events(&ws, &s.id).await.unwrap();
     let (event, engine) = read.iter().find(|(e, _)| e.id == said.id).unwrap();
     let mut engine = engine.clone().unwrap();
     assert!(
@@ -632,14 +628,14 @@ async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
             at: Timestamp::now(),
             events: std::slice::from_ref(&event),
             engine: &engine,
-            session: &unchanged,
+            session: None,
             deliveries: None,
             wake: &[],
         };
         ends.push(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
     }
     assert_eq!(ends, [true, false], "the duplicate commits nothing");
-    let kept = r.log.engine_events(&ws, &s.id).await.unwrap();
+    let kept = r.log.step_events(&ws, &s.id).await.unwrap();
     let count = kept
         .iter()
         .filter(|(e, _)| matches!(e.payload, EventPayload::Agent(AgentEvent::ThreadContextCompacted {})))
@@ -669,7 +665,7 @@ async fn a_step_left_behind_by_a_deleted_session_ends_on_its_next_claim() {
         at: Timestamp::now(),
         events: &[],
         engine: &[],
-        session: &unchanged,
+        session: None,
         deliveries: None,
         wake: &[],
     };
@@ -706,7 +702,7 @@ async fn a_thread_s_commit_and_its_session_s_delete_at_once_never_deadlock_and_l
             at: Timestamp::now(),
             events: &[],
             engine: &[],
-            session: &unchanged,
+            session: None,
             deliveries: None,
             wake: &[],
         };
@@ -720,12 +716,62 @@ async fn a_thread_s_commit_and_its_session_s_delete_at_once_never_deadlock_and_l
                 at: Timestamp::now(),
                 events: &[],
                 engine: &[],
-                session: &unchanged,
+                session: None,
                 deliveries: None,
                 wake: &[],
             };
             assert!(r.steps.commit(&left, StepEnd::Done, w).await.unwrap(), "a step left behind ends");
         }
+    }
+}
+
+#[tokio::test]
+async fn a_session_step_s_commit_and_a_thread_s_commit_at_once_never_deadlock() {
+    // The session's step wakes the thread while the thread's step wakes the
+    // session's, and both change the session's row: rows lock in one order,
+    // the session's own step, the thread's, then the session, so both end.
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    for round in 0..20 {
+        let ws = uniq_ws(&format!("order{round}"));
+        let s = r.session(&ws).await;
+        r.wake(&ws, &s.id).await;
+        let thread = sessions::types::ThreadId::generate();
+        let mut conn = r.pg.diesel.get().await.unwrap();
+        let q = diesel::sql_query(
+            "INSERT INTO loop_steps (workspace_id, session_id, thread_id) VALUES ($1, $2, $3)",
+        )
+        .bind::<diesel::sql_types::Text, _>(ws.as_str())
+        .bind::<diesel::sql_types::Text, _>(s.id.as_str())
+        .bind::<diesel::sql_types::Text, _>(thread.as_str());
+        diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+        drop(conn);
+        let a = r.claim_of("w1", 60, &s.id).await.expect("a step is due");
+        let b = r.claim_of("w2", 60, &s.id).await.expect("the other step is due");
+        let (own, mine) = match a.thread.is_none() {
+            true => (a, b),
+            false => (b, a),
+        };
+        assert_eq!(mine.thread.as_ref(), Some(&thread));
+        let woken = [thread.clone()];
+        let settle = StepWrite {
+            read: &[],
+            at: Timestamp::now(),
+            events: &[],
+            engine: &[],
+            session: Some(&running),
+            deliveries: None,
+            wake: &woken,
+        };
+        let end = StepWrite { wake: &[], ..settle };
+        let (settled, ended) = tokio::join!(
+            r.steps.commit(&own, StepEnd::Done, settle),
+            r.steps.commit(&mine, StepEnd::Done, end)
+        );
+        settled.expect("the session's step ends without a deadlock");
+        ended.expect("the thread's step ends without a deadlock");
     }
 }
 
@@ -805,7 +851,7 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
             at: Timestamp::now(),
             events,
             engine,
-            session: &unchanged,
+            session: None,
             deliveries: None,
             wake: &[],
         };
@@ -820,9 +866,16 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     let primary = ids(r.log.thread_events(&ws, &s.id, None, FROM_CHECKPOINT).await.unwrap(), &events);
     assert_eq!(primary, [0, 1, 5, 6, 7], "the primary's events, the answers with no thread among them");
     let calls = r.log.calls(&ws, &s.id, "list_cost_nanos").await.unwrap();
-    assert_eq!((calls.input_tokens, calls.output_tokens, calls.unpriced, calls.cost), (22, 6, 0, 12));
+    let want = sessions::store::Calls {
+        cache_read_input_tokens: 0,
+        input_tokens: 22,
+        output_tokens: 6,
+        unpriced: 0,
+        cost: 12,
+    };
+    assert_eq!(calls, want);
     // A checkpoint covering through my call: the thread resumes from it.
-    let all = r.log.engine_events(&ws, &s.id).await.unwrap();
+    let all = r.log.step_events(&ws, &s.id).await.unwrap();
     let seq =
         all.iter().find(|(e, _)| e.id == my_call.id).and_then(|(_, k)| k.as_ref()?.get("seq")?.as_i64());
     let compacted = on(AgentEvent::ThreadContextCompacted {}.into(), Some(&mine));
@@ -867,7 +920,7 @@ async fn a_thread_reads_its_results_whole_and_the_session_step_without_content()
         at: Timestamp::now(),
         events: &events,
         engine: &[],
-        session: &unchanged,
+        session: None,
         deliveries: None,
         wake: &[],
     };

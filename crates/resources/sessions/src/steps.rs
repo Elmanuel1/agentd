@@ -52,8 +52,8 @@ pub struct StepWrite<'a> {
     /// What the loop keeps beside some of those events, by event id, which
     /// no API read serves.
     pub engine: &'a [(EventId, serde_json::Value)],
-    /// What it changes on the session's row.
-    pub session: &'a SessionChange<'a>,
+    /// What it may change on the session's row; `None` reads no row.
+    pub session: Option<&'a SessionChange<'a>>,
     /// The webhook deliveries of a status change, when any endpoint is configured.
     pub deliveries: Option<&'a StatusDeliveries<'a>>,
     /// The threads the write gives a step to run, due at once.

@@ -5,7 +5,7 @@ use shared::{ApiError, AuthContext, Pagination, WorkspaceId};
 
 use super::{SkillsService, map_store, new_version};
 use crate::bundle::UploadFile;
-use crate::types::{SkillVersion, SkillVersionId, VersionRef};
+use crate::types::{SkillId, SkillVersion, SkillVersionId, VersionRef};
 
 impl SkillsService {
     /// `POST /v1/skills/{id}/versions`: the new version becomes the latest.
@@ -47,20 +47,27 @@ impl SkillsService {
         raw_id: &str,
         raw_version: &str,
     ) -> Result<SkillVersion, ApiError> {
-        self.version_in(&ctx.workspace, raw_id, raw_version).await
+        let which = VersionRef::parse(raw_version)?;
+        let skill = self.get(ctx, raw_id).await?;
+        self.versions
+            .get(&ctx.workspace, &skill.id, &which)
+            .await
+            .map_err(|e| map_store(e, raw_id, raw_version))
     }
 
-    /// A version of a skill in `ws`, for the agent loop, which acts for the
-    /// session rather than a caller.
-    pub async fn version_in(
+    /// The versions an agent's skills name, by (skill id, version), for the
+    /// agent loop, which acts for the session rather than a caller; one that
+    /// does not parse or name a version is left out.
+    pub async fn listed(
         &self,
         ws: &WorkspaceId,
-        raw_id: &str,
-        raw_version: &str,
-    ) -> Result<SkillVersion, ApiError> {
-        let which = VersionRef::parse(raw_version)?;
-        let skill = self.get_in(ws, raw_id).await?;
-        self.versions.get(ws, &skill.id, &which).await.map_err(|e| map_store(e, raw_id, raw_version))
+        refs: &[(&str, &str)],
+    ) -> Result<Vec<SkillVersion>, ApiError> {
+        let refs: Vec<(SkillId, VersionRef)> = refs
+            .iter()
+            .filter_map(|(id, version)| Some((SkillId::parse(id).ok()?, VersionRef::parse(version).ok()?)))
+            .collect();
+        self.versions.listed(ws, &refs).await.map_err(|e| map_store(e, "", ""))
     }
 
     /// `GET /v1/skills/{id}/versions/{version}/content`: the version's zip.

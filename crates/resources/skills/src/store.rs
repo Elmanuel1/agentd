@@ -68,6 +68,12 @@ pub trait SkillVersionsStore: Send + Sync {
         id: &SkillId,
         which: &VersionRef,
     ) -> Result<SkillVersion, StoreError>;
+    /// The versions `refs` name that exist, in `refs`' order.
+    async fn listed(
+        &self,
+        ws: &WorkspaceId,
+        refs: &[(SkillId, VersionRef)],
+    ) -> Result<Vec<SkillVersion>, StoreError>;
     /// How many versions the skill has.
     async fn count(&self, ws: &WorkspaceId, id: &SkillId) -> Result<usize, StoreError>;
     /// A version's bundle.

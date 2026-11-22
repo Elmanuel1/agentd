@@ -27,6 +27,20 @@ pub(super) fn stopped<'a>(log: &'a [Event], thread: &ThreadId) -> Option<&'a Sto
 /// A thread stopped on its retries or on the budget, or idle since an
 /// interrupt, and nothing has come in for it since: its turn is over until a
 /// message or an answer arrives.
+/// The last interrupt the agent took came during `thread`'s turn that ran up
+/// to `end`, an index into `log`: after that turn began and before `end`.
+pub(super) fn interrupted(log: &[Event], thread: &ThreadId, end: usize) -> bool {
+    let last = log.iter().rposition(|e| {
+        e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
+    });
+    let Some(i) = last.filter(|i| *i < end) else { return false };
+    let began = log.get(..end).unwrap_or_default().iter().rposition(|e| {
+        e.session_thread_id.as_ref() == Some(thread)
+            && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }))
+    });
+    began.is_none_or(|b| i > b)
+}
+
 pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
     let over = |r: Option<&StopReason>| {
         matches!(r, Some(StopReason::RetriesExhausted {} | StopReason::BudgetReached {}))
@@ -35,18 +49,9 @@ pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
         e.session_thread_id.as_ref() == Some(&thread.id)
             && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusIdle { .. }))
     });
-    let interrupt = log.iter().rposition(|e| {
-        e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
-    });
     // Only an interrupt during the turn that stopped holds the thread: an
     // earlier turn's does not.
-    let began = |s: usize| {
-        log.get(..s).unwrap_or_default().iter().rposition(|e| {
-            e.session_thread_id.as_ref() == Some(&thread.id)
-                && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }))
-        })
-    };
-    let cut = stop.zip(interrupt).is_some_and(|(s, i)| i < s && began(s).is_none_or(|b| i > b));
+    let cut = stop.is_some_and(|s| interrupted(log, &thread.id, s));
     let (Some(at), true) = (stop, cut || over(stopped(log, &thread.id))) else { return false };
     let scope = (!thread.primary).then(|| thread.id.clone());
     // Answers are matched to the thread's calls over the whole log, then

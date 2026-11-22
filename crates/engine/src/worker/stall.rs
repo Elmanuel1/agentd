@@ -3,12 +3,12 @@
 //! without end.
 
 use serde_json::json;
-use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent};
+use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent, StopReason};
 use sessions::types::{OutcomeEvaluation, Session, ThreadId};
 
 use super::grade::{Outcome, verdict};
 use super::team::Thread;
-use super::turn::Turn;
+use super::turn::{Turn, thread_idle};
 
 /// Turns a grader may end without its verdict before its round fails.
 const NUDGES: usize = 3;
@@ -32,11 +32,20 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
     ended >= NUDGES
 }
 
-/// A grader that stopped on the budget or its retries ends its round failed,
-/// so the round does not stay open with no one to grade it; `why` says which.
-pub(super) fn abandoned(session: &Session, thread: &Thread, why: &str) -> Option<(Event, OutcomeEvaluation)> {
-    let outcome = thread.grading.as_ref()?;
-    Some(failed(&Thread::primary(session).turn(), outcome, ModelUsage::default(), why))
+/// A thread that stopped on `stop` (the budget or its retries) idles; a
+/// grader also ends its round failed, so the round does not stay open with
+/// no one to grade it, `why` saying which.
+pub(super) fn abandoned(
+    turn: &Turn,
+    session: &Session,
+    thread: &Thread,
+    stop: StopReason,
+    why: &str,
+) -> (Vec<Event>, Option<OutcomeEvaluation>) {
+    let idle = turn.lifecycle(thread_idle(turn, stop));
+    let Some(outcome) = thread.grading.as_ref() else { return (vec![idle], None) };
+    let (end, eval) = failed(&Thread::primary(session).turn(), outcome, ModelUsage::default(), why);
+    (vec![idle, end], Some(eval))
 }
 
 /// The round's end when the grader stalled: it fails.

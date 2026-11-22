@@ -299,7 +299,7 @@ async fn a_message_racing_a_delete_lands_before_it_or_is_refused_and_leaves_no_e
         let id = SessionId::parse(&session).unwrap();
         // Every row, settled or not: `head` serves only settled ones.
         assert!(
-            rig.stores.session_events.engine_events(&ws, &id).await.unwrap().is_empty(),
+            rig.stores.session_events.step_events(&ws, &id).await.unwrap().is_empty(),
             "no event outlives its session"
         );
         let (_, item) =

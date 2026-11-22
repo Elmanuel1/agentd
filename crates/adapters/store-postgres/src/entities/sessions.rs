@@ -80,13 +80,6 @@ impl NativeSessionsStore for PgSessionsStore {
                 // An append in flight commits first; a later one finds no session.
                 lock(c, id).await?;
                 let key = sessions::workspace_id.eq(ws.as_str()).and(sessions::session_id.eq(id.as_str()));
-                let status: Option<String> =
-                    sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
-                match status.as_deref() {
-                    None => return Ok(Err(StoreError::NotFound)),
-                    Some(s) if s == running => return Ok(Err(StoreError::Conflict)),
-                    Some(_) => {}
-                }
                 // The steps before the row, as a step's commit locks them.
                 forget(c, ws, id).await?;
                 let doc: Option<serde_json::Value> =
@@ -95,17 +88,26 @@ impl NativeSessionsStore for PgSessionsStore {
                         .get_result(c)
                         .await
                         .optional()?;
-                // A step started the session since: nothing is deleted.
-                let Some(doc) = doc else { return Err(diesel::result::Error::RollbackTransaction) };
+                // Nothing deleted: no such session, or it is running. Either
+                // way the steps' delete rolls back.
+                let Some(doc) = doc else {
+                    let status: Option<String> =
+                        sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
+                    return Err(match status {
+                        None => diesel::result::Error::NotFound,
+                        Some(_) => diesel::result::Error::RollbackTransaction,
+                    });
+                };
                 stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
                 super::mcp_connections::forget(c, ws, id).await?;
-                Ok(Ok(doc))
+                Ok(doc)
             })
             .await
             .map_err(|e| match e {
+                diesel::result::Error::NotFound => StoreError::NotFound,
                 diesel::result::Error::RollbackTransaction => StoreError::Conflict,
                 e => diesel_be(e),
-            })??;
+            })?;
         parse_doc(doc)
     }
 

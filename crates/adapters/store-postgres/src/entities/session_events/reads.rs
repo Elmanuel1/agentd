@@ -117,12 +117,9 @@ impl NativeSessionEventReads for PgSessionEventLog {
         // The session row comes back with no event when nothing matched, and
         // no row at all once the session is gone. Only settled events are
         // served, a pending one too, so the cursor never passes an earlier
-        // one still being written; an archived session reads as archived only
-        // once none is left.
+        // one still being written.
         let rows: Vec<TailRow> = diesel::sql_query(format!(
-            "SELECT s.doc->>'archived_at' IS NOT NULL AND NOT EXISTS (SELECT 1 FROM session_events u
-               WHERE u.workspace_id = s.workspace_id AND u.session_id = s.session_id AND NOT u.{SETTLED}) AS archived,
-               e.xid::text::bigint AS xid, e.seq, e.doc
+            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, e.xid::text::bigint AS xid, e.seq, e.doc
              FROM sessions s
              LEFT JOIN session_events e ON e.workspace_id = s.workspace_id AND e.session_id = s.session_id
                AND e.{SETTLED} AND ((e.xid::text::bigint, e.seq) > ($3, $4) OR e.seq = ANY($5))
@@ -141,6 +138,22 @@ impl NativeSessionEventReads for PgSessionEventLog {
         let Some(archived) = <[TailRow]>::first(&rows).map(|r| r.archived) else {
             return Ok(None);
         };
+        // An archived session reads as archived only once no event is left
+        // unsettled.
+        let unsettled: Option<LastRow> = match archived {
+            false => None,
+            true => diesel::sql_query(format!(
+                "SELECT xid::text::bigint AS xid, seq FROM session_events
+                 WHERE workspace_id = $1 AND session_id = $2 AND NOT {SETTLED} LIMIT 1"
+            ))
+            .bind::<Text, _>(ws.as_str())
+            .bind::<Text, _>(id.as_str())
+            .get_result(&mut conn)
+            .await
+            .optional()
+            .map_err(diesel_be)?,
+        };
+        let archived = archived && unsettled.is_none();
         let events = rows
             .into_iter()
             .filter_map(|r| r.xid.zip(r.seq).zip(r.doc))
@@ -151,18 +164,10 @@ impl NativeSessionEventReads for PgSessionEventLog {
 
     async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let last: Option<LastRow> = diesel::sql_query(format!(
-            "SELECT xid::text::bigint AS xid, seq FROM session_events
-             WHERE workspace_id = $1 AND session_id = $2 AND {SETTLED} ORDER BY xid DESC, seq DESC LIMIT 1"
-        ))
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .get_result(&mut conn)
-        .await
-        .optional()
-        .map_err(diesel_be)?;
         let head: HeadRow = diesel::sql_query(format!(
-            "SELECT coalesce(array_agg(seq ORDER BY seq) FILTER (WHERE {QUEUED}), '{{}}') AS queued
+            "SELECT (array_agg(xid::text::bigint ORDER BY xid DESC, seq DESC) FILTER (WHERE {SETTLED}))[1] AS xid,
+                    (array_agg(seq ORDER BY xid DESC, seq DESC) FILTER (WHERE {SETTLED}))[1] AS seq,
+                    coalesce(array_agg(seq ORDER BY seq) FILTER (WHERE {QUEUED}), '{{}}') AS queued
              FROM session_events WHERE workspace_id = $1 AND session_id = $2"
         ))
         .bind::<Text, _>(ws.as_str())
@@ -170,7 +175,7 @@ impl NativeSessionEventReads for PgSessionEventLog {
         .get_result(&mut conn)
         .await
         .map_err(diesel_be)?;
-        let pos = last.map(|l| Pos { xid: l.xid, seq: l.seq }).unwrap_or_default();
+        let pos = head.xid.zip(head.seq).map(|(xid, seq)| Pos { xid, seq }).unwrap_or_default();
         Ok(Head { pos, queued: head.queued })
     }
 }

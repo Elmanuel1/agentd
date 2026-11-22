@@ -125,7 +125,9 @@ fn the_coordinator_replays_delegation_as_a_tool_call_and_the_reply_as_input() {
         from_agent_name: "bid-extractor".into(),
         from_session_thread_id: sub.clone(),
     });
-    let h = build(&[user("go"), s1.clone(), end(&s1), sent, got]);
+    let kept = HashMap::from([(sent.id.clone(), json!({"opened": true}))]);
+    let log = [user("go"), s1.clone(), end(&s1), sent, got];
+    let h = rebuild(&log.iter().collect::<Vec<_>>(), &HashMap::new(), &kept);
     assert!(
         matches!(&h.messages[1].content[0], Block::ToolUse { name, .. } if name == delegation::CREATE_AGENT)
     );
@@ -217,7 +219,11 @@ fn a_coordinator_s_sends_replay_as_live_s_tools_with_their_results() {
         })
     };
     let (first, again) = (sent("do it"), sent("fix it"));
-    let h = rebuild(&[&first, &again], &HashMap::new(), &HashMap::new());
+    let kept = HashMap::from([
+        (first.id.clone(), json!({"opened": true})),
+        (again.id.clone(), json!({"opened": false})),
+    ]);
+    let h = rebuild(&[&first, &again], &HashMap::new(), &kept);
     let blocks: Vec<&Block> = h.messages.iter().flat_map(|m| &m.content).collect();
     let calls: Vec<(&str, &serde_json::Value)> = blocks
         .iter()

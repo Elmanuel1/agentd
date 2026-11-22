@@ -38,12 +38,6 @@ pub struct ThreadRead {
 /// A session's log as the loop reads it. A session that does not exist,
 /// which the caller has already read, has no events.
 pub trait EngineReads: Send + Sync {
-    /// Every event of the session, oldest first.
-    fn engine_events<'a>(
-        &'a self,
-        ws: &'a WorkspaceId,
-        session: &'a SessionId,
-    ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
     /// At least what the session's own step reads, oldest first: each
     /// thread's events from its latest checkpoint's covered event, every
     /// `session.*` event, the outcomes' evaluation spans and the client
@@ -77,6 +71,7 @@ pub trait EngineReads: Send + Sync {
 /// What an adapter implements to provide [`EngineReads`]; the methods are
 /// documented there. The defaults read the whole log.
 pub trait NativeEngineReads: NativeSessionEventReads {
+    /// Every event of the session, oldest first, each with its kept object.
     fn engine_events(
         &self,
         ws: &WorkspaceId,
@@ -134,13 +129,6 @@ pub trait NativeEngineReads: NativeSessionEventReads {
 }
 
 impl<T: NativeEngineReads> EngineReads for T {
-    fn engine_events<'a>(
-        &'a self,
-        ws: &'a WorkspaceId,
-        session: &'a SessionId,
-    ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
-        Box::pin(NativeEngineReads::engine_events(self, ws, session))
-    }
     fn step_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,

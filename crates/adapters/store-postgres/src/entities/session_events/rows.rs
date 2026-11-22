@@ -12,6 +12,10 @@ pub(super) struct LastRow {
 
 #[derive(diesel::QueryableByName)]
 pub(super) struct HeadRow {
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub(super) xid: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub(super) seq: Option<i64>,
     #[diesel(sql_type = Array<BigInt>)]
     pub(super) queued: Vec<i64>,
 }

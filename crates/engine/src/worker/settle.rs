@@ -11,7 +11,7 @@ use sessions::types::{Session, SessionStatus};
 use super::grade::{active, begin};
 use super::reply::Led;
 use super::stall::{no_verdict, stalled};
-use super::status::{awaited, busy, stopped, unfinished};
+use super::status::{awaited, busy, interrupted, stopped, unfinished};
 use super::team::{Thread, reply, threads};
 use super::turn::{Turn, thread_idle};
 use super::usage::final_text;
@@ -60,14 +60,7 @@ pub(super) fn round(session: &Session, log: &[Event]) -> Option<Event> {
     }
     // A turn an interrupt ended is no reply to grade: a round waits for the
     // primary's next turn.
-    let began = log.iter().rposition(|e| {
-        e.session_thread_id.as_ref() == Some(&primary.id)
-            && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }))
-    });
-    let interrupted = log.iter().rposition(|e| {
-        e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
-    });
-    if interrupted.is_some_and(|i| began.is_none_or(|b| i > b)) {
+    if interrupted(log, &primary.id, log.len()) {
         return None;
     }
     let replied = log.iter().rposition(|e| {

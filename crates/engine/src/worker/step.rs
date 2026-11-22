@@ -71,30 +71,26 @@ impl Loop {
         if !mine || !history.awaits_model() || session.status != SessionStatus::Running {
             // A session step that read the log before this thread's last
             // commit may have started it again: it idles once more.
-            let mut events = answers;
-            if mine && busy(&read, &thread.id) {
+            let again = (mine && busy(&read, &thread.id)).then(|| {
                 let event_ids: Vec<EventId> =
                     history.unanswered.iter().filter_map(|u| EventId::parse(&u.id).ok()).collect();
                 let stop = match event_ids.is_empty() {
                     true => StopReason::EndTurn {},
                     false => StopReason::RequiresAction { event_ids },
                 };
-                events.push(turn.lifecycle(thread_idle(&turn, stop)));
-            }
+                turn.lifecycle(thread_idle(&turn, stop))
+            });
+            let mut events = answers;
+            events.extend(again);
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), None).await?;
             return Ok(());
         }
         let before = self.calls(claim).await?.cost;
         if over_budget(&session, before) {
+            let why = "The grader stopped on the session's budget before it gave a grade.";
+            let (stopped, verdict) = abandoned(&turn, &session, &thread, StopReason::BudgetReached {}, why);
             let mut events = answers;
-            events.push(turn.lifecycle(thread_idle(&turn, StopReason::BudgetReached {})));
-            let failed = abandoned(
-                &session,
-                &thread,
-                "The grader stopped on the session's budget before it gave a grade.",
-            );
-            events.extend(failed.as_ref().map(|(end, _)| end.clone()));
-            let verdict = failed.map(|(_, eval)| eval);
+            events.extend(stopped);
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), verdict.as_ref()).await?;
             return Ok(());
         }
@@ -154,14 +150,10 @@ impl Loop {
             }
             Ok(Err(e)) => {
                 let mut events = failed(Some(&e));
-                events.push(turn.lifecycle(thread_idle(&turn, StopReason::RetriesExhausted {})));
-                let failed = abandoned(
-                    &session,
-                    &thread,
-                    "The grader's model calls failed after every retry, before it gave a grade.",
-                );
-                events.extend(failed.as_ref().map(|(end, _)| end.clone()));
-                verdict = failed.map(|(_, eval)| eval);
+                let why = "The grader's model calls failed after every retry, before it gave a grade.";
+                let (stopped, v) = abandoned(&turn, &session, &thread, StopReason::RetriesExhausted {}, why);
+                events.extend(stopped);
+                verdict = v;
                 (batch(Vec::new(), Vec::new(), events), StepEnd::Done)
             }
             Ok(Ok(reply)) => {

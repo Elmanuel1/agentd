@@ -63,16 +63,27 @@ impl Loop {
     /// read (deleted since, or an Anthropic skill agentd does not have) is
     /// left out.
     async fn skills(&self, ws: &WorkspaceId, agent: &AgentSnapshot) -> Vec<SkillInfo> {
-        let mut listed = Vec::new();
-        for skill in &agent.config.skills {
-            let (SkillRef::Anthropic { version, .. } | SkillRef::Custom { version, .. }) = skill;
-            match self.stores.skills.version_in(ws, skill.skill_id(), version).await {
-                Ok(v) => listed.push(SkillInfo { name: v.directory, description: v.description }),
-                Err(e) => {
-                    tracing::debug!(skill = skill.skill_id(), error = %e.message, "loop: a skill is not listed")
-                }
+        let refs: Vec<(&str, &str)> = agent
+            .config
+            .skills
+            .iter()
+            .map(|skill| {
+                let (SkillRef::Anthropic { version, .. } | SkillRef::Custom { version, .. }) = skill;
+                (skill.skill_id(), version.as_str())
+            })
+            .collect();
+        if refs.is_empty() {
+            return Vec::new();
+        }
+        match self.stores.skills.listed(ws, &refs).await {
+            Ok(versions) => versions
+                .into_iter()
+                .map(|v| SkillInfo { name: v.directory, description: v.description })
+                .collect(),
+            Err(e) => {
+                tracing::debug!(error = %e.message, "loop: the agent's skills are not listed");
+                Vec::new()
             }
         }
-        listed
     }
 }

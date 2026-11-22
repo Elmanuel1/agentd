@@ -15,7 +15,7 @@ use super::Loop;
 use super::grade::conversation;
 use super::stall::abandoned;
 use super::team::Thread;
-use super::turn::{Turn, batch, thread_idle};
+use super::turn::{Turn, batch};
 use super::usage::{kept, spent};
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
@@ -176,11 +176,9 @@ impl Loop {
     ) -> Result<(), BackendError> {
         let Opened { turn, thread, start } = opened;
         let mut events = turn.failed(start, Some(e));
-        events.push(turn.lifecycle(thread_idle(turn, StopReason::RetriesExhausted {})));
         let why = "The grader's model could not be called, before it gave a grade.";
-        let failed = abandoned(session, thread, why);
-        events.extend(failed.as_ref().map(|(end, _)| end.clone()));
-        let verdict = failed.map(|(_, eval)| eval);
+        let (stopped, verdict) = abandoned(turn, session, thread, StopReason::RetriesExhausted {}, why);
+        events.extend(stopped);
         self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), verdict.as_ref()).await?;
         Ok(())
     }

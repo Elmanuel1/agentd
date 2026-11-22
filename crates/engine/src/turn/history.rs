@@ -76,7 +76,6 @@ pub type Kept = HashMap<EventId, serde_json::Value>;
 /// conversation stays valid after an interrupted step.
 pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept) -> History {
     let mut b = Builder::default();
-    let mut opened: HashSet<String> = HashSet::new();
     for ev in events {
         let id = ev.id.as_str().to_owned();
         match &ev.payload {
@@ -121,20 +120,22 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 to_agent_name,
                 to_session_thread_id,
             }) => {
-                // Replayed as the coordinator called it: a thread's first
-                // message is the `create_agent` that opened it, a later one a
-                // `send_to_agent` to it, each with live's result.
+                // Replayed as the coordinator called it: the send the loop kept
+                // as opening its thread is the `create_agent` that opened it,
+                // a later one a `send_to_agent` to it, each with live's result.
                 if ev.session_thread_id.is_none() {
                     let (thread, message) = (to_session_thread_id, texts(content));
-                    let first = kept.get(&ev.id).and_then(|k| k["opened"].as_bool());
-                    let (name, input, result) = if first.unwrap_or_else(|| opened.insert(thread.to_string()))
-                    {
-                        let agent = to_agent_name.as_deref().unwrap_or_default();
-                        let input = serde_json::json!({"agent_name": agent, "task": message});
-                        (delegation::CREATE_AGENT, input, delegation::created(thread, agent))
-                    } else {
-                        let input = serde_json::json!({"thread_id": thread, "message": message});
-                        (SEND_TO_AGENT, input, delegation::sent(thread))
+                    let opened = kept.get(&ev.id).and_then(|k| k["opened"].as_bool()).unwrap_or_default();
+                    let (name, input, result) = match opened {
+                        true => {
+                            let agent = to_agent_name.as_deref().unwrap_or_default();
+                            let input = serde_json::json!({"agent_name": agent, "task": message});
+                            (delegation::CREATE_AGENT, input, delegation::created(thread, agent))
+                        }
+                        false => {
+                            let input = serde_json::json!({"thread_id": thread, "message": message});
+                            (SEND_TO_AGENT, input, delegation::sent(thread))
+                        }
                     };
                     b.call(id.clone(), name, &input);
                     b.result(id, result, false);

@@ -37,20 +37,17 @@ pub(super) async fn land(
     if insert(c, ws, id, &ids, docs).await? != ids.len() {
         return Err(diesel::result::Error::RollbackTransaction);
     }
-    // A write that leaves the row as it is takes no lock on it; a step of a
+    // A write that may change the row reads it once, locked; a step of a
     // session that is gone, with nothing to write, just ends.
-    let Some(mut current) = row(c, claim, "").await? else {
+    let Some(change) = write.session else { return Ok(()) };
+    let Some(mut session) = row(c, claim).await? else {
         return match write.events.is_empty() {
             true => Ok(()),
             false => Err(diesel::result::Error::RollbackTransaction),
         };
     };
-    if !(write.session)(&mut current) {
-        return Ok(());
-    }
-    let mut session = row(c, claim, "FOR UPDATE").await?.ok_or(diesel::result::Error::RollbackTransaction)?;
     let before = session.status;
-    if !(write.session)(&mut session) {
+    if !change(&mut session) {
         return Ok(());
     }
     session.updated_at = Timestamp::now();
@@ -69,18 +66,15 @@ pub(super) async fn land(
     }
 }
 
-/// The session's row, read `lock`ed as given; `None` once it is gone.
-async fn row(
-    c: &mut AsyncPgConnection,
-    claim: &Claim,
-    lock: &str,
-) -> Result<Option<Session>, diesel::result::Error> {
-    let row: Option<Doc> = diesel::sql_query(format!("SELECT doc FROM sessions WHERE {KEY} {lock}"))
-        .bind::<Text, _>(claim.workspace.as_str())
-        .bind::<Text, _>(claim.session.as_str())
-        .get_result(c)
-        .await
-        .optional()?;
+/// The session's row, locked for its update; `None` once it is gone.
+async fn row(c: &mut AsyncPgConnection, claim: &Claim) -> Result<Option<Session>, diesel::result::Error> {
+    let row: Option<Doc> =
+        diesel::sql_query(format!("SELECT doc FROM sessions WHERE {KEY} FOR NO KEY UPDATE"))
+            .bind::<Text, _>(claim.workspace.as_str())
+            .bind::<Text, _>(claim.session.as_str())
+            .get_result(c)
+            .await
+            .optional()?;
     let Some(row) = row else { return Ok(None) };
     serde_json::from_value(row.doc)
         .map(Some)

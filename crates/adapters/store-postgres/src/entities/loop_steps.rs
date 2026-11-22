@@ -6,7 +6,7 @@
 use ::sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite};
 use ::sessions::store::{StoreError, Wake};
 use ::sessions::types::SessionId;
-use diesel::sql_types::Text;
+use diesel::sql_types::{Array, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
@@ -45,24 +45,20 @@ pub(crate) async fn enqueue(
     id: &SessionId,
     wake: Wake,
 ) -> Result<(), diesel::result::Error> {
-    let sql = match wake {
-        Wake::No => return Ok(()),
-        Wake::Step => WAKE,
-    };
-    diesel::sql_query(sql)
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .bind::<Text, _>("")
-        .execute(c)
-        .await
-        .map(drop)
+    match wake {
+        Wake::No => Ok(()),
+        Wake::Step => self::wake(c, ws, id, &[""]).await,
+    }
 }
 
-/// A step due at once for `thread` (`''`: the session's own), or a wake of
-/// the one it has.
-/// A session that is gone gets no step.
+/// A step due at once for each of `$3` (`''`: the session's own), or a wake
+/// of the one it has, locked in thread order, so the session's own step
+/// comes first. A session that is gone gets no step.
 const WAKE: &str = "INSERT INTO loop_steps (workspace_id, session_id, thread_id) \
-     SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE workspace_id = $1 AND session_id = $2) \
+     SELECT DISTINCT s.workspace_id, s.session_id, t.thread_id \
+     FROM sessions s CROSS JOIN unnest($3::text[]) AS t(thread_id) \
+     WHERE s.workspace_id = $1 AND s.session_id = $2 \
+     ORDER BY t.thread_id \
      ON CONFLICT (workspace_id, session_id, thread_id) \
      DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())";
 
@@ -73,15 +69,17 @@ pub(super) async fn wake(
     id: &SessionId,
     threads: &[&str],
 ) -> Result<(), diesel::result::Error> {
-    for thread in threads {
-        diesel::sql_query(WAKE)
-            .bind::<Text, _>(ws.as_str())
-            .bind::<Text, _>(id.as_str())
-            .bind::<Text, _>(*thread)
-            .execute(c)
-            .await?;
+    if threads.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let threads: Vec<&str> = threads.to_vec();
+    diesel::sql_query(WAKE)
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .bind::<Array<Text>, _>(&threads)
+        .execute(c)
+        .await
+        .map(drop)
 }
 
 /// The session's steps go with the session, in its delete's transaction,

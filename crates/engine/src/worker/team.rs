@@ -107,25 +107,26 @@ fn send(
 ) -> Result<Vec<Event>, String> {
     let field =
         |key: &str| input.get(key).and_then(Value::as_str).ok_or(format!("{name}: `{key}` is required"));
-    let (thread, opened, text) = if name == CREATE_AGENT {
-        let (agent_name, task) = (field("agent_name")?, field("task")?);
-        let roster = roster(session);
-        let agent = roster.iter().find(|a| a.config.name == agent_name).ok_or_else(|| {
-            let names: Vec<&str> = roster.iter().map(|a| a.config.name.as_str()).collect();
-            format!("`{agent_name}` is not on your roster ({})", names.join(", "))
-        })?;
-        (
-            Thread { id: ThreadId::generate(), agent: (*agent).clone(), primary: false, grading: None },
-            true,
-            task,
-        )
-    } else {
-        let (tid, message) = (field("thread_id")?, field("message")?);
-        let thread = threads(session, log).into_iter().find(|t| !t.primary && t.id.as_str() == tid);
-        let thread = thread.ok_or_else(|| {
-            format!("{SEND_TO_AGENT}: no thread {tid} of yours; {LIST_AGENTS} gives your threads' ids")
-        })?;
-        (thread, false, message)
+    let (thread, opened, text) = match name == CREATE_AGENT {
+        true => {
+            let (agent_name, task) = (field("agent_name")?, field("task")?);
+            let roster = roster(session);
+            let agent = roster.iter().find(|a| a.config.name == agent_name).ok_or_else(|| {
+                let names: Vec<&str> = roster.iter().map(|a| a.config.name.as_str()).collect();
+                format!("`{agent_name}` is not on your roster ({})", names.join(", "))
+            })?;
+            let thread =
+                Thread { id: ThreadId::generate(), agent: (*agent).clone(), primary: false, grading: None };
+            (thread, true, task)
+        }
+        false => {
+            let (tid, message) = (field("thread_id")?, field("message")?);
+            let thread = threads(session, log).into_iter().find(|t| !t.primary && t.id.as_str() == tid);
+            let thread = thread.ok_or_else(|| {
+                format!("{SEND_TO_AGENT}: no thread {tid} of yours; {LIST_AGENTS} gives your threads' ids")
+            })?;
+            (thread, false, message)
+        }
     };
     let to = thread.turn();
     let content = vec![ContentBlock::text(text)];

@@ -70,7 +70,10 @@ pub fn listing(threads: &[(ThreadId, String, bool, Option<&str>)], roster: &[&Ag
     let agents: Vec<_> = threads
         .iter()
         .map(|(id, name, busy, park)| {
-            let status = if *busy { "RUNNING" } else { "IDLE" };
+            let status = match busy {
+                true => "RUNNING",
+                false => "IDLE",
+            };
             json!({"thread_id": id, "agent_name": name, "status": status, "parked": park.is_some(), "park_reason": park})
         })
         .collect();

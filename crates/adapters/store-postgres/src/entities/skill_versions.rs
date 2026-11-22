@@ -16,6 +16,7 @@ use shared::{Pagination, WorkspaceId};
 use super::skills::{PgSkillsStore, version_col};
 
 mod latest;
+mod listed;
 
 use crate::schema::skill_versions;
 use crate::{PgBackend, blob_be, diesel_be, parse_doc, pool_be, to_doc};
@@ -137,6 +138,14 @@ impl SkillVersionsStore for PgSkillVersionsStore {
             .optional()
             .map_err(diesel_be)?;
         parse_doc(doc.ok_or(StoreError::VersionNotFound)?)
+    }
+
+    async fn listed(
+        &self,
+        ws: &WorkspaceId,
+        refs: &[(SkillId, VersionRef)],
+    ) -> Result<Vec<SkillVersion>, StoreError> {
+        listed::listed(&self.backend, ws, refs).await
     }
 
     async fn count(&self, ws: &WorkspaceId, id: &SkillId) -> Result<usize, StoreError> {

@@ -27,7 +27,8 @@ impl Loop {
         to: Option<SessionStatus>,
     ) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        self.land(claim, b, &change, Landing::Write(self.settings.lease_seconds()), &[]).await
+        let change = to.is_some().then_some(&change as &SessionChange<'_>);
+        self.land(claim, b, change, Landing::Write(self.settings.lease_seconds()), &[]).await
     }
 
     /// End a thread's step, recording `verdict` when its grader gave one.
@@ -44,7 +45,8 @@ impl Loop {
             s.outcome_evaluations.push(v.clone());
             true
         };
-        self.land(claim, b, &change, Landing::Commit(end), &[]).await
+        let change = verdict.is_some().then_some(&change as &SessionChange<'_>);
+        self.land(claim, b, change, Landing::Commit(end), &[]).await
     }
 
     /// End the session's own step with `session`'s status and usage, giving
@@ -64,7 +66,7 @@ impl Loop {
             s.usage = after.usage.clone();
             !same
         };
-        self.land(claim, b, &change, Landing::Commit(end), wake).await
+        self.land(claim, b, Some(&change as &SessionChange<'_>), Landing::Commit(end), wake).await
     }
 
     /// Land `b` with `change` as `how` says; `false` when another worker
@@ -73,7 +75,7 @@ impl Loop {
         &self,
         claim: &Claim,
         b: &Batch,
-        change: &SessionChange<'_>,
+        change: Option<&SessionChange<'_>>,
         how: Landing,
         wake: &[ThreadId],
     ) -> Result<bool, BackendError> {
