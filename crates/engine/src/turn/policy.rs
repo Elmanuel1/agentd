@@ -8,12 +8,10 @@ use agents::AgentSnapshot;
 use agents::types::{PermissionPolicy, Tool};
 use serde_json::{Value, json};
 
-use super::history::SEND_TO_AGENT;
-use super::specs;
+use super::{delegation, specs};
 use crate::model::ModelTool;
 
-/// The coordinator's roster tool.
-pub const LIST_AGENTS: &str = "list_agents";
+pub use super::delegation::{CREATE_AGENT, LIST_AGENTS, SEND_TO_AGENT};
 
 /// What a call to a tool does.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,8 +53,9 @@ pub struct Toolbox {
 }
 
 impl Toolbox {
-    /// The tools `agent` declares; a coordinator also gets its roster tools.
-    pub fn for_agent(agent: &AgentSnapshot, coordinator: bool) -> Self {
+    /// The tools `agent` declares; a coordinator, with a `roster`, also
+    /// gets live's tools for it.
+    pub fn for_agent(agent: &AgentSnapshot, roster: &[&AgentSnapshot]) -> Self {
         let mut b = Self::default();
         for tool in &agent.config.tools {
             match tool {
@@ -82,9 +81,8 @@ impl Toolbox {
                 Tool::McpToolset { .. } => {}
             }
         }
-        if coordinator {
-            b.add(list_agents(), Disposition::Delegate);
-            b.add(send_to_agent(), Disposition::Delegate);
+        for tool in delegation::tools(roster).into_iter().filter(|_| !roster.is_empty()) {
+            b.add(tool, Disposition::Delegate);
         }
         b
     }
@@ -123,26 +121,6 @@ pub(super) fn from_policy(policy: PermissionPolicy) -> Disposition {
         PermissionPolicy::Auto => Disposition::Allow {
             evaluation: Some(json!({"type": "auto", "evaluated_permission": {"type": "allow"}})),
         },
-    }
-}
-
-fn list_agents() -> ModelTool {
-    ModelTool {
-        name: LIST_AGENTS.into(),
-        description: "List the agents on your roster, with what each does.".into(),
-        input_schema: json!({"type": "object", "properties": {}}),
-    }
-}
-
-fn send_to_agent() -> ModelTool {
-    ModelTool {
-        name: SEND_TO_AGENT.into(),
-        description: "Send a task or a follow-up to an agent on your roster. Name `agent_name` to start a new thread; name `session_thread_id` to send a follow-up to a thread you started. Returns the thread id at once; the agent's reply arrives later as a message from that thread.".into(),
-        input_schema: json!({"type": "object", "properties": {
-            "agent_name": {"type": "string", "description": "A roster agent, for a new thread."},
-            "session_thread_id": {"type": "string", "description": "A thread you started, for a follow-up."},
-            "message": {"type": "string"}},
-            "required": ["message"]}),
     }
 }
 

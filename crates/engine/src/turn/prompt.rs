@@ -1,6 +1,6 @@
 //! The system prompt a thread's model gets: the agent's own, then its
-//! skills (name, description and where SKILL.md is), then, for a
-//! coordinator, its roster.
+//! skills (name, description and where SKILL.md is). A coordinator's roster
+//! is in its `create_agent` tool, as on live.
 
 use agents::AgentSnapshot;
 use sessions::types::OutcomeResult;
@@ -18,22 +18,12 @@ pub struct SkillInfo {
 }
 
 /// The system prompt for `agent`.
-pub fn system_prompt(agent: &AgentSnapshot, skills: &[SkillInfo], roster: &[&AgentSnapshot]) -> String {
+pub fn system_prompt(agent: &AgentSnapshot, skills: &[SkillInfo]) -> String {
     let mut out = agent.config.system.clone().unwrap_or_default();
     if !skills.is_empty() {
         out.push_str("\n\n# Skills\n\nBefore doing work a skill covers, read its SKILL.md with the `read` tool; its scripts and references sit beside it.\n\n");
         for s in skills {
             out.push_str(&format!("- `{}` ({SKILLS_DIR}/{}/SKILL.md): {}\n", s.name, s.name, s.description));
-        }
-    }
-    if !roster.is_empty() {
-        out.push_str("\n\n# Your roster\n\nDelegate with `send_to_agent`. Start each new task with `agent_name`: it opens a thread, and the result gives its id. Send a follow-up with that `session_thread_id`, only ever an id a result gave you.\n\n");
-        for a in roster {
-            out.push_str(&format!(
-                "- `{}`: {}\n",
-                a.config.name,
-                a.config.description.as_deref().unwrap_or("")
-            ));
         }
     }
     out

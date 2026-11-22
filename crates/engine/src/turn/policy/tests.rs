@@ -31,7 +31,8 @@ fn toolset_configs_decide_what_is_offered_and_how_it_runs() {
         description: "d".into(),
         input_schema: json!({"type": "object"}),
     };
-    let b = Toolbox::for_agent(&agent(vec![toolset, custom]), true);
+    let helper = agent(vec![]);
+    let b = Toolbox::for_agent(&agent(vec![toolset, custom]), &[&helper]);
     let names: Vec<&str> = b.tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         names,
@@ -44,8 +45,9 @@ fn toolset_configs_decide_what_is_offered_and_how_it_runs() {
             "grep",
             "web_search",
             "lookup",
-            "list_agents",
-            "send_to_agent"
+            "create_agent",
+            "send_to_agent",
+            "list_agents"
         ]
     );
     let asked = Disposition::Ask { evaluation: json!({"type": "always_ask"}) };
@@ -61,7 +63,7 @@ fn a_policy_decision_names_its_policy_as_live_does() {
         configs: Vec::new(),
         default_config: ToolDefaultConfig { enabled: true, permission_policy: policy },
     };
-    let allowed = Toolbox::for_agent(&agent(vec![toolset(PermissionPolicy::AlwaysAllow)]), false);
+    let allowed = Toolbox::for_agent(&agent(vec![toolset(PermissionPolicy::AlwaysAllow)]), &[]);
     let evaluation = Some(json!({"type": "always_allow"}));
     assert_eq!(allowed.disposition("bash"), Some(&Disposition::Allow { evaluation }));
 }

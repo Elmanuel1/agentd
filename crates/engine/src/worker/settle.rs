@@ -1,7 +1,7 @@
 //! How a thread's turn ends its step. A delegate's final text goes back to
 //! its coordinator; a primary turn that ends on an outcome not yet met
-//! starts a grading round; a turn that ends while other threads still work
-//! leaves the session running; otherwise the session idles.
+//! starts a grading round; a turn that ends or waits while other threads
+//! still work idles only its thread; otherwise the session idles.
 
 use sessions::events::{Event, StopReason};
 use sessions::steps::StepEnd;
@@ -26,8 +26,9 @@ pub(super) fn settle(
 ) {
     let primary = Thread::primary(session).turn();
     let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
-    let others =
-        threads(session, &seen).into_iter().any(|t| !t.primary && t.id != turn.thread && busy(&seen, &t.id));
+    let working: Vec<Thread> =
+        threads(session, &seen).into_iter().filter(|t| t.id != turn.thread && busy(&seen, &t.id)).collect();
+    let others = working.iter().any(|t| !t.primary);
     let active = active(&seen);
     let grading = active.as_ref().is_some_and(|o| o.open.is_some());
     let outcome = active.filter(|o| o.open.is_none());
@@ -56,6 +57,13 @@ pub(super) fn settle(
         // The session never idles with delegates working or a round open: the
         // grader runs, then the primary thread takes its verdict.
         (Some(stop @ StopReason::EndTurn {}), true, _) if others || grading => {
+            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
+            out.end = StepEnd::Again;
+        }
+        // A thread that waits (on the worker, a confirmation or the client)
+        // idles alone while another works, as on live: the session runs on
+        // and the other threads take their steps.
+        (Some(stop), _, _) if !working.is_empty() => {
             out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.end = StepEnd::Again;
         }
