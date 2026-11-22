@@ -10,7 +10,7 @@ use sessions::types::{Session, SessionStatus};
 use super::grade::{active, begin};
 use super::reply::Led;
 use super::stall::{no_verdict, stalled};
-use super::team::{Thread, busy, reply, threads};
+use super::team::{Thread, busy, reply, threads, unfinished};
 use super::turn::{Turn, thread_idle};
 use super::usage::final_text;
 use crate::model::ModelResponse;
@@ -28,7 +28,9 @@ pub(super) fn settle(
     let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
     let working: Vec<Thread> =
         threads(session, &seen).into_iter().filter(|t| t.id != turn.thread && busy(&seen, &t.id)).collect();
-    let others = working.iter().any(|t| !t.primary);
+    let others = threads(session, &seen)
+        .into_iter()
+        .any(|t| !t.primary && t.id != turn.thread && unfinished(&seen, &t.id));
     let active = active(&seen);
     let grading = active.as_ref().is_some_and(|o| o.open.is_some());
     let outcome = active.filter(|o| o.open.is_none());
