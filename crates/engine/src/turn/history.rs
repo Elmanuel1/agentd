@@ -76,6 +76,7 @@ pub type Kept = HashMap<EventId, serde_json::Value>;
 /// conversation stays valid after an interrupted step.
 pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept) -> History {
     let mut b = Builder::default();
+    let mut opened: HashSet<String> = HashSet::new();
     for ev in events {
         let id = ev.id.as_str().to_owned();
         match &ev.payload {
@@ -120,12 +121,28 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 to_agent_name,
                 to_session_thread_id,
             }) => {
+                // Replayed as the coordinator called it: a thread's first
+                // message names the agent and gets the thread's id back; a
+                // follow-up names that id.
                 if ev.session_thread_id.is_none() {
-                    let input = serde_json::json!({"agent_name": to_agent_name, "session_thread_id": to_session_thread_id, "message": texts(content)});
+                    let message = texts(content);
+                    let (input, note) = if opened.insert(to_session_thread_id.to_string()) {
+                        let agent = to_agent_name.as_deref().unwrap_or_default();
+                        (
+                            serde_json::json!({"agent_name": agent, "message": message}),
+                            format!(
+                                "Started thread {to_session_thread_id} with {agent}. Send follow-ups to this thread id; the reply arrives as a message from that thread."
+                            ),
+                        )
+                    } else {
+                        (
+                            serde_json::json!({"session_thread_id": to_session_thread_id, "message": message}),
+                            format!(
+                                "Sent to thread {to_session_thread_id}. The reply arrives as a message from that thread."
+                            ),
+                        )
+                    };
                     b.call(id.clone(), SEND_TO_AGENT, &input);
-                    let note = format!(
-                        "Sent to thread {to_session_thread_id}. The reply arrives as a message from that thread."
-                    );
                     b.result(id, note, false);
                 }
             }

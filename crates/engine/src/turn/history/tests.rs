@@ -201,3 +201,33 @@ fn the_primary_thread_leaves_out_answers_to_another_threads_calls() {
 mod inputs;
 mod interrupts;
 mod thinking;
+
+#[test]
+fn a_coordinator_s_sends_replay_as_it_called_them() {
+    // The first message to a thread named the agent; a follow-up names the thread.
+    let thread = ThreadId::generate();
+    let sent = |text: &str| {
+        ev(AgentEvent::ThreadMessageSent {
+            content: vec![ContentBlock::text(text)],
+            to_agent_name: Some("helper".into()),
+            to_session_thread_id: thread.clone(),
+        })
+    };
+    let (first, again) = (sent("do it"), sent("fix it"));
+    let h = rebuild(&[&first, &again], &HashMap::new(), &HashMap::new());
+    let calls: Vec<&serde_json::Value> = h
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolUse { input, .. } => Some(input),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls[0], &json!({"agent_name": "helper", "message": "do it"}));
+    assert_eq!(calls[1], &json!({"session_thread_id": thread, "message": "fix it"}));
+    let started = h.messages.iter().flat_map(|m| &m.content).any(|b| {
+        matches!(b, Block::ToolResult { content, .. } if content.starts_with(&format!("Started thread {thread} with helper")))
+    });
+    assert!(started, "the first send's result gives the thread id: {:?}", h.messages);
+}

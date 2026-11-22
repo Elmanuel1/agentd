@@ -27,7 +27,7 @@ pub fn system_prompt(agent: &AgentSnapshot, skills: &[SkillInfo], roster: &[&Age
         }
     }
     if !roster.is_empty() {
-        out.push_str("\n\n# Your roster\n\nDelegate with `send_to_agent`. Each new task opens a thread; send follow-ups to that thread's id.\n\n");
+        out.push_str("\n\n# Your roster\n\nDelegate with `send_to_agent`. Start each new task with `agent_name`: it opens a thread, and the result gives its id. Send a follow-up with that `session_thread_id`, only ever an id a result gave you.\n\n");
         for a in roster {
             out.push_str(&format!(
                 "- `{}`: {}\n",
@@ -51,10 +51,15 @@ pub fn skill_description(skill_md: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The text the agent gets for an outcome: the task and the rubric it is
-/// graded on.
+/// How the agent works on an outcome: on its own, to the end. Live's agent
+/// "works toward the outcome on its own, iterating until it succeeds or runs
+/// out of iterations", and the session idles only on the final verdict.
+const ON_ITS_OWN: &str = "Work on this on your own until the result is delivered. No one answers questions before then, so do not stop to ask: where something is unclear or two sources disagree, decide by your instructions, record the choice in the result, and go on. Your instructions come first; the rubric below is how an independent grader checks the result, and its findings come back to you after each round.";
+
+/// The text the agent gets for an outcome: the task, how to work on it, and
+/// the rubric it is graded on.
 pub fn outcome_prompt(description: &str, rubric: &str) -> String {
-    format!("{description}\n\nAn independent grader will grade the result against this rubric:\n\n{rubric}")
+    format!("{description}\n\n{ON_ITS_OWN}\n\nThe rubric:\n\n{rubric}")
 }
 
 /// The text the agent gets after a grading round.
@@ -64,7 +69,9 @@ pub fn feedback_prompt(result: OutcomeResult, explanation: &str) -> String {
             "The grader's last round still asks for revisions, and no rounds are left:\n\n{explanation}\n\nSummarize where the work stands; it will not be graded again."
         ),
         OutcomeResult::NeedsRevision => {
-            format!("{explanation}\n\nRevise the work to address these findings. It will be graded again.")
+            format!(
+                "{explanation}\n\nRevise the work to address these findings, on your own, then deliver it again. It will be graded again."
+            )
         }
         _ => format!("{explanation}\n\nSummarize where the work stands; it will not be graded again."),
     }
@@ -79,5 +86,13 @@ mod tests {
         let md = "---\nname: citing-sources\ndescription: Resolves snippets to pages.\n---\n# Citing";
         assert_eq!(skill_description(md), "Resolves snippets to pages.");
         assert_eq!(skill_description("# no front matter"), "");
+    }
+
+    #[test]
+    fn an_outcome_keeps_the_task_first_and_says_to_work_on_without_asking() {
+        let text = outcome_prompt("Write result.json.", "### 1. name");
+        assert!(text.starts_with("Write result.json.\n\nWork on this on your own"));
+        assert!(text.contains("do not stop to ask"));
+        assert!(text.ends_with("The rubric:\n\n### 1. name"));
     }
 }
