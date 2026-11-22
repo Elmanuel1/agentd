@@ -43,7 +43,8 @@ pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
                 EventPayload::User(_) | EventPayload::Agent(AgentEvent::ThreadMessageReceived { .. })
             )
     };
-    !thread_events(&log[at + 1..], scope.as_ref()).iter().any(input)
+    let after = log.get(at + 1..).unwrap_or_default();
+    !thread_events(after, scope.as_ref()).iter().any(input)
 }
 
 /// A thread is at work: its last status in `log` is running.

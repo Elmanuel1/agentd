@@ -56,13 +56,15 @@ impl Loop {
         if claim.thread.is_none() {
             return self.session_step(claim, session, &log, &kept, step).await;
         }
-        if step.history.unanswered.iter().any(Unanswered::for_loop) {
+        let mine = claim.thread.as_ref() == Some(&step.thread.id);
+        if mine && step.history.unanswered.iter().any(Unanswered::for_loop) {
             return self.call_mcp(claim, session, step).await;
         }
         let Taken { taken, arrived, answers, thread, history, read, .. } = step;
         let turn = thread.turn();
-        // Nothing for this thread now: the session's step decides what follows.
-        if !history.awaits_model() || session.status != SessionStatus::Running {
+        // Nothing for this thread now (its work is done, or it is gone, as a
+        // grader after its round): the session's step decides what follows.
+        if !mine || !history.awaits_model() || session.status != SessionStatus::Running {
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), answers), None).await?;
             return Ok(());
         }
