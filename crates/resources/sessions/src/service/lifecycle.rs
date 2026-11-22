@@ -139,8 +139,7 @@ impl SessionsService {
         raw_id: &str,
         req: UpdateSessionRequest,
     ) -> Result<Session, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))?;
+        let mut s = self.get(ctx, raw_id).await?;
         let read = s.clone();
         s.writable()?;
         if req.vault_ids.is_some() {
@@ -159,14 +158,13 @@ impl SessionsService {
         }
         s.change_budget(req.budget)?;
         s.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, &read, s.clone(), &[]).await.map_err(map_store(&id))?;
+        self.store.replace(&ctx.workspace, &read, s.clone(), &[]).await.map_err(map_store(&read.id))?;
         Ok(s)
     }
 
     /// `POST /v1/sessions/{id}/archive` — read-only afterwards.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))?;
+        let mut s = self.get(ctx, raw_id).await?;
         let read = s.clone();
         if s.status == SessionStatus::Running {
             // Documented race: cannot archive while running.
@@ -178,11 +176,14 @@ impl SessionsService {
             s.status = SessionStatus::Terminated;
             s.updated_at = Timestamp::now();
             let kind = webhooks::EventKind::SessionTerminated;
-            let hooks =
+            let deliveries =
                 self.webhooks.deliveries(ctx.org.as_str(), ctx.workspace.as_str(), kind, s.id.as_str());
-            self.store.replace(&ctx.workspace, &read, s.clone(), &hooks).await.map_err(map_store(&id))?;
+            self.store
+                .replace(&ctx.workspace, &read, s.clone(), &deliveries)
+                .await
+                .map_err(map_store(&read.id))?;
             // Every replica's streams of the session end.
-            self.publish(&ctx.workspace, &id).await;
+            self.publish(&ctx.workspace, &read.id).await;
         }
         Ok(s)
     }
