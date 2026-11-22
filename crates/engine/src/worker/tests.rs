@@ -189,9 +189,9 @@ fn a_reply_s_signed_thinking_is_kept_beside_its_agent_thinking() {
 }
 
 #[test]
-fn the_thread_that_waited_longest_takes_the_step() {
-    // Two delegates both await the model: the one that just had a step
-    // waits, so a thread whose calls come back fast cannot starve the other.
+fn every_thread_with_work_is_due_and_each_thread_s_step_takes_only_its_own() {
+    // Two delegates both await the model: the session's step starts both,
+    // and each one's step reads its own conversation.
     use agents::types::{Multiagent, RosterMember};
     use sessions::events::{AgentEvent, SessionEvent};
     use shared::ContentBlock;
@@ -223,13 +223,16 @@ fn the_thread_that_waited_longest_takes_the_step() {
         on(&fast, AgentEvent::Message { content: vec![ContentBlock::text("on it")] }.into()),
         on(&fast, message("more").into()),
     ];
-    let taken = super::take::take(&log, &session, false, &Default::default(), &Default::default());
-    assert_eq!(taken.thread.id, slow);
-    assert!(taken.more, "the fast one still awaits the model, so the step is not the last");
+    let (rubrics, kept) = (Default::default(), Default::default());
+    let taken = super::take::take(&log, &session, false, &rubrics, &kept, None);
+    assert!(taken.due.contains(&fast) && taken.due.contains(&slow), "{:?}", taken.due);
+    let mine = super::take::take(&log, &session, false, &rubrics, &kept, Some(&slow));
+    assert_eq!(mine.thread.id, slow);
+    assert!(mine.taken.is_empty(), "only the session's step takes client events");
 }
 
 #[test]
-fn a_thread_that_waits_while_another_is_ready_idles_alone() {
+fn a_thread_s_step_idles_only_its_thread_and_the_session_s_step_idles_the_session() {
     use sessions::events::StopReason;
     use sessions::steps::StepEnd;
     use sessions::types::SessionStatus;
@@ -246,13 +249,11 @@ fn a_thread_that_waits_while_another_is_ready_idles_alone() {
     let turn = thread.turn();
     let r = reply(&[]);
     let mut out = led();
-    super::settle::settle(&mut out, &turn, &thread, &mut session, &[], &r, true);
-    assert!(matches!(out.end, StepEnd::Again), "another thread is ready, so the step runs again");
-    assert_eq!(session.status, SessionStatus::Running);
+    super::settle::settle(&mut out, &turn, &thread, &session, &[], &r);
     assert_eq!(types(&wire(&out.events)), ["session.thread_status_idle"]);
-    let mut out = led();
-    super::settle::settle(&mut out, &turn, &thread, &mut session, &[], &r, false);
-    assert_eq!(session.status, SessionStatus::Idle, "with no other thread to run, the session idles");
+    let idle = super::settle::quiet(&mut session, &out.events, false).expect("no thread works");
+    assert_eq!(session.status, SessionStatus::Idle, "with no thread at work, the session idles");
+    assert_eq!(types(&wire(&idle)), ["session.usage", "session.status_idle"]);
 }
 
 #[test]

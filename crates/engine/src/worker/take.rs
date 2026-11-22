@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 
 use sessions::events::{
-    AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, SpanEvent, UserEvent,
+    AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, UserEvent,
 };
-use sessions::types::Session;
+use sessions::types::{Session, ThreadId};
 use shared::Timestamp;
 
 use super::grade::{active, conversation};
@@ -14,15 +14,18 @@ use super::team::{Thread, threads};
 use super::turn::Turn;
 use crate::turn::compact::checkpoint;
 use crate::turn::history::{History, Kept, Unanswered, rebuild, thread_events};
-use mcp::{answered, is_mcp, refusal};
+pub(super) use cut::cut_off;
+use cut::thread_of;
+use mcp::{is_mcp, refusal};
 
+mod cut;
 mod mcp;
 
 /// The result a denied call gets when the client gave no reason.
 const DENIED: &str = "The user denied this tool call.";
 
 /// The text live posts for a built-in call an interrupt cut off (L-6).
-const INTERRUPTED: &str = "Tool execution was interrupted before completion. Please retry.";
+pub(super) const INTERRUPTED: &str = "Tool execution was interrupted before completion. Please retry.";
 
 /// How the client interrupted the turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,8 +50,7 @@ pub(super) struct Taken {
     pub(super) answers: Vec<Event>,
     /// A confirmation allowed a call, which the session's worker now runs.
     pub(super) allowed: bool,
-    /// The thread the step runs: the first that awaits the model or has an
-    /// MCP call to run, else the primary.
+    /// The thread the step runs; the primary for the session's own step.
     pub(super) thread: Thread,
     /// That thread's conversation, with the taken events in it.
     pub(super) history: History,
@@ -56,27 +58,32 @@ pub(super) struct Taken {
     pub(super) read: Vec<Event>,
     /// The interrupts among the taken events.
     pub(super) interrupt: Interrupt,
-    /// Another thread awaits the model too: the step that runs this one is
-    /// not the last.
-    pub(super) more: bool,
+    /// The threads that await the model or have an MCP call to run.
+    pub(super) due: Vec<ThreadId>,
+    /// Every thread with its conversation, for the session's own step.
+    pub(super) all: Vec<(Thread, History)>,
 }
 
 fn is_interrupt(e: &Event) -> bool {
     matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
 }
 
-/// Read `log` of `session`.
+/// Read `log` of `session` for `thread`'s step, or with `None` for the
+/// session's own step, which alone takes the client's events.
 pub(super) fn take(
     log: &[Event],
     session: &Session,
     cloud: bool,
     rubrics: &HashMap<String, String>,
     kept: &Kept,
+    thread: Option<&ThreadId>,
 ) -> Taken {
     let primary = Thread::primary(session);
     let turn = &primary.turn();
-    let queued: Vec<&Event> =
-        log.iter().filter(|e| e.processed_at.is_none() && e.payload.is_user_event()).collect();
+    let queued: Vec<&Event> = log
+        .iter()
+        .filter(|e| thread.is_none() && e.processed_at.is_none() && e.payload.is_user_event())
+        .collect();
     let taken: Vec<EventId> = queued.iter().map(|e| e.id.clone()).collect();
     let arrived = !queued.is_empty()
         && queued.iter().all(|e| matches!(e.payload, EventPayload::User(UserEvent::ToolResult { .. })));
@@ -162,39 +169,10 @@ pub(super) fn take(
     };
     let mut candidates = threads(session, &read);
     candidates.extend(active(&read).and_then(|o| o.thread(session)));
-    let due = |h: &History| h.awaits_model() || h.unanswered.iter().any(Unanswered::for_loop);
-    // The thread that has waited longest goes first, so a thread whose
-    // calls come back fast cannot keep the others from their turns.
-    let last_step = |t: &Thread| {
-        read.iter().rposition(|e| {
-            matches!(e.payload, EventPayload::Span(SpanEvent::ModelRequestStart {}))
-                && (e.session_thread_id.as_ref() == Some(&t.id)
-                    || (t.primary && e.session_thread_id.is_none()))
-        })
-    };
-    let ready: Vec<_> = candidates.iter().map(|t| (t, history_of(t))).filter(|(_, h)| due(h)).collect();
-    let more = ready.len() > 1;
-    let chosen = ready.into_iter().min_by_key(|(t, _)| last_step(t));
-    let (thread, history) = match chosen {
-        Some((t, h)) => (t.clone(), h),
-        None => (primary.clone(), history_of(&primary)),
-    };
-    Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, more }
-}
-
-/// The thread of the call `answer` answers.
-fn thread_of(log: &[Event], answer: &Event) -> Option<sessions::types::ThreadId> {
-    let tool_use_id = answered(answer)?;
-    log.iter().find(|e| e.id == *tool_use_id).and_then(|e| e.session_thread_id.clone())
-}
-
-/// The error results live posts for the built-in calls an interrupt cut off.
-pub(super) fn cut_off(turn: &Turn, history: &History, log: &[Event]) -> Vec<Event> {
-    history
-        .unanswered
-        .iter()
-        .filter(|u| u.for_worker() || u.for_loop())
-        .filter_map(|u| EventId::parse(&u.id).ok())
-        .map(|id| refusal(log, turn, &id, INTERRUPTED.to_owned()))
-        .collect()
+    let works = |h: &History| h.awaits_model() || h.unanswered.iter().any(Unanswered::for_loop);
+    let all: Vec<(Thread, History)> = candidates.iter().map(|t| (t.clone(), history_of(t))).collect();
+    let due: Vec<ThreadId> = all.iter().filter(|(_, h)| works(h)).map(|(t, _)| t.id.clone()).collect();
+    let mine = thread.and_then(|id| all.iter().find(|(t, _)| t.id == *id)).cloned();
+    let (thread, history) = mine.unwrap_or_else(|| (primary.clone(), history_of(&primary)));
+    Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, due, all }
 }

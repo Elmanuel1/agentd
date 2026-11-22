@@ -1,5 +1,7 @@
 //! The writes of a held step: each lands only while its claim still holds
-//! the step, under the session's append lock.
+//! the step. Steps take no session-wide lock: a thread's step writes only
+//! its events, and the session's row is locked only by a write that changes
+//! it, the session's own step.
 
 use ::sessions::steps::{Claim, StepEnd, StepWrite};
 use ::sessions::store::StoreError;
@@ -9,10 +11,10 @@ use diesel::sql_types::{BigInt, Jsonb, Text};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use shared::Timestamp;
 
-use super::super::session_events::{insert, lock, stamp};
+use super::super::session_events::{insert, stamp};
 use super::super::work_items::stop::requeue;
 use super::rows::Doc;
-use super::{HELD, KEY};
+use super::{HELD, KEY, wake};
 use crate::entities::webhook_deliveries::status_changed;
 use crate::{PgBackend, diesel_be, enum_str, pool_be, to_doc};
 
@@ -38,17 +40,11 @@ async fn land(
     if insert(c, ws, id, &ids, docs).await? != ids.len() {
         return Err(diesel::result::Error::RollbackTransaction);
     }
-    let row: Option<Doc> = diesel::sql_query(format!("SELECT doc FROM sessions WHERE {KEY} FOR UPDATE"))
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .get_result(c)
-        .await
-        .optional()?;
-    let Some(row) = row else {
-        return Err(diesel::result::Error::RollbackTransaction);
-    };
-    let mut session: Session =
-        serde_json::from_value(row.doc).map_err(|e| diesel::result::Error::DeserializationError(e.into()))?;
+    // A write that leaves the row as it is takes no lock on it.
+    if !(write.session)(&mut row(c, claim, "").await?) {
+        return Ok(());
+    }
+    let mut session = row(c, claim, "FOR UPDATE").await?;
     let before = session.status;
     if !(write.session)(&mut session) {
         return Ok(());
@@ -69,11 +65,23 @@ async fn land(
     }
 }
 
+/// The session's row, read `lock`ed as given.
+async fn row(c: &mut AsyncPgConnection, claim: &Claim, lock: &str) -> Result<Session, diesel::result::Error> {
+    let row: Option<Doc> = diesel::sql_query(format!("SELECT doc FROM sessions WHERE {KEY} {lock}"))
+        .bind::<Text, _>(claim.workspace.as_str())
+        .bind::<Text, _>(claim.session.as_str())
+        .get_result(c)
+        .await
+        .optional()?;
+    let row = row.ok_or(diesel::result::Error::RollbackTransaction)?;
+    serde_json::from_value(row.doc).map_err(|e| diesel::result::Error::DeserializationError(e.into()))
+}
+
 fn serde_be(e: StoreError) -> diesel::result::Error {
     diesel::result::Error::SerializationError(Box::new(e))
 }
 
-/// `$3` the holder and `$4` the attempts, after the session's key.
+/// `$3` the holder, `$4` the attempts and `$5` the thread, after the session's key.
 fn held(
     sql: String,
     claim: &Claim,
@@ -84,6 +92,7 @@ fn held(
         .bind::<Text, _>(claim.session.as_str())
         .bind::<Text, _>(&claim.owner)
         .bind::<BigInt, _>(claim.attempts)
+        .bind::<Text, _>(claim.thread.as_ref().map_or("", |t| t.as_str()))
 }
 
 /// The transaction's result: `Ok(false)` when the claim no longer holds the
@@ -111,9 +120,8 @@ pub(super) async fn write(
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
-        lock(c, &claim.session).await?;
         let kept = held(
-            format!("UPDATE loop_steps SET lease_until = now() + make_interval(secs => $5) WHERE {HELD}"),
+            format!("UPDATE loop_steps SET lease_until = now() + make_interval(secs => $6) WHERE {HELD}"),
             claim,
         )
         .bind::<BigInt, _>(lease)
@@ -137,12 +145,11 @@ pub(super) async fn commit(
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
-                lock(c, &claim.session).await?;
                 // Woken while it ran, or asked to go on: the step stays, due at once.
                 let deleted = match end {
                     StepEnd::Again => 0,
                     StepEnd::Done | StepEnd::Requeue => {
-                        held(format!("DELETE FROM loop_steps WHERE {HELD} AND wakes = $5"), claim)
+                        held(format!("DELETE FROM loop_steps WHERE {HELD} AND wakes = $6"), claim)
                             .bind::<BigInt, _>(claim.wakes)
                             .execute(c)
                             .await?
@@ -161,6 +168,11 @@ pub(super) async fn commit(
                     return Err(diesel::result::Error::RollbackTransaction);
                 }
                 land(c, claim, &write).await?;
+                // A thread's step that ends wakes the session's own step,
+                // which makes the decisions that span the threads.
+                let mut woken: Vec<&str> = write.wake.iter().map(|t| t.as_str()).collect();
+                woken.extend(claim.thread.as_ref().map(|_| ""));
+                wake(c, &claim.workspace, &claim.session, &woken).await?;
                 if end == StepEnd::Requeue {
                     requeue(c, &claim.workspace, claim.session.as_str()).await?;
                 }
@@ -175,7 +187,7 @@ pub(super) async fn defer(backend: &PgBackend, claim: &Claim, seconds: i64) -> R
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     held(
             format!(
-                "UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now() + make_interval(secs => $5) WHERE {HELD}"
+                "UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now() + make_interval(secs => $6) WHERE {HELD}"
             ),
             claim,
         )

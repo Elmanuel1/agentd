@@ -30,6 +30,7 @@ impl Loop {
                     engine: &[],
                     session: &unchanged,
                     deliveries: None,
+                    wake: &[],
                 };
                 match self.stores.steps.write(claim, lease, w).await {
                     Ok(true) => {}

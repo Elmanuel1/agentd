@@ -2,6 +2,7 @@
 //! (SSE tails `session_events` by `seq`).
 
 mod reads;
+mod rows;
 mod writes;
 
 pub(crate) use writes::{insert, lock, stamp};

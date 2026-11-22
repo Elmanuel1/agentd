@@ -11,7 +11,7 @@ use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
 mod reads;
 
-pub use reads::{Head, NativeSessionEventReads, SessionEventReads, Tail};
+pub use reads::{Head, NativeSessionEventReads, Pos, SessionEventReads, Tail};
 
 mod native;
 pub use native::{NativeSessionEventLog, NativeSessionReplace, NativeSessionsStore};

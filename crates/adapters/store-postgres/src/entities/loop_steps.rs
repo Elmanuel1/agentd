@@ -26,8 +26,10 @@ impl PgSteps {
 }
 
 pub(super) const KEY: &str = "workspace_id = $1 AND session_id = $2";
-/// `$3` the holder, `$4` the claim's attempts.
-pub(super) const HELD: &str = "workspace_id = $1 AND session_id = $2 AND lease_owner = $3 AND attempts = $4";
+/// `$3` the holder, `$4` the claim's attempts, `$5` the thread (`''` for the
+/// session's own step).
+pub(super) const HELD: &str =
+    "workspace_id = $1 AND session_id = $2 AND lease_owner = $3 AND attempts = $4 AND thread_id = $5";
 
 mod claim;
 mod held;
@@ -35,7 +37,7 @@ mod rows;
 
 use self::rows::Counts;
 
-/// Put the session on the queue in the append's transaction.
+/// Put the session's own step on the queue in the append's transaction.
 pub(crate) async fn enqueue(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
@@ -44,17 +46,39 @@ pub(crate) async fn enqueue(
 ) -> Result<(), diesel::result::Error> {
     let sql = match wake {
         Wake::No => return Ok(()),
-        Wake::Step => {
-            "INSERT INTO loop_steps (workspace_id, session_id) VALUES ($1, $2) ON CONFLICT (workspace_id, session_id) \
-             DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())"
-        }
+        Wake::Step => WAKE,
     };
     diesel::sql_query(sql)
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
+        .bind::<Text, _>("")
         .execute(c)
         .await
         .map(drop)
+}
+
+/// A step due at once for `thread` (`''`: the session's own), or a wake of
+/// the one it has.
+const WAKE: &str = "INSERT INTO loop_steps (workspace_id, session_id, thread_id) VALUES ($1, $2, $3) \
+     ON CONFLICT (workspace_id, session_id, thread_id) \
+     DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())";
+
+/// Give each of `threads` (`''`: the session's own step) a step due at once.
+pub(super) async fn wake(
+    c: &mut AsyncPgConnection,
+    ws: &WorkspaceId,
+    id: &SessionId,
+    threads: &[&str],
+) -> Result<(), diesel::result::Error> {
+    for thread in threads {
+        diesel::sql_query(WAKE)
+            .bind::<Text, _>(ws.as_str())
+            .bind::<Text, _>(id.as_str())
+            .bind::<Text, _>(*thread)
+            .execute(c)
+            .await?;
+    }
+    Ok(())
 }
 
 /// The session's step goes with the session, in its delete's transaction.

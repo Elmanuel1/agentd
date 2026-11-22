@@ -1,6 +1,7 @@
 //! What a model call costs the session, and its budget (L-16, L-18).
 
 use serde_json::Value;
+use sessions::events::{Event, EventPayload, SpanEvent};
 use sessions::steps::Claim;
 use sessions::types::Session;
 use shared::BackendError;
@@ -45,15 +46,29 @@ pub(super) fn so_far(kept: &Kept) -> u64 {
     kept.values().filter_map(|v| v.get(KEPT)?.as_u64()).sum()
 }
 
-/// `session` after a call that used `usage` and cost `cost`, on top of the
-/// exact `before`. As on live, `usage.list_cost` is rounded to the nearest cent.
-pub(super) fn charged(session: &mut Session, usage: &Usage, cost: Option<u64>, before: u64) {
-    let measured = !session.usage.cost_unmeasured();
-    session.usage.add(usage);
-    session.usage.list_cost = match (measured, cost) {
-        (true, Some(c)) => Some(MonetaryAmount::usd((before + c + NANOS_PER_CENT / 2) / NANOS_PER_CENT)),
-        _ => None,
-    };
+/// `session`'s usage as the calls in `log` add up, every thread's. As on
+/// live, `usage.list_cost` is rounded to the nearest cent, and is unknown
+/// once a call of a model with no list price ran.
+pub(super) fn tally(session: &mut Session, log: &[Event], kept: &Kept) {
+    let mut usage = Usage::default();
+    let mut priced = true;
+    for e in log {
+        let EventPayload::Span(SpanEvent::ModelRequestEnd { model_usage, is_error: false, .. }) = &e.payload
+        else {
+            continue;
+        };
+        let t = &model_usage.tokens;
+        usage.add(&Usage {
+            cache_read_input_tokens: t.cache_read_input_tokens,
+            input_tokens: t.input_tokens + t.cache_creation_input_tokens,
+            output_tokens: t.output_tokens,
+            ..Usage::default()
+        });
+        priced &= kept.get(&e.id).is_some_and(|k| k.get(KEPT).is_some());
+    }
+    let cents = (so_far(kept) + NANOS_PER_CENT / 2) / NANOS_PER_CENT;
+    usage.list_cost = priced.then(|| MonetaryAmount::usd(cents));
+    session.usage = usage;
 }
 
 /// The session's budget is spent: its exact list cost so far, `spent`,

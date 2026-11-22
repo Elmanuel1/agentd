@@ -173,6 +173,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 engine: &[],
                 session: &running,
                 deliveries: None,
+                wake: &[],
             },
         )
         .await
@@ -192,6 +193,7 @@ async fn a_step_writes_and_commits_while_it_holds_its_claim() {
                 engine: &[],
                 session: &unchanged,
                 deliveries: None,
+                wake: &[],
             },
         )
         .await
@@ -231,7 +233,8 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                     events: none,
                     engine: &[],
                     session: &unchanged,
-                    deliveries: None
+                    deliveries: None,
+                    wake: &[],
                 }
             )
             .await
@@ -248,7 +251,8 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                     events: none,
                     engine: &[],
                     session: &unchanged,
-                    deliveries: None
+                    deliveries: None,
+                    wake: &[],
                 }
             )
             .await
@@ -265,7 +269,8 @@ async fn a_lease_that_runs_out_is_taken_over_and_the_late_commit_rolls_back() {
                     events: &[reply()],
                     engine: &[],
                     session: &unchanged,
-                    deliveries: None
+                    deliveries: None,
+                    wake: &[],
                 }
             )
             .await
@@ -299,7 +304,8 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                     events: &[reply()],
                     engine: &[],
                     session: &unchanged,
-                    deliveries: None
+                    deliveries: None,
+                    wake: &[],
                 }
             )
             .await
@@ -318,7 +324,8 @@ async fn a_wake_during_a_step_runs_another_step_after_its_commit() {
                     events: &[],
                     engine: &[],
                     session: &unchanged,
-                    deliveries: None
+                    deliveries: None,
+                    wake: &[],
                 }
             )
             .await
@@ -351,7 +358,8 @@ async fn a_session_deleted_during_its_step_rolls_the_commit_back_and_runs_no_mor
                     events: &[reply()],
                     engine: &[],
                     session: &unchanged,
-                    deliveries: None
+                    deliveries: None,
+                    wake: &[],
                 }
             )
             .await
@@ -399,6 +407,7 @@ async fn a_workspace_at_its_limit_waits_and_the_others_run() {
                 engine: &[],
                 session: &unchanged,
                 deliveries: None,
+                wake: &[],
             },
         )
         .await
@@ -455,6 +464,7 @@ async fn a_step_that_parks_a_built_in_call_queues_the_stopped_work_item_again() 
                 engine: &[],
                 session: &unchanged,
                 deliveries: None,
+                wake: &[],
             },
         )
         .await
@@ -494,6 +504,7 @@ async fn the_counts_see_due_and_leased_steps() {
                 engine: &[],
                 session: &unchanged,
                 deliveries: None,
+                wake: &[],
             },
         )
         .await
@@ -539,7 +550,7 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
     assert!(seen_o, "another workspace runs");
     let mut conn = r.pg.diesel.get().await.unwrap();
     let q = diesel::sql_query(
-        "SELECT extract(epoch FROM due_at - now())::bigint AS seconds FROM loop_steps WHERE session_id = $1",
+        "SELECT extract(epoch FROM due_at - now())::bigint AS seconds FROM loop_steps WHERE session_id = $1 AND thread_id = ''",
     )
     .bind::<diesel::sql_types::Text, _>(c.id.as_str());
     let due: DueIn = diesel_async::RunQueryDsl::get_result(q, &mut *conn).await.unwrap();
@@ -551,6 +562,7 @@ async fn a_workspace_at_its_limit_defers_its_lapsed_step_and_keeps_a_later_one()
         engine: &[],
         session: &unchanged,
         deliveries: None,
+        wake: &[],
     };
     r.steps.commit(&held, StepEnd::Done, w).await.unwrap();
 }
@@ -574,6 +586,7 @@ async fn what_a_step_keeps_beside_an_event_only_the_engine_read_returns() {
         engine: &kept,
         session: &unchanged,
         deliveries: None,
+        wake: &[],
     };
     r.steps.commit(&c, StepEnd::Done, write).await.unwrap();
     let read = r.log.engine_events(&ws, &s.id).await.unwrap();
@@ -615,6 +628,7 @@ async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
             engine: &engine,
             session: &unchanged,
             deliveries: None,
+            wake: &[],
         };
         ends.push(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
     }

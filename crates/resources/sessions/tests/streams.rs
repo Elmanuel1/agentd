@@ -18,7 +18,7 @@ use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, U
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
     AnswerCheck, Append, DatabaseLoad, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
-    NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
+    NativeSessionReplace, NativeSessionsStore, Pos, SessionFilter, StoreError, Tail, Wake,
 };
 use sessions::{NativeSessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
@@ -53,11 +53,11 @@ impl NativeSessionEventReads for Scripted {
         &self,
         _: &WorkspaceId,
         _: &SessionId,
-        after: i64,
+        after: Pos,
         pending: &[i64],
         _: usize,
     ) -> Result<Option<Tail>, StoreError> {
-        self.asked.lock().push((after, pending.to_vec()));
+        self.asked.lock().push((after.seq, pending.to_vec()));
         self.reads.lock().pop_front().unwrap_or(Ok(Some(Tail::default())))
     }
     async fn head(&self, _: &WorkspaceId, _: &SessionId) -> Result<Head, StoreError> {
@@ -226,6 +226,7 @@ fn processed(e: &Event) -> Event {
 }
 
 fn read(archived: bool, events: Vec<(i64, Event)>) -> Result<Option<Tail>, StoreError> {
+    let events = events.into_iter().map(|(seq, e)| (Pos { xid: 0, seq }, e)).collect();
     Ok(Some(Tail { archived, events }))
 }
 
@@ -252,7 +253,7 @@ async fn a_client_event_is_sent_once_when_processed_and_never_queued() {
 async fn a_client_event_queued_before_the_stream_opened_is_sent_once_processed() {
     let e = message();
     let done = processed(&e);
-    let head = Head { seq: 7, queued: vec![7] };
+    let head = Head { pos: Pos { xid: 0, seq: 7 }, queued: vec![7] };
     let rig = rig(head, false, vec![read(false, vec![(7, e.clone())]), read(false, vec![(7, done.clone())])]);
     let mut sub = rig.subscribe().await;
     rig.signal().await;

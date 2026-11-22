@@ -19,6 +19,11 @@ fn status<'a>(log: &'a [Event], thread: &ThreadId) -> Option<Option<&'a StopReas
     })
 }
 
+/// How a thread's last turn stopped, while it is idle.
+pub(super) fn stopped<'a>(log: &'a [Event], thread: &ThreadId) -> Option<&'a StopReason> {
+    status(log, thread).flatten()
+}
+
 /// A thread is at work: its last status in `log` is running.
 pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
     matches!(status(log, thread), Some(None))

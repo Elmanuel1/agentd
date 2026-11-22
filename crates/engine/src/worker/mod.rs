@@ -23,6 +23,7 @@ mod mcp;
 mod reply;
 mod request;
 mod rubrics;
+mod session;
 mod settle;
 mod stall;
 mod status;

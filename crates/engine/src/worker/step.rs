@@ -1,7 +1,7 @@
-//! One step: read the session's log, take the client events it holds, call
-//! the model once with no transaction open, and commit what the reply leads
-//! to. As on live, the session reads `running` before the call: the start of
-//! the call is written first, with the client events it takes.
+//! One step of a thread: read the session's log, call the model once for the
+//! thread with no transaction open, and commit what the reply leads to. The
+//! session's own step (`session.rs`) takes the client's events and starts the
+//! threads, so a session's threads step at the same time.
 
 use sessions::events::{Event, SessionEvent, SpanEvent, StopReason};
 use sessions::steps::{Claim, StepEnd};
@@ -14,11 +14,11 @@ use super::Loop;
 use super::compact::{Log, Opened};
 use super::reply::{Call, led};
 use super::rubrics;
-use super::settle::{quiet, settle};
+use super::settle::settle;
 use super::status::arrived_for;
-use super::take::{Interrupt, Taken, cut_off, take};
-use super::turn::{batch, opening};
-use super::usage::{charged, over_budget, so_far, spent};
+use super::take::{Taken, take};
+use super::turn::{batch, opening, thread_idle};
+use super::usage::{over_budget, so_far, spent};
 use super::watch::Watch;
 use crate::model::{ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
@@ -38,7 +38,7 @@ impl Loop {
 
     async fn run(&self, claim: &Claim) -> Result<(), BackendError> {
         let (ws, id) = (&claim.workspace, &claim.session);
-        let mut session = match self.stores.sessions.get(ws, id).await {
+        let session = match self.stores.sessions.get(ws, id).await {
             Ok(session) => session,
             // Gone: the delete took its step with it.
             Err(StoreError::NotFound) => return Ok(()),
@@ -52,38 +52,25 @@ impl Loop {
         let cloud = queue.is_none_or(|q| q == RUNTIME_QUEUE);
         let idle = session.status == SessionStatus::Idle;
         let rubrics = rubrics::read(&self.stores.files, ws, &log).await?;
-        let step = take(&log, &session, cloud, &rubrics, &kept);
-        if step.interrupt == Interrupt::None && step.history.unanswered.iter().any(Unanswered::for_loop) {
+        let step = take(&log, &session, cloud, &rubrics, &kept, claim.thread.as_ref());
+        if claim.thread.is_none() {
+            return self.session_step(claim, session, &log, &kept, step).await;
+        }
+        if step.history.unanswered.iter().any(Unanswered::for_loop) {
             return self.call_mcp(claim, session, step).await;
         }
-        let Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, more: ready } = step;
+        let Taken { taken, arrived, answers, thread, history, read, .. } = step;
         let turn = thread.turn();
-        if interrupt == Interrupt::Second {
-            self.stores.work.halt(ws, id.as_str()).await.map_err(BackendError::new)?;
-        }
-        if interrupt != Interrupt::None {
-            session.status = SessionStatus::Idle;
-            let mut events = cut_off(&turn, &history, &log);
-            events.extend(turn.idle(&session, StopReason::EndTurn {}));
-            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
-            return Ok(());
-        }
-        if !history.awaits_model() {
-            let end = match allowed {
-                true => StepEnd::Requeue,
-                false => StepEnd::Done,
-            };
-            let mut events = answers;
-            events.extend(quiet(&mut session, &read).unwrap_or_default());
-            self.commit(claim, end, &batch(taken, Vec::new(), events), &session).await?;
+        // Nothing for this thread now: the session's step decides what follows.
+        if !history.awaits_model() || session.status != SessionStatus::Running {
+            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), answers), None).await?;
             return Ok(());
         }
         let before = so_far(&kept);
         if over_budget(&session, before) {
-            session.status = SessionStatus::Idle;
             let mut events = answers;
-            events.extend(turn.idle(&session, StopReason::BudgetReached {}));
-            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session).await?;
+            events.push(turn.lifecycle(thread_idle(&turn, StopReason::BudgetReached {})));
+            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), None).await?;
             return Ok(());
         }
         let agent = thread.agent.clone();
@@ -102,10 +89,7 @@ impl Loop {
         let fit = self.fit(&thread, &Log { read: &read, kept: &kept, rubrics: &rubrics }, &mut history).await;
         let start = turn.event(SpanEvent::ModelRequestStart {});
         let start_id = start.id.clone();
-        let mut running = match idle {
-            true => turn.running(),
-            false => Vec::new(),
-        };
+        let mut running = Vec::new();
         let ongoing =
             thread.grading.as_ref().map(|o| SpanEvent::OutcomeEvaluationOngoing { outcome_id: o.id.clone() });
         running.extend(ongoing.map(|span| Event { session_thread_id: None, ..turn.event(span) }));
@@ -114,14 +98,13 @@ impl Loop {
         if matches!(fit, Ok(Some(_))) {
             opening.engine.push((start_id.clone(), checkpoint::attempt()));
         }
-        if !self.write(claim, &opening, Some(SessionStatus::Running)).await? {
+        if !self.write(claim, &opening, None).await? {
             return Ok(());
         }
-        session.status = SessionStatus::Running;
         match fit {
-            Err(e) => return self.unfit(claim, &turn, session, &start_id, &e).await,
+            Err(e) => return self.unfit(claim, &turn, &start_id, &e).await,
             Ok(Some(c)) => {
-                let opened = Opened { turn: &turn, thread: &thread, start: &start_id, spent: before };
+                let opened = Opened { turn: &turn, thread: &thread, start: &start_id };
                 return self.compact(claim, session, opened, c, &servers.tools()).await;
             }
             Ok(None) => {}
@@ -138,24 +121,24 @@ impl Loop {
             interrupts = watch.interrupted() => Err(interrupts),
         };
         let failed = |e: Option<&ModelError>| turn.failed(&start_id, e);
+        let mut verdict = None;
         let (done, end) = match answer {
             // As on live: the call's end, then the interrupt, then the idle.
-            Err(interrupts) => {
-                session.status = SessionStatus::Idle;
-                (batch(interrupts, failed(None), turn.idle(&session, StopReason::EndTurn {})), StepEnd::Done)
+            // The session's step takes the interrupt and idles the session.
+            Err(_) => {
+                let idle = turn.lifecycle(thread_idle(&turn, StopReason::EndTurn {}));
+                (batch(Vec::new(), failed(None), vec![idle]), StepEnd::Done)
             }
             Ok(Err(e)) => {
-                session.status = SessionStatus::Idle;
                 let mut events = failed(Some(&e));
-                events.extend(turn.idle(&session, StopReason::RetriesExhausted {}));
+                events.push(turn.lifecycle(thread_idle(&turn, StopReason::RetriesExhausted {})));
                 (batch(Vec::new(), Vec::new(), events), StepEnd::Done)
             }
             Ok(Ok(reply)) => {
-                let (usage, cost) = spent(&reply);
+                let (usage, _) = spent(&reply);
                 if let Err(e) = self.models.budget.spend(provider, usage.input_tokens).await {
                     tracing::warn!(session = %id, error = %e, "loop: could not count the call's tokens");
                 }
-                charged(&mut session, &usage, cost, before);
                 let later = self.stores.log.unprocessed_events(ws, id).await.map_err(BackendError::new)?;
                 let more = arrived_for(&thread, &log, &later);
                 let call = Call {
@@ -170,17 +153,14 @@ impl Loop {
                     grading: thread.grading.as_ref(),
                 };
                 let mut out = led(&call, &reply);
-                settle(&mut out, &turn, &thread, &mut session, &read, &reply, more || ready);
-                if let Some(eval) = out.evaluation.take() {
-                    session.outcome_evaluations.retain(|e| e.outcome_id != eval.outcome_id);
-                    session.outcome_evaluations.push(eval);
-                }
+                settle(&mut out, &turn, &thread, &session, &read, &reply);
                 let mut done = batch(Vec::new(), Vec::new(), out.events);
                 done.engine = out.engine;
+                verdict = out.evaluation;
                 (done, out.end)
             }
         };
-        self.commit(claim, end, &done, &session).await?;
+        self.commit(claim, end, &done, verdict.as_ref()).await?;
         Ok(())
     }
 }

@@ -177,7 +177,7 @@ impl NativeSessionEventReads for Log {
         &self,
         _: &WorkspaceId,
         _: &SessionId,
-        _: i64,
+        _: sessions::store::Pos,
         _: &[i64],
         _: usize,
     ) -> Result<Option<Tail>, StoreError> {

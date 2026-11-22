@@ -8,6 +8,8 @@ pub(super) struct Due {
     pub(super) workspace_id: String,
     #[diesel(sql_type = Text)]
     pub(super) session_id: String,
+    #[diesel(sql_type = Text)]
+    pub(super) thread_id: String,
 }
 
 #[derive(diesel::QueryableByName)]

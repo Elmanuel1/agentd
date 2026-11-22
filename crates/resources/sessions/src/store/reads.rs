@@ -8,20 +8,32 @@ use super::{EventFilter, StoreError};
 use crate::events::Event;
 use crate::types::SessionId;
 
+/// An event's place in its session's log: the transaction that wrote it,
+/// then its number. Writers append without a lock, so a lower number can
+/// commit later; a reader that pages by (`xid`, `seq`) below the oldest
+/// running transaction never skips it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pos {
+    /// The writing transaction's id.
+    pub xid: i64,
+    /// The event's number.
+    pub seq: i64,
+}
+
 /// A read of a session's log from a position.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tail {
     /// The session is archived.
     pub archived: bool,
     /// Each event with its position in the log, in log order.
-    pub events: Vec<(i64, Event)>,
+    pub events: Vec<(Pos, Event)>,
 }
 
 /// Where a new stream of a session starts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Head {
-    /// The position of the session's latest event, 0 when it has none.
-    pub seq: i64,
+    /// The position of the session's latest event, the default when it has none.
+    pub pos: Pos,
     /// The positions of its client events not processed yet, in log order.
     pub queued: Vec<i64>,
 }
@@ -65,7 +77,7 @@ pub trait SessionEventReads: Send + Sync {
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
-        after: i64,
+        after: Pos,
         pending: &'a [i64],
         limit: usize,
     ) -> BoxFuture<'a, Result<Option<Tail>, StoreError>>;
@@ -103,7 +115,7 @@ pub trait NativeSessionEventReads: Send + Sync {
         &self,
         ws: &WorkspaceId,
         id: &SessionId,
-        after: i64,
+        after: Pos,
         pending: &[i64],
         limit: usize,
     ) -> impl Future<Output = Result<Option<Tail>, StoreError>> + Send;
@@ -146,7 +158,7 @@ impl<T: NativeSessionEventReads> SessionEventReads for T {
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
-        after: i64,
+        after: Pos,
         pending: &'a [i64],
         limit: usize,
     ) -> BoxFuture<'a, Result<Option<Tail>, StoreError>> {

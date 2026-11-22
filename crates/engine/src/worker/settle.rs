@@ -1,42 +1,33 @@
-//! How a thread's turn ends its step. A delegate's final text goes back to
-//! its coordinator; a primary turn that ends on an outcome not yet met
-//! starts a grading round; a turn that ends or waits while other threads
-//! still work idles only its thread; otherwise the session idles.
+//! How a thread's turn ends its step, and the decisions the session's own
+//! step makes for all of them. A thread's step ends only its own thread: a
+//! delegate's final text goes back to its coordinator, a grader with no grade
+//! is asked again. Idling the session and starting a grading round span the
+//! threads, so only the session's step, which runs one at a time, makes them.
 
-use sessions::events::{Event, SessionEvent, StopReason};
+use sessions::events::{Event, EventPayload, SessionEvent, SpanEvent, StopReason, UserEvent};
 use sessions::steps::StepEnd;
 use sessions::types::{Session, SessionStatus};
 
 use super::grade::{active, begin};
 use super::reply::Led;
 use super::stall::{no_verdict, stalled};
-use super::status::{awaited, busy, unfinished};
+use super::status::{awaited, busy, stopped, unfinished};
 use super::team::{Thread, reply, threads};
 use super::turn::{Turn, thread_idle};
 use super::usage::final_text;
 use crate::model::ModelResponse;
 
-/// End `out` as `turn`'s thread's turn ends; `more` says another thread
-/// awaits the model, as a step takes every thread's arrived results.
+/// End `out` as `turn`'s thread's turn ends.
 pub(super) fn settle(
     out: &mut Led,
     turn: &Turn,
     thread: &Thread,
-    session: &mut Session,
+    session: &Session,
     log: &[Event],
     r: &ModelResponse,
-    more: bool,
 ) {
     let primary = Thread::primary(session).turn();
     let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
-    let working: Vec<Thread> =
-        threads(session, &seen).into_iter().filter(|t| t.id != turn.thread && busy(&seen, &t.id)).collect();
-    let others = threads(session, &seen)
-        .into_iter()
-        .any(|t| !t.primary && t.id != turn.thread && unfinished(&seen, &t.id));
-    let active = active(&seen);
-    let grading = active.as_ref().is_some_and(|o| o.open.is_some());
-    let outcome = active.filter(|o| o.open.is_none());
     match (out.idle.take(), thread.primary, thread.grading.is_some()) {
         // The grader ended a step without its grade: the next step asks for
         // it, until the grader has stalled and the round fails.
@@ -50,56 +41,59 @@ pub(super) fn settle(
         (Some(stop @ StopReason::EndTurn {}), false, false) => {
             out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.events.extend(reply(turn, &primary, &final_text(r)));
-            out.end = StepEnd::Again;
         }
-        // As on live: the round starts right after the reply that ends the
-        // work, the thread still running; a reply while delegates still work
-        // is not the end of it.
-        (Some(StopReason::EndTurn {}), true, _) if outcome.is_some() && !others => {
-            out.events.extend(outcome.map(|o| begin(&primary, &o)));
-            out.end = StepEnd::Again;
-        }
-        // The session never idles with delegates working or a round open: the
-        // grader runs, then the primary thread takes its verdict.
-        (Some(stop @ StopReason::EndTurn {}), true, _) if others || grading => {
-            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
-            out.end = StepEnd::Again;
-        }
-        // A thread that waits (on the worker, a confirmation or the client)
-        // idles alone while another works, as on live: the session runs on
-        // and the other threads take their steps.
-        (Some(stop), _, _) if more || !working.is_empty() => {
-            out.events.push(turn.lifecycle(thread_idle(turn, stop)));
-            out.end = StepEnd::Again;
-        }
-        // The session idles on every call its threads wait for, as `quiet` does.
-        (Some(StopReason::RequiresAction { mut event_ids }), _, _) => {
-            let others = threads(session, &seen).into_iter().filter(|t| t.id != turn.thread);
-            event_ids.extend(others.flat_map(|t| awaited(&seen, &t.id)));
-            session.status = SessionStatus::Idle;
-            out.events.extend(turn.idle(session, StopReason::RequiresAction { event_ids }));
-        }
-        (Some(stop), _, _) => {
-            session.status = SessionStatus::Idle;
-            out.events.extend(turn.idle(session, stop));
-        }
+        (Some(stop), _, _) => out.events.push(turn.lifecycle(thread_idle(turn, stop))),
         (None, _, _) => {}
     }
 }
 
+/// The round that starts once the primary thread has replied to the outcome
+/// and no delegate is mid-turn, as on live: right after the reply that ends
+/// the work. `None` while a round is open, a delegate works, or the primary
+/// has not replied since the outcome was defined or last graded.
+pub(super) fn round(session: &Session, log: &[Event]) -> Option<Event> {
+    let outcome = active(log).filter(|o| o.open.is_none())?;
+    let primary = Thread::primary(session);
+    if threads(session, log).iter().any(|t| !t.primary && unfinished(log, &t.id)) {
+        return None;
+    }
+    let replied = log.iter().rposition(|e| {
+        e.session_thread_id.as_ref() == Some(&primary.id)
+            && matches!(
+                &e.payload,
+                EventPayload::Session(SessionEvent::ThreadStatusIdle {
+                    stop_reason: StopReason::EndTurn {},
+                    ..
+                })
+            )
+    })?;
+    let asked = log.iter().rposition(|e| {
+        matches!(
+            &e.payload,
+            EventPayload::User(UserEvent::DefineOutcome { .. })
+                | EventPayload::Span(SpanEvent::OutcomeEvaluationEnd { .. })
+        )
+    })?;
+    (replied > asked).then(|| begin(&primary.turn(), &outcome))
+}
+
 /// When no thread works and no round is open, the session idles, as on
-/// live: on the calls its threads wait for, else on the end of its turn.
-/// `None` while anything works, or once the session is idle.
-pub(super) fn quiet(session: &mut Session, log: &[Event]) -> Option<Vec<Event>> {
+/// live: on the budget once it is spent, on the calls its threads wait for,
+/// else on the end of its turn. `None` while anything works, or once the
+/// session is idle.
+pub(super) fn quiet(session: &mut Session, log: &[Event], spent: bool) -> Option<Vec<Event>> {
     let all = threads(session, log);
     let open = active(log).is_some_and(|o| o.open.is_some());
     if session.status != SessionStatus::Running || open || all.iter().any(|t| busy(log, &t.id)) {
         return None;
     }
     let event_ids: Vec<_> = all.iter().flat_map(|t| awaited(log, &t.id)).collect();
-    let stop = match event_ids.is_empty() {
-        true => StopReason::EndTurn {},
-        false => StopReason::RequiresAction { event_ids },
+    let failed = all.iter().any(|t| matches!(stopped(log, &t.id), Some(StopReason::RetriesExhausted {})));
+    let stop = match (spent, failed, event_ids.is_empty()) {
+        (true, _, _) => StopReason::BudgetReached {},
+        (false, true, _) => StopReason::RetriesExhausted {},
+        (false, false, true) => StopReason::EndTurn {},
+        (false, false, false) => StopReason::RequiresAction { event_ids },
     };
     session.status = SessionStatus::Idle;
     let primary = Thread::primary(session).turn();

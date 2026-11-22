@@ -1,7 +1,9 @@
-//! The step queue: one row per session that has work for the loop. A loop
-//! worker claims a due row under a lease, runs one model call from the log
-//! and commits its events, so a replica holds nothing between steps and a
-//! step cut off by a crash runs again from the log after its lease.
+//! The step queue: one row per session and per thread with work for the
+//! loop. A thread's row runs one model call for that thread; the session's
+//! own row takes the client's events, wakes the threads with work and makes
+//! the decisions that span the session. Each row is claimed under its own
+//! lease, so a session's threads call the model at the same time, and a step
+//! cut off by a crash runs again from the log after its lease.
 
 use shared::WorkspaceId;
 use shared::ports::BoxFuture;
@@ -9,7 +11,7 @@ use std::future::Future;
 
 use crate::events::{Event, EventId};
 use crate::store::StoreError;
-use crate::types::{Session, SessionId};
+use crate::types::{Session, SessionId, ThreadId};
 
 /// A step a worker holds. A write that names it lands only while the worker
 /// still holds the step with these counts.
@@ -19,6 +21,8 @@ pub struct Claim {
     pub workspace: WorkspaceId,
     /// The session.
     pub session: SessionId,
+    /// The thread whose step it is; `None` for the session's own step.
+    pub thread: Option<ThreadId>,
     /// The worker that holds it.
     pub owner: String,
     /// The claims the step has had, this one included.
@@ -52,6 +56,8 @@ pub struct StepWrite<'a> {
     pub session: &'a SessionChange<'a>,
     /// The webhook deliveries of a status change, when any endpoint is configured.
     pub deliveries: Option<&'a StatusDeliveries<'a>>,
+    /// The threads the write gives a step to run, due at once.
+    pub wake: &'a [ThreadId],
 }
 
 impl std::fmt::Debug for StepWrite<'_> {
@@ -95,8 +101,7 @@ pub trait Steps: Send + Sync {
         lease: i64,
         per_workspace: i64,
     ) -> BoxFuture<'a, Result<Option<Claim>, StoreError>>;
-    /// Under the session's append lock, write `write` while `claim` still
-    /// holds the step, and keep its lease for `lease` more seconds; `false`
+    /// Write `write` while `claim` still holds the step, and keep its lease for `lease` more seconds; `false`
     /// when it no longer does, with nothing written.
     fn write<'a>(
         &'a self,
@@ -104,8 +109,9 @@ pub trait Steps: Send + Sync {
         lease: i64,
         write: StepWrite<'a>,
     ) -> BoxFuture<'a, Result<bool, StoreError>>;
-    /// Write the step's last events and release it as `end` says; `false`
-    /// when another worker took it over, with nothing written.
+    /// Write the step's last events and release it as `end` says; a thread's
+    /// step also wakes the session's own step. `false` when another worker
+    /// took it over, with nothing written.
     fn commit<'a>(
         &'a self,
         claim: &'a Claim,

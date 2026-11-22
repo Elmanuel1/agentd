@@ -21,7 +21,7 @@ impl Loop {
     pub(super) async fn call_mcp(
         &self,
         claim: &Claim,
-        mut session: Session,
+        session: Session,
         step: Taken,
     ) -> Result<(), BackendError> {
         let Taken { taken, answers, thread, history, read, .. } = step;
@@ -75,8 +75,7 @@ impl Loop {
             let result = turn.event(AgentEvent::McpToolResult { mcp_tool_use_id: id, content, is_error });
             finished = error.into_iter().chain([result]).collect();
         }
-        session.status = SessionStatus::Running;
-        self.commit(claim, StepEnd::Again, &batch(Vec::new(), Vec::new(), finished), &session).await?;
+        self.commit(claim, StepEnd::Again, &batch(Vec::new(), Vec::new(), finished), None).await?;
         Ok(())
     }
 

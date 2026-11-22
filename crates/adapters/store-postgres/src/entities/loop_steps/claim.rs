@@ -2,7 +2,7 @@
 
 use ::sessions::steps::Claim;
 use ::sessions::store::StoreError;
-use ::sessions::types::SessionId;
+use ::sessions::types::{SessionId, ThreadId};
 use diesel::OptionalExtension;
 use diesel::sql_types::{BigInt, Text};
 use diesel_async::{AsyncConnection, RunQueryDsl};
@@ -22,7 +22,7 @@ pub(super) async fn claim(
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
                 let due: Option<Due> = diesel::sql_query(
-                    "SELECT workspace_id, session_id FROM loop_steps
+                    "SELECT workspace_id, session_id, thread_id FROM loop_steps
                      WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now())
                      ORDER BY due_at LIMIT 1 FOR UPDATE SKIP LOCKED",
                 )
@@ -56,19 +56,25 @@ pub(super) async fn claim(
                 }
                 let held: Claimed = diesel::sql_query(format!(
                     "UPDATE loop_steps SET lease_owner = $3, lease_until = now() + make_interval(secs => $4),
-                     attempts = attempts + 1 WHERE {KEY}
+                     attempts = attempts + 1 WHERE {KEY} AND thread_id = $5
                      RETURNING attempts, wakes, greatest(0, extract(epoch FROM now() - due_at) * 1000)::bigint AS waited_ms"
                 ))
                 .bind::<Text, _>(&due.workspace_id)
                 .bind::<Text, _>(&due.session_id)
                 .bind::<Text, _>(owner)
                 .bind::<BigInt, _>(lease)
+                .bind::<Text, _>(&due.thread_id)
                 .get_result(c)
                 .await?;
                 let session = SessionId::parse(&due.session_id).map_err(|e| diesel::result::Error::DeserializationError(e.into()))?;
+                let thread = match due.thread_id.as_str() {
+                    "" => None,
+                    t => Some(ThreadId::parse(t).map_err(|e| diesel::result::Error::DeserializationError(e.into()))?),
+                };
                 Ok(Some(Claim {
                     workspace: WorkspaceId::new(due.workspace_id),
                     session,
+                    thread,
                     owner: owner.to_owned(),
                     attempts: held.attempts,
                     wakes: held.wakes,

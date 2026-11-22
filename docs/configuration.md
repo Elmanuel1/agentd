@@ -58,14 +58,24 @@ fakes in test code, never from configuration ([Security](#security)).
 
 ## The loop
 
-Every session runs on agentd's own loop. A client event, or a worker's
-`user.tool_result`, puts its session on the step queue (`loop_steps`) in the
-same commit. A loop worker claims the step under a lease,
-builds one model call's prompt from the session's event log, and commits what
-the reply leads to:
-- the call's start, the running status and the client events it takes, in one
-  commit before the call;
-- its events, in one commit after it.
+Every session runs on agentd's own loop. The step queue (`loop_steps`) holds
+one row per session and per thread with work, each claimed under its own
+lease, so a session's threads call the model at the same time on any replica.
+- **The session's own step.** A client event, or a worker's
+  `user.tool_result`, wakes it in the same commit. It takes the client's
+  events, starts each thread with work (the running status and each thread's
+  running event, then a step for that thread), and makes the decisions that
+  span the threads: an interrupt stops every thread, a grading round starts
+  once the primary thread has replied and no delegate is mid-turn, the session
+  idles when no thread works, and its usage is the sum of every thread's
+  calls. It calls no model.
+- **A thread's step.** It builds one model call's prompt from its thread's
+  events and commits the call's start before the call, then the reply's
+  events after it, then wakes the session's step.
+
+Steps take no session-wide lock. Readers serve each event only once every
+older transaction has finished, and page by (transaction, number), so a
+stream never skips an event that commits after a later-numbered one.
 
 While a step runs, its worker renews the lease every third of its length, so
 slow MCP or model work never outlasts it; a step whose claim is gone (another
@@ -84,7 +94,7 @@ A roster thread's or the grader's built-in calls show on the session's stream
 with their `session_thread_id`, so the official worker runs them from it, and
 its results land on the call's thread. A coordinator has live's three roster
 tools, with live's descriptions: `create_agent` (`agent_name`, `task`) opens a
-roster thread that runs in later steps and returns its `thread_id`;
+roster thread that runs beside the coordinator and returns its `thread_id`;
 `send_to_agent` (`thread_id`, `message`) sends that thread a follow-up; and
 `list_agents` lists the threads started, each with its status, and the agents
 on the roster. A delegate's reply reaches the coordinator as a message tagged

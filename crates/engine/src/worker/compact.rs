@@ -8,14 +8,14 @@ use std::collections::HashMap;
 use agents::types::ModelSpeed;
 use sessions::events::{AgentEvent, Event, EventId, SpanEvent, SpanModelUsage, StopReason};
 use sessions::steps::{Claim, StepEnd};
-use sessions::types::{Session, SessionStatus};
+use sessions::types::Session;
 use shared::BackendError;
 
 use super::Loop;
 use super::grade::conversation;
 use super::team::Thread;
-use super::turn::{Turn, batch};
-use super::usage::{charged, kept, spent};
+use super::turn::{Turn, batch, thread_idle};
+use super::usage::{kept, spent};
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
@@ -37,8 +37,6 @@ pub(super) struct Opened<'a> {
     pub(super) turn: &'a Turn,
     pub(super) thread: &'a Thread,
     pub(super) start: &'a EventId,
-    /// The session's exact list cost before the call.
-    pub(super) spent: u64,
 }
 
 /// What the step's call needs from the thread's log.
@@ -126,12 +124,12 @@ impl Loop {
     pub(super) async fn compact(
         &self,
         claim: &Claim,
-        mut session: Session,
+        session: Session,
         opened: Opened<'_>,
         c: Compacting,
         mcp: &[McpTool],
     ) -> Result<(), BackendError> {
-        let Opened { turn, thread, start, spent: before } = opened;
+        let Opened { turn, thread, start } = opened;
         let (_, mut request) = self.request(&claim.workspace, &session, thread, c.messages, mcp).await;
         request.compact = Some(c.instructions);
         let model = request.model.clone();
@@ -143,7 +141,6 @@ impl Loop {
                 if let Err(e) = self.models.budget.spend(provider, usage.input_tokens).await {
                     tracing::warn!(session = %claim.session, error = %e, "loop: could not count the call's tokens");
                 }
-                charged(&mut session, &usage, cost, before);
                 let end = turn.event(SpanEvent::ModelRequestEnd {
                     model_request_start_id: start.clone(),
                     is_error: false,
@@ -170,7 +167,7 @@ impl Loop {
         }
         let mut done = batch(Vec::new(), Vec::new(), events);
         done.engine = engine;
-        self.commit(claim, StepEnd::Again, &done, &session).await?;
+        self.commit(claim, StepEnd::Again, &done, None).await?;
         Ok(())
     }
 
@@ -180,14 +177,12 @@ impl Loop {
         &self,
         claim: &Claim,
         turn: &Turn,
-        mut session: Session,
         start: &EventId,
         e: &ModelError,
     ) -> Result<(), BackendError> {
-        session.status = SessionStatus::Idle;
         let mut events = turn.failed(start, Some(e));
-        events.extend(turn.idle(&session, StopReason::RetriesExhausted {}));
-        self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), &session).await?;
+        events.push(turn.lifecycle(thread_idle(turn, StopReason::RetriesExhausted {})));
+        self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), None).await?;
         Ok(())
     }
 }

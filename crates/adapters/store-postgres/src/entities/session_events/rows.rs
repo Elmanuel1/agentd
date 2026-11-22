@@ -1,0 +1,29 @@
+//! The rows the event log's stream reads return.
+
+use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable};
+
+#[derive(diesel::QueryableByName)]
+pub(super) struct LastRow {
+    #[diesel(sql_type = BigInt)]
+    pub(super) xid: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) seq: i64,
+}
+
+#[derive(diesel::QueryableByName)]
+pub(super) struct HeadRow {
+    #[diesel(sql_type = Array<BigInt>)]
+    pub(super) queued: Vec<i64>,
+}
+
+#[derive(diesel::QueryableByName)]
+pub(super) struct TailRow {
+    #[diesel(sql_type = Bool)]
+    pub(super) archived: bool,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub(super) xid: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub(super) seq: Option<i64>,
+    #[diesel(sql_type = Nullable<Jsonb>)]
+    pub(super) doc: Option<serde_json::Value>,
+}
