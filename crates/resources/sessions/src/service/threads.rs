@@ -3,7 +3,7 @@
 
 use shared::{ApiError, AuthContext, Timestamp, Usage};
 
-use super::{SessionsService, map_store, parse_id};
+use super::{SessionsService, map_store};
 use crate::events::{Event, EventPayload, SessionEvent, SpanEvent};
 use crate::store::{Append, Wake};
 use crate::types::{
@@ -13,9 +13,8 @@ use crate::types::{
 impl SessionsService {
     /// Every thread of the session, the primary one first.
     pub async fn threads(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vec<SessionThread>, ApiError> {
-        let id = parse_id(raw_id)?;
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))?;
-        let events = self.events.events(&ctx.workspace, &id).await.map_err(map_store(&id))?;
+        let session = self.get(ctx, raw_id).await?;
+        let events = self.events.events(&ctx.workspace, &session.id).await.map_err(map_store(&session.id))?;
         Ok(threads_projection(&session, &events))
     }
 

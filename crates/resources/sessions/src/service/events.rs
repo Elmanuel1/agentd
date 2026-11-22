@@ -57,9 +57,7 @@ impl SessionsService {
         environment: Option<&str>,
         payloads: &[EventPayload],
     ) -> Result<Session, ApiError> {
-        let id = parse_id(raw_id)?;
-        let session =
-            self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))?.seen_from(environment)?;
+        let session = self.get(ctx, raw_id).await?.seen_from(environment)?;
         session.takes_events()?;
         validate_sendable("events", payloads)?;
         self.guard_waiting(&ctx.workspace, &session, payloads).await?;
