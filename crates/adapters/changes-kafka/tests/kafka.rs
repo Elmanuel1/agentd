@@ -336,19 +336,41 @@ async fn a_record_whose_partition_is_revoked_mid_attempt_is_applied_once_by_its_
     tasks.iter().chain(&joined).for_each(tokio::task::JoinHandle::abort);
 }
 
+/// What the readers log, kept for the test to read.
+#[derive(Clone, Default)]
+struct Logged(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logged {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn a_topic_made_after_the_reader_starts_is_read_without_a_reconnect() {
     // A table with no change yet has no topic: the reader waits on the same
-    // subscription and reads the first record once Debezium writes it.
+    // subscription and reads the first record once Debezium writes it. The
+    // test runtime runs the reader's task on this thread, so its log is here.
     let Some(brokers) = brokers() else { return };
+    let logged = Logged::default();
+    let writer = logged.clone();
+    let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
+    let _log = tracing::subscriber::set_default(subscriber);
     let table: &'static str = Box::leak(format!("t{}", uuid::Uuid::new_v4().simple()).into_boxed_str());
     let seen = Arc::new(Seen { table, fail_once: -1, failed: Mutex::new(false), seen: Mutex::new(vec![]) });
     let tasks = KafkaChanges::new(&brokers, "agentdtest").spawn(vec![seen.clone()]);
     tokio::time::sleep(Duration::from_secs(3)).await;
-    assert!(tasks.iter().all(|t| !t.is_finished()), "the reader waits for its topic");
     let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", &brokers).create().unwrap();
     send(&producer, &format!("agentdtest.public.{table}"), table, 1, None).await;
     until(|| !seen.seen.lock().unwrap().is_empty()).await;
     assert_eq!(*seen.seen.lock().unwrap(), vec![1]);
     tasks.iter().for_each(tokio::task::JoinHandle::abort);
+    let log = String::from_utf8(logged.0.lock().unwrap().clone()).unwrap();
+    assert!(log.contains("the topic does not exist yet"), "the wait is logged: {log}");
+    assert!(!log.contains("reconnecting"), "the reader kept its consumer: {log}");
 }
