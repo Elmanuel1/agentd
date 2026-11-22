@@ -289,6 +289,6 @@ fn only_a_thread_s_own_new_events_keep_its_turn_going() {
     assert!(!super::status::arrived_for(&primary, &read, &later), "the helper's result is not the primary's");
     assert!(super::status::arrived_for(&helper, &read, &later));
     let message = Event::new(UserEvent::Message { content: vec![ContentBlock::text("more")] }.into());
-    assert!(super::status::arrived_for(&primary, &read, &[message.clone()]));
+    assert!(super::status::arrived_for(&primary, &read, std::slice::from_ref(&message)));
     assert!(!super::status::arrived_for(&helper, &read, &[message]));
 }
