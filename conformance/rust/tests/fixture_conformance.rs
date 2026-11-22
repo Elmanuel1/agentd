@@ -64,7 +64,7 @@ async fn app() -> Option<Router> {
             placeholders: shared::hash::KeyRing::single(vec![2; 32]),
             api_base_url: "http://agentd.test".into(),
         },
-        extra_models: Vec::new(),
+        models: shared::limits::ModelCatalog::default_catalog(),
         metrics: Arc::new(api::telemetry::Metrics::global()),
         signals: Arc::new(sessions::signals::LocalSignals::default()),
         load,

@@ -11,7 +11,6 @@ use memory::MemoriesService;
 use organizations::WorkspacesService;
 use sessions::{SessionsService, Streams};
 use shared::Module;
-use shared::limits::ModelCatalog;
 use shared::ports::fire::FireError;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource};
 use skills::SkillsService;
@@ -65,7 +64,7 @@ impl AppState {
             system,
             fires,
             fire_sources,
-            extra_models,
+            models: catalog,
             metrics,
             signals,
             load,
@@ -73,7 +72,6 @@ impl AppState {
             guard,
             webhooks,
         } = backends;
-        let catalog = ModelCatalog::default_catalog().with(extra_models);
         let agents = Arc::new(AgentsService::new(stores.agents, catalog.clone()));
         let environments = Arc::new(EnvironmentsService::new(stores.environments));
         let probe = Arc::new(engine::mcp::Probe::new(guard.clone(), MCP_PROBE_TIMEOUT));

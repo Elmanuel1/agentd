@@ -95,7 +95,19 @@ environment: `AGENTD_ANTHROPIC_API_KEY` and `AGENTD_OPENROUTER_API_KEY`. A
 model id with a `/` goes to the
 OpenAI-compatible API at `AGENTD_MODEL_BASE_URL` (default
 `https://openrouter.ai/api/v1`), and any other id to the
-Messages API at `AGENTD_ANTHROPIC_BASE_URL`. A Messages API call asks for
+Messages API at `AGENTD_ANTHROPIC_BASE_URL`.
+
+An agent or session may name the Anthropic models live accepts, and the
+`vendor/model` ids in `AGENTD_MODELS`. Live accepts each id its Models API
+(`GET /v1/models`) lists, and the undated alias of a dated one
+(`claude-haiku-4-5` for `claude-haiku-4-5-20251001`). With
+`AGENTD_ANTHROPIC_API_KEY` set, each replica reads that list at
+`AGENTD_ANTHROPIC_BASE_URL` at start and once a day; a read that fails keeps
+the list last read. Without the key, and before the first read, agentd takes
+its built-in list, which matches live's on 2026-11-21. Any other id is a 400:
+`` `model.id`: model "gpt-4": model is not supported ``.
+
+A Messages API call asks for
 thinking: adaptive, or a budget of a quarter of the output cap for
 `claude-haiku-4-5`, `claude-sonnet-4-5` and `claude-opus-4-5`. Each call that
 reasons writes `agent.thinking` (no content, as live), and its signed thinking
@@ -119,7 +131,7 @@ step's 10 minute deadline.
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |
 | `AGENTD_MODEL_RPM`, `AGENTD_MODEL_ITPM` | unset (no limit) | Requests and input tokens per provider and minute, shared by every replica in Valkey (`AGENTD_VALKEY_URL`); a step over it waits for the next minute. Without Valkey there is no limit |
-| `AGENTD_MODELS` | unset | Model ids agents may name beyond the built-in Anthropic ones, comma-separated |
+| `AGENTD_MODELS` | unset | The OpenAI-compatible `vendor/model` ids agents may name, comma-separated. An id without a `/` is refused at start: Anthropic's models need no entry |
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
 | `AGENTD_MODEL_PRICES_URL` | `https://openrouter.ai/api/v1/models` | The model list Anthropic's list prices are read from, at start and once a day; empty, the built-in table alone |
@@ -202,7 +214,8 @@ the nearest cent. A session whose exact cost has reached its budget, or that
 ran a model with no list price, stops its turn with `budget_reached` before
 its next call. A budgeted session cannot be created when its agent, or a
 roster agent or advisor of it, names a Messages API model with no list
-price (an `AGENTD_MODELS` extra): the create is a 400 that names the model.
+price (one neither the price list nor the built-in table has): the create
+is a 400 that names the model.
 
 ## S3 credentials
 

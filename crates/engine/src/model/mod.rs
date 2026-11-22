@@ -10,6 +10,7 @@ pub mod anthropic;
 mod block;
 pub mod budget;
 mod list_cost;
+pub mod model_list;
 pub mod openai;
 pub mod price_feed;
 pub mod retry;
