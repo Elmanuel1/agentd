@@ -225,4 +225,5 @@ fn the_thread_that_waited_longest_takes_the_step() {
     ];
     let taken = super::take::take(&log, &session, false, &Default::default(), &Default::default());
     assert_eq!(taken.thread.id, slow);
+    assert!(taken.more, "the fast one still awaits the model, so the step is not the last");
 }

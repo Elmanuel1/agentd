@@ -56,6 +56,9 @@ pub(super) struct Taken {
     pub(super) read: Vec<Event>,
     /// The interrupts among the taken events.
     pub(super) interrupt: Interrupt,
+    /// Another thread awaits the model too: the step that runs this one is
+    /// not the last.
+    pub(super) more: bool,
 }
 
 fn is_interrupt(e: &Event) -> bool {
@@ -169,16 +172,14 @@ pub(super) fn take(
                     || (t.primary && e.session_thread_id.is_none()))
         })
     };
-    let chosen = candidates
-        .iter()
-        .map(|t| (t, history_of(t)))
-        .filter(|(_, h)| due(h))
-        .min_by_key(|(t, _)| last_step(t));
+    let ready: Vec<_> = candidates.iter().map(|t| (t, history_of(t))).filter(|(_, h)| due(h)).collect();
+    let more = ready.len() > 1;
+    let chosen = ready.into_iter().min_by_key(|(t, _)| last_step(t));
     let (thread, history) = match chosen {
         Some((t, h)) => (t.clone(), h),
         None => (primary.clone(), history_of(&primary)),
     };
-    Taken { taken, arrived, answers, allowed, thread, history, read, interrupt }
+    Taken { taken, arrived, answers, allowed, thread, history, read, interrupt, more }
 }
 
 /// The thread of the call `answer` answers.

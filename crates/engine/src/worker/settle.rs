@@ -16,7 +16,8 @@ use super::turn::{Turn, thread_idle};
 use super::usage::final_text;
 use crate::model::ModelResponse;
 
-/// End `out` as `turn`'s thread's turn ends.
+/// End `out` as `turn`'s thread's turn ends; `more` says another thread
+/// awaits the model, as a step takes every thread's arrived results.
 pub(super) fn settle(
     out: &mut Led,
     turn: &Turn,
@@ -24,6 +25,7 @@ pub(super) fn settle(
     session: &mut Session,
     log: &[Event],
     r: &ModelResponse,
+    more: bool,
 ) {
     let primary = Thread::primary(session).turn();
     let seen: Vec<Event> = log.iter().chain(&out.events).cloned().collect();
@@ -66,7 +68,7 @@ pub(super) fn settle(
         // A thread that waits (on the worker, a confirmation or the client)
         // idles alone while another works, as on live: the session runs on
         // and the other threads take their steps.
-        (Some(stop), _, _) if !working.is_empty() => {
+        (Some(stop), _, _) if more || !working.is_empty() => {
             out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.end = StepEnd::Again;
         }
