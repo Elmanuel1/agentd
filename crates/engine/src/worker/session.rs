@@ -4,7 +4,7 @@
 //! at a time per session and calls no model, so the threads' steps, each on
 //! its own row, run at the same time beside it.
 
-use sessions::events::{Event, SessionEvent, StopReason};
+use sessions::events::{Event, EventPayload, SessionEvent, StopReason};
 use sessions::steps::{Claim, StepEnd};
 use sessions::types::{Session, SessionStatus};
 use shared::BackendError;
@@ -74,9 +74,26 @@ impl Loop {
                     rest.push(start);
                     (Vec::new(), StepEnd::Again)
                 }
+                // Idle on calls the worker owes: its work item is queued again
+                // if a worker that died stopped it, so a new one runs them.
                 None => {
-                    rest.extend(quiet(&mut session, &seen).unwrap_or_default());
-                    (Vec::new(), StepEnd::Done)
+                    let idle = quiet(&mut session, &seen).unwrap_or_default();
+                    let owed = idle.iter().any(|e| {
+                        matches!(
+                            &e.payload,
+                            EventPayload::Session(SessionEvent::StatusIdle {
+                                stop_reason: StopReason::RequiresAction { .. }
+                            })
+                        )
+                    });
+                    rest.extend(idle);
+                    (
+                        Vec::new(),
+                        match owed {
+                            true => StepEnd::Requeue,
+                            false => StepEnd::Done,
+                        },
+                    )
                 }
             },
         };
