@@ -1,8 +1,13 @@
 //! A thread's state as its lifecycle events in the log say it: working,
 //! mid-turn, or parked on what it waits for.
 
+use std::collections::HashSet;
+
 use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, StopReason};
 use sessions::types::ThreadId;
+
+use super::team::Thread;
+use crate::turn::history::thread_events;
 
 /// A thread's last status in `log`: running (`Some(None)`), idle and why
 /// (`Some(Some(_))`), or none yet.
@@ -57,4 +62,15 @@ pub(super) fn opens(created: &Event, sent: &Event) -> bool {
 /// `e` is a coordinator's message to one of its threads.
 pub(super) fn is_send(e: &Event) -> bool {
     matches!(e.payload, EventPayload::Agent(AgentEvent::ThreadMessageSent { .. }))
+}
+
+/// Of `later`, the events not in `read`, one is `thread`'s: its client's
+/// message, or a result for one of its calls. Events for other threads do
+/// not keep its turn from ending.
+pub(super) fn arrived_for(thread: &Thread, read: &[Event], later: &[Event]) -> bool {
+    let known: HashSet<&EventId> = read.iter().map(|e| &e.id).collect();
+    let fresh: Vec<Event> = later.iter().filter(|e| !known.contains(&e.id)).cloned().collect();
+    let all: Vec<Event> = read.iter().cloned().chain(fresh.iter().cloned()).collect();
+    let scope = (!thread.primary).then(|| thread.id.clone());
+    thread_events(&all, scope.as_ref()).iter().any(|e| fresh.iter().any(|f| f.id == e.id))
 }
