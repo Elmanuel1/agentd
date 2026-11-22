@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 
 use super::common::{self, Auth, KEY, Rig, request, send_to};
-use super::{Say, Scripted, events_until, on_loop, send, types};
+use super::{Say, Scripted, events_until, message, on_loop, send, types};
 
 #[tokio::test]
 async fn a_round_starts_only_once_the_delegates_are_done_and_ends_with_its_verdict() {
@@ -109,4 +109,45 @@ async fn a_round_waits_for_a_delegate_that_waits_on_a_tool() {
     let t = types(&events);
     let at = |kind: &str| t.iter().rposition(|k| *k == kind).unwrap_or_else(|| panic!("{kind} in {t:?}"));
     assert!(at("agent.thread_message_received") < at("span.outcome_evaluation_start"), "{t:?}");
+}
+
+#[tokio::test]
+async fn a_revision_starts_after_an_interrupt_in_an_earlier_turn() {
+    // An interrupt cuts the first turn; the outcome defined after it is
+    // graded needs_revision, and the agent revises with no new message.
+    let Some(rig) = Rig::new().await else { return };
+    let env = rig.environment("cloud").await;
+    let name = format!("writer-{}", common::stamp());
+    let revise = json!({"result": "needs_revision", "criteria": [{"criterion": "Poem", "met": false, "finding": "Not yet."}]});
+    let pass = json!({"result": "satisfied", "criteria": [{"criterion": "Poem", "met": true, "finding": "It is one."}]});
+    let model = Scripted::per_agent(vec![
+        (name.clone(), vec![Say::Hold, Say::Text("draft"), Say::Text("final"), Say::Text("done")]),
+        (
+            "grader".to_owned(),
+            vec![
+                Say::Text(Box::leak(revise.to_string().into_boxed_str())),
+                Say::Text(Box::leak(pass.to_string().into_boxed_str())),
+            ],
+        ),
+    ]);
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
+    let agent = json!({"name": name, "model": "claude-haiku-4-5"});
+    let (_, agent) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(agent))).await;
+    let body = json!({"agent": agent["id"], "environment_id": env});
+    let (_, created) = send_to(&app, request("POST", "/v1/sessions", Auth::Key(KEY), Some(body))).await;
+    let s = created["id"].as_str().unwrap().to_owned();
+    send(&app, &s, message("start")).await;
+    events_until(&app, &s, "span.model_request_start", 1).await;
+    send(&app, &s, json!({"events": [{"type": "user.interrupt"}]})).await;
+    events_until(&app, &s, "session.status_idle", 1).await;
+    let outcome = json!({"events": [{"type": "user.define_outcome", "description": "Write a poem.", "rubric": {"type": "text", "content": "### Poem\nA poem."}, "max_iterations": 3}]});
+    let (st, body) = send(&app, &s, outcome).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let events = events_until(&app, &s, "span.outcome_evaluation_end", 2).await;
+    let ends: Vec<&Value> =
+        events.iter().filter(|e| e["type"] == "span.outcome_evaluation_end").map(|e| &e["result"]).collect();
+    assert_eq!(ends, [&json!("needs_revision"), &json!("satisfied")], "the revision ran on its own");
+    let said: Vec<&Value> =
+        events.iter().filter(|e| e["type"] == "agent.message").map(|e| &e["content"][0]["text"]).collect();
+    assert!(said.contains(&&json!("final")), "the agent revised: {said:?}");
 }
