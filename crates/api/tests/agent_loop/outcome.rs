@@ -85,8 +85,10 @@ async fn a_round_waits_for_a_delegate_that_waits_on_a_tool() {
     let s = created["id"].as_str().unwrap().to_owned();
     let outcome = json!({"events": [{"type": "user.define_outcome", "description": "Write a poem.", "rubric": {"type": "text", "content": "### Poem\nA poem."}, "max_iterations": 2}]});
     send(&app, &s, outcome).await;
-    let events = events_until(&app, &s, "agent.custom_tool_use", 1).await;
+    // The coordinator replies while the helper still waits on its call.
+    let events = events_until(&app, &s, "agent.message", 1).await;
     let t = types(&events);
+    assert!(t.contains(&"agent.custom_tool_use"), "{t:?}");
     assert!(!t.contains(&"span.outcome_evaluation_start"), "no round while the helper waits: {t:?}");
     let custom = events.iter().find(|e| e["type"] == "agent.custom_tool_use").unwrap().clone();
     let answer = json!({"events": [{"type": "user.custom_tool_result", "custom_tool_use_id": custom["id"], "content": [{"type": "text", "text": "42"}]}]});

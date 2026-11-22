@@ -72,6 +72,13 @@ pub(super) fn settle(
             out.events.push(turn.lifecycle(thread_idle(turn, stop)));
             out.end = StepEnd::Again;
         }
+        // The session idles on every call its threads wait for, as `quiet` does.
+        (Some(StopReason::RequiresAction { mut event_ids }), _, _) => {
+            let others = threads(session, &seen).into_iter().filter(|t| t.id != turn.thread);
+            event_ids.extend(others.flat_map(|t| awaited(&seen, &t.id)));
+            session.status = SessionStatus::Idle;
+            out.events.extend(turn.idle(session, StopReason::RequiresAction { event_ids }));
+        }
         (Some(stop), _, _) => {
             session.status = SessionStatus::Idle;
             out.events.extend(turn.idle(session, stop));
