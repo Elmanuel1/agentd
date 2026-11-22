@@ -70,6 +70,7 @@ pub async fn spawn(
             system.api_base_url.clone(),
         )),
         files: Arc::new(FilesService::new(stores.files.clone())),
+        skills: Arc::new(skills::SkillsService::new(stores.skills.clone(), stores.skill_versions.clone())),
         mcp: mcp(stores, shared::net::Guard::default(), &config.webhooks),
         webhooks: config.webhooks.clone(),
     };

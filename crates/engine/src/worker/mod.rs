@@ -51,6 +51,8 @@ pub struct Stores {
     pub work: Arc<WorkService>,
     /// The files outcomes name as rubrics.
     pub files: Arc<FilesService>,
+    /// The skills agents name, listed in their prompts.
+    pub skills: Arc<skills::SkillsService>,
     /// The agents' MCP servers.
     pub mcp: crate::mcp::Mcp,
     /// The endpoints a session's status changes are sent to.

@@ -132,7 +132,7 @@ impl Loop {
         mcp: &[McpTool],
     ) -> Result<(), BackendError> {
         let Opened { turn, thread, start, spent: before } = opened;
-        let (_, mut request) = self.request(&session, thread, c.messages, mcp);
+        let (_, mut request) = self.request(&claim.workspace, &session, thread, c.messages, mcp).await;
         request.compact = Some(c.instructions);
         let model = request.model.clone();
         let provider = ModelProvider::of(&model).name();

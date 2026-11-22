@@ -1,7 +1,7 @@
 //! Skill versions: create, list, retrieve, download and delete.
 
 use bytes::Bytes;
-use shared::{ApiError, AuthContext, Pagination};
+use shared::{ApiError, AuthContext, Pagination, WorkspaceId};
 
 use super::{SkillsService, map_store, new_version};
 use crate::bundle::UploadFile;
@@ -47,12 +47,20 @@ impl SkillsService {
         raw_id: &str,
         raw_version: &str,
     ) -> Result<SkillVersion, ApiError> {
+        self.version_in(&ctx.workspace, raw_id, raw_version).await
+    }
+
+    /// A version of a skill in `ws`, for the agent loop, which acts for the
+    /// session rather than a caller.
+    pub async fn version_in(
+        &self,
+        ws: &WorkspaceId,
+        raw_id: &str,
+        raw_version: &str,
+    ) -> Result<SkillVersion, ApiError> {
         let which = VersionRef::parse(raw_version)?;
-        let skill = self.get(ctx, raw_id).await?;
-        self.versions
-            .get(&ctx.workspace, &skill.id, &which)
-            .await
-            .map_err(|e| map_store(e, raw_id, raw_version))
+        let skill = self.get_in(ws, raw_id).await?;
+        self.versions.get(ws, &skill.id, &which).await.map_err(|e| map_store(e, raw_id, raw_version))
     }
 
     /// `GET /v1/skills/{id}/versions/{version}/content`: the version's zip.

@@ -11,6 +11,7 @@ agents = { workspace = true }
 sessions = { workspace = true }
 work = { workspace = true }
 files = { workspace = true }
+skills = { workspace = true }
 vaults = { workspace = true }
 environments = { workspace = true }
 webhooks = { workspace = true }

@@ -1477,6 +1477,7 @@ dependencies = [
  "serde_json",
  "sessions",
  "shared",
+ "skills",
  "thiserror",
  "tokio",
  "tracing",
