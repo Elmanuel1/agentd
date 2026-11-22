@@ -281,7 +281,7 @@ async fn a_missing_foreign_or_deleted_session_is_live_s_404() {
     assert_eq!((st, v["error"].clone()), (StatusCode::NOT_FOUND, not_found(sid)), "another workspace's");
     let (st, _) = call(&app, "DELETE", &path, None).await;
     assert_eq!(st, StatusCode::OK);
-    for uri in [path.clone(), format!("{path}/events")] {
+    for uri in [path.clone(), format!("{path}/events"), format!("{path}/events/stream")] {
         let (st, v) = call(&app, "GET", &uri, None).await;
         assert_eq!((st, v["error"].clone()), (StatusCode::NOT_FOUND, not_found(sid)), "{uri} once deleted");
     }

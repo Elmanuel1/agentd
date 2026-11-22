@@ -145,7 +145,11 @@ async fn an_environment_key_reaches_its_environment_s_sessions_only() {
     assert_eq!(st, StatusCode::OK);
     // W-17, with live's message (AG-1).
     let not_found = json!({"message": format!("Session not found: {theirs}"), "type": "not_found_error"});
-    for path in [format!("/v1/sessions/{theirs}"), format!("/v1/sessions/{theirs}/events")] {
+    for path in [
+        format!("/v1/sessions/{theirs}"),
+        format!("/v1/sessions/{theirs}/events"),
+        format!("/v1/sessions/{theirs}/events/stream"),
+    ] {
         let (st, body) = rig.call("GET", &path, Auth::Bearer(&key), None).await;
         assert_eq!((st, &body["error"]), (StatusCode::NOT_FOUND, &not_found), "{path}: {body}");
     }

@@ -218,6 +218,9 @@ async fn while_overloaded_a_new_stream_gets_529_and_an_open_one_keeps_streaming(
     let (st, refused) = send_to(&app, request("GET", &stream, Auth::Key(KEY), None)).await;
     assert_eq!(st.as_u16(), 529);
     assert_eq!(refused["error"], json!({"type": "overloaded_error", "message": "Overloaded"}), "{refused}");
+    let malformed = "/v1/sessions/sesn_bad/events/stream";
+    let (st, _) = send_to(&app, request("GET", malformed, Auth::Key(KEY), None)).await;
+    assert_eq!(st.as_u16(), 529, "the gate refuses before the id is parsed");
     let events = format!("/v1/sessions/{session}/events");
     let (_, sent) = send_to(&app, request("POST", &events, Auth::Key(KEY), Some(message("still")))).await;
     take(signals.as_ref(), &rig, &session).await;
