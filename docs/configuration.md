@@ -225,7 +225,11 @@ credential keeps a secret. Reads are not cached.
 
 Our `cloud` runtime swaps `environment_variable` values in at egress from
 Secrets Manager or Parameter Store, never from Postgres, so a deployment that
-runs that swap uses `aws_sm` or `aws_ssm`.
+runs that swap uses `aws_sm` or `aws_ssm`. With `AGENTD_SECRETS` resolved to
+`postgres` and `AGENTD_RUNTIME_KEYS` set, agentd logs one `WARN` at boot
+saying that `environment_variable` credentials in cloud sessions are not
+swapped; it still starts, since each environment, not the configuration, says
+whether it is `cloud`.
 
 ### Postgres
 
@@ -590,7 +594,11 @@ with `outcome` `dropped` and logged at `ERROR`. A claim's attempt count is its
 token: a worker whose lease another took over writes nothing and logs the
 lost lease at `WARN`. A deployment fire derives its run and session ids from
 the deployment and the fire time, so a fire run again finds the session and
-run the first made and makes no second one. Done rows are deleted every hour
+run the first made and makes no second one. Two runs of one fire that overlap
+queue the session's initial events once: the event log appends them under the
+session's append lock only while its log is empty, so whichever run appends
+first lands them and the other appends nothing. A fire that finds its session
+archived or terminated appends nothing. Done rows are deleted every hour
 30 days after their occurrence.
 
 ## The change feed
