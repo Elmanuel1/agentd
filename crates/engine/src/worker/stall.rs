@@ -32,16 +32,20 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
     ended >= NUDGES
 }
 
-/// The round's end when the grader stalled: it fails.
 /// A grader that stopped on the budget or its retries ends its round failed,
-/// so the round does not stay open with no one to grade it.
-pub(super) fn abandoned(session: &Session, thread: &Thread) -> Option<(Event, OutcomeEvaluation)> {
+/// so the round does not stay open with no one to grade it; `why` says which.
+pub(super) fn abandoned(session: &Session, thread: &Thread, why: &str) -> Option<(Event, OutcomeEvaluation)> {
     let outcome = thread.grading.as_ref()?;
-    Some(no_verdict(&Thread::primary(session).turn(), outcome, ModelUsage::default()))
+    Some(failed(&Thread::primary(session).turn(), outcome, ModelUsage::default(), why))
 }
 
+/// The round's end when the grader stalled: it fails.
 pub(super) fn no_verdict(primary: &Turn, outcome: &Outcome, usage: ModelUsage) -> (Event, OutcomeEvaluation) {
-    let grade = json!({"result": "failed", "criteria": [{"criterion": "grade", "met": false,
-        "finding": format!("The grader ended {NUDGES} turns without a grade.")}]});
+    failed(primary, outcome, usage, &format!("The grader ended {NUDGES} turns without a grade."))
+}
+
+fn failed(primary: &Turn, outcome: &Outcome, usage: ModelUsage, finding: &str) -> (Event, OutcomeEvaluation) {
+    let grade =
+        json!({"result": "failed", "criteria": [{"criterion": "grade", "met": false, "finding": finding}]});
     verdict(primary, outcome, &grade, usage)
 }

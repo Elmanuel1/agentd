@@ -41,8 +41,11 @@ impl Loop {
         let (ws, id) = (&claim.workspace, &claim.session);
         let session = match self.stores.sessions.get(ws, id).await {
             Ok(session) => session,
-            // Gone: the delete took its step with it.
-            Err(StoreError::NotFound) => return Ok(()),
+            // Gone: its step goes too, should a commit have left one behind.
+            Err(StoreError::NotFound) => {
+                self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), Vec::new()), None).await?;
+                return Ok(());
+            }
             Err(e) => return Err(BackendError::new(e)),
         };
         let read = self.stores.log.engine_events(ws, id).await.map_err(BackendError::new)?;
@@ -73,7 +76,11 @@ impl Loop {
         if over_budget(&session, before) {
             let mut events = answers;
             events.push(turn.lifecycle(thread_idle(&turn, StopReason::BudgetReached {})));
-            let failed = abandoned(&session, &thread);
+            let failed = abandoned(
+                &session,
+                &thread,
+                "The grader stopped on the session's budget before it gave a grade.",
+            );
             events.extend(failed.as_ref().map(|(end, _)| end.clone()));
             let verdict = failed.map(|(_, eval)| eval);
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), verdict.as_ref()).await?;
@@ -138,7 +145,11 @@ impl Loop {
             Ok(Err(e)) => {
                 let mut events = failed(Some(&e));
                 events.push(turn.lifecycle(thread_idle(&turn, StopReason::RetriesExhausted {})));
-                let failed = abandoned(&session, &thread);
+                let failed = abandoned(
+                    &session,
+                    &thread,
+                    "The grader's model calls failed after every retry, before it gave a grade.",
+                );
                 events.extend(failed.as_ref().map(|(end, _)| end.clone()));
                 verdict = failed.map(|(_, eval)| eval);
                 (batch(Vec::new(), Vec::new(), events), StepEnd::Done)

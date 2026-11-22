@@ -41,15 +41,18 @@ pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
     let cut = stop.zip(interrupt).is_some_and(|(s, i)| i < s);
     let (Some(at), true) = (stop, cut || over(stopped(log, &thread.id))) else { return false };
     let scope = (!thread.primary).then(|| thread.id.clone());
+    // Answers are matched to the thread's calls over the whole log, then
+    // counted only when they came after the stop.
+    let after: HashSet<&EventId> = log.get(at + 1..).unwrap_or_default().iter().map(|e| &e.id).collect();
     let input = |e: &&Event| {
-        e.processed_at.is_some()
+        after.contains(&e.id)
+            && e.processed_at.is_some()
             && matches!(
                 e.payload,
                 EventPayload::User(_) | EventPayload::Agent(AgentEvent::ThreadMessageReceived { .. })
             )
     };
-    let after = log.get(at + 1..).unwrap_or_default();
-    !thread_events(after, scope.as_ref()).iter().any(input)
+    !thread_events(log, scope.as_ref()).iter().any(input)
 }
 
 /// A thread is at work: its last status in `log` is running.

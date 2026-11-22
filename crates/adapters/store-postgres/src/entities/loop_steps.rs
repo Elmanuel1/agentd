@@ -33,6 +33,7 @@ pub(super) const HELD: &str =
 
 mod claim;
 mod held;
+mod land;
 mod rows;
 
 use self::rows::Counts;
@@ -59,7 +60,9 @@ pub(crate) async fn enqueue(
 
 /// A step due at once for `thread` (`''`: the session's own), or a wake of
 /// the one it has.
-const WAKE: &str = "INSERT INTO loop_steps (workspace_id, session_id, thread_id) VALUES ($1, $2, $3) \
+/// A session that is gone gets no step.
+const WAKE: &str = "INSERT INTO loop_steps (workspace_id, session_id, thread_id) \
+     SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE workspace_id = $1 AND session_id = $2) \
      ON CONFLICT (workspace_id, session_id, thread_id) \
      DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())";
 

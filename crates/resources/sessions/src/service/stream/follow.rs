@@ -68,7 +68,8 @@ impl Follow {
                 for (pos, ev) in read.events {
                     self.send(&mut cursor, &mut pending, pos, ev);
                 }
-                if read.archived && self.ends_on_archive {
+                // An archived session's stream ends once every page is sent.
+                if read.archived && self.ends_on_archive && fresh < PAGE {
                     return self.close();
                 }
                 if fresh < PAGE {

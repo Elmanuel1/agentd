@@ -644,3 +644,33 @@ async fn a_second_checkpoint_of_one_covered_event_rolls_back_as_a_lost_claim() {
         .count();
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+async fn a_step_left_behind_by_a_deleted_session_ends_on_its_next_claim() {
+    // A thread's commit raced the delete and left the session's own step:
+    // its next claim, with nothing to write, removes it.
+    if !enabled() {
+        return;
+    }
+    let r = rig().await;
+    let ws = uniq_ws("orphan");
+    let s = r.session(&ws).await;
+    r.sessions.delete(&ws, &s.id).await.unwrap();
+    let mut conn = r.pg.diesel.get().await.unwrap();
+    let q = diesel::sql_query("INSERT INTO loop_steps (workspace_id, session_id) VALUES ($1, $2)")
+        .bind::<diesel::sql_types::Text, _>(ws.as_str())
+        .bind::<diesel::sql_types::Text, _>(s.id.as_str());
+    diesel_async::RunQueryDsl::execute(q, &mut *conn).await.unwrap();
+    let c = r.claim_of("w1", 60, &s.id).await.expect("the step left behind is due");
+    let nothing = StepWrite {
+        read: &[],
+        at: Timestamp::now(),
+        events: &[],
+        engine: &[],
+        session: &unchanged,
+        deliveries: None,
+        wake: &[],
+    };
+    assert!(r.steps.commit(&c, StepEnd::Done, nothing).await.unwrap(), "a step with nothing to write ends");
+    assert!(r.claim_of("w2", 60, &s.id).await.is_none(), "the step is gone");
+}

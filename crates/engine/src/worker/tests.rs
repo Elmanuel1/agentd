@@ -293,3 +293,37 @@ fn only_a_thread_s_own_new_events_keep_its_turn_going() {
     assert!(super::status::arrived_for(&primary, &read, std::slice::from_ref(&message)));
     assert!(!super::status::arrived_for(&helper, &read, &[message]));
 }
+
+#[test]
+fn an_interrupted_delegate_resumes_on_the_answer_to_its_earlier_call() {
+    // The helper's custom call came before the interrupt; its answer arrives
+    // after the helper idled, and matches the call over the whole log.
+    use sessions::events::{AgentEvent, SessionEvent, StopReason};
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let mut helper = primary.clone();
+    (helper.id, helper.primary) = (ThreadId::generate(), false);
+    let on = |payload: EventPayload| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: Some(helper.id.clone()),
+        ..Event::new(payload)
+    };
+    let call = on(AgentEvent::CustomToolUse { name: "lookup".into(), input: json!({}) }.into());
+    let interrupt =
+        Event { processed_at: Some(Timestamp::now()), ..Event::new(UserEvent::Interrupt {}.into()) };
+    let idle = on(SessionEvent::ThreadStatusIdle {
+        agent_name: "helper".into(),
+        stop_reason: StopReason::EndTurn {},
+        stop_details: None,
+    }
+    .into());
+    let mut log = vec![call.clone(), interrupt, idle];
+    assert!(super::status::held(&log, &helper), "idle since the interrupt, with nothing new for it");
+    let answer = UserEvent::CustomToolResult {
+        custom_tool_use_id: call.id.clone(),
+        content: Vec::new(),
+        is_error: false,
+    };
+    log.push(on(answer.into()));
+    assert!(!super::status::held(&log, &helper), "the answer to its call resumes it");
+}
