@@ -254,3 +254,41 @@ fn a_thread_that_waits_while_another_is_ready_idles_alone() {
     super::settle::settle(&mut out, &turn, &thread, &mut session, &[], &r, false);
     assert_eq!(session.status, SessionStatus::Idle, "with no other thread to run, the session idles");
 }
+
+#[test]
+fn only_a_thread_s_own_new_events_keep_its_turn_going() {
+    // A result for another thread's call that lands during this thread's
+    // call must not keep this thread's turn from ending.
+    use sessions::events::AgentEvent;
+    use shared::ContentBlock;
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let mut helper = primary.clone();
+    (helper.id, helper.primary) = (ThreadId::generate(), false);
+    let call = Event {
+        session_thread_id: Some(helper.id.clone()),
+        ..Event::new(
+            AgentEvent::ToolUse {
+                name: "bash".into(),
+                input: json!({}),
+                evaluated_permission: None,
+                evaluation: None,
+            }
+            .into(),
+        )
+    };
+    let result = Event {
+        session_thread_id: Some(helper.id.clone()),
+        ..Event::new(
+            UserEvent::ToolResult { tool_use_id: call.id.clone(), content: Vec::new(), is_error: false }
+                .into(),
+        )
+    };
+    let read = vec![call];
+    let later = vec![result];
+    assert!(!super::status::arrived_for(&primary, &read, &later), "the helper's result is not the primary's");
+    assert!(super::status::arrived_for(&helper, &read, &later));
+    let message = Event::new(UserEvent::Message { content: vec![ContentBlock::text("more")] }.into());
+    assert!(super::status::arrived_for(&primary, &read, &[message.clone()]));
+    assert!(!super::status::arrived_for(&helper, &read, &[message]));
+}

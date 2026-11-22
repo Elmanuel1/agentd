@@ -3,9 +3,7 @@
 //! to. As on live, the session reads `running` before the call: the start of
 //! the call is written first, with the client events it takes.
 
-use std::collections::HashSet;
-
-use sessions::events::{Event, EventId, SessionEvent, SpanEvent, StopReason};
+use sessions::events::{Event, SessionEvent, SpanEvent, StopReason};
 use sessions::steps::{Claim, StepEnd};
 use sessions::store::StoreError;
 use sessions::types::SessionStatus;
@@ -17,6 +15,7 @@ use super::compact::{Log, Opened};
 use super::reply::{Call, led};
 use super::rubrics;
 use super::settle::{quiet, settle};
+use super::status::arrived_for;
 use super::take::{Interrupt, Taken, cut_off, take};
 use super::turn::{batch, opening};
 use super::usage::{charged, over_budget, so_far, spent};
@@ -157,9 +156,8 @@ impl Loop {
                     tracing::warn!(session = %id, error = %e, "loop: could not count the call's tokens");
                 }
                 charged(&mut session, &usage, cost, before);
-                let known: HashSet<&EventId> = log.iter().map(|e| &e.id).collect();
                 let later = self.stores.log.unprocessed_events(ws, id).await.map_err(BackendError::new)?;
-                let more = later.iter().any(|e| !known.contains(&e.id));
+                let more = arrived_for(&thread, &log, &later);
                 let call = Call {
                     turn: &turn,
                     start: &start_id,
