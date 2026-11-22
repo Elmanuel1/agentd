@@ -58,6 +58,18 @@ pub(super) fn round(session: &Session, log: &[Event]) -> Option<Event> {
     if !ended || threads(session, log).iter().any(|t| !t.primary && unfinished(log, &t.id)) {
         return None;
     }
+    // A turn an interrupt ended is no reply to grade: a round waits for the
+    // primary's next turn.
+    let began = log.iter().rposition(|e| {
+        e.session_thread_id.as_ref() == Some(&primary.id)
+            && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }))
+    });
+    let interrupted = log.iter().rposition(|e| {
+        e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
+    });
+    if interrupted.is_some_and(|i| began.is_none_or(|b| i > b)) {
+        return None;
+    }
     let replied = log.iter().rposition(|e| {
         e.session_thread_id.as_ref() == Some(&primary.id)
             && matches!(

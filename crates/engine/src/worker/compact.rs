@@ -13,6 +13,7 @@ use shared::BackendError;
 
 use super::Loop;
 use super::grade::conversation;
+use super::stall::abandoned;
 use super::team::Thread;
 use super::turn::{Turn, batch, thread_idle};
 use super::usage::{kept, spent};
@@ -172,17 +173,22 @@ impl Loop {
     }
 
     /// A call that cannot start because its model has no window ends the
-    /// turn as a failed model call.
+    /// turn as a failed model call; a grader's round fails with it.
     pub(super) async fn unfit(
         &self,
         claim: &Claim,
-        turn: &Turn,
-        start: &EventId,
+        opened: Opened<'_>,
+        session: &Session,
         e: &ModelError,
     ) -> Result<(), BackendError> {
+        let Opened { turn, thread, start } = opened;
         let mut events = turn.failed(start, Some(e));
         events.push(turn.lifecycle(thread_idle(turn, StopReason::RetriesExhausted {})));
-        self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), None).await?;
+        let why = "The grader's model could not be called, before it gave a grade.";
+        let failed = abandoned(session, thread, why);
+        events.extend(failed.as_ref().map(|(end, _)| end.clone()));
+        let verdict = failed.map(|(_, eval)| eval);
+        self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), verdict.as_ref()).await?;
         Ok(())
     }
 }

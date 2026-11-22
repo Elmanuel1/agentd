@@ -354,3 +354,45 @@ fn an_interrupt_from_an_earlier_turn_does_not_hold_a_thread_that_ended_a_new_one
     let during = vec![running(), interrupt(), idle()];
     assert!(super::status::held(&during, &primary), "the interrupt cut this turn");
 }
+
+#[test]
+fn a_turn_an_interrupt_ended_starts_no_grading_round() {
+    use sessions::events::{AgentEvent, SessionEvent, StopReason};
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let done = |payload: EventPayload, thread: Option<&ThreadId>| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: thread.cloned(),
+        ..Event::new(payload)
+    };
+    let mine = Some(&primary.id);
+    let turn = |log: &mut Vec<Event>| {
+        log.push(done(SessionEvent::ThreadStatusRunning { agent_name: "a".into() }.into(), mine));
+        log.push(done(AgentEvent::Message { content: vec![] }.into(), None));
+    };
+    let ended = || {
+        done(
+            SessionEvent::ThreadStatusIdle {
+                agent_name: "a".into(),
+                stop_reason: StopReason::EndTurn {},
+                stop_details: None,
+            }
+            .into(),
+            mine,
+        )
+    };
+    let outcome = UserEvent::DefineOutcome {
+        description: "Write a poem.".into(),
+        rubric: Rubric::Text { content: "### Rain\nAbout rain.".into() },
+        max_iterations: None,
+        outcome_id: Some(OutcomeId::generate()),
+    };
+    let mut log = vec![done(outcome.into(), None)];
+    turn(&mut log);
+    log.push(done(UserEvent::Interrupt {}.into(), None));
+    log.push(ended());
+    assert!(super::settle::round(&session, &log).is_none(), "the interrupt ended the turn");
+    turn(&mut log);
+    log.push(ended());
+    assert!(super::settle::round(&session, &log).is_some(), "the next turn's reply is graded");
+}

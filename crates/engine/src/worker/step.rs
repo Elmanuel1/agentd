@@ -126,12 +126,10 @@ impl Loop {
         if !self.write(claim, &opening, None).await? {
             return Ok(());
         }
+        let opened = Opened { turn: &turn, thread: &thread, start: &start_id };
         match fit {
-            Err(e) => return self.unfit(claim, &turn, &start_id, &e).await,
-            Ok(Some(c)) => {
-                let opened = Opened { turn: &turn, thread: &thread, start: &start_id };
-                return self.compact(claim, session, opened, c, &servers.tools()).await;
-            }
+            Err(e) => return self.unfit(claim, opened, &session, &e).await,
+            Ok(Some(c)) => return self.compact(claim, session, opened, c, &servers.tools()).await,
             Ok(None) => {}
         }
         let (tools, request) = self.request(ws, &session, &thread, history.messages, &servers.tools()).await;
