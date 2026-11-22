@@ -50,8 +50,8 @@ where
         loop {
             let wait = match read(http.clone()).await {
                 Ok(found) if !found.is_empty() => {
-                    tracing::info!(list, "the list is installed");
                     install(found);
+                    tracing::info!(list, "the list is installed");
                     EVERY
                 }
                 Ok(_) => {
