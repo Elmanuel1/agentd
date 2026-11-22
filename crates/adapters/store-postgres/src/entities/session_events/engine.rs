@@ -13,8 +13,9 @@ use crate::{diesel_be, parse_doc, pool_be};
 
 /// Each thread's events from its latest checkpoint's covered event (the
 /// snapshot it resumes from), or from its first with `$4`, only thread `$3`'s
-/// when it is set, with every session event, the outcomes' spans and the
-/// client events that answer no call. The cuts read V11's index; the rest
+/// when it is set, with every session event, the outcomes' spans, the
+/// client events that answer no call and the answers to its calls, which
+/// need not carry its thread. The cuts read V11's index; the rest
 /// V27's. A processed successful tool result comes with no content when no
 /// prompt needs it: always with `$5` unset (the session's step), else once
 /// the thread's last call since its checkpoint took `$5` tokens, for a
@@ -34,7 +35,11 @@ const STEP: &str = "WITH cuts AS (
          OR e.event_type LIKE 'session.%'
          OR e.event_type LIKE 'span.outcome_evaluation%'
          OR e.event_type IN ('user.message', 'user.interrupt', 'user.tool_confirmation',
-                             'user.define_outcome', 'system.message'))),
+                             'user.define_outcome', 'system.message')
+         OR (e.event_type IN ('user.tool_result', 'user.custom_tool_result')
+             AND coalesce(e.doc->>'tool_use_id', e.doc->>'custom_tool_use_id') IN (
+               SELECT m.event_id FROM session_events m
+               WHERE m.workspace_id = $1 AND m.session_id = $2 AND m.thread_id = $3)))),
      last AS (
        SELECT p.seq, coalesce((u->>'input_tokens')::bigint, 0) + coalesce((u->>'cache_read_input_tokens')::bigint, 0)
               + coalesce((u->>'cache_creation_input_tokens')::bigint, 0)

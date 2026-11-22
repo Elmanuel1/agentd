@@ -80,8 +80,8 @@ thread's events from the event the checkpoint covers through, never the
 events before it. The session-wide events are read whole: every `session.*`
 event, the outcomes' evaluation spans and the client events that answer no
 call (`user.message`, `user.interrupt`, `user.tool_confirmation`,
-`user.define_outcome`, `system.message`). An answer to a call carries the
-call's thread. The session's own step reads each thread this way; a thread's
+`user.define_outcome`, `system.message`), and a thread's step reads the
+answers to its calls by the call they answer. The session's own step reads each thread this way; a thread's
 step reads only its own. A grader that compacted reads its round whole, so
 its count of replies with no grade spans the round. Usage, cost and the
 budget are sums the database computes over every `span.model_request_end`,

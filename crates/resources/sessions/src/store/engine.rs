@@ -61,7 +61,7 @@ pub trait EngineReads: Send + Sync {
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
     /// At least what one thread's step reads: as [`Self::step_events`], with
     /// only this thread's own events (`None` is the primary's), as `how`
-    /// says. An answer carries its call's thread. Once the thread's last
+    /// says, with the answers to its calls. Once the thread's last
     /// call since its checkpoint took `clear_at` tokens, a processed
     /// successful tool result before that call and older than the newest
     /// `keep` may come with its content left out: its prompt clears it.

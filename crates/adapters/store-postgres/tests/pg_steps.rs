@@ -761,10 +761,11 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
         };
         on(tool.into(), Some(thread))
     };
-    // As the API appends it: an answer carries its call's thread.
+    // An answer with no thread, as a custom tool's result comes: it is read
+    // by the call it answers.
     let answer = |to: &Event| {
         let result = UserEvent::ToolResult { tool_use_id: to.id.clone(), content: vec![], is_error: false };
-        on(result.into(), to.session_thread_id.as_ref())
+        on(result.into(), None)
     };
     let end = |thread| {
         let tokens = ModelUsage {
@@ -817,7 +818,7 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), WHOLE).await.unwrap(), &events);
     assert_eq!(read, [0, 2, 3, 5, 7, 9], "its creation, its events, its answer, the client's message");
     let primary = ids(r.log.thread_events(&ws, &s.id, None, WHOLE).await.unwrap(), &events);
-    assert_eq!(primary, [0, 1, 7], "the primary's own events, no other thread's work or answers");
+    assert_eq!(primary, [0, 1, 5, 6, 7], "the primary's events, the answers with no thread among them");
     let calls = r.log.calls(&ws, &s.id, "list_cost_nanos").await.unwrap();
     assert_eq!((calls.input_tokens, calls.output_tokens, calls.unpriced, calls.cost), (22, 6, 0, 12));
     // A checkpoint covering through my call: the thread resumes from it.
