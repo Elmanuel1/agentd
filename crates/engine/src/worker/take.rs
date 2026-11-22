@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use sessions::events::{
-    AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, UserEvent,
+    AgentEvent, ConfirmationResult, Event, EventId, EventPayload, SessionEvent, SpanEvent, UserEvent,
 };
 use sessions::types::Session;
 use shared::Timestamp;
@@ -160,7 +160,20 @@ pub(super) fn take(
     let mut candidates = threads(session, &read);
     candidates.extend(active(&read).and_then(|o| o.thread(session)));
     let due = |h: &History| h.awaits_model() || h.unanswered.iter().any(Unanswered::for_loop);
-    let chosen = candidates.iter().map(|t| (t, history_of(t))).find(|(_, h)| due(h));
+    // The thread that has waited longest goes first, so a thread whose
+    // calls come back fast cannot keep the others from their turns.
+    let last_step = |t: &Thread| {
+        read.iter().rposition(|e| {
+            matches!(e.payload, EventPayload::Span(SpanEvent::ModelRequestStart {}))
+                && (e.session_thread_id.as_ref() == Some(&t.id)
+                    || (t.primary && e.session_thread_id.is_none()))
+        })
+    };
+    let chosen = candidates
+        .iter()
+        .map(|t| (t, history_of(t)))
+        .filter(|(_, h)| due(h))
+        .min_by_key(|(t, _)| last_step(t));
     let (thread, history) = match chosen {
         Some((t, h)) => (t.clone(), h),
         None => (primary.clone(), history_of(&primary)),
