@@ -67,3 +67,16 @@ fn a_policy_decision_names_its_policy_as_live_does() {
     let evaluation = Some(json!({"type": "always_allow"}));
     assert_eq!(allowed.disposition("bash"), Some(&Disposition::Allow { evaluation }));
 }
+
+#[test]
+fn a_grader_s_calls_carry_an_evaluation_so_the_worker_sees_them() {
+    let grader = Toolbox::read_only();
+    assert!(!grader.tools.is_empty());
+    for tool in &grader.tools {
+        assert!(
+            matches!(grader.disposition(&tool.name), Some(Disposition::Allow { evaluation: Some(_) })),
+            "{}",
+            tool.name
+        );
+    }
+}
