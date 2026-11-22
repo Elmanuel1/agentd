@@ -10,9 +10,6 @@ use crate::model::ModelTool;
 /// Every tool of `agent_toolset_20260401`, in toolset order.
 pub const TOOLSET: [&str; 8] = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
 
-/// The tools a grader gets: it reads the work and changes nothing.
-pub const READ_ONLY: [&str; 4] = ["bash", "read", "glob", "grep"];
-
 /// The definition of toolset tool `name`; `None` for a name outside it.
 pub fn spec(name: &str) -> Option<ModelTool> {
     let (description, schema) = match name {
