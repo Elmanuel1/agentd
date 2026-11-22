@@ -126,11 +126,13 @@ fn the_coordinator_replays_delegation_as_a_tool_call_and_the_reply_as_input() {
         from_session_thread_id: sub.clone(),
     });
     let h = build(&[user("go"), s1.clone(), end(&s1), sent, got]);
-    assert!(matches!(&h.messages[1].content[0], Block::ToolUse { name, .. } if name == SEND_TO_AGENT));
+    assert!(
+        matches!(&h.messages[1].content[0], Block::ToolUse { name, .. } if name == delegation::CREATE_AGENT)
+    );
     let last = h.messages.last().unwrap();
     assert!(matches!(&last.content[0], Block::ToolResult { is_error: false, .. }));
     assert!(
-        matches!(&last.content[1], Block::Text { text } if text.starts_with("Message from bid-extractor"))
+        matches!(&last.content[1], Block::Text { text } if text.starts_with("<agent-notification thread_id="))
     );
 }
 
@@ -203,8 +205,9 @@ mod interrupts;
 mod thinking;
 
 #[test]
-fn a_coordinator_s_sends_replay_as_it_called_them() {
-    // The first message to a thread named the agent; a follow-up names the thread.
+fn a_coordinator_s_sends_replay_as_live_s_tools_with_their_results() {
+    // Live, 2026-11-21: `create_agent` opens a thread and returns its id;
+    // `send_to_agent` takes that id.
     let thread = ThreadId::generate();
     let sent = |text: &str| {
         ev(AgentEvent::ThreadMessageSent {
@@ -215,19 +218,23 @@ fn a_coordinator_s_sends_replay_as_it_called_them() {
     };
     let (first, again) = (sent("do it"), sent("fix it"));
     let h = rebuild(&[&first, &again], &HashMap::new(), &HashMap::new());
-    let calls: Vec<&serde_json::Value> = h
-        .messages
+    let blocks: Vec<&Block> = h.messages.iter().flat_map(|m| &m.content).collect();
+    let calls: Vec<(&str, &serde_json::Value)> = blocks
         .iter()
-        .flat_map(|m| &m.content)
         .filter_map(|b| match b {
-            Block::ToolUse { input, .. } => Some(input),
+            Block::ToolUse { name, input, .. } => Some((name.as_str(), input)),
             _ => None,
         })
         .collect();
-    assert_eq!(calls[0], &json!({"agent_name": "helper", "message": "do it"}));
-    assert_eq!(calls[1], &json!({"session_thread_id": thread, "message": "fix it"}));
-    let started = h.messages.iter().flat_map(|m| &m.content).any(|b| {
-        matches!(b, Block::ToolResult { content, .. } if content.starts_with(&format!("Started thread {thread} with helper")))
-    });
-    assert!(started, "the first send's result gives the thread id: {:?}", h.messages);
+    assert_eq!(calls[0], ("create_agent", &json!({"agent_name": "helper", "task": "do it"})));
+    assert_eq!(calls[1], ("send_to_agent", &json!({"thread_id": thread, "message": "fix it"})));
+    let results: Vec<serde_json::Value> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => serde_json::from_str(content).ok(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!((&results[0]["thread_id"], &results[0]["agent_name"]), (&json!(thread), &json!("helper")));
+    assert_eq!((&results[1]["delivered"], &results[1]["queued"]), (&json!(true), &json!(false)));
 }

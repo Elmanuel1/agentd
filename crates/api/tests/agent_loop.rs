@@ -585,7 +585,7 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
     let env = rig.environment("cloud").await;
     let name = format!("helper-{}", common::stamp());
     let model = Scripted::new(vec![
-        Say::Tool("send_to_agent", json!({"agent_name": name, "message": "do it"})),
+        Say::Tool("create_agent", json!({"agent_name": name, "task": "do it"})),
         Say::Text("waiting on the helper"),
         Say::Text("done by the helper"),
         Say::Text("all done"),
@@ -633,7 +633,7 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
         .messages
         .iter()
         .flat_map(|m| &m.content)
-        .any(|b| matches!(b, Block::Text { text } if text.starts_with(&format!("Message from {name}"))));
+        .any(|b| matches!(b, Block::Text { text } if text.starts_with("<agent-notification thread_id=") && text.contains(&format!("agent_name=\"{name}\""))));
     assert!(heard, "the coordinator hears the helper's reply");
 }
 

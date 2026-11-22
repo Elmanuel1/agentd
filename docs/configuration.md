@@ -82,9 +82,13 @@ which takes the session's work item:
 
 A roster thread's or the grader's built-in calls show on the session's stream
 with their `session_thread_id`, so the official worker runs them from it, and
-its results land on the call's thread. A coordinator's `send_to_agent` opens a
-roster thread that runs in later steps: a first send names the agent and its
-result gives the thread's id, and a follow-up names that id. An outcome is
+its results land on the call's thread. A coordinator has live's three roster
+tools, with live's descriptions: `create_agent` (`agent_name`, `task`) opens a
+roster thread that runs in later steps and returns its `thread_id`;
+`send_to_agent` (`thread_id`, `message`) sends that thread a follow-up; and
+`list_agents` lists the threads started, each with its status, and the agents
+on the roster. A delegate's reply reaches the coordinator as a message tagged
+`<agent-notification>` whose header carries the thread's id. An outcome is
 graded on the grader's own thread, in a round that starts when the primary
 thread ends a turn with no roster thread still working. The agent is told to
 work on the outcome on its own until the result is delivered, deciding by its

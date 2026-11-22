@@ -2,6 +2,7 @@
 //! tools and their permission policies, and what its reply leads to.
 
 pub mod compact;
+pub mod delegation;
 pub mod history;
 pub mod policy;
 pub mod prompt;
