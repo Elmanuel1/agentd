@@ -87,12 +87,15 @@ impl Toolbox {
         b
     }
 
-    /// Read-only toolset tools, for a grader.
+    /// Read-only toolset tools, for a grader. Allowed as `always_allow` says
+    /// so, since the session's worker runs a grader's calls from the
+    /// session's stream, which shows a thread's toolset calls by their
+    /// evaluation.
     pub fn read_only() -> Self {
         let mut b = Self::default();
         for name in specs::READ_ONLY {
             if let Some(spec) = specs::spec(name) {
-                b.add(spec, Disposition::Allow { evaluation: None });
+                b.add(spec, from_policy(PermissionPolicy::AlwaysAllow));
             }
         }
         b
