@@ -38,7 +38,7 @@ pub(super) struct Call<'a> {
     pub(super) tools: &'a Toolbox,
     /// Keep the session running while its worker runs built-in calls.
     pub(super) cloud: bool,
-    /// The client sent events during the call, which the next call takes.
+    /// Events for this thread arrived during the call, which its next call takes.
     pub(super) more: bool,
     pub(super) session: &'a Session,
     pub(super) log: &'a [Event],
