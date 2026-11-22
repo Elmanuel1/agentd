@@ -28,6 +28,18 @@ pub struct Calls {
     pub cost: u64,
 }
 
+/// How a thread's step reads its thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadRead {
+    /// From the thread's first event, not its latest checkpoint.
+    pub whole: bool,
+    /// The prompt size, in tokens, past which the prompt keeps whole only
+    /// the newest `keep` successful tool results.
+    pub clear_at: u64,
+    /// The newest successful tool results a cleared prompt keeps whole.
+    pub keep: usize,
+}
+
 /// A session's log as the loop reads it. A session that does not exist,
 /// which the caller has already read, has no events.
 pub trait EngineReads: Send + Sync {
@@ -40,20 +52,25 @@ pub trait EngineReads: Send + Sync {
     /// At least what the session's own step reads, oldest first: each
     /// thread's events from its latest checkpoint's covered event, every
     /// `session.*` event, the outcomes' evaluation spans and the client
-    /// events that answer no call.
+    /// events that answer no call. A processed tool result may come with
+    /// its content left out, as the step builds no prompt.
     fn step_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
     /// At least what one thread's step reads: as [`Self::step_events`], with
-    /// only this thread's own events (`None` is the primary's). An answer
-    /// carries its call's thread.
+    /// only this thread's own events (`None` is the primary's), as `how`
+    /// says. An answer carries its call's thread. Once the thread's last
+    /// call since its checkpoint took `clear_at` tokens, a processed
+    /// successful tool result before that call and older than the newest
+    /// `keep` may come with its content left out: its prompt clears it.
     fn thread_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
         session: &'a SessionId,
         thread: Option<&'a ThreadId>,
+        how: ThreadRead,
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
     /// The session's `span.model_request_end`s added up, with the costs
     /// their `engine` objects hold at `cost`.
@@ -93,6 +110,7 @@ pub trait NativeEngineReads: NativeSessionEventReads {
         ws: &WorkspaceId,
         session: &SessionId,
         _thread: Option<&ThreadId>,
+        _how: ThreadRead,
     ) -> impl Future<Output = Result<EngineEvents, StoreError>> + Send {
         NativeEngineReads::engine_events(self, ws, session)
     }
@@ -143,8 +161,9 @@ impl<T: NativeEngineReads> EngineReads for T {
         ws: &'a WorkspaceId,
         session: &'a SessionId,
         thread: Option<&'a ThreadId>,
+        how: ThreadRead,
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
-        Box::pin(NativeEngineReads::thread_events(self, ws, session, thread))
+        Box::pin(NativeEngineReads::thread_events(self, ws, session, thread, how))
     }
     fn calls<'a>(
         &'a self,

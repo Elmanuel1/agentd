@@ -10,7 +10,9 @@ use std::sync::Arc;
 use serde_json::json;
 use sessions::events::{AgentEvent, Event, EventPayload, UserEvent};
 use sessions::steps::{Claim, StepEnd, StepWrite, Steps};
-use sessions::store::{Append, EngineReads, SessionEventLog, SessionEventReads, SessionsStore, Wake};
+use sessions::store::{
+    Append, EngineReads, SessionEventLog, SessionEventReads, SessionsStore, ThreadRead, Wake,
+};
 use sessions::types::{Session, SessionId, SessionStatus};
 use shared::{OrgId, Timestamp, WorkspaceId};
 use store_postgres::{PgBackend, PgSessionEventLog, PgSessionsStore, PgSteps, PgWorkStore};
@@ -727,6 +729,9 @@ async fn a_thread_s_commit_and_its_session_s_delete_at_once_never_deadlock_and_l
     }
 }
 
+/// A thread's read that clears no tool result.
+const WHOLE: ThreadRead = ThreadRead { whole: false, clear_at: u64::MAX, keep: 3 };
+
 #[tokio::test]
 async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     // S-3: a thread's step reads its own events from its latest checkpoint,
@@ -809,9 +814,9 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     let ids = |read: Vec<(Event, Option<serde_json::Value>)>, of: &[Event]| -> Vec<usize> {
         read.iter().filter_map(|(e, _)| of.iter().position(|x| x.id == e.id)).collect()
     };
-    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine)).await.unwrap(), &events);
+    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), WHOLE).await.unwrap(), &events);
     assert_eq!(read, [0, 2, 3, 5, 7, 9], "its creation, its events, its answer, the client's message");
-    let primary = ids(r.log.thread_events(&ws, &s.id, None).await.unwrap(), &events);
+    let primary = ids(r.log.thread_events(&ws, &s.id, None, WHOLE).await.unwrap(), &events);
     assert_eq!(primary, [0, 1, 7], "the primary's own events, no other thread's work or answers");
     let calls = r.log.calls(&ws, &s.id, "list_cost_nanos").await.unwrap();
     assert_eq!((calls.input_tokens, calls.output_tokens, calls.unpriced, calls.cost), (22, 6, 0, 12));
@@ -824,8 +829,66 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     commit(std::slice::from_ref(&compacted), &[(compacted.id.clone(), kept)]).await;
     let mut later = events.clone();
     later.push(compacted);
-    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine)).await.unwrap(), &later);
+    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), WHOLE).await.unwrap(), &later);
     assert_eq!(read, [0, 3, 5, 7, 9, 11], "from the covered call on, with the checkpoint");
     let session = ids(r.log.step_events(&ws, &s.id).await.unwrap(), &later);
     assert_eq!(session, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11], "each thread from its own checkpoint");
+}
+
+#[tokio::test]
+async fn a_result_the_prompt_clears_is_read_without_its_content() {
+    // CP-2: once the thread's last call took `clear_at` tokens, a result
+    // before it and older than the newest `keep` comes with no content; the
+    // session's own step reads no processed result's content.
+    if !enabled() {
+        return;
+    }
+    use sessions::events::{EventId, ModelUsage, SpanEvent, SpanModelUsage};
+    use sessions::types::ThreadId;
+    let r = rig().await;
+    let ws = uniq_ws("clear");
+    let s = r.session(&ws).await;
+    let mine = ThreadId::generate();
+    let on = |payload: EventPayload| {
+        let mut e = Event::new(payload);
+        e.processed_at = Some(Timestamp::now());
+        e.session_thread_id = Some(mine.clone());
+        e
+    };
+    let result = || {
+        let content = vec![shared::ContentBlock::text("output")];
+        on(UserEvent::ToolResult { tool_use_id: EventId::generate(), content, is_error: false }.into())
+    };
+    let tokens = ModelUsage { input_tokens: 150, output_tokens: 50, ..ModelUsage::default() };
+    let end = SpanEvent::ModelRequestEnd {
+        model_request_start_id: EventId::generate(),
+        is_error: false,
+        model_usage: SpanModelUsage { tokens, speed: None },
+    };
+    let events = vec![result(), result(), on(end.into()), result()];
+    r.wake(&ws, &s.id).await;
+    let c = r.claim_of("w1", 60, &s.id).await.unwrap();
+    let write = StepWrite {
+        read: &[],
+        at: Timestamp::now(),
+        events: &events,
+        engine: &[],
+        session: &unchanged,
+        deliveries: None,
+        wake: &[],
+    };
+    assert!(r.steps.commit(&c, StepEnd::Done, write).await.unwrap());
+    let whole = |read: Vec<(Event, Option<serde_json::Value>)>| -> Vec<bool> {
+        let of = |e: &Event| match &e.payload {
+            EventPayload::User(UserEvent::ToolResult { content, .. }) => Some(!content.is_empty()),
+            _ => None,
+        };
+        read.iter().filter(|(e, _)| events.iter().any(|x| x.id == e.id)).filter_map(|(e, _)| of(e)).collect()
+    };
+    let read = |clear_at| {
+        r.log.thread_events(&ws, &s.id, Some(&mine), ThreadRead { whole: false, clear_at, keep: 1 })
+    };
+    assert_eq!(whole(read(200).await.unwrap()), [false, false, true], "the last call took 200 tokens");
+    assert_eq!(whole(read(201).await.unwrap()), [true, true, true], "under the threshold, all whole");
+    assert_eq!(whole(r.log.step_events(&ws, &s.id).await.unwrap()), [false, false, false]);
 }

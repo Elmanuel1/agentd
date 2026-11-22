@@ -82,8 +82,17 @@ event, the outcomes' evaluation spans and the client events that answer no
 call (`user.message`, `user.interrupt`, `user.tool_confirmation`,
 `user.define_outcome`, `system.message`). An answer to a call carries the
 call's thread. The session's own step reads each thread this way; a thread's
-step reads only its own. Usage, cost and the budget are sums the database
-computes over every `span.model_request_end`, every thread's.
+step reads only its own. A grader that compacted reads its round whole, so
+its count of replies with no grade spans the round. Usage, cost and the
+budget are sums the database computes over every `span.model_request_end`,
+every thread's.
+
+A read leaves out the content of a tool result no prompt will carry. The
+session's own step builds no prompt, so it reads no processed result's
+content. Once a thread's last call since its checkpoint took
+`AGENTD_COMPACTION_CLEAR_AT` tokens, its next prompt clears every successful
+result but the newest `AGENTD_COMPACTION_KEEP_RESULTS`, so its step reads
+those older results without their content. The stored events stay whole.
 
 A worker claims steps while its replica's memory is under
 `AGENTD_MEMORY_TARGET`, with no count of steps: the working set of its

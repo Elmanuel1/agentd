@@ -1,9 +1,9 @@
 //! The loop's reads of the event log, each event with the `engine` object
 //! stored beside it.
 
-use ::sessions::store::{Calls, EngineEvents, NativeEngineReads, StoreError};
+use ::sessions::store::{Calls, EngineEvents, NativeEngineReads, StoreError, ThreadRead};
 use ::sessions::types::{SessionId, ThreadId};
-use diesel::sql_types::{Nullable, Text};
+use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel_async::RunQueryDsl;
 use shared::WorkspaceId;
 
@@ -12,23 +12,53 @@ use super::rows::{CallsRow, SeqDoc};
 use crate::{diesel_be, parse_doc, pool_be};
 
 /// Each thread's events from its latest checkpoint's covered event (the
-/// snapshot it resumes from), only thread `$3`'s when it is set, with every
-/// session event, the outcomes' spans and the client events that answer no
-/// call. The cuts read V11's index; the rest V27's.
+/// snapshot it resumes from), or from its first with `$4`, only thread `$3`'s
+/// when it is set, with every session event, the outcomes' spans and the
+/// client events that answer no call. The cuts read V11's index; the rest
+/// V27's. A processed successful tool result comes with no content when no
+/// prompt needs it: always with `$5` unset (the session's step), else once
+/// the thread's last call since its checkpoint took `$5` tokens, for a
+/// result before that call older than the newest `$6`, which the prompt
+/// clears.
 const STEP: &str = "WITH cuts AS (
        SELECT coalesce(doc->>'session_thread_id', '') AS thread_id,
-              max((doc->'checkpoint'->>'through_seq')::bigint) AS seq
+              max((doc->'checkpoint'->>'through_seq')::bigint) AS through, max(seq) AS at
        FROM session_events
        WHERE workspace_id = $1 AND session_id = $2 AND doc->>'type' = 'agent.thread_context_compacted'
-       GROUP BY 1)
-     SELECT e.seq, e.doc FROM session_events e LEFT JOIN cuts c ON c.thread_id = e.thread_id
-     WHERE e.workspace_id = $1 AND e.session_id = $2 AND (
-       (($3::text IS NULL OR e.thread_id = $3) AND e.seq >= coalesce(c.seq, 0))
-       OR e.event_type LIKE 'session.%'
-       OR e.event_type LIKE 'span.outcome_evaluation%'
-       OR e.event_type IN ('user.message', 'user.interrupt', 'user.tool_confirmation', 'user.define_outcome',
-                           'system.message'))
-     ORDER BY e.seq";
+       GROUP BY 1),
+     picked AS (
+       SELECT e.seq, e.doc, e.thread_id, e.event_type FROM session_events e
+       LEFT JOIN cuts c ON c.thread_id = e.thread_id
+       WHERE e.workspace_id = $1 AND e.session_id = $2 AND (
+         (($3::text IS NULL OR e.thread_id = $3) AND ($4 OR e.seq >= coalesce(c.through, 0)))
+         OR e.event_type LIKE 'session.%'
+         OR e.event_type LIKE 'span.outcome_evaluation%'
+         OR e.event_type IN ('user.message', 'user.interrupt', 'user.tool_confirmation',
+                             'user.define_outcome', 'system.message'))),
+     last AS (
+       SELECT p.seq, coalesce((u->>'input_tokens')::bigint, 0) + coalesce((u->>'cache_read_input_tokens')::bigint, 0)
+              + coalesce((u->>'cache_creation_input_tokens')::bigint, 0)
+              + coalesce((u->>'output_tokens')::bigint, 0) AS tokens
+       FROM picked p CROSS JOIN LATERAL (SELECT p.doc->'model_usage' AS u) x
+       LEFT JOIN cuts c ON c.thread_id = p.thread_id
+       WHERE p.thread_id = $3 AND p.event_type = 'span.model_request_end' AND p.seq > coalesce(c.at, 0)
+         AND NOT coalesce((p.doc->>'is_error')::boolean, false)
+         AND NOT EXISTS (SELECT 1 FROM session_events s
+                         WHERE s.workspace_id = $1 AND s.session_id = $2
+                           AND s.event_id = p.doc->>'model_request_start_id'
+                           AND s.doc->'engine'->>'compaction' = 'true')
+       ORDER BY p.seq DESC LIMIT 1),
+     results AS (
+       SELECT p.seq, row_number() OVER (ORDER BY p.seq DESC) AS newest FROM picked p
+       WHERE p.event_type IN ('agent.tool_result', 'agent.mcp_tool_result', 'user.tool_result',
+                              'user.custom_tool_result')
+         AND p.doc->>'processed_at' IS NOT NULL AND NOT coalesce((p.doc->>'is_error')::boolean, false))
+     SELECT p.seq, CASE
+         WHEN r.seq IS NOT NULL AND ($5::bigint IS NULL OR (r.newest > $6
+           AND EXISTS (SELECT 1 FROM last l WHERE l.tokens >= $5 AND p.seq < l.seq)))
+         THEN jsonb_set(p.doc, '{content}', '[]'::jsonb) ELSE p.doc END AS doc
+     FROM picked p LEFT JOIN results r ON r.seq = p.seq
+     ORDER BY p.seq";
 
 /// The session's model calls added up; a cost is kept at `$3`.
 const CALLS: &str = "SELECT
@@ -57,18 +87,29 @@ fn engine(rows: Vec<SeqDoc>) -> Result<EngineEvents, StoreError> {
         .collect()
 }
 
+/// A step's read: of every thread (`None`) or one, as `how` says.
+struct Step<'a> {
+    thread: Option<&'a str>,
+    how: Option<ThreadRead>,
+}
+
 impl PgSessionEventLog {
     async fn step(
         &self,
         ws: &WorkspaceId,
         id: &SessionId,
-        thread: Option<&str>,
+        read: Step<'_>,
     ) -> Result<EngineEvents, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
+        let clear_at = read.how.map(|h| i64::try_from(h.clear_at).unwrap_or(i64::MAX));
+        let keep = read.how.map_or(0, |h| i64::try_from(h.keep).unwrap_or(i64::MAX));
         let rows: Vec<SeqDoc> = diesel::sql_query(STEP)
             .bind::<Text, _>(ws.as_str())
             .bind::<Text, _>(id.as_str())
-            .bind::<Nullable<Text>, _>(thread)
+            .bind::<Nullable<Text>, _>(read.thread)
+            .bind::<Bool, _>(read.how.is_some_and(|h| h.whole))
+            .bind::<Nullable<BigInt>, _>(clear_at)
+            .bind::<BigInt, _>(keep)
             .load(&mut conn)
             .await
             .map_err(diesel_be)?;
@@ -91,7 +132,7 @@ impl NativeEngineReads for PgSessionEventLog {
     }
 
     async fn step_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<EngineEvents, StoreError> {
-        self.step(ws, id, None).await
+        self.step(ws, id, Step { thread: None, how: None }).await
     }
 
     async fn thread_events(
@@ -99,8 +140,9 @@ impl NativeEngineReads for PgSessionEventLog {
         ws: &WorkspaceId,
         id: &SessionId,
         thread: Option<&ThreadId>,
+        how: ThreadRead,
     ) -> Result<EngineEvents, StoreError> {
-        self.step(ws, id, Some(thread.map_or("", ThreadId::as_str))).await
+        self.step(ws, id, Step { thread: Some(thread.map_or("", ThreadId::as_str)), how: Some(how) }).await
     }
 
     async fn calls(&self, ws: &WorkspaceId, id: &SessionId, cost: &str) -> Result<Calls, StoreError> {
