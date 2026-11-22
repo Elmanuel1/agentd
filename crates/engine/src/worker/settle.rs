@@ -78,17 +78,19 @@ pub(super) fn round(session: &Session, log: &[Event]) -> Option<Event> {
 }
 
 /// When no thread works and no round is open, the session idles, as on
-/// live: on the budget once it is spent, on the calls its threads wait for,
-/// else on the end of its turn. `None` while anything works, or once the
-/// session is idle.
-pub(super) fn quiet(session: &mut Session, log: &[Event], spent: bool) -> Option<Vec<Event>> {
+/// live: on the budget or the retries a thread stopped on, on the calls its
+/// threads wait for, else on the end of its turn. `None` while anything
+/// works, or once the session is idle.
+pub(super) fn quiet(session: &mut Session, log: &[Event]) -> Option<Vec<Event>> {
     let all = threads(session, log);
     let open = active(log).is_some_and(|o| o.open.is_some());
     if session.status != SessionStatus::Running || open || all.iter().any(|t| busy(log, &t.id)) {
         return None;
     }
     let event_ids: Vec<_> = all.iter().flat_map(|t| awaited(log, &t.id)).collect();
-    let failed = all.iter().any(|t| matches!(stopped(log, &t.id), Some(StopReason::RetriesExhausted {})));
+    let stopped_on = |r: fn(&StopReason) -> bool| all.iter().any(|t| stopped(log, &t.id).is_some_and(r));
+    let spent = stopped_on(|r| matches!(r, StopReason::BudgetReached {}));
+    let failed = stopped_on(|r| matches!(r, StopReason::RetriesExhausted {}));
     let stop = match (spent, failed, event_ids.is_empty()) {
         (true, _, _) => StopReason::BudgetReached {},
         (false, true, _) => StopReason::RetriesExhausted {},

@@ -11,11 +11,11 @@ use shared::BackendError;
 
 use super::Loop;
 use super::settle::{quiet, round};
-use super::status::busy;
+use super::status::{busy, held};
 use super::take::{Interrupt, Taken, cut_off};
 use super::team::Thread;
 use super::turn::{batch, opening};
-use super::usage::{over_budget, so_far, tally};
+use super::usage::tally;
 use crate::turn::history::Kept;
 
 impl Loop {
@@ -46,13 +46,17 @@ impl Loop {
             self.settled(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session, &[]).await?;
             return Ok(());
         }
-        let spent = over_budget(&session, so_far(kept));
         let seen: Vec<Event> = read.iter().chain(&answers).cloned().collect();
+        // A thread's step checks the budget itself and stops on it.
+        let due: Vec<_> = due
+            .into_iter()
+            .filter(|id| all.iter().find(|(t, _)| t.id == *id).is_none_or(|(t, _)| !held(&seen, t)))
+            .collect();
         tally(&mut session, &seen, kept);
         let mut running = Vec::new();
         let mut rest = answers;
-        let (wake, end) = match (spent, due.is_empty()) {
-            (false, false) => {
+        let (wake, end) = match due.is_empty() {
+            false => {
                 if session.status != SessionStatus::Running {
                     running.push(primary.event(SessionEvent::StatusRunning {}));
                     session.status = SessionStatus::Running;
@@ -65,13 +69,13 @@ impl Loop {
                 (due, StepEnd::Done)
             }
             // The round's grader is a thread: the next step starts it.
-            _ => match round(&session, &seen) {
+            true => match round(&session, &seen) {
                 Some(start) => {
                     rest.push(start);
                     (Vec::new(), StepEnd::Again)
                 }
                 None => {
-                    rest.extend(quiet(&mut session, &seen, spent).unwrap_or_default());
+                    rest.extend(quiet(&mut session, &seen).unwrap_or_default());
                     (Vec::new(), StepEnd::Done)
                 }
             },

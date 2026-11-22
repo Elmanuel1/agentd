@@ -251,7 +251,7 @@ fn a_thread_s_step_idles_only_its_thread_and_the_session_s_step_idles_the_sessio
     let mut out = led();
     super::settle::settle(&mut out, &turn, &thread, &session, &[], &r);
     assert_eq!(types(&wire(&out.events)), ["session.thread_status_idle"]);
-    let idle = super::settle::quiet(&mut session, &out.events, false).expect("no thread works");
+    let idle = super::settle::quiet(&mut session, &out.events).expect("no thread works");
     assert_eq!(session.status, SessionStatus::Idle, "with no thread at work, the session idles");
     assert_eq!(types(&wire(&idle)), ["session.usage", "session.status_idle"]);
 }

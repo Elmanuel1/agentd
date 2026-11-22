@@ -145,6 +145,13 @@ pub(super) async fn commit(
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+                // Rows are locked in one order, the session's own step first,
+                // then threads' steps, then the session: a thread's step wakes
+                // the session's step before it releases its own row, which
+                // ends, and the session's step wakes threads after its own.
+                if claim.thread.is_some() {
+                    wake(c, &claim.workspace, &claim.session, &[""]).await?;
+                }
                 // Woken while it ran, or asked to go on: the step stays, due at once.
                 let deleted = match end {
                     StepEnd::Again => 0,
@@ -167,12 +174,9 @@ pub(super) async fn commit(
                 if released == 0 {
                     return Err(diesel::result::Error::RollbackTransaction);
                 }
-                land(c, claim, &write).await?;
-                // A thread's step that ends wakes the session's own step,
-                // which makes the decisions that span the threads.
-                let mut woken: Vec<&str> = write.wake.iter().map(|t| t.as_str()).collect();
-                woken.extend(claim.thread.as_ref().map(|_| ""));
+                let woken: Vec<&str> = write.wake.iter().map(|t| t.as_str()).collect();
                 wake(c, &claim.workspace, &claim.session, &woken).await?;
+                land(c, claim, &write).await?;
                 if end == StepEnd::Requeue {
                     requeue(c, &claim.workspace, claim.session.as_str()).await?;
                 }

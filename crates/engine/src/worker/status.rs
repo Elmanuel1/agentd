@@ -24,6 +24,28 @@ pub(super) fn stopped<'a>(log: &'a [Event], thread: &ThreadId) -> Option<&'a Sto
     status(log, thread).flatten()
 }
 
+/// A thread stopped on its retries or on the budget, and nothing has come in
+/// for it since: its turn is over until a message or an answer arrives.
+pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
+    let over = |r: Option<&StopReason>| {
+        matches!(r, Some(StopReason::RetriesExhausted {} | StopReason::BudgetReached {}))
+    };
+    let stop = log.iter().rposition(|e| {
+        e.session_thread_id.as_ref() == Some(&thread.id)
+            && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusIdle { .. }))
+    });
+    let (Some(at), true) = (stop, over(stopped(log, &thread.id))) else { return false };
+    let scope = (!thread.primary).then(|| thread.id.clone());
+    let input = |e: &&Event| {
+        e.processed_at.is_some()
+            && matches!(
+                e.payload,
+                EventPayload::User(_) | EventPayload::Agent(AgentEvent::ThreadMessageReceived { .. })
+            )
+    };
+    !thread_events(&log[at + 1..], scope.as_ref()).iter().any(input)
+}
+
 /// A thread is at work: its last status in `log` is running.
 pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
     matches!(status(log, thread), Some(None))
