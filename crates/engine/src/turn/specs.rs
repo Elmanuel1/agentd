@@ -10,6 +10,11 @@ use crate::model::ModelTool;
 /// Every tool of `agent_toolset_20260401`, in toolset order.
 pub const TOOLSET: [&str; 8] = ["bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"];
 
+/// The toolset tools an agent is offered: those a worker runs. `web_fetch`
+/// and `web_search` are server tools on live, which agentd does not run yet,
+/// so no agent is offered them and none waits on a call no one answers.
+pub const OFFERED: [&str; 6] = ["bash", "read", "write", "edit", "glob", "grep"];
+
 /// The definition of toolset tool `name`; `None` for a name outside it.
 pub fn spec(name: &str) -> Option<ModelTool> {
     let (description, schema) = match name {

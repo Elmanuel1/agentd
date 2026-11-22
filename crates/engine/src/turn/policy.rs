@@ -60,7 +60,7 @@ impl Toolbox {
         for tool in &agent.config.tools {
             match tool {
                 Tool::AgentToolset { configs, default_config } => {
-                    for name in specs::TOOLSET {
+                    for name in specs::OFFERED {
                         let config = configs.iter().find(|c| c.name == name);
                         let enabled = config.map_or(default_config.enabled, |c| c.enabled);
                         let policy = config.map_or(default_config.permission_policy, |c| c.permission_policy);
@@ -94,7 +94,7 @@ impl Toolbox {
     /// evaluation, sees it.
     pub fn grader() -> Self {
         let mut b = Self::default();
-        for name in specs::TOOLSET {
+        for name in specs::OFFERED {
             if let Some(spec) = specs::spec(name) {
                 b.add(spec, from_policy(PermissionPolicy::AlwaysAllow));
             }

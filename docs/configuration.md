@@ -90,6 +90,10 @@ which takes the session's work item:
 - a `cloud` session stays `running`, and its worker's results show as
   `agent.tool_result`.
 
+An agent, and the grader, is offered the toolset's `bash`, `read`, `write`, `edit`, `glob` and `grep`.
+`web_fetch` and `web_search` are not offered: on live they are server tools, which agentd does not run yet, and
+no worker runs them.
+
 A roster thread's or the grader's built-in calls show on the session's stream
 with their `session_thread_id`, so the official worker runs them from it, and
 its results land on the call's thread. A coordinator has live's three roster

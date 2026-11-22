@@ -43,7 +43,6 @@ fn toolset_configs_decide_what_is_offered_and_how_it_runs() {
             "edit",
             "glob",
             "grep",
-            "web_search",
             "lookup",
             "create_agent",
             "send_to_agent",
@@ -71,7 +70,8 @@ fn a_policy_decision_names_its_policy_as_live_does() {
 #[test]
 fn a_grader_s_calls_carry_an_evaluation_so_the_worker_sees_them() {
     let grader = Toolbox::grader();
-    assert_eq!(grader.tools.len(), 8, "every toolset tool");
+    assert_eq!(grader.tools.len(), 6, "every toolset tool a worker runs");
+    assert!(grader.tools.iter().all(|t| t.name != "web_search" && t.name != "web_fetch"), "no web tools yet");
     assert!(!grader.tools.is_empty());
     for tool in &grader.tools {
         assert!(
