@@ -13,6 +13,8 @@ mod mcp;
 mod outcome;
 #[path = "agent_loop/stream.rs"]
 mod stream;
+#[path = "agent_loop/threads.rs"]
+mod threads;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
