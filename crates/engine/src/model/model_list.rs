@@ -133,9 +133,9 @@ mod tests {
         assert!(catalog.supports("claude-haiku-5-5"));
     }
 
-    /// A Models API that answers every read with `page`, how many reads it
-    /// answered, and the catalog the reads fill.
-    async fn served(page: serde_json::Value) -> (Arc<AtomicUsize>, ModelCatalog) {
+    /// A list at `path` that answers every read with `page`: how many reads
+    /// it answered, and its base URL.
+    async fn served(path: &'static str, page: serde_json::Value) -> (Arc<AtomicUsize>, String) {
         let hits = Arc::new(AtomicUsize::new(0));
         let counted = hits.clone();
         let answer = move || {
@@ -143,14 +143,18 @@ mod tests {
             let page = page.clone();
             async move { Json(page) }
         };
-        let catalog = ModelCatalog::default_catalog();
-        spawn(&anthropic(serve(Router::new().route("/v1/models", get(answer))).await), &catalog);
-        (hits, catalog)
+        (hits, serve(Router::new().route(path, get(answer))).await)
+    }
+
+    fn openai_compat(base: String) -> ProviderConfig {
+        ProviderConfig { anthropic: None, openai_compat: Some(("k".into(), format!("{base}/api/v1"))) }
     }
 
     #[tokio::test]
     async fn an_empty_read_keeps_the_built_in_models() {
-        let (hits, catalog) = served(json!({"data": [], "has_more": false})).await;
+        let (hits, base) = served("/v1/models", json!({"data": [], "has_more": false})).await;
+        let catalog = ModelCatalog::default_catalog();
+        spawn(&anthropic(base), &catalog);
         until(|| hits.load(Ordering::SeqCst) > 0).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(catalog.supports("claude-haiku-5-5"));
@@ -161,7 +165,9 @@ mod tests {
         let repeated = json!({"data": [{"id": "claude-new-1"}], "has_more": true, "last_id": "claude-new-1"});
         let missing = json!({"data": [{"id": "claude-new-1"}], "has_more": true});
         for (page, reads) in [(repeated, 2), (missing, 1)] {
-            let (hits, catalog) = served(page).await;
+            let (hits, base) = served("/v1/models", page).await;
+            let catalog = ModelCatalog::default_catalog();
+            spawn(&anthropic(base), &catalog);
             until(|| hits.load(Ordering::SeqCst) >= reads).await;
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(hits.load(Ordering::SeqCst), reads, "no read past a page with no new cursor");
@@ -170,18 +176,14 @@ mod tests {
         }
     }
 
-    fn listed() -> serde_json::Value {
-        json!({"data": [{"id": "qwen/qwen3.7-flash:free", "context_length": 262144},
-            {"id": "openai/gpt-6-luna", "context_length": 400000}]})
-    }
-
     #[tokio::test]
     async fn the_openai_compatible_list_is_the_vendor_models_accepted() {
-        let app = Router::new().route("/api/v1/models", get(|| async { Json(listed()) }));
+        let listed = json!({"data": [{"id": "qwen/qwen3.7-flash:free", "context_length": 262144},
+            {"id": "openai/gpt-6-luna", "context_length": 400000}]});
+        let (_, base) = served("/api/v1/models", listed).await;
         let catalog = ModelCatalog::default_catalog();
         assert!(!catalog.supports("openai/gpt-6-luna"), "none before the first read");
-        let base = format!("{}/api/v1", serve(app).await);
-        spawn(&ProviderConfig { anthropic: None, openai_compat: Some(("k".into(), base)) }, &catalog);
+        spawn(&openai_compat(base), &catalog);
         until(|| catalog.supports("openai/gpt-6-luna")).await;
         assert!(catalog.supports("qwen/qwen3.7-flash:free"));
         assert!(!catalog.supports("qwen/qwen3.7-flash"), "a variant only as listed");
@@ -190,16 +192,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_list_with_no_vendor_model_id_keeps_the_earlier_list() {
-        let hits = Arc::new(AtomicUsize::new(0));
-        let counted = hits.clone();
-        let answer = move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-            async { Json(json!({"data": [{"id": "claude-haiku-5-5"}]})) }
-        };
-        let base = format!("{}/api/v1", serve(Router::new().route("/api/v1/models", get(answer))).await);
+        let (hits, base) = served("/api/v1/models", json!({"data": [{"id": "claude-haiku-5-5"}]})).await;
         let catalog = ModelCatalog::default_catalog();
         catalog.replace_openai_compat(["openai/gpt-6-luna".to_owned()]);
-        spawn(&ProviderConfig { anthropic: None, openai_compat: Some(("k".into(), base)) }, &catalog);
+        spawn(&openai_compat(base), &catalog);
         until(|| hits.load(Ordering::SeqCst) > 0).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(catalog.supports("openai/gpt-6-luna"), "the earlier list stays");
