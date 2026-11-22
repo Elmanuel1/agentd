@@ -38,7 +38,7 @@ async fn a_coordinator_waiting_on_a_tool_lets_its_delegate_run() {
     let (_, created) = send_to(&app, request("POST", "/v1/sessions", Auth::Key(KEY), Some(body))).await;
     let s = created["id"].as_str().unwrap().to_owned();
     send(&app, &s, message("run it")).await;
-    let events = events_until(&app, &s, "agent.thread_message_received", 2).await;
+    let events = events_until(&app, &s, "agent.thread_message_received", 1).await;
     let t = types(&events);
     let replied = t.iter().rposition(|k| *k == "agent.thread_message_received").unwrap();
     let idled = t.iter().position(|k| *k == "session.status_idle");
