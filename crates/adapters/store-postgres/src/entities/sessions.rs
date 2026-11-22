@@ -80,24 +80,32 @@ impl NativeSessionsStore for PgSessionsStore {
                 // An append in flight commits first; a later one finds no session.
                 lock(c, id).await?;
                 let key = sessions::workspace_id.eq(ws.as_str()).and(sessions::session_id.eq(id.as_str()));
+                let status: Option<String> =
+                    sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
+                match status.as_deref() {
+                    None => return Ok(Err(StoreError::NotFound)),
+                    Some(s) if s == running => return Ok(Err(StoreError::Conflict)),
+                    Some(_) => {}
+                }
+                // The steps before the row, as a step's commit locks them.
+                forget(c, ws, id).await?;
                 let doc: Option<serde_json::Value> =
                     diesel::delete(sessions::table.filter(key).filter(sessions::status.ne(running)))
                         .returning(sessions::doc)
                         .get_result(c)
                         .await
                         .optional()?;
-                let Some(doc) = doc else {
-                    let status: Option<String> =
-                        sessions::table.filter(key).select(sessions::status).first(c).await.optional()?;
-                    return Ok(Err(status.map_or(StoreError::NotFound, |_| StoreError::Conflict)));
-                };
+                // A step started the session since: nothing is deleted.
+                let Some(doc) = doc else { return Err(diesel::result::Error::RollbackTransaction) };
                 stop(c, ws, id.as_str(), &Reach::default(), false, Timestamp::now()).await?;
-                forget(c, ws, id).await?;
                 super::mcp_connections::forget(c, ws, id).await?;
                 Ok(Ok(doc))
             })
             .await
-            .map_err(diesel_be)??;
+            .map_err(|e| match e {
+                diesel::result::Error::RollbackTransaction => StoreError::Conflict,
+                e => diesel_be(e),
+            })??;
         parse_doc(doc)
     }
 

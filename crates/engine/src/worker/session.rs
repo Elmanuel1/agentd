@@ -11,10 +11,10 @@ use shared::BackendError;
 
 use super::Loop;
 use super::settle::{quiet, round};
-use super::status::{busy, held};
+use super::status::{busy, held, unfinished};
 use super::take::{Interrupt, Taken, cut_off};
 use super::team::Thread;
-use super::turn::{batch, opening};
+use super::turn::{batch, opening, thread_idle};
 use super::usage::tally;
 use crate::turn::history::Kept;
 
@@ -40,9 +40,14 @@ impl Loop {
         // and the session idles.
         if interrupt != Interrupt::None {
             session.status = SessionStatus::Idle;
-            let mut events: Vec<Event> = all.iter().flat_map(|(t, h)| cut_off(&t.turn(), h, log)).collect();
-            events.extend(primary.idle(&session, StopReason::EndTurn {}));
             tally(&mut session, &read, kept);
+            let mut events: Vec<Event> = all.iter().flat_map(|(t, h)| cut_off(&t.turn(), h, log)).collect();
+            let working = all.iter().filter(|(t, _)| !t.primary && unfinished(&read, &t.id));
+            events.extend(working.map(|(t, _)| {
+                let turn = t.turn();
+                turn.lifecycle(thread_idle(&turn, StopReason::EndTurn {}))
+            }));
+            events.extend(primary.idle(&session, StopReason::EndTurn {}));
             self.settled(claim, StepEnd::Done, &batch(taken, Vec::new(), events), &session, &[]).await?;
             return Ok(());
         }

@@ -81,18 +81,22 @@ pub(super) async fn wake(
     Ok(())
 }
 
-/// The session's step goes with the session, in its delete's transaction.
+/// The session's steps go with the session, in its delete's transaction,
+/// before its row: the session's own step first, in the order a step's
+/// commit locks them, so the two never wait on each other in a cycle.
 pub(crate) async fn forget(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
     id: &SessionId,
 ) -> Result<(), diesel::result::Error> {
-    diesel::sql_query(format!("DELETE FROM loop_steps WHERE {KEY}"))
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .execute(c)
-        .await
-        .map(drop)
+    for scope in ["AND thread_id = ''", ""] {
+        diesel::sql_query(format!("DELETE FROM loop_steps WHERE {KEY} {scope}"))
+            .bind::<Text, _>(ws.as_str())
+            .bind::<Text, _>(id.as_str())
+            .execute(c)
+            .await?;
+    }
+    Ok(())
 }
 
 impl NativeSteps for PgSteps {

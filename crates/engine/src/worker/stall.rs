@@ -4,9 +4,10 @@
 
 use serde_json::json;
 use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent};
-use sessions::types::{OutcomeEvaluation, ThreadId};
+use sessions::types::{OutcomeEvaluation, Session, ThreadId};
 
 use super::grade::{Outcome, verdict};
+use super::team::Thread;
 use super::turn::Turn;
 
 /// Turns a grader may end without its verdict before its round fails.
@@ -32,6 +33,13 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
 }
 
 /// The round's end when the grader stalled: it fails.
+/// A grader that stopped on the budget or its retries ends its round failed,
+/// so the round does not stay open with no one to grade it.
+pub(super) fn abandoned(session: &Session, thread: &Thread) -> Option<(Event, OutcomeEvaluation)> {
+    let outcome = thread.grading.as_ref()?;
+    Some(no_verdict(&Thread::primary(session).turn(), outcome, ModelUsage::default()))
+}
+
 pub(super) fn no_verdict(primary: &Turn, outcome: &Outcome, usage: ModelUsage) -> (Event, OutcomeEvaluation) {
     let grade = json!({"result": "failed", "criteria": [{"criterion": "grade", "met": false,
         "finding": format!("The grader ended {NUDGES} turns without a grade.")}]});

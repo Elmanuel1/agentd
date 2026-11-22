@@ -54,7 +54,8 @@ pub(super) fn settle(
 pub(super) fn round(session: &Session, log: &[Event]) -> Option<Event> {
     let outcome = active(log).filter(|o| o.open.is_none())?;
     let primary = Thread::primary(session);
-    if threads(session, log).iter().any(|t| !t.primary && unfinished(log, &t.id)) {
+    let ended = matches!(stopped(log, &primary.id), Some(StopReason::EndTurn {}));
+    if !ended || threads(session, log).iter().any(|t| !t.primary && unfinished(log, &t.id)) {
         return None;
     }
     let replied = log.iter().rposition(|e| {

@@ -15,6 +15,7 @@ use super::compact::{Log, Opened};
 use super::reply::{Call, led};
 use super::rubrics;
 use super::settle::settle;
+use super::stall::abandoned;
 use super::status::arrived_for;
 use super::take::{Taken, take};
 use super::turn::{batch, opening, thread_idle};
@@ -72,7 +73,10 @@ impl Loop {
         if over_budget(&session, before) {
             let mut events = answers;
             events.push(turn.lifecycle(thread_idle(&turn, StopReason::BudgetReached {})));
-            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), None).await?;
+            let failed = abandoned(&session, &thread);
+            events.extend(failed.as_ref().map(|(end, _)| end.clone()));
+            let verdict = failed.map(|(_, eval)| eval);
+            self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), verdict.as_ref()).await?;
             return Ok(());
         }
         let agent = thread.agent.clone();
@@ -134,6 +138,9 @@ impl Loop {
             Ok(Err(e)) => {
                 let mut events = failed(Some(&e));
                 events.push(turn.lifecycle(thread_idle(&turn, StopReason::RetriesExhausted {})));
+                let failed = abandoned(&session, &thread);
+                events.extend(failed.as_ref().map(|(end, _)| end.clone()));
+                verdict = failed.map(|(_, eval)| eval);
                 (batch(Vec::new(), Vec::new(), events), StepEnd::Done)
             }
             Ok(Ok(reply)) => {

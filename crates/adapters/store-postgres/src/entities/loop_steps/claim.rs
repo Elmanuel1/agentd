@@ -45,9 +45,13 @@ pub(super) async fn claim(
                 .get_result(c)
                 .await?;
                 if busy.leased >= per_workspace {
+                    // Rows another transaction holds are skipped, never waited on.
                     diesel::sql_query(
-                        "UPDATE loop_steps SET due_at = greatest(due_at, now() + interval '1 second') \
-                         WHERE workspace_id = $1 AND (lease_until IS NULL OR lease_until < now())",
+                        "WITH free AS (SELECT workspace_id, session_id, thread_id FROM loop_steps \
+                         WHERE workspace_id = $1 AND (lease_until IS NULL OR lease_until < now()) FOR UPDATE SKIP LOCKED) \
+                         UPDATE loop_steps l SET due_at = greatest(l.due_at, now() + interval '1 second') FROM free \
+                         WHERE l.workspace_id = free.workspace_id AND l.session_id = free.session_id \
+                         AND l.thread_id = free.thread_id",
                     )
                     .bind::<Text, _>(&due.workspace_id)
                     .execute(c)

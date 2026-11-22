@@ -139,12 +139,17 @@ impl NativeSessionEventReads for PgSessionEventLog {
     ) -> Result<Option<Tail>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         // The session row comes back with no event when nothing matched, and
-        // no row at all once the session is gone.
+        // no row at all once the session is gone. Only settled events are
+        // served, a pending one too, so the cursor never passes an earlier
+        // one still being written; an archived session reads as archived only
+        // once none is left.
         let rows: Vec<TailRow> = diesel::sql_query(format!(
-            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, e.xid::text::bigint AS xid, e.seq, e.doc
+            "SELECT s.doc->>'archived_at' IS NOT NULL AND NOT EXISTS (SELECT 1 FROM session_events u
+               WHERE u.workspace_id = s.workspace_id AND u.session_id = s.session_id AND NOT u.{SETTLED}) AS archived,
+               e.xid::text::bigint AS xid, e.seq, e.doc
              FROM sessions s
              LEFT JOIN session_events e ON e.workspace_id = s.workspace_id AND e.session_id = s.session_id
-               AND (((e.xid::text::bigint, e.seq) > ($3, $4) AND e.{SETTLED}) OR e.seq = ANY($5))
+               AND e.{SETTLED} AND ((e.xid::text::bigint, e.seq) > ($3, $4) OR e.seq = ANY($5))
              WHERE s.workspace_id = $1 AND s.session_id = $2
              ORDER BY e.xid, e.seq LIMIT $6"
         ))

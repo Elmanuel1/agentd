@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, StopReason};
+use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, StopReason, UserEvent};
 use sessions::types::ThreadId;
 
 use super::team::Thread;
@@ -24,8 +24,9 @@ pub(super) fn stopped<'a>(log: &'a [Event], thread: &ThreadId) -> Option<&'a Sto
     status(log, thread).flatten()
 }
 
-/// A thread stopped on its retries or on the budget, and nothing has come in
-/// for it since: its turn is over until a message or an answer arrives.
+/// A thread stopped on its retries or on the budget, or idle since an
+/// interrupt, and nothing has come in for it since: its turn is over until a
+/// message or an answer arrives.
 pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
     let over = |r: Option<&StopReason>| {
         matches!(r, Some(StopReason::RetriesExhausted {} | StopReason::BudgetReached {}))
@@ -34,7 +35,11 @@ pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
         e.session_thread_id.as_ref() == Some(&thread.id)
             && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusIdle { .. }))
     });
-    let (Some(at), true) = (stop, over(stopped(log, &thread.id))) else { return false };
+    let interrupt = log.iter().rposition(|e| {
+        e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
+    });
+    let cut = stop.zip(interrupt).is_some_and(|(s, i)| i < s);
+    let (Some(at), true) = (stop, cut || over(stopped(log, &thread.id))) else { return false };
     let scope = (!thread.primary).then(|| thread.id.clone());
     let input = |e: &&Event| {
         e.processed_at.is_some()
@@ -56,7 +61,8 @@ pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
 /// the end of its turn.
 pub(super) fn unfinished(log: &[Event], thread: &ThreadId) -> bool {
     match status(log, thread) {
-        Some(Some(reason)) => !matches!(reason, StopReason::EndTurn {}),
+        // Its retries ran out: the turn is over, as at its end.
+        Some(Some(reason)) => !matches!(reason, StopReason::EndTurn {} | StopReason::RetriesExhausted {}),
         Some(None) => true,
         None => false,
     }
