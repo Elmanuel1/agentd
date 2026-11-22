@@ -45,3 +45,34 @@ async fn a_coordinator_waiting_on_a_tool_lets_its_delegate_run() {
     assert_eq!(events.last().unwrap()["stop_reason"], json!({"type": "end_turn"}));
     assert_eq!(model.asked.lock().len(), 4);
 }
+
+#[tokio::test]
+async fn an_agent_s_skills_are_listed_in_its_prompt() {
+    // Each skill the agent names, with its frontmatter description and where
+    // its SKILL.md is in the sandbox.
+    let Some(rig) = Rig::new().await else { return };
+    let env = rig.environment("self_hosted").await;
+    let name = format!("citing-{}", common::stamp());
+    let md = format!("---\nname: {name}\ndescription: Resolves snippets to pages.\n---\n# Citing\n");
+    let skills = skills::SkillsService::new(rig.stores.skills.clone(), rig.stores.skill_versions.clone());
+    let files = vec![(format!("{name}/SKILL.md"), bytes::Bytes::from(md))];
+    let skill = skills.create(&rig.ctx(), files, None).await.unwrap();
+    let model = Scripted::new(vec![Say::Text("ok")]);
+    let (app, _worker) = on_loop(&rig, model.clone()).await;
+    let agent = json!({"name": format!("a-{}", common::stamp()), "model": "claude-haiku-4-5",
+        "skills": [{"type": "custom", "skill_id": skill.id, "version": "latest"}]});
+    let (st, agent) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(agent))).await;
+    assert_eq!(st, StatusCode::OK, "{agent}");
+    let body = json!({"agent": agent["id"], "environment_id": env});
+    let (_, created) = send_to(&app, request("POST", "/v1/sessions", Auth::Key(KEY), Some(body))).await;
+    let s = created["id"].as_str().unwrap().to_owned();
+    send(&app, &s, message("hi")).await;
+    events_until(&app, &s, "session.status_idle", 1).await;
+    let system = model.asked.lock()[0].system.clone();
+    assert!(
+        system.contains(&format!(
+            "- `{name}` (/workspace/skills/{name}/SKILL.md): Resolves snippets to pages."
+        )),
+        "{system}"
+    );
+}
