@@ -53,8 +53,7 @@ pub struct LoopConfig {
     pub model_base_url: String,
     /// A step's model deadline (10 min); its lease is 2 min longer.
     pub deadline: Duration,
-    /// `AGENTD_COMPACTION_CLEAR_AT` (100000), `AGENTD_COMPACTION_KEEP_RESULTS`
-    /// (3, from 3 to 5) and `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` (16000).
+    /// `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` (16000).
     pub compaction: engine::turn::compact::Compaction,
 }
 
@@ -102,13 +101,7 @@ fn memory_target(get: &impl Fn(&str) -> Option<String>) -> Result<u16, ConfigErr
 fn compaction(
     get: &impl Fn(&str) -> Option<String>,
 ) -> Result<engine::turn::compact::Compaction, ConfigError> {
-    let keep_results: usize = number(get, "AGENTD_COMPACTION_KEEP_RESULTS", 3)?;
-    if !(3..=5).contains(&keep_results) {
-        return Err(ConfigError { var: "AGENTD_COMPACTION_KEEP_RESULTS", reason: "expected 3 to 5".into() });
-    }
     Ok(engine::turn::compact::Compaction {
-        clear_at: number(get, "AGENTD_COMPACTION_CLEAR_AT", 100_000)?,
-        keep_results,
         tool_output_limit: number(get, "AGENTD_TOOL_OUTPUT_TOKEN_LIMIT", 16_000)?,
     })
 }

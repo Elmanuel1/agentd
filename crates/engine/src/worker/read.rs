@@ -18,15 +18,14 @@ impl Loop {
             return self.stores.log.step_events(ws, id).await.map_err(BackendError::new);
         };
         let scope = (*t != primary_thread_id(id)).then_some(t);
-        let c = &self.models.compaction;
-        let how = ThreadRead { whole: false, clear_at: c.clear_at, keep: c.keep_results };
-        let read = self.stores.log.thread_events(ws, id, scope, how).await.map_err(BackendError::new)?;
+        let log = &self.stores.log;
+        let read = log.thread_events(ws, id, scope, ThreadRead { whole: false }).await;
+        let read = read.map_err(BackendError::new)?;
         if !compacted_grader(&read, t) {
             return Ok(read);
         }
         // A grader's stall count spans its round: it reads its round whole.
-        let how = ThreadRead { whole: true, ..how };
-        self.stores.log.thread_events(ws, id, scope, how).await.map_err(BackendError::new)
+        log.thread_events(ws, id, scope, ThreadRead { whole: true }).await.map_err(BackendError::new)
     }
 }
 

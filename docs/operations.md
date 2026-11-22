@@ -43,7 +43,7 @@ A `self_hosted` environment's tools run on the customer's worker (`ant beta:work
 | `agentd.loop.step_wait` p95 | above 5 s for 10 minutes | the same, seen as latency; check the workspace cap (`AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`) when one workspace dominates |
 | `agentd.loop.model_call_duration` with outcome `error` | above 5% of calls for 10 minutes | the provider fails or rate-limits: check its status, `AGENTD_MODEL_RPM` and `AGENTD_MODEL_ITPM` |
 | `agentd.loop.turns` with stop reason `retries_exhausted` | above 1% of turns for 15 minutes | turns end on model errors: the same as above |
-| `agentd.loop.compactions` with outcome `failed` or `no_summary` | above 10% of compactions for 30 minutes | threads run on cleared prompts only: check the provider's compaction support for the model |
+| `agentd.loop.compactions` with outcome `failed` or `no_summary` | above 10% of compactions for 30 minutes | threads grow to the window with no summary: check the provider's compaction support for the model |
 | `agentd.loop.mcp_calls` with outcome `unreachable` | above 10% for 15 minutes | MCP servers fail: usually one tenant's server; check the `session.error` events and the `is_error` `agent.mcp_tool_result` events for its name |
 | `http.server.request.duration` 5xx ratio | above 1% for 5 minutes | the API fails: read the `request failed` log lines and their spans |
 | `db.client.connection.pending_requests` | above 0 for 5 minutes | the pool is saturated: raise `AGENTD_DB_POOL_SIZE` or add replicas within the database's connection limit |

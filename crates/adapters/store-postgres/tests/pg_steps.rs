@@ -729,8 +729,8 @@ async fn a_thread_s_commit_and_its_session_s_delete_at_once_never_deadlock_and_l
     }
 }
 
-/// A thread's read that clears no tool result.
-const WHOLE: ThreadRead = ThreadRead { whole: false, clear_at: u64::MAX, keep: 3 };
+/// A thread's read from its latest checkpoint.
+const FROM_CHECKPOINT: ThreadRead = ThreadRead { whole: false };
 
 #[tokio::test]
 async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
@@ -815,9 +815,9 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     let ids = |read: Vec<(Event, Option<serde_json::Value>)>, of: &[Event]| -> Vec<usize> {
         read.iter().filter_map(|(e, _)| of.iter().position(|x| x.id == e.id)).collect()
     };
-    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), WHOLE).await.unwrap(), &events);
+    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), FROM_CHECKPOINT).await.unwrap(), &events);
     assert_eq!(read, [0, 2, 3, 5, 7, 9], "its creation, its events, its answer, the client's message");
-    let primary = ids(r.log.thread_events(&ws, &s.id, None, WHOLE).await.unwrap(), &events);
+    let primary = ids(r.log.thread_events(&ws, &s.id, None, FROM_CHECKPOINT).await.unwrap(), &events);
     assert_eq!(primary, [0, 1, 5, 6, 7], "the primary's events, the answers with no thread among them");
     let calls = r.log.calls(&ws, &s.id, "list_cost_nanos").await.unwrap();
     assert_eq!((calls.input_tokens, calls.output_tokens, calls.unpriced, calls.cost), (22, 6, 0, 12));
@@ -830,24 +830,23 @@ async fn a_thread_s_read_keeps_its_own_events_and_what_it_needs_of_the_rest() {
     commit(std::slice::from_ref(&compacted), &[(compacted.id.clone(), kept)]).await;
     let mut later = events.clone();
     later.push(compacted);
-    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), WHOLE).await.unwrap(), &later);
+    let read = ids(r.log.thread_events(&ws, &s.id, Some(&mine), FROM_CHECKPOINT).await.unwrap(), &later);
     assert_eq!(read, [0, 3, 5, 7, 9, 11], "from the covered call on, with the checkpoint");
     let session = ids(r.log.step_events(&ws, &s.id).await.unwrap(), &later);
     assert_eq!(session, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11], "each thread from its own checkpoint");
 }
 
 #[tokio::test]
-async fn a_result_the_prompt_clears_is_read_without_its_content() {
-    // CP-2: once the thread's last call took `clear_at` tokens, a result
-    // before it and older than the newest `keep` comes with no content; the
-    // session's own step reads no processed result's content.
+async fn a_thread_reads_its_results_whole_and_the_session_step_without_content() {
+    // A thread's prompt carries every result; the session's own step builds
+    // no prompt and reads no processed result's content.
     if !enabled() {
         return;
     }
-    use sessions::events::{EventId, ModelUsage, SpanEvent, SpanModelUsage};
+    use sessions::events::EventId;
     use sessions::types::ThreadId;
     let r = rig().await;
-    let ws = uniq_ws("clear");
+    let ws = uniq_ws("whole");
     let s = r.session(&ws).await;
     let mine = ThreadId::generate();
     let on = |payload: EventPayload| {
@@ -860,13 +859,7 @@ async fn a_result_the_prompt_clears_is_read_without_its_content() {
         let content = vec![shared::ContentBlock::text("output")];
         on(UserEvent::ToolResult { tool_use_id: EventId::generate(), content, is_error: false }.into())
     };
-    let tokens = ModelUsage { input_tokens: 150, output_tokens: 50, ..ModelUsage::default() };
-    let end = SpanEvent::ModelRequestEnd {
-        model_request_start_id: EventId::generate(),
-        is_error: false,
-        model_usage: SpanModelUsage { tokens, speed: None },
-    };
-    let events = vec![result(), result(), on(end.into()), result()];
+    let events = vec![result(), result(), result()];
     r.wake(&ws, &s.id).await;
     let c = r.claim_of("w1", 60, &s.id).await.unwrap();
     let write = StepWrite {
@@ -886,10 +879,7 @@ async fn a_result_the_prompt_clears_is_read_without_its_content() {
         };
         read.iter().filter(|(e, _)| events.iter().any(|x| x.id == e.id)).filter_map(|(e, _)| of(e)).collect()
     };
-    let read = |clear_at| {
-        r.log.thread_events(&ws, &s.id, Some(&mine), ThreadRead { whole: false, clear_at, keep: 1 })
-    };
-    assert_eq!(whole(read(200).await.unwrap()), [false, false, true], "the last call took 200 tokens");
-    assert_eq!(whole(read(201).await.unwrap()), [true, true, true], "under the threshold, all whole");
+    let read = r.log.thread_events(&ws, &s.id, Some(&mine), FROM_CHECKPOINT).await.unwrap();
+    assert_eq!(whole(read), [true, true, true]);
     assert_eq!(whole(r.log.step_events(&ws, &s.id).await.unwrap()), [false, false, false]);
 }

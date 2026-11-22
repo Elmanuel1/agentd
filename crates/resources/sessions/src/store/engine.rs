@@ -33,11 +33,6 @@ pub struct Calls {
 pub struct ThreadRead {
     /// From the thread's first event, not its latest checkpoint.
     pub whole: bool,
-    /// The prompt size, in tokens, past which the prompt keeps whole only
-    /// the newest `keep` successful tool results.
-    pub clear_at: u64,
-    /// The newest successful tool results a cleared prompt keeps whole.
-    pub keep: usize,
 }
 
 /// A session's log as the loop reads it. A session that does not exist,
@@ -61,10 +56,7 @@ pub trait EngineReads: Send + Sync {
     ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
     /// At least what one thread's step reads: as [`Self::step_events`], with
     /// only this thread's own events (`None` is the primary's), as `how`
-    /// says, with the answers to its calls. Once the thread's last
-    /// call since its checkpoint took `clear_at` tokens, a processed
-    /// successful tool result before that call and older than the newest
-    /// `keep` may come with its content left out: its prompt clears it.
+    /// says, with the answers to its calls, every event whole.
     fn thread_events<'a>(
         &'a self,
         ws: &'a WorkspaceId,

@@ -87,12 +87,10 @@ its count of replies with no grade spans the round. Usage, cost and the
 budget are sums the database computes over every `span.model_request_end`,
 every thread's.
 
-A read leaves out the content of a tool result no prompt will carry. The
-session's own step builds no prompt, so it reads no processed result's
-content. Once a thread's last call since its checkpoint took
-`AGENTD_COMPACTION_CLEAR_AT` tokens, its next prompt clears every successful
-result but the newest `AGENTD_COMPACTION_KEEP_RESULTS`, so its step reads
-those older results without their content. The stored events stay whole.
+The session's own step builds no prompt, so it reads no processed tool
+result's content. A thread's step reads every result whole: its prompt
+carries each one, capped, until the thread compacts. The stored events stay
+whole.
 
 A worker claims steps while its replica's memory is under
 `AGENTD_MEMORY_TARGET`, with no count of steps: the working set of its
@@ -170,8 +168,6 @@ step's 10 minute deadline.
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
 | `AGENTD_MODEL_PRICES_URL` | `https://openrouter.ai/api/v1/models` | The model list Anthropic's list prices are read from, at start and once a day; empty, the built-in table alone |
-| `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
-| `AGENTD_COMPACTION_KEEP_RESULTS` | `3` | The newest tool results kept whole when clearing, from 3 to 5 |
 | `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` | `16000` | The most of one tool result a prompt carries; the stored event stays whole |
 
 Each model's context window comes from its provider's model list, read once
@@ -179,10 +175,9 @@ per process: the Messages API's `GET /v1/models/{id}` (`max_input_tokens`) and
 the OpenAI-compatible list's `context_length`. A model its provider does not
 list fails its step as a model error. The loop estimates a thread's prompt from
 its last call's tokens and a token per 4 bytes since. Every tool result is
-capped at `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`. Past the clear threshold, tool
-results older than the newest `AGENTD_COMPACTION_KEEP_RESULTS` become
-`[tool result cleared: event <id>]`; inputs and error results stay. Past 80% of
-the window, and when no tool call is waiting, the step runs a compaction call
+capped at `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`; no result is cleared from a
+prompt, so each call's prompt extends the last one and the provider's prompt
+cache holds. Past 80% of the window, and when no tool call is waiting, the step runs a compaction call
 instead of the turn, with the turn's system prompt and tools: on-demand
 compaction (`compact-2026-09-04`) for an Anthropic model, a handoff prompt for
 any other. It summarises from the thread's latest checkpoint, keeps the last
@@ -190,7 +185,7 @@ two calls verbatim and quotes the user's messages newest first. Its
 `agent.thread_context_compacted` event is the thread's checkpoint; the summary
 is kept beside it and never served. Every later call starts with the signed
 block, sent back unmodified, or with the summary. A compaction that returns
-no summary lets the turn run on the cleared prompt.
+no summary lets the turn run on the whole prompt.
 
 ### MCP servers
 

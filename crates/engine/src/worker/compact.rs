@@ -21,7 +21,7 @@ use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
 use crate::turn::compact::estimate::estimate;
-use crate::turn::compact::prompt::{cap, clear};
+use crate::turn::compact::prompt::cap;
 use crate::turn::compact::{BYTES_PER_TOKEN, Tier, summary};
 use crate::turn::history::{History, Kept, rebuild, thread_events};
 
@@ -48,8 +48,7 @@ pub(super) struct Log<'a> {
 }
 
 impl Loop {
-    /// Cap and, past the clear tier, clear `history`'s tool results; the
-    /// compaction to run first when the prompt needs one (CP-4, CP-12) and
+    /// Cap `history`'s tool results; the compaction to run first when the prompt needs one (CP-4, CP-12) and
     /// the last call was not a compaction that left no checkpoint (CP-10).
     pub(super) async fn fit(
         &self,
@@ -64,13 +63,7 @@ impl Loop {
         let view = checkpoint::view(&events, log.kept);
         let c = self.models.compaction;
         let tier = c.tier(estimate(&view), window);
-        let tidy = |messages: &mut Vec<Message>| {
-            cap(messages, c.tool_output_limit);
-            if tier != Tier::Whole {
-                clear(messages, c.keep_results);
-            }
-        };
-        tidy(&mut history.messages);
+        cap(&mut history.messages, c.tool_output_limit);
         let redo = view.checkpoint.as_ref().is_some_and(|cp| cp.model != *model);
         if (tier != Tier::Compact && !redo) || view.attempted {
             return Ok(None);
@@ -109,7 +102,7 @@ impl Loop {
         if let Some(cp) = &view.checkpoint {
             messages.insert(0, cp.message());
         }
-        tidy(&mut messages);
+        cap(&mut messages, c.tool_output_limit);
         let Some(last) = cut.checked_sub(1).and_then(|i| view.prompt.get(i)) else { return Ok(None) };
         let seq = log.kept.get(&last.id).and_then(|k| k.get("seq")).and_then(serde_json::Value::as_i64);
         let through = (last.id.clone(), seq.unwrap_or_default());
@@ -121,7 +114,7 @@ impl Loop {
     /// Run `c` with the turn's system prompt and tools, so the prompt cache
     /// holds, and commit its call's end and the thread's checkpoint. A call
     /// that fails or leaves no summary is ended as it came; the next step
-    /// takes the turn with the cleared prompt.
+    /// takes the turn with the whole prompt.
     pub(super) async fn compact(
         &self,
         claim: &Claim,
