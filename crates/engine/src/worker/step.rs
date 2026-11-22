@@ -125,7 +125,7 @@ impl Loop {
             }
             Ok(None) => {}
         }
-        let (tools, request) = self.request(&session, &thread, history.messages, &servers.tools());
+        let (tools, request) = self.request(ws, &session, &thread, history.messages, &servers.tools()).await;
         let mut watch = Watch {
             rx: self.signals.subscribe(),
             log: self.stores.log.clone(),

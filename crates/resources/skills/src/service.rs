@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use shared::{ApiError, AuthContext, Pagination, Timestamp};
+use shared::{ApiError, AuthContext, Pagination, Timestamp, WorkspaceId};
 
 use crate::bundle::{UploadFile, parse_bundle};
 use crate::store::{SkillVersionsStore, SkillsStore, StoreError};
@@ -62,8 +62,12 @@ impl SkillsService {
     /// `GET /v1/skills/{id}`. Live (skills/44, 45): an unknown or malformed id
     /// is ``Skill not found: <id>``.
     pub async fn get(&self, ctx: &AuthContext, raw_id: &str) -> Result<Skill, ApiError> {
+        self.get_in(&ctx.workspace, raw_id).await
+    }
+
+    async fn get_in(&self, ws: &WorkspaceId, raw_id: &str) -> Result<Skill, ApiError> {
         let id = SkillId::parse(raw_id).map_err(|_| map_store(StoreError::SkillNotFound, raw_id, ""))?;
-        self.store.get(&ctx.workspace, &id).await.map_err(|e| map_store(e, raw_id, ""))
+        self.store.get(ws, &id).await.map_err(|e| map_store(e, raw_id, ""))
     }
 
     /// `GET /v1/skills`. agentd has no Anthropic prebuilt skills, so

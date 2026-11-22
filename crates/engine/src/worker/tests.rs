@@ -187,3 +187,42 @@ fn a_reply_s_signed_thinking_is_kept_beside_its_agent_thinking() {
         "live's agent.thinking carries no content"
     );
 }
+
+#[test]
+fn the_thread_that_waited_longest_takes_the_step() {
+    // Two delegates both await the model: the one that just had a step
+    // waits, so a thread whose calls come back fast cannot starve the other.
+    use agents::types::{Multiagent, RosterMember};
+    use sessions::events::{AgentEvent, SessionEvent};
+    use shared::ContentBlock;
+    let mut session = session();
+    let member = |name: &str| {
+        let mut a = session.agent.clone();
+        a.config.name = name.into();
+        RosterMember::Snapshot(Box::new(a))
+    };
+    let roster = vec![member("fast"), member("slow")];
+    session.agent.config.multiagent = Some(Multiagent::Coordinator { agents: roster });
+    let on = |thread: &ThreadId, payload: EventPayload| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: Some(thread.clone()),
+        ..Event::new(payload)
+    };
+    let message = |text: &str| AgentEvent::ThreadMessageReceived {
+        content: vec![ContentBlock::text(text)],
+        from_agent_name: "coord".into(),
+        from_session_thread_id: ThreadId::generate(),
+    };
+    let (fast, slow) = (ThreadId::generate(), ThreadId::generate());
+    let log = vec![
+        on(&fast, SessionEvent::ThreadCreated { agent_name: "fast".into() }.into()),
+        on(&slow, SessionEvent::ThreadCreated { agent_name: "slow".into() }.into()),
+        on(&fast, message("go").into()),
+        on(&slow, message("go").into()),
+        on(&fast, SpanEvent::ModelRequestStart {}.into()),
+        on(&fast, AgentEvent::Message { content: vec![ContentBlock::text("on it")] }.into()),
+        on(&fast, message("more").into()),
+    ];
+    let taken = super::take::take(&log, &session, false, &Default::default(), &Default::default());
+    assert_eq!(taken.thread.id, slow);
+}

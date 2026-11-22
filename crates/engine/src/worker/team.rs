@@ -5,7 +5,7 @@
 
 use agents::AgentSnapshot;
 use serde_json::Value;
-use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent};
+use sessions::events::{AgentEvent, Event, EventPayload, SessionEvent, StopReason};
 use sessions::types::{Session, ThreadId, primary_thread_id};
 use shared::ContentBlock;
 
@@ -57,17 +57,29 @@ pub(super) fn threads(session: &Session, log: &[Event]) -> Vec<Thread> {
     std::iter::once(primary).chain(opened).collect()
 }
 
+/// A thread's last status in `log`: running (`Some(None)`), idle and why
+/// (`Some(Some(_))`), or none yet.
+fn status<'a>(log: &'a [Event], thread: &ThreadId) -> Option<Option<&'a StopReason>> {
+    log.iter().rev().filter(|e| e.session_thread_id.as_ref() == Some(thread)).find_map(|e| match &e.payload {
+        EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }) => Some(None),
+        EventPayload::Session(SessionEvent::ThreadStatusIdle { stop_reason, .. }) => Some(Some(stop_reason)),
+        _ => None,
+    })
+}
+
 /// A thread is at work: its last status in `log` is running.
 pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
-    log.iter()
-        .rev()
-        .filter(|e| e.session_thread_id.as_ref() == Some(thread))
-        .find_map(|e| match e.payload {
-            EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }) => Some(true),
-            EventPayload::Session(SessionEvent::ThreadStatusIdle { .. }) => Some(false),
-            _ => None,
-        })
-        .unwrap_or(false)
+    matches!(status(log, thread), Some(None))
+}
+
+/// A thread is mid-turn: running, or idle on a call it waits for, not on
+/// the end of its turn.
+pub(super) fn unfinished(log: &[Event], thread: &ThreadId) -> bool {
+    match status(log, thread) {
+        Some(Some(reason)) => !matches!(reason, StopReason::EndTurn {}),
+        Some(None) => true,
+        None => false,
+    }
 }
 
 /// A coordinator's call to a roster tool: its `agent.tool_use` and what it

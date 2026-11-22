@@ -278,6 +278,10 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
+        skills: Arc::new(skills::SkillsService::new(
+            rig.stores.skills.clone(),
+            rig.stores.skill_versions.clone(),
+        )),
         mcp,
         webhooks: hooks,
     };
