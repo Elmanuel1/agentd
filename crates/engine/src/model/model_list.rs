@@ -28,7 +28,7 @@ pub fn spawn(providers: &ProviderConfig, catalog: &ModelCatalog) {
                         return Ok::<_, String>(all);
                     }
                     let next = page.get("last_id").and_then(Value::as_str).map(str::to_owned);
-                    let Some(last) = next.filter(|l| !seen.contains(l)) else {
+                    let Some(last) = next.filter(|l| !l.is_empty() && !seen.contains(l)) else {
                         return Err("the model list's next page has no new cursor".to_owned());
                     };
                     path = format!("/v1/models?limit=1000&after_id={last}");
@@ -164,7 +164,8 @@ mod tests {
     async fn a_next_page_with_no_new_cursor_keeps_the_built_in_models() {
         let repeated = json!({"data": [{"id": "claude-new-1"}], "has_more": true, "last_id": "claude-new-1"});
         let missing = json!({"data": [{"id": "claude-new-1"}], "has_more": true});
-        for (page, reads) in [(repeated, 2), (missing, 1)] {
+        let empty = json!({"data": [{"id": "claude-new-1"}], "has_more": true, "last_id": ""});
+        for (page, reads) in [(repeated, 2), (missing, 1), (empty, 1)] {
             let (hits, base) = served("/v1/models", page).await;
             let catalog = ModelCatalog::default_catalog();
             spawn(&anthropic(base), &catalog);
