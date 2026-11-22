@@ -1,7 +1,9 @@
 //! The session event log's reads.
 
 use ::sessions::events::Event;
-use ::sessions::store::{EventFilter, Head, NativeSessionEventReads, Order, Pos, StoreError, Tail};
+use ::sessions::store::{
+    EventFilter, Head, NativeEngineReads, NativeSessionEventReads, Order, Pos, StoreError, Tail,
+};
 use ::sessions::types::SessionId;
 use diesel::sql_types::{Array, BigInt, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
@@ -10,7 +12,7 @@ use shared::{Pagination, WorkspaceId};
 
 use super::PgSessionEventLog;
 use super::rows::{HeadRow, LastRow, TailRow};
-use crate::schema::{session_events, sessions};
+use crate::schema::sessions;
 use crate::{DocRow, diesel_be, parse_doc, pool_be};
 
 /// Committed by every transaction older than the oldest one still running:
@@ -39,33 +41,7 @@ impl PgSessionEventLog {
 impl NativeSessionEventReads for PgSessionEventLog {
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         self.require_session(ws, id).await?;
-        Ok(self.engine_events(ws, id).await?.into_iter().map(|(e, _)| e).collect())
-    }
-
-    async fn engine_events(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-    ) -> Result<Vec<(Event, Option<serde_json::Value>)>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let rows: Vec<(i64, serde_json::Value)> = session_events::table
-            .filter(session_events::workspace_id.eq(ws.as_str()))
-            .filter(session_events::session_id.eq(id.as_str()))
-            .order(session_events::seq.asc())
-            .select((session_events::seq, session_events::doc))
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        // Each event's kept object names its `seq`, which a checkpoint records.
-        rows.into_iter()
-            .map(|(seq, doc)| {
-                let mut kept = doc.get("engine").cloned().unwrap_or_else(|| serde_json::json!({}));
-                if let Some(k) = kept.as_object_mut() {
-                    k.insert("seq".into(), serde_json::json!(seq));
-                }
-                Ok((parse_doc(doc)?, Some(kept)))
-            })
-            .collect()
+        Ok(NativeEngineReads::engine_events(self, ws, id).await?.into_iter().map(|(e, _)| e).collect())
     }
 
     async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {

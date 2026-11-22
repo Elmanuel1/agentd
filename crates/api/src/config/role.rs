@@ -37,8 +37,9 @@ pub struct LoopConfig {
     pub per_workspace: i64,
     /// `AGENTD_MODEL_ATTEMPTS` (5).
     pub attempts: u32,
-    /// `AGENTD_STEPS_PER_WORKER` (256).
-    pub steps: usize,
+    /// `AGENTD_MEMORY_TARGET` (0.8), in thousandths: the share of the
+    /// replica's memory limit below which its loop claims steps.
+    pub memory_target: u16,
     /// `AGENTD_MAX_OUTPUT_TOKENS` (16000).
     pub max_output_tokens: u32,
     /// `AGENTD_MODEL_RPM`: requests per provider and minute; unset, no limit.
@@ -75,7 +76,7 @@ impl LoopConfig {
             role,
             per_workspace: number(get, "AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE", 32)?,
             attempts: number(get, "AGENTD_MODEL_ATTEMPTS", 5)?,
-            steps: number(get, "AGENTD_STEPS_PER_WORKER", 256)?,
+            memory_target: memory_target(get)?,
             max_output_tokens: number(get, "AGENTD_MAX_OUTPUT_TOKENS", 16000)?,
             rpm: optional("AGENTD_MODEL_RPM")?,
             itpm: optional("AGENTD_MODEL_ITPM")?,
@@ -87,6 +88,15 @@ impl LoopConfig {
             compaction: compaction(get)?,
         })
     }
+}
+
+fn memory_target(get: &impl Fn(&str) -> Option<String>) -> Result<u16, ConfigError> {
+    let Some(v) = get("AGENTD_MEMORY_TARGET") else { return Ok(800) };
+    let share = v.parse::<f64>().ok().filter(|s| *s > 0.0 && *s <= 1.0);
+    let reason = || format!("`{v}` is not a share of memory above 0 and at most 1");
+    share
+        .map(|s| (s * 1000.0).round() as u16)
+        .ok_or_else(|| ConfigError { var: "AGENTD_MEMORY_TARGET", reason: reason() })
 }
 
 fn compaction(

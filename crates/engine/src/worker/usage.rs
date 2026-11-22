@@ -17,7 +17,7 @@ use crate::turn::history::Kept;
 const NANOS_PER_CENT: u64 = 10_000_000;
 /// What the loop keeps beside a call's `span.model_request_end`: its exact
 /// list cost in billionths of a dollar.
-const KEPT: &str = "list_cost_nanos";
+pub(super) const KEPT: &str = "list_cost_nanos";
 
 /// A call's exact list cost in billionths of a dollar; `None` when its model
 /// has no price.

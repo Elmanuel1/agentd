@@ -9,8 +9,10 @@ use std::future::Future;
 use crate::events::{Event, EventId};
 use crate::types::{Session, SessionId, SessionStatus, ThreadId};
 
+mod engine;
 mod reads;
 
+pub use engine::{EngineEvents, EngineReads, NativeEngineReads};
 pub use reads::{Head, NativeSessionEventReads, Pos, SessionEventReads, Tail};
 
 mod native;
@@ -144,7 +146,7 @@ pub type AnswerCheck<'a> = dyn Fn(&[Event]) -> Result<Vec<Option<ThreadId>>, Api
 /// A session's append-only event log. It has its own lifecycle: the engine
 /// appends to it while the session row is unchanged, and the events list and
 /// stream read it on its own.
-pub trait SessionEventLog: SessionEventReads {
+pub trait SessionEventLog: SessionEventReads + EngineReads {
     /// Append `events`, in order, to the log of an existing session, under
     /// the session's append lock, as `append` allows; whether it appended.
     fn append_events<'a>(

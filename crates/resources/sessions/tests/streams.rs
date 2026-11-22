@@ -33,6 +33,8 @@ struct Scripted {
     asked: Mutex<Vec<(i64, Vec<i64>)>>,
 }
 
+impl sessions::store::NativeEngineReads for Scripted {}
+
 impl NativeSessionEventReads for Scripted {
     async fn events(&self, _: &WorkspaceId, _: &SessionId) -> Result<Vec<Event>, StoreError> {
         unimplemented!()

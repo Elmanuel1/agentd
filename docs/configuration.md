@@ -69,9 +69,20 @@ lease, so a session's threads call the model at the same time on any replica.
   once the primary thread has replied and no delegate is mid-turn, the session
   idles when no thread works, and its usage is the sum of every thread's
   calls. It calls no model.
-- **A thread's step.** It builds one model call's prompt from its thread's
-  events and commits the call's start before the call, then the reply's
-  events after it, then wakes the session's step.
+- **A thread's step.** It reads its thread's events, the client events that
+  answer its calls or none, the session's events and the outcomes' spans, not
+  the other threads' work. It builds one model call's prompt from them and
+  commits the call's start before the call, then the reply's events after it,
+  then wakes the session's step. The session's budget counts every thread's
+  calls.
+
+A worker claims steps while its replica's memory is under
+`AGENTD_MEMORY_TARGET`, with no count of steps: the working set of its
+container (cgroup usage less the page cache it can drop) over its limit, or
+the host's share in use where the container has no limit. At the target it
+claims nothing more until memory falls, but always runs one step; past half
+the target it claims one step per 50 ms, so a burst of claims cannot outrun
+what their reads add. Replicas scale on memory and on `agentd.loop.steps_due`.
 
 Steps take no session-wide lock. Readers serve each event only once every
 older transaction has finished, and page by (transaction, number), so a
@@ -132,7 +143,7 @@ step's 10 minute deadline.
 | `AGENTD_TEMPORAL_TLS_SERVER_CA_CERT_PATH` | unset (the operating system's roots) | With an `https://` address: the PEM file the frontend's certificate chains to |
 | `AGENTD_TEMPORAL_NAMESPACE` | `default` | With `temporal`: the namespace that holds agentd's schedules |
 | `AGENTD_TEMPORAL_TASK_QUEUE` | `agentd` | With `temporal`: the task queue agentd's Temporal worker polls |
-| `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
+| `AGENTD_MEMORY_TARGET` | `0.8` | The share of the replica's memory limit, above 0 and at most 1, below which its loop claims steps |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |

@@ -39,7 +39,7 @@ A `self_hosted` environment's tools run on the customer's worker (`ant beta:work
 
 | Signal | Threshold | What it means, and what to do |
 |---|---|---|
-| `agentd.loop.steps_due` (max across replicas) | above 2× `AGENTD_STEPS_PER_WORKER` × loop replicas for 5 minutes | steps wait for a worker: add `loop` replicas |
+| `agentd.loop.steps_due` (max across replicas) | above 0 for 5 minutes while the loop replicas' memory is at `AGENTD_MEMORY_TARGET` | steps wait for memory: add `loop` replicas, or raise their memory limit |
 | `agentd.loop.step_wait` p95 | above 5 s for 10 minutes | the same, seen as latency; check the workspace cap (`AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`) when one workspace dominates |
 | `agentd.loop.model_call_duration` with outcome `error` | above 5% of calls for 10 minutes | the provider fails or rate-limits: check its status, `AGENTD_MODEL_RPM` and `AGENTD_MODEL_ITPM` |
 | `agentd.loop.turns` with stop reason `retries_exhausted` | above 1% of turns for 15 minutes | turns end on model errors: the same as above |

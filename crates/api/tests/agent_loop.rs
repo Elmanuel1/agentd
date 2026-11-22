@@ -196,8 +196,8 @@ async fn on_loop(rig: &Rig, model: Arc<Scripted>) -> (Router, Worker) {
 
 /// How a test's worker differs from the default.
 struct Tune {
-    /// Steps it runs at once.
-    steps: usize,
+    /// The share of the memory limit it claims steps below.
+    memory_target: f64,
     budget: Arc<dyn ModelBudget>,
     /// The session rows it reads, when not the rig's.
     sessions: Option<Arc<dyn SessionsStore>>,
@@ -218,7 +218,7 @@ struct Tune {
 impl Default for Tune {
     fn default() -> Self {
         Self {
-            steps: 8,
+            memory_target: f64::INFINITY,
             budget: Arc::new(Unlimited),
             sessions: None,
             guard: shared::net::Guard::default(),
@@ -271,7 +271,7 @@ impl NativeSessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue } = tune;
+    let Tune { memory_target, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -299,7 +299,8 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
-    let settings = Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, steps };
+    let settings =
+        Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, memory_target };
     (app, Worker { task: Loop::new(stores, models, signals, settings).spawn(), _turn: turn })
 }
 
@@ -739,24 +740,28 @@ async fn an_interrupt_answers_a_waiting_built_in_call_with_live_s_text_and_a_sec
 }
 
 #[tokio::test]
-async fn a_worker_runs_no_more_steps_at_once_than_it_is_set_to() {
-    // S-8.
+async fn a_worker_claims_steps_while_its_memory_is_under_the_target() {
+    // S-8: no count caps a worker; at its memory target it holds one step.
     let Some(rig) = Rig::new().await else { return };
-    let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
-    let (app, _worker) = worker(&rig, model.clone(), Tune { steps: 4, ..Tune::default() }).await;
-    let env = rig.environment("cloud").await;
-    for _ in 0..5 {
-        let s = session(&app, &env, json!([])).await;
-        send(&app, &s, message("think for a while")).await;
-    }
-    for _ in 0..200 {
-        if model.asked.lock().len() >= 4 {
-            break;
+    for (target, held) in [(f64::INFINITY, 5), (0.0, 1)] {
+        let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
+        let (app, worker) =
+            worker(&rig, model.clone(), Tune { memory_target: target, ..Tune::default() }).await;
+        let env = rig.environment("cloud").await;
+        for _ in 0..5 {
+            let s = session(&app, &env, json!([])).await;
+            send(&app, &s, message("think for a while")).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..200 {
+            if model.asked.lock().len() >= held {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(model.asked.lock().len(), held, "memory target {target}");
+        drop(worker);
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(model.asked.lock().len(), 4, "a fifth step waits for a free slot");
 }
 
 #[tokio::test]

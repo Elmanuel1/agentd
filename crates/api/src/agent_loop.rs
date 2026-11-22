@@ -78,7 +78,7 @@ pub async fn spawn(
         owner: format!("loop-{}", uuid::Uuid::new_v4()),
         lease: c.deadline + LEASE_MARGIN,
         per_workspace: c.per_workspace,
-        steps: c.steps,
+        memory_target: f64::from(c.memory_target) / 1000.0,
     };
     Ok(Loop::new(loop_stores, models, signals, settings).spawn())
 }

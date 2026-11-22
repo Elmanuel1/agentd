@@ -27,3 +27,17 @@ pub(super) struct TailRow {
     #[diesel(sql_type = Nullable<Jsonb>)]
     pub(super) doc: Option<serde_json::Value>,
 }
+
+#[derive(diesel::QueryableByName)]
+pub(super) struct SeqDoc {
+    #[diesel(sql_type = BigInt)]
+    pub(super) seq: i64,
+    #[diesel(sql_type = Jsonb)]
+    pub(super) doc: serde_json::Value,
+}
+
+#[derive(diesel::QueryableByName)]
+pub(super) struct Sum {
+    #[diesel(sql_type = BigInt)]
+    pub(super) total: i64,
+}

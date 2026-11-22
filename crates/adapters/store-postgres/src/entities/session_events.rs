@@ -1,6 +1,7 @@
 //! `SessionEventLog` on Postgres via Diesel: the shared append-only event log
 //! (SSE tails `session_events` by `seq`).
 
+mod engine;
 mod reads;
 mod rows;
 mod writes;

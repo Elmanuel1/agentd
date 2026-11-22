@@ -1,15 +1,15 @@
-//! A loop worker: up to `steps` steps at once, each claimed from the queue,
-//! run and committed by itself. The worker holds a database connection only
+//! A loop worker: steps claimed from the queue while the replica's memory is
+//! under its target, each run and committed by itself. The worker holds a database connection only
 //! while it claims, reads or writes, and nothing between steps.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use files::FilesService;
 use sessions::signals::{Signal, Signals};
 use sessions::steps::Steps;
 use sessions::store::{SessionEventLog, SessionsStore};
-use tokio::sync::Semaphore;
 use work::WorkService;
 
 use crate::model::ModelClient;
@@ -20,6 +20,8 @@ mod compact;
 mod grade;
 mod keep;
 mod mcp;
+mod memory;
+mod read;
 mod reply;
 mod request;
 mod rubrics;
@@ -39,7 +41,6 @@ mod write;
 
 /// How long an idle worker waits for a signal before it looks again.
 const IDLE: Duration = Duration::from_secs(1);
-
 /// The stores a step reads and writes.
 #[derive(Clone)]
 pub struct Stores {
@@ -100,8 +101,9 @@ pub struct Settings {
     pub lease: Duration,
     /// Steps held at once per workspace (`AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`).
     pub per_workspace: i64,
-    /// Steps this worker runs at once (`AGENTD_STEPS_PER_WORKER`).
-    pub steps: usize,
+    /// The share of the replica's memory limit below which this worker
+    /// claims steps (`AGENTD_MEMORY_TARGET`).
+    pub memory_target: f64,
 }
 
 impl Settings {
@@ -136,31 +138,31 @@ impl Loop {
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         let me = Arc::new(self);
         tokio::spawn(async move {
-            let permits = Arc::new(Semaphore::new(me.settings.steps));
+            let running = Arc::new(AtomicUsize::new(0));
             let mut woken = me.signals.subscribe();
             loop {
-                let Ok(permit) = permits.clone().acquire_owned().await else { return };
+                if !me.admits(running.load(Ordering::Acquire)).await {
+                    continue;
+                }
                 let lease = me.settings.lease_seconds();
                 let claimed =
                     me.stores.steps.claim(&me.settings.owner, lease, me.settings.per_workspace).await;
                 let claim = match claimed {
                     Ok(Some(claim)) => claim,
                     Ok(None) => {
-                        drop(permit);
                         let _ = tokio::time::timeout(IDLE, woken.recv()).await;
                         continue;
                     }
                     Err(e) => {
-                        drop(permit);
                         tracing::warn!(error = %e, "loop: could not claim a step");
                         tokio::time::sleep(IDLE).await;
                         continue;
                     }
                 };
-                let worker = me.clone();
+                let (worker, held) = (me.clone(), memory::Running::start(&running));
                 tokio::spawn(async move {
                     worker.step(claim).await;
-                    drop(permit);
+                    drop(held);
                 });
             }
         })

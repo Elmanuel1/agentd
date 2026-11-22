@@ -157,6 +157,8 @@ struct Log {
     events: Mutex<Vec<Event>>,
 }
 
+impl sessions::store::NativeEngineReads for Log {}
+
 impl NativeSessionEventReads for Log {
     async fn events(&self, _: &WorkspaceId, _: &SessionId) -> Result<Vec<Event>, StoreError> {
         Ok(vec![])

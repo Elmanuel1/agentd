@@ -19,7 +19,7 @@ use super::stall::abandoned;
 use super::status::{arrived_for, busy};
 use super::take::{Taken, take};
 use super::turn::{batch, opening, thread_idle};
-use super::usage::{over_budget, so_far, spent};
+use super::usage::{over_budget, spent};
 use super::watch::Watch;
 use crate::model::{ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
@@ -48,7 +48,7 @@ impl Loop {
             }
             Err(e) => return Err(BackendError::new(e)),
         };
-        let read = self.stores.log.engine_events(ws, id).await.map_err(BackendError::new)?;
+        let read = self.read(claim).await?;
         crate::metrics::read(read.len());
         let kept: Kept = read.iter().filter_map(|(e, k)| Some((e.id.clone(), k.clone()?))).collect();
         let log: Vec<Event> = read.into_iter().map(|(e, _)| e).collect();
@@ -84,7 +84,7 @@ impl Loop {
             self.commit(claim, StepEnd::Done, &batch(taken, Vec::new(), events), None).await?;
             return Ok(());
         }
-        let before = so_far(&kept);
+        let before = self.cost_so_far(claim).await?;
         if over_budget(&session, before) {
             let mut events = answers;
             events.push(turn.lifecycle(thread_idle(&turn, StopReason::BudgetReached {})));
