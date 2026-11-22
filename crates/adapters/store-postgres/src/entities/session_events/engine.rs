@@ -20,15 +20,21 @@ use crate::{diesel_be, parse_doc, pool_be};
 /// prompt needs it: always with `$5` unset (the session's step), else once
 /// the thread's last call since its checkpoint took `$5` tokens, for a
 /// result before that call older than the newest `$6`, which the prompt
-/// clears.
+/// clears. Each event's document is read once: `picked` and `last` are
+/// materialized, so no row is checked against every other.
 const STEP: &str = "WITH cuts AS (
        SELECT coalesce(doc->>'session_thread_id', '') AS thread_id,
               max((doc->'checkpoint'->>'through_seq')::bigint) AS through, max(seq) AS at
        FROM session_events
        WHERE workspace_id = $1 AND session_id = $2 AND doc->>'type' = 'agent.thread_context_compacted'
        GROUP BY 1),
-     picked AS (
-       SELECT e.seq, e.doc, e.thread_id, e.event_type FROM session_events e
+     picked AS MATERIALIZED (
+       SELECT e.seq, e.event_id, e.doc, e.thread_id, e.event_type,
+              e.event_type IN ('agent.tool_result', 'agent.mcp_tool_result', 'user.tool_result',
+                               'user.custom_tool_result')
+                AND e.doc->>'processed_at' IS NOT NULL
+                AND NOT coalesce((e.doc->>'is_error')::boolean, false) AS clearable
+       FROM session_events e
        LEFT JOIN cuts c ON c.thread_id = e.thread_id
        WHERE e.workspace_id = $1 AND e.session_id = $2 AND (
          (($3::text IS NULL OR e.thread_id = $3) AND ($4 OR e.seq >= coalesce(c.through, 0)))
@@ -40,30 +46,26 @@ const STEP: &str = "WITH cuts AS (
              AND coalesce(e.doc->>'tool_use_id', e.doc->>'custom_tool_use_id') IN (
                SELECT m.event_id FROM session_events m
                WHERE m.workspace_id = $1 AND m.session_id = $2 AND m.thread_id = $3)))),
-     last AS (
+     last AS MATERIALIZED (
        SELECT p.seq, coalesce((u->>'input_tokens')::bigint, 0) + coalesce((u->>'cache_read_input_tokens')::bigint, 0)
               + coalesce((u->>'cache_creation_input_tokens')::bigint, 0)
               + coalesce((u->>'output_tokens')::bigint, 0) AS tokens
        FROM picked p CROSS JOIN LATERAL (SELECT p.doc->'model_usage' AS u) x
        LEFT JOIN cuts c ON c.thread_id = p.thread_id
+       LEFT JOIN picked st ON st.event_id = p.doc->>'model_request_start_id'
        WHERE p.thread_id = $3 AND p.event_type = 'span.model_request_end' AND p.seq > coalesce(c.at, 0)
          AND NOT coalesce((p.doc->>'is_error')::boolean, false)
-         AND NOT EXISTS (SELECT 1 FROM session_events s
-                         WHERE s.workspace_id = $1 AND s.session_id = $2
-                           AND s.event_id = p.doc->>'model_request_start_id'
-                           AND s.doc->'engine'->>'compaction' = 'true')
+         AND coalesce(st.doc->'engine'->>'compaction', '') <> 'true'
        ORDER BY p.seq DESC LIMIT 1),
-     results AS (
-       SELECT p.seq, row_number() OVER (ORDER BY p.seq DESC) AS newest FROM picked p
-       WHERE p.event_type IN ('agent.tool_result', 'agent.mcp_tool_result', 'user.tool_result',
-                              'user.custom_tool_result')
-         AND p.doc->>'processed_at' IS NOT NULL AND NOT coalesce((p.doc->>'is_error')::boolean, false))
-     SELECT p.seq, CASE
-         WHEN r.seq IS NOT NULL AND ($5::bigint IS NULL OR (r.newest > $6
-           AND EXISTS (SELECT 1 FROM last l WHERE l.tokens >= $5 AND p.seq < l.seq)))
-         THEN jsonb_set(p.doc, '{content}', '[]'::jsonb) ELSE p.doc END AS doc
-     FROM picked p LEFT JOIN results r ON r.seq = p.seq
-     ORDER BY p.seq";
+     ranked AS (
+       SELECT p.seq, p.doc, p.clearable,
+              row_number() OVER (PARTITION BY p.clearable ORDER BY p.seq DESC) AS newest
+       FROM picked p)
+     SELECT r.seq, CASE
+         WHEN r.clearable AND ($5::bigint IS NULL OR (r.newest > $6 AND l.tokens >= $5 AND r.seq < l.seq))
+         THEN jsonb_set(r.doc, '{content}', '[]'::jsonb) ELSE r.doc END AS doc
+     FROM ranked r LEFT JOIN last l ON true
+     ORDER BY r.seq";
 
 /// The session's model calls added up; a cost is kept at `$3`.
 const CALLS: &str = "SELECT
