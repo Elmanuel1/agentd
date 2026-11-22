@@ -83,7 +83,8 @@ impl SessionsService {
         if self.streams.load.overloaded() {
             return Err(ApiError::of(ErrorType::Overloaded, "the database is overloaded; retry the stream"));
         }
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
+        let session =
+            self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))?.seen_from(environment)?;
         self.streams.listening.call_once(|| {
             let rx = self.streams.signals.subscribe();
             tokio::spawn(wake_tails(rx, Arc::downgrade(&self.streams.tails)));
@@ -114,7 +115,7 @@ impl SessionsService {
                 if listed(&map, &id, &tail.wake) {
                     map.remove(&id);
                 }
-                return Err(map_store(e));
+                return Err(map_store(&id)(e));
             }
         };
         let follow = Follow {

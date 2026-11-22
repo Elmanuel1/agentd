@@ -255,6 +255,39 @@ async fn workspace_isolation_through_http() {
 }
 
 #[tokio::test]
+async fn a_missing_foreign_or_deleted_session_is_live_s_404() {
+    let Some(app) = app().await else {
+        return;
+    };
+    let not_found = |id: &str| serde_json::json!({"message": format!("Session not found: {id}"), "type": "not_found_error"});
+    let missing = "sesn_01NeverCreatedNeverCreated";
+    let (st, v) = call(&app, "GET", &format!("/v1/sessions/{missing}"), None).await;
+    assert_eq!((st, v["error"].clone()), (StatusCode::NOT_FOUND, not_found(missing)));
+    let (_, env) =
+        call(&app, "POST", "/v1/environments", Some(r#"{"name":"gone","config":{"type":"self_hosted"}}"#))
+            .await;
+    let (_, agent) =
+        call(&app, "POST", "/v1/agents", Some(r#"{"name":"gone","model":"claude-sonnet-4-6"}"#)).await;
+    let body = format!(
+        r#"{{"agent":"{}","environment_id":"{}"}}"#,
+        agent["id"].as_str().unwrap(),
+        env["id"].as_str().unwrap()
+    );
+    let (st, session) = call(&app, "POST", "/v1/sessions", Some(&body)).await;
+    assert_eq!(st, StatusCode::OK, "{session}");
+    let sid = session["id"].as_str().unwrap();
+    let path = format!("/v1/sessions/{sid}");
+    let (st, v) = call_raw(&app, "GET", &path, None, Some(KEY_B), true).await;
+    assert_eq!((st, v["error"].clone()), (StatusCode::NOT_FOUND, not_found(sid)), "another workspace's");
+    let (st, _) = call(&app, "DELETE", &path, None).await;
+    assert_eq!(st, StatusCode::OK);
+    for uri in [path.clone(), format!("{path}/events")] {
+        let (st, v) = call(&app, "GET", &uri, None).await;
+        assert_eq!((st, v["error"].clone()), (StatusCode::NOT_FOUND, not_found(sid)), "{uri} once deleted");
+    }
+}
+
+#[tokio::test]
 async fn deployment_create_and_internal_fire_through_http() {
     let Some(app) = app().await else {
         return;

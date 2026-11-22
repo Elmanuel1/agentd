@@ -104,12 +104,17 @@ pub struct Session {
     pub deployment_id: Option<String>,
 }
 
+/// Live's 404 for a session the caller cannot reach: missing, foreign or deleted.
+pub fn not_found(id: &str) -> shared::ApiError {
+    shared::ApiError::not_found(format!("Session not found: {id}"))
+}
+
 impl Session {
     /// The session as an environment key of `environment` sees it: any
     /// session of another environment does not exist for that key.
     pub fn seen_from(self, environment: Option<&str>) -> Result<Self, shared::ApiError> {
         match environment {
-            Some(env) if env != self.environment_id => Err(shared::ApiError::not_found("session not found")),
+            Some(env) if env != self.environment_id => Err(not_found(self.id.as_str())),
             _ => Ok(self),
         }
     }

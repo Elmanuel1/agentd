@@ -14,8 +14,8 @@ impl SessionsService {
     /// Every thread of the session, the primary one first.
     pub async fn threads(&self, ctx: &AuthContext, raw_id: &str) -> Result<Vec<SessionThread>, ApiError> {
         let id = parse_id(raw_id)?;
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
-        let events = self.events.events(&ctx.workspace, &id).await.map_err(map_store)?;
+        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))?;
+        let events = self.events.events(&ctx.workspace, &id).await.map_err(map_store(&id))?;
         Ok(threads_projection(&session, &events))
     }
 
@@ -62,7 +62,7 @@ impl SessionsService {
             self.events
                 .append_events(ws, session, std::slice::from_ref(&ev), Wake::No, Append::Always)
                 .await
-                .map_err(map_store)?;
+                .map_err(map_store(session))?;
             self.publish(ws, session).await;
         }
         self.thread(ctx, raw_id, tid).await

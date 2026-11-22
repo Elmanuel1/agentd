@@ -419,7 +419,7 @@ async fn the_runtime_key_reads_only_an_environment_with_runtime_work() {
         (off_queue.status, off_queue.body["error"].clone()),
         (
             StatusCode::NOT_FOUND,
-            serde_json::json!({"message": "session not found", "type": "not_found_error"})
+            serde_json::json!({"message": "Session not found: sesn_1", "type": "not_found_error"})
         )
     );
     let off_work = send(bearer("/v1/environments/runtime/work/sesn_1", RUNTIME_KEY)).await;

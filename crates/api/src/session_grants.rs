@@ -34,7 +34,7 @@ impl std::fmt::Debug for SessionReach {
 
 impl SessionReach {
     async fn session(&self, ctx: &AuthContext, session: &str) -> Result<Session, ApiError> {
-        let not_found = || ApiError::not_found("session not found");
+        let not_found = || sessions::types::not_found(session);
         let id = SessionId::parse(session).map_err(|_| not_found())?;
         self.sessions.get(&ctx.workspace, &id).await.map_err(|e| match e {
             sessions::store::StoreError::NotFound => not_found(),
