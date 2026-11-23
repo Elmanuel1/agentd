@@ -3,11 +3,9 @@
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable};
 
 #[derive(diesel::QueryableByName)]
-pub(super) struct LastRow {
+pub(super) struct CountRow {
     #[diesel(sql_type = BigInt)]
-    pub(super) xid: i64,
-    #[diesel(sql_type = BigInt)]
-    pub(super) seq: i64,
+    pub(super) n: i64,
 }
 
 #[derive(diesel::QueryableByName)]

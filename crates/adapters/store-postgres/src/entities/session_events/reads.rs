@@ -11,7 +11,7 @@ use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
 
 use super::PgSessionEventLog;
-use super::rows::{HeadRow, LastRow, TailRow};
+use super::rows::{CountRow, HeadRow, TailRow};
 use crate::schema::sessions;
 use crate::{DocRow, diesel_be, parse_doc, pool_be};
 
@@ -140,20 +140,22 @@ impl NativeSessionEventReads for PgSessionEventLog {
         };
         // An archived session reads as archived only once no event is left
         // unsettled.
-        let unsettled: Option<LastRow> = match archived {
-            false => None,
-            true => diesel::sql_query(format!(
-                "SELECT xid::text::bigint AS xid, seq FROM session_events
-                 WHERE workspace_id = $1 AND session_id = $2 AND NOT {SETTLED} LIMIT 1"
-            ))
-            .bind::<Text, _>(ws.as_str())
-            .bind::<Text, _>(id.as_str())
-            .get_result(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?,
+        let unsettled = match archived {
+            false => 0,
+            true => {
+                let row: CountRow = diesel::sql_query(format!(
+                    "SELECT count(*) AS n FROM session_events
+                     WHERE workspace_id = $1 AND session_id = $2 AND NOT {SETTLED}"
+                ))
+                .bind::<Text, _>(ws.as_str())
+                .bind::<Text, _>(id.as_str())
+                .get_result(&mut conn)
+                .await
+                .map_err(diesel_be)?;
+                row.n
+            }
         };
-        let archived = archived && unsettled.is_none();
+        let archived = archived && unsettled == 0;
         let events = rows
             .into_iter()
             .filter_map(|r| r.xid.zip(r.seq).zip(r.doc))
