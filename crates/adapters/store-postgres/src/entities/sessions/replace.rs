@@ -8,6 +8,7 @@ use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::WorkspaceId;
 
+use super::super::session_events::lock;
 use super::super::webhook_deliveries::insert_deliveries;
 use super::PgSessionsStore;
 use crate::schema::sessions;
@@ -28,6 +29,12 @@ impl NativeSessionReplace for PgSessionsStore {
         // the same session.
 
         conn.transaction::<_, diesel::result::Error, _>(async move |c| {
+            let archives = read.archived_at.is_none() && s.archived_at.is_some();
+            // An archive takes the session's lock before its row, as a delete
+            // does, so the two never wait on each other in a cycle.
+            if archives {
+                lock(c, &s.id).await?;
+            }
             let stored: Option<serde_json::Value> = sessions::table
                 .filter(sessions::workspace_id.eq(ws.as_str()))
                 .filter(sessions::session_id.eq(s.id.as_str()))
@@ -50,7 +57,7 @@ impl NativeSessionReplace for PgSessionsStore {
             .set((sessions::status.eq(enum_str(&s.status)), sessions::doc.eq(doc)))
             .execute(c)
             .await?;
-            if read.archived_at.is_none() && s.archived_at.is_some() {
+            if archives {
                 super::terminate::archived(c, ws, read, &s).await?;
             }
             insert_deliveries(c, deliveries).await?;

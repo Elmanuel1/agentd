@@ -1,5 +1,5 @@
 //! The session event log over live Postgres: ordered appends, appends into an empty log, stamps, the
-//! stream's tail read, the session delete, retention, and the overload gate.
+//! stream's tail read, the session delete, the archive's lock order, retention, and the overload gate.
 //! Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -548,4 +548,91 @@ async fn a_checkout_that_waits_over_a_second_trips_the_gate() {
     drop(pg.diesel.get().await.unwrap());
     release.await.unwrap();
     assert!(load.overloaded(), "a checkout waited over 1 s within the last 10 s");
+}
+
+#[derive(diesel::QueryableByName)]
+struct Pid {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    pid: i32,
+}
+
+#[derive(diesel::QueryableByName)]
+struct Count {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    n: i64,
+}
+
+#[derive(diesel::QueryableByName)]
+struct Locked {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    session_id: String,
+}
+
+#[tokio::test]
+async fn an_archive_waits_for_the_session_lock_before_it_locks_the_row() {
+    // The lock order a delete takes: the session's lock, then its row. An
+    // archive that held the row while it waited would deadlock with a delete.
+    use diesel::sql_types::{Integer, Text};
+    use diesel_async::RunQueryDsl;
+    if !enabled() {
+        return;
+    }
+    let pg = backend().await;
+    let store = PgSessionsStore::new(pg.clone());
+    let ws = uniq_ws("archlock");
+    let s = session(&store, &ws, None).await;
+
+    let mut holder = pg.diesel.write().await.unwrap();
+    diesel::sql_query("BEGIN").execute(&mut holder).await.unwrap();
+    diesel::sql_query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind::<Text, _>(s.id.as_str())
+        .execute(&mut holder)
+        .await
+        .unwrap();
+    let holder_pid: Pid =
+        diesel::sql_query("SELECT pg_backend_pid() AS pid").get_result(&mut holder).await.unwrap();
+
+    let mut archived = s.clone();
+    archived.archived_at = Some(now());
+    let archive = {
+        let (store, ws, read) = (store.clone(), ws.clone(), s.clone());
+        tokio::spawn(async move { store.replace(&ws, &read, archived, &[]).await })
+    };
+
+    let mut watcher = pg.diesel.get().await.unwrap();
+    let mut blocked = 0;
+    for _ in 0..200 {
+        let waiting: Count = diesel::sql_query(
+            "SELECT count(*) AS n FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+        )
+        .bind::<Integer, _>(holder_pid.pid)
+        .get_result(&mut watcher)
+        .await
+        .unwrap();
+        blocked = waiting.n;
+        if blocked > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(blocked, 1, "the archive waits on the session's lock");
+
+    let row: Result<Locked, diesel::result::Error> = diesel::sql_query(
+        "SELECT session_id FROM sessions WHERE workspace_id = $1 AND session_id = $2 FOR UPDATE NOWAIT",
+    )
+    .bind::<Text, _>(ws.as_str())
+    .bind::<Text, _>(s.id.as_str())
+    .get_result(&mut holder)
+    .await;
+    diesel::sql_query("ROLLBACK").execute(&mut holder).await.unwrap();
+    drop(holder);
+    let locked = row.map(|r| r.session_id);
+    assert_eq!(
+        locked.as_deref().ok(),
+        Some(s.id.as_str()),
+        "the archive held the session's row while it waited: {locked:?}"
+    );
+
+    archive.await.unwrap().unwrap();
+    assert!(store.get(&ws, &s.id).await.unwrap().archived_at.is_some());
 }

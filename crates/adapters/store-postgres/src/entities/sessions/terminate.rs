@@ -8,10 +8,11 @@ use ::work::store::Reach;
 use diesel_async::AsyncPgConnection;
 use shared::{Timestamp, WorkspaceId};
 
-use super::super::session_events::{insert, lock};
+use super::super::session_events::insert;
 use super::super::work_items::stop::stop;
 
-/// What the archive of `read` into `s` writes beside the row.
+/// What the archive of `read` into `s` writes beside the row, under the
+/// session's lock the caller took first.
 pub(super) async fn archived(
     c: &mut AsyncPgConnection,
     ws: &WorkspaceId,
@@ -22,7 +23,6 @@ pub(super) async fn archived(
     if read.status == s.status || s.status != SessionStatus::Terminated {
         return Ok(());
     }
-    lock(c, &s.id).await?;
     let mut event = Event::new(EventPayload::Session(SessionEvent::StatusTerminated {}));
     event.processed_at = Some(Timestamp::now());
     let doc =

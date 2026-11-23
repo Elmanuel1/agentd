@@ -1,4 +1,4 @@
-//! Keeping a thread's prompt inside its model's window, in tiers (D31):
+//! Keeping a thread's prompt inside its model's window (D31):
 //! every tool result is capped as it reaches the prompt (CP-3); past 80% of
 //! the window, a compaction step summarises the thread into a
 //! checkpoint the later prompts start from (CP-4 to CP-12).
