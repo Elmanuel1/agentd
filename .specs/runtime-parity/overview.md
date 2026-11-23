@@ -20,15 +20,17 @@ sequenceDiagram
     participant M as Model
     participant W as Worker (agentd-worker)
     C->>A: user.message
-    A->>L: wakes the session's loop step
-    L->>M: prompt built from the event log
+    A->>L: wakes the session's own step
+    L->>L: starts the primary thread's step
+    L->>M: prompt built from the thread's events
     M-->>L: reply asks for a tool
     L->>A: agent.tool_use, work item queued
     W->>A: polls and takes the work item
     A-->>W: agent.tool_use on the event stream
     W->>W: runs the tool
     W->>A: user.tool_result
-    A->>L: wakes the next loop step
+    A->>L: wakes the session's own step
+    L->>L: wakes the thread's step
     L->>M: prompt with the tool result
     M-->>L: final reply
     L->>A: agent.message, session idle
@@ -43,10 +45,11 @@ sequenceDiagram
 - **MCP server**: an outside tool server the agent can call; agentd connects to it with the credential stored in
   the session's vaults.
 - **Loop worker**: an agentd server whose job is running loop steps; the **step queue** is the list of sessions
-  with a step to run.
+  and threads with a step to run.
 - **Work token**: the credential a worker gets with a work item; it reaches only that session.
 - **Environment key**: the key a worker uses to ask for work; the **runtime queue** is where `cloud` work waits.
-- **Loop step**: one pass of a session's loop: read the session's event log, ask the model, record what it said.
+- **Loop step**: one pass of the loop. A thread's step reads its thread's events, asks the model and records what it
+  said; the session's own step starts the threads' steps and makes the decisions that span them, with no model call.
   A tool call ends a step; the tool's result starts the next one, an allowed MCP call the loop makes itself runs
   in the next step, and an `ask` call after its confirmation.
 - **Work item**: a queue entry that tells a worker "this session needs you"; its id is the session id.

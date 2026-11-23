@@ -86,7 +86,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | F-2 | When a session is deleted, the API shall end its streams on every replica with `session.deleted`. |
 | F-3 | When a session is archived, the API shall end its streams on every replica. |
 | F-6 | When a session is archived, the API shall terminate it in the archive's commit: status `terminated`, `session.status_terminated` appended, and its webhook deliveries written (D61). |
-| F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s. |
+| F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s plus the age of the oldest transaction open in the database when the event commits (F1). |
 | F-5 | While Postgres is overloaded (a connection waits more than 1 s for the pool, or the database's connections pass 90% of `max_connections`), the API shall refuse a new event stream with 529 `overloaded_error` "Overloaded" and keep the streams already open. |
 | E-2 | Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
 | E-4 | When a session is deleted, the API shall delete its events through the event-log port after the commit that deletes the session row. |
@@ -487,7 +487,10 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append of
   client events and answers, each taking it first in its transaction; a step's commit takes none. Each event records
   its transaction id (`xid`, V27), and a reader serves events only below the oldest transaction still running
-  (`pg_snapshot_xmin`) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late. No migration: `processed_at` stays in `doc`, as
+  (`pg_snapshot_xmin`, database-wide) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late.
+  An event therefore waits for every older transaction in the database to end: agentd holds none open across a model
+  call, a tool or a stream (S-3), so the wait is its own short writes, and a long transaction from elsewhere delays
+  every stream by its age, seen as the oldest `xact_start` in `pg_stat_activity`. No migration: `processed_at` stays in `doc`, as
   today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
   concurrent appends to one session are read back in commit order, each once.
 - **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
@@ -496,7 +499,7 @@ Every table and index of the plan ships here, production-safe, except V12's two 
 - **F3.** `sessions/src/service/stream.rs`: the fallback timer of 5 s plus up to 1 s of jitter; the overload gate
   reads the pool's wait time and a 10 s cached `SELECT count(*) FROM pg_stat_activity` against `max_connections`;
   `store-postgres/src/pool.rs` opens the replica pool when `AGENTD_PG_READ_URL` is set and `events.list` uses it.
-  Tests: with signals off, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
+  Tests: with signals off and no long transaction open, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
   `overloaded_error` and an open one keeps streaming; with a replica URL set, `events.list` reads it and a step
   reads the primary.
 - **E4.** Every event-log access stays behind its port (D18): `SessionEventReads` reads, and `SessionEventLog`,
@@ -519,11 +522,12 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   oldest. Its test: the
   metric advances after a run. Session delete, in
   `sessions/src/service/lifecycle.rs` and `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one
-  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes first and a later one finds no session; 1 `DELETE FROM sessions WHERE
-  workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status FROM
-  sessions WHERE …` on the failure path to answer 404 or today's `cannot delete a running session` error; from PR 6, 1 `DELETE
-  FROM loop_steps WHERE workspace_id = $1 AND session_id = $2`, so a queued step is gone and a running one finds its
-  claim gone at commit and rolls back (S-4); from PR 4, W3's stop (W-11: 1 UPDATE); from PR 7, MC1's `mcp_connections` delete
+  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes first and a later one finds no session; from PR 6, `DELETE FROM loop_steps` of the
+  session's own step, then its threads' steps, before the session row, in the lock order a step's commit takes, so a
+  queued step is gone and a running one finds its claim gone at commit and rolls back (S-4); 1 `DELETE FROM sessions
+  WHERE workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status
+  FROM sessions WHERE …` on the failure path to answer 404 or today's `cannot delete a running session` error, the
+  steps' delete rolling back with it; from PR 4, W3's stop (W-11: 1 UPDATE); from PR 7, MC1's `mcp_connections` delete
   (MC-22: 1 `DELETE FROM mcp_connections WHERE workspace_id = $1 AND session_id = $2`). `SessionsStore::delete` calls
   those two methods with its transaction, so each has one version, taking the caller's connection. Today's pre-read of the session goes.
   After the commit, 1 `delete_events_of` with the one session (E-4), outside the transaction because the log sits
@@ -833,7 +837,7 @@ The removals are in PR 7 (D44).
 | Thread step commit, one transaction | the Enqueue statement, waking the session's own step; 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing (woken, or an allowed `agent.mcp_tool_use` left for the next step, MC-24), 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of the step's events; with a verdict only, 1 `SELECT … FOR NO KEY UPDATE` and 1 `UPDATE sessions` |
 | Session step, no transaction open | 1 `SELECT doc FROM sessions`; the thread step read for every thread, processed tool results without their content; the rubric file reads; the usage sum; on a second interrupt, the work item's halt; no model call |
 | Session step commit, one transaction | the DELETE or release of its own row, as a thread step's; 1 Enqueue statement waking every thread it gives a step; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of its events; 1 `SELECT … FOR NO KEY UPDATE` and, when the status or usage changed, 1 `UPDATE sessions` and the status webhooks' inserts (H1) |
-| Lock order | every write takes its row locks in one order: the session's own step row, then the threads' step rows (by `thread_id`), then the session row; no step takes a session-wide lock |
+| Lock order | every write takes its locks in one order: the session's advisory lock (`pg_advisory_xact_lock(hashtext($session))`, taken only by a client append, an answer, the archive and the delete), then the session's own step row, then the threads' step rows (by `thread_id`), then the session row; a step's commit takes no advisory lock, so no step waits on it while holding a row |
 | Defer at the account-wide model budget (M-4), a credential claimed by another worker (MC-20), or a lost refresh claim whose stored token is still expired (MC-23) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
 | Compaction step (CP2) | the thread step's read, opening write and commit; the commit's INSERT carries the checkpoint |
 | Takeover | the Claim statements: a lease that has run out is claimable |
@@ -921,7 +925,7 @@ metric of agentd's yet.
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
 | Step statements | about 10 per step, plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
-| Log reads | 500 steps/s × a thread's events since its latest checkpoint plus the session-wide events (S-3) | bounded by each thread's compaction; measured in the load test; `events.list` moves to the read replica when it grows |
+| Log reads | 500 steps/s × a thread's events since its latest checkpoint plus the session-wide events (S-3) | a thread's own events are bounded by its compaction; the session-wide events and a compacted grader's whole round are not; measured in the load test; `events.list` moves to the read replica when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13), and the account-wide budget (M-4) | bounded by M-1 and M-4 |
 | Compaction calls | one per thread each time it reaches the summary threshold; a step that compacts makes no turn call | at most the model call rate, measured in the load test |
 | MCP per step | an MCP tool call adds two steps, the tool step and the model step after it (MC-24, MC-25); 1 `mcp_connections` SELECT and 1 credential SELECT per step; `initialize` and `tools/list` only on a reconnect (MC-15); 1 `GetSecretValue` per server the step connects to or calls (MC-6) | at most 500 secret reads/s when every step calls one server, about 1.3×10^9 a month, about $6.5k a month at $0.05 per 10,000 calls (Q1); a step that calls no MCP tool reads none |
