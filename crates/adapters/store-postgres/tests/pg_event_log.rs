@@ -594,6 +594,7 @@ async fn an_archive_waits_for_the_session_lock_before_it_locks_the_row() {
 
     let mut archived = s.clone();
     archived.archived_at = Some(now());
+    archived.status = SessionStatus::Terminated;
     let archive = {
         let (store, ws, read) = (store.clone(), ws.clone(), s.clone());
         tokio::spawn(async move { store.replace(&ws, &read, archived, &[]).await })
@@ -634,5 +635,39 @@ async fn an_archive_waits_for_the_session_lock_before_it_locks_the_row() {
     );
 
     archive.await.unwrap().unwrap();
-    assert!(store.get(&ws, &s.id).await.unwrap().archived_at.is_some());
+    let stored = store.get(&ws, &s.id).await.unwrap();
+    assert!(stored.archived_at.is_some());
+    assert_eq!(stored.status, SessionStatus::Terminated);
+    let log = PgSessionEventLog::new(pg);
+    let events = log.events(&ws, &s.id).await.unwrap();
+    assert!(
+        matches!(
+            events.last().map(|e| &e.payload),
+            Some(EventPayload::Session(SessionEvent::StatusTerminated {}))
+        ),
+        "the archive appended session.status_terminated under the lock"
+    );
+}
+
+#[tokio::test]
+async fn an_archive_and_a_delete_of_one_session_at_once_never_deadlock() {
+    // Both take the session's lock first, so one waits for the other.
+    if !enabled() {
+        return;
+    }
+    let store = PgSessionsStore::new(backend().await);
+    for round in 0..20 {
+        let ws = uniq_ws(&format!("archdel{round}"));
+        let s = session(&store, &ws, None).await;
+        let mut archived = s.clone();
+        archived.archived_at = Some(now());
+        archived.status = SessionStatus::Terminated;
+        let (archive, deleted) =
+            tokio::join!(store.replace(&ws, &s, archived, &[]), store.delete(&ws, &s.id));
+        assert!(
+            matches!(archive, Ok(()) | Err(StoreError::NotFound)),
+            "the archive ends without a deadlock: {archive:?}"
+        );
+        deleted.expect("the delete ends without a deadlock");
+    }
 }
