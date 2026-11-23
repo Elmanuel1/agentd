@@ -6,8 +6,12 @@ use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable};
 pub(super) struct StateRow {
     #[diesel(sql_type = Bool)]
     pub(super) archived: bool,
+}
+
+#[derive(diesel::QueryableByName)]
+pub(super) struct CountRow {
     #[diesel(sql_type = BigInt)]
-    pub(super) unsettled: i64,
+    pub(super) n: i64,
 }
 
 #[derive(diesel::QueryableByName)]

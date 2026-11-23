@@ -11,7 +11,7 @@ use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
 
 use super::PgSessionEventLog;
-use super::rows::{HeadRow, StateRow, TailRow};
+use super::rows::{CountRow, HeadRow, StateRow, TailRow};
 use crate::schema::sessions;
 use crate::{DocRow, diesel_be, parse_doc, pool_be};
 
@@ -115,23 +115,32 @@ impl NativeSessionEventReads for PgSessionEventLog {
     ) -> Result<Option<Tail>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         // An archived session reads as archived only once no event is left
-        // unsettled. That is read first: an event settled then is settled
-        // for the read of the events after it. No row once the session is gone.
-        let state: Option<StateRow> = diesel::sql_query(format!(
-            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, count(u.seq) AS unsettled
-             FROM sessions s
-             LEFT JOIN session_events u ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
-               AND NOT u.{SETTLED}
-             WHERE s.workspace_id = $1 AND s.session_id = $2
-             GROUP BY s.workspace_id, s.session_id"
-        ))
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .get_result(&mut conn)
-        .await
-        .optional()
-        .map_err(diesel_be)?;
+        // unsettled, counted before the events are read: an event settled
+        // then is settled for the read after it. No row once the session is gone.
+        let state: Option<StateRow> =
+            diesel::sql_query("SELECT doc->>'archived_at' IS NOT NULL AS archived FROM sessions WHERE workspace_id = $1 AND session_id = $2")
+                .bind::<Text, _>(ws.as_str())
+                .bind::<Text, _>(id.as_str())
+                .get_result(&mut conn)
+                .await
+                .optional()
+                .map_err(diesel_be)?;
         let Some(state) = state else { return Ok(None) };
+        let unsettled = match state.archived {
+            false => 0,
+            true => {
+                let row: CountRow = diesel::sql_query(format!(
+                    "SELECT count(*) AS n FROM session_events
+                     WHERE workspace_id = $1 AND session_id = $2 AND NOT {SETTLED}"
+                ))
+                .bind::<Text, _>(ws.as_str())
+                .bind::<Text, _>(id.as_str())
+                .get_result(&mut conn)
+                .await
+                .map_err(diesel_be)?;
+                row.n
+            }
+        };
         // Only settled events are served, a pending one too, so the cursor
         // never passes an earlier one still being written.
         let rows: Vec<TailRow> = diesel::sql_query(format!(
@@ -149,7 +158,7 @@ impl NativeSessionEventReads for PgSessionEventLog {
         .load(&mut conn)
         .await
         .map_err(diesel_be)?;
-        let archived = state.archived && state.unsettled == 0;
+        let archived = state.archived && unsettled == 0;
         let events = rows
             .into_iter()
             .map(|r| parse_doc(r.doc).map(|e| (Pos { xid: r.xid, seq: r.seq }, e)))

@@ -69,7 +69,8 @@ async fn an_agent_s_skill_versions_are_read_in_one_call_in_its_order() {
     let skill = skills.create(&ctx, files(), None).await.unwrap();
     let id = skill.id.as_str();
     let first = skills.version(&ctx, id, "latest").await.unwrap();
-    let second = skills.create_version(&ctx, id, files()).await.unwrap();
+    skills.create_version(&ctx, id, files()).await.unwrap();
+    let second = skills.version(&ctx, id, "latest").await.unwrap();
     let missing = skills::SkillId::generate();
     let refs = [
         (id, "latest"),
@@ -79,8 +80,7 @@ async fn an_agent_s_skill_versions_are_read_in_one_call_in_its_order() {
         (id, second.id.as_str()),
     ];
     let got = skills.listed(&ctx.workspace, &refs).await.unwrap();
-    let ids: Vec<&str> = got.iter().map(|v| v.id.as_str()).collect();
-    assert_eq!(ids, [second.id.as_str(), first.id.as_str(), first.id.as_str(), second.id.as_str()]);
+    assert_eq!(got, [second.clone(), first.clone(), first.clone(), second.clone()]);
 }
 
 #[tokio::test]
