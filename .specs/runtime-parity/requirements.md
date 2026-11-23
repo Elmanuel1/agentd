@@ -104,7 +104,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | S-6 | When a session is woken while its step runs, the loop shall run another step after the commit. |
 | S-7 | The loop shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
 | S-8 | A loop worker shall claim steps while its replica's memory is under `AGENTD_MEMORY_TARGET` of its limit (default 0.8; the container's memory use less the page cache it can drop, its working set, over its limit, or the host's share in use where the container has no limit), with no count of steps, always running at least one, from one database pool of `AGENTD_DB_POOL_SIZE` connections (default 10), holding a connection only while it claims, reads or writes. |
-| S-9 | The session's own step shall read every thread as S-3 reads one, with each processed tool result's content left out, and call no model. |
+| S-9 | The session's own step shall read every thread as S-3 reads one, with the content left out of each processed tool result that is not an error, and call no model. |
 | R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api`, `loop`, or `all`. |
 | R-2 | agentd shall export the number of due, unclaimed steps (`agentd.loop.steps_due`) and of leased steps (`agentd.loop.steps_leased`) as metrics, which the loop workers' autoscaler follows. |
 | M-1 | The loop shall run at most `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` model calls at once per workspace. |
@@ -483,10 +483,11 @@ Every table and index of the plan ships here, production-safe, except V12's two 
 - **F1.** `entities/session_events.rs`: append stays L6's one multi-row `INSERT … SELECT … FROM sessions s,
   unnest(…) WITH ORDINALITY`; `update_processed_at(ws, session,
   ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
-  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. Each event
-  records its transaction id (`xid`, V27), and a reader serves events only below the oldest transaction still
-  running (`pg_snapshot_xmin`) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late;
-  no append or step takes a session-wide lock. No migration: `processed_at` stays in `doc`, as
+  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. The
+  `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append of
+  client events and answers, each taking it first in its transaction; a step's commit takes none. Each event records
+  its transaction id (`xid`, V27), and a reader serves events only below the oldest transaction still running
+  (`pg_snapshot_xmin`) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late. No migration: `processed_at` stays in `doc`, as
   today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
   concurrent appends to one session are read back in commit order, each once.
 - **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
