@@ -86,7 +86,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | F-2 | When a session is deleted, the API shall end its streams on every replica with `session.deleted`. |
 | F-3 | When a session is archived, the API shall end its streams on every replica. |
 | F-6 | When a session is archived, the API shall terminate it in the archive's commit: status `terminated`, `session.status_terminated` appended, and its webhook deliveries written (D61). |
-| F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s plus the age of the oldest transaction open in the database when the event commits (F1). |
+| F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s after every transaction holding a transaction id older than the event's, on any database of the server, has ended (F1). |
 | F-5 | While Postgres is overloaded (a connection waits more than 1 s for the pool, or the database's connections pass 90% of `max_connections`), the API shall refuse a new event stream with 529 `overloaded_error` "Overloaded" and keep the streams already open. |
 | E-2 | Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
 | E-4 | When a session is deleted, the API shall delete its events through the event-log port after the commit that deletes the session row. |
@@ -487,10 +487,11 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append of
   client events and answers, each taking it first in its transaction; a step's commit takes none. Each event records
   its transaction id (`xid`, V27), and a reader serves events only below the oldest transaction still running
-  (`pg_snapshot_xmin`, database-wide) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late.
-  An event therefore waits for every older transaction in the database to end: agentd holds none open across a model
-  call, a tool or a stream (S-3), so the wait is its own short writes, and a long transaction from elsewhere delays
-  every stream by its age, seen as the oldest `xact_start` in `pg_stat_activity`. No migration: `processed_at` stays in `doc`, as
+  (`pg_snapshot_xmin`, server-wide) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late.
+  An event therefore waits until every older transaction holding a transaction id, on any database of the server, has
+  ended: agentd holds none open across a model call, a tool or a stream (S-3), so the wait is its own short writes,
+  and a long writing transaction from elsewhere delays every stream and every `events.list` read until it ends, seen
+  as the largest `age(backend_xid)` in `pg_stat_activity` and the oldest entry in `pg_prepared_xacts`. No migration: `processed_at` stays in `doc`, as
   today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
   concurrent appends to one session are read back in commit order, each once.
 - **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
@@ -522,7 +523,7 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   oldest. Its test: the
   metric advances after a run. Session delete, in
   `sessions/src/service/lifecycle.rs` and `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one
-  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes first and a later one finds no session; from PR 6, `DELETE FROM loop_steps` of the
+  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes first and a later one finds no session; from PR 6, 2 `DELETE FROM loop_steps`, the
   session's own step, then its threads' steps, before the session row, in the lock order a step's commit takes, so a
   queued step is gone and a running one finds its claim gone at commit and rolls back (S-4); 1 `DELETE FROM sessions
   WHERE workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status
@@ -837,7 +838,7 @@ The removals are in PR 7 (D44).
 | Thread step commit, one transaction | the Enqueue statement, waking the session's own step; 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing (woken, or an allowed `agent.mcp_tool_use` left for the next step, MC-24), 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of the step's events; with a verdict only, 1 `SELECT … FOR NO KEY UPDATE` and 1 `UPDATE sessions` |
 | Session step, no transaction open | 1 `SELECT doc FROM sessions`; the thread step read for every thread, processed tool results without their content; the rubric file reads; the usage sum; on a second interrupt, the work item's halt; no model call |
 | Session step commit, one transaction | the DELETE or release of its own row, as a thread step's; 1 Enqueue statement waking every thread it gives a step; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of its events; 1 `SELECT … FOR NO KEY UPDATE` and, when the status or usage changed, 1 `UPDATE sessions` and the status webhooks' inserts (H1) |
-| Lock order | every write takes its locks in one order: the session's advisory lock (`pg_advisory_xact_lock(hashtext($session))`, taken only by a client append, an answer, the archive and the delete), then the session's own step row, then the threads' step rows (by `thread_id`), then the session row; a step's commit takes no advisory lock, so no step waits on it while holding a row |
+| Lock order | a client append, an answer, the delete and every step take their locks in one order: the session's advisory lock (`pg_advisory_xact_lock(hashtext($session))`, which no step takes), then the session's own step row, then the threads' step rows (by `thread_id`), then the session row; so no step waits on the advisory lock while holding a row. The archive takes the session row `FOR UPDATE` first and the advisory lock after it, when it appends `session.status_terminated`, so an archive and a delete of one session at once can deadlock, and Postgres aborts one of them |
 | Defer at the account-wide model budget (M-4), a credential claimed by another worker (MC-20), or a lost refresh claim whose stored token is still expired (MC-23) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
 | Compaction step (CP2) | the thread step's read, opening write and commit; the commit's INSERT carries the checkpoint |
 | Takeover | the Claim statements: a lease that has run out is claimable |
