@@ -3,9 +3,11 @@
 use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable};
 
 #[derive(diesel::QueryableByName)]
-pub(super) struct CountRow {
+pub(super) struct StateRow {
+    #[diesel(sql_type = Bool)]
+    pub(super) archived: bool,
     #[diesel(sql_type = BigInt)]
-    pub(super) n: i64,
+    pub(super) unsettled: i64,
 }
 
 #[derive(diesel::QueryableByName)]
@@ -20,14 +22,12 @@ pub(super) struct HeadRow {
 
 #[derive(diesel::QueryableByName)]
 pub(super) struct TailRow {
-    #[diesel(sql_type = Bool)]
-    pub(super) archived: bool,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    pub(super) xid: Option<i64>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    pub(super) seq: Option<i64>,
-    #[diesel(sql_type = Nullable<Jsonb>)]
-    pub(super) doc: Option<serde_json::Value>,
+    #[diesel(sql_type = BigInt)]
+    pub(super) xid: i64,
+    #[diesel(sql_type = BigInt)]
+    pub(super) seq: i64,
+    #[diesel(sql_type = Jsonb)]
+    pub(super) doc: serde_json::Value,
 }
 
 #[derive(diesel::QueryableByName)]

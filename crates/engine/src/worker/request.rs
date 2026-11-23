@@ -81,7 +81,7 @@ impl Loop {
                 .map(|v| SkillInfo { name: v.directory, description: v.description })
                 .collect(),
             Err(e) => {
-                tracing::debug!(error = %e.message, "loop: the agent's skills are not listed");
+                tracing::warn!(error = %e.message, "loop: the agent's skills could not be read; its prompt lists none");
                 Vec::new()
             }
         }

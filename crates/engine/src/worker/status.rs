@@ -24,9 +24,6 @@ pub(super) fn stopped<'a>(log: &'a [Event], thread: &ThreadId) -> Option<&'a Sto
     status(log, thread).flatten()
 }
 
-/// A thread stopped on its retries or on the budget, or idle since an
-/// interrupt, and nothing has come in for it since: its turn is over until a
-/// message or an answer arrives.
 /// The last interrupt the agent took came during `thread`'s turn that ran up
 /// to `end`, an index into `log`: after that turn began and before `end`.
 pub(super) fn interrupted(log: &[Event], thread: &ThreadId, end: usize) -> bool {
@@ -41,6 +38,9 @@ pub(super) fn interrupted(log: &[Event], thread: &ThreadId, end: usize) -> bool 
     began.is_none_or(|b| i > b)
 }
 
+/// A thread stopped on its retries or on the budget, or idle since an
+/// interrupt, and nothing has come in for it since: its turn is over until a
+/// message or an answer arrives.
 pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
     let over = |r: Option<&StopReason>| {
         matches!(r, Some(StopReason::RetriesExhausted {} | StopReason::BudgetReached {}))

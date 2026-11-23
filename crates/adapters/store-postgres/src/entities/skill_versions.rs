@@ -6,8 +6,6 @@ use std::sync::Arc;
 use ::skills::{SkillId, SkillVersion, SkillVersionsStore, StoreError, VersionRef};
 use async_trait::async_trait;
 use bytes::Bytes;
-use diesel::AnyJsonExpressionMethods;
-use diesel::OptionalExtension;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncConnection, RunQueryDsl};
 use shared::ports::blobs::BlobStore;
@@ -118,26 +116,8 @@ impl SkillVersionsStore for PgSkillVersionsStore {
         id: &SkillId,
         which: &VersionRef,
     ) -> Result<SkillVersion, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let mut q = skill_versions::table
-            .filter(skill_versions::workspace_id.eq(ws.as_str()))
-            .filter(skill_versions::skill_id.eq(id.as_str()))
-            .into_boxed();
-        q = match which {
-            VersionRef::Latest => q,
-            VersionRef::Number(n) => q.filter(skill_versions::version.eq(version_col(n))),
-            VersionRef::Id(vid) => {
-                q.filter(skill_versions::doc.retrieve_as_text("id").eq(vid.as_str().to_owned()))
-            }
-        };
-        let doc: Option<serde_json::Value> = q
-            .order(skill_versions::version.desc())
-            .select(skill_versions::doc)
-            .first(&mut conn)
-            .await
-            .optional()
-            .map_err(diesel_be)?;
-        parse_doc(doc.ok_or(StoreError::VersionNotFound)?)
+        let mut found = listed::listed(&self.backend, ws, &[(id.clone(), which.clone())]).await?;
+        found.pop().ok_or(StoreError::VersionNotFound)
     }
 
     async fn listed(

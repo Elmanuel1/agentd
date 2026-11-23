@@ -770,8 +770,8 @@ async fn a_session_step_s_commit_and_a_thread_s_commit_at_once_never_deadlock() 
             r.steps.commit(&own, StepEnd::Done, settle),
             r.steps.commit(&mine, StepEnd::Done, end)
         );
-        settled.expect("the session's step ends without a deadlock");
-        ended.expect("the thread's step ends without a deadlock");
+        assert!(settled.expect("the session's step ends without a deadlock"), "and commits");
+        assert!(ended.expect("the thread's step ends without a deadlock"), "and commits");
     }
 }
 

@@ -57,6 +57,33 @@ async fn a_coordinator_waiting_on_a_tool_lets_its_delegate_run() {
 }
 
 #[tokio::test]
+async fn an_agent_s_skill_versions_are_read_in_one_call_in_its_order() {
+    // Each ref reads its version (the newest for `latest`, by number or by
+    // id); one that names no version is left out.
+    let Some(rig) = Rig::new().await else { return };
+    let name = format!("listed-{}", common::stamp());
+    let md = format!("---\nname: {name}\ndescription: Reads.\n---\n# Listed\n");
+    let files = || vec![(format!("{name}/SKILL.md"), bytes::Bytes::from(md.clone()))];
+    let skills = skills::SkillsService::new(rig.stores.skills.clone(), rig.stores.skill_versions.clone());
+    let ctx = rig.ctx();
+    let skill = skills.create(&ctx, files(), None).await.unwrap();
+    let id = skill.id.as_str();
+    let first = skills.version(&ctx, id, "latest").await.unwrap();
+    let second = skills.create_version(&ctx, id, files()).await.unwrap();
+    let missing = skills::SkillId::generate();
+    let refs = [
+        (id, "latest"),
+        (id, first.version.as_str()),
+        (missing.as_str(), "latest"),
+        (id, first.id.as_str()),
+        (id, second.id.as_str()),
+    ];
+    let got = skills.listed(&ctx.workspace, &refs).await.unwrap();
+    let ids: Vec<&str> = got.iter().map(|v| v.id.as_str()).collect();
+    assert_eq!(ids, [second.id.as_str(), first.id.as_str(), first.id.as_str(), second.id.as_str()]);
+}
+
+#[tokio::test]
 async fn an_agent_s_skills_are_listed_in_its_prompt() {
     // Each skill the agent names, with its frontmatter description and where
     // its SKILL.md is in the sandbox.

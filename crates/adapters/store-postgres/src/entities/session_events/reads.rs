@@ -11,7 +11,7 @@ use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
 
 use super::PgSessionEventLog;
-use super::rows::{CountRow, HeadRow, TailRow};
+use super::rows::{HeadRow, StateRow, TailRow};
 use crate::schema::sessions;
 use crate::{DocRow, diesel_be, parse_doc, pool_be};
 
@@ -114,17 +114,31 @@ impl NativeSessionEventReads for PgSessionEventLog {
         limit: usize,
     ) -> Result<Option<Tail>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // The session row comes back with no event when nothing matched, and
-        // no row at all once the session is gone. Only settled events are
-        // served, a pending one too, so the cursor never passes an earlier
-        // one still being written.
-        let rows: Vec<TailRow> = diesel::sql_query(format!(
-            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, e.xid::text::bigint AS xid, e.seq, e.doc
+        // An archived session reads as archived only once no event is left
+        // unsettled. That is read first: an event settled then is settled
+        // for the read of the events after it. No row once the session is gone.
+        let state: Option<StateRow> = diesel::sql_query(format!(
+            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, count(u.seq) AS unsettled
              FROM sessions s
-             LEFT JOIN session_events e ON e.workspace_id = s.workspace_id AND e.session_id = s.session_id
-               AND e.{SETTLED} AND ((e.xid::text::bigint, e.seq) > ($3, $4) OR e.seq = ANY($5))
+             LEFT JOIN session_events u ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
+               AND NOT u.{SETTLED}
              WHERE s.workspace_id = $1 AND s.session_id = $2
-             ORDER BY e.xid, e.seq LIMIT $6"
+             GROUP BY s.workspace_id, s.session_id"
+        ))
+        .bind::<Text, _>(ws.as_str())
+        .bind::<Text, _>(id.as_str())
+        .get_result(&mut conn)
+        .await
+        .optional()
+        .map_err(diesel_be)?;
+        let Some(state) = state else { return Ok(None) };
+        // Only settled events are served, a pending one too, so the cursor
+        // never passes an earlier one still being written.
+        let rows: Vec<TailRow> = diesel::sql_query(format!(
+            "SELECT xid::text::bigint AS xid, seq, doc FROM session_events
+             WHERE workspace_id = $1 AND session_id = $2
+               AND {SETTLED} AND ((xid::text::bigint, seq) > ($3, $4) OR seq = ANY($5))
+             ORDER BY xid, seq LIMIT $6"
         ))
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
@@ -135,31 +149,10 @@ impl NativeSessionEventReads for PgSessionEventLog {
         .load(&mut conn)
         .await
         .map_err(diesel_be)?;
-        let Some(archived) = <[TailRow]>::first(&rows).map(|r| r.archived) else {
-            return Ok(None);
-        };
-        // An archived session reads as archived only once no event is left
-        // unsettled.
-        let unsettled = match archived {
-            false => 0,
-            true => {
-                let row: CountRow = diesel::sql_query(format!(
-                    "SELECT count(*) AS n FROM session_events
-                     WHERE workspace_id = $1 AND session_id = $2 AND NOT {SETTLED}"
-                ))
-                .bind::<Text, _>(ws.as_str())
-                .bind::<Text, _>(id.as_str())
-                .get_result(&mut conn)
-                .await
-                .map_err(diesel_be)?;
-                row.n
-            }
-        };
-        let archived = archived && unsettled == 0;
+        let archived = state.archived && state.unsettled == 0;
         let events = rows
             .into_iter()
-            .filter_map(|r| r.xid.zip(r.seq).zip(r.doc))
-            .map(|((xid, seq), doc)| parse_doc(doc).map(|e| (Pos { xid, seq }, e)))
+            .map(|r| parse_doc(r.doc).map(|e| (Pos { xid: r.xid, seq: r.seq }, e)))
             .collect::<Result<_, StoreError>>()?;
         Ok(Some(Tail { archived, events }))
     }
