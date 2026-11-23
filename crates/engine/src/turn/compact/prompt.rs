@@ -1,7 +1,5 @@
-//! The prompt-side tiers: every tool result capped as it reaches the prompt
-//! (CP-3), and past the clear threshold the older ones replaced by a
-//! placeholder naming their call's event (CP-2). The stored events stay
-//! whole; tool inputs and error results are never cleared.
+//! Every tool result capped as it reaches the prompt (CP-3). The stored
+//! events stay whole.
 
 use super::BYTES_PER_TOKEN;
 use crate::model::{Block, Message};
@@ -23,21 +21,6 @@ pub fn cap(messages: &mut [Message], limit: u64) {
     }
 }
 
-/// Replace every successful tool result but the newest `keep` with a
-/// placeholder naming its call's event.
-pub fn clear(messages: &mut [Message], keep: usize) {
-    let results = messages.iter_mut().rev().flat_map(|m| m.content.iter_mut().rev());
-    let mut kept = 0;
-    for block in results {
-        let Block::ToolResult { tool_use_id, content, is_error: false } = block else { continue };
-        if kept < keep {
-            kept += 1;
-            continue;
-        }
-        *content = format!("[tool result cleared: event {tool_use_id}]");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,25 +38,6 @@ mod tests {
             Block::ToolResult { content, .. } => content,
             _ => "",
         }
-    }
-
-    #[test]
-    fn older_results_are_cleared_and_errors_and_the_newest_kept() {
-        let mut messages: Vec<Message> =
-            (0..6).map(|i| result(&format!("sevt_{i}"), "out", i == 1)).collect();
-        clear(&mut messages, 3);
-        let got: Vec<&str> = messages.iter().map(text_of).collect();
-        assert_eq!(
-            got,
-            [
-                "[tool result cleared: event sevt_0]",
-                "out",
-                "[tool result cleared: event sevt_2]",
-                "out",
-                "out",
-                "out"
-            ]
-        );
     }
 
     #[test]

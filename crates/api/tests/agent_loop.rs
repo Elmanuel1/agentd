@@ -9,8 +9,12 @@ mod common;
 mod compact;
 #[path = "agent_loop/mcp.rs"]
 mod mcp;
+#[path = "agent_loop/outcome.rs"]
+mod outcome;
 #[path = "agent_loop/stream.rs"]
 mod stream;
+#[path = "agent_loop/threads.rs"]
+mod threads;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -46,12 +50,15 @@ enum Say {
     Fail(ModelError),
 }
 
-/// Plays its script in order, then says "done"; records each request. A
+/// Plays its script in order, then says "done"; records each request. An
+/// agent with a script of its own (`per_agent`) plays that one, so threads
+/// that call the model at the same time each get their own lines. A
 /// compaction request is answered from `summaries` (a summary by default, or
 /// none) and takes no turn of the script.
 #[derive(Default)]
 struct Scripted {
     script: Mutex<VecDeque<Say>>,
+    agents: Mutex<std::collections::HashMap<String, VecDeque<Say>>>,
     asked: Mutex<Vec<ModelRequest>>,
     window: Mutex<u64>,
     summaries: Mutex<VecDeque<Option<&'static str>>>,
@@ -68,11 +75,19 @@ impl Scripted {
             ..Self::default()
         })
     }
+
+    /// Each agent, by name, plays its own script.
+    fn per_agent(scripts: Vec<(String, Vec<Say>)>) -> Arc<Self> {
+        let model = Self::new(Vec::new());
+        *model.agents.lock() = scripts.into_iter().map(|(name, script)| (name, script.into())).collect();
+        model
+    }
 }
 
 impl NativeModelClient for Scripted {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
         let compacting = req.compact.is_some();
+        let agent = req.agent.clone();
         self.asked.lock().push(req);
         if compacting {
             let usage = ModelUsage { input_tokens: 50, output_tokens: 5, ..ModelUsage::default() };
@@ -83,7 +98,8 @@ impl NativeModelClient for Scripted {
             let stop = if content.is_empty() { StopKind::EndTurn } else { StopKind::Compaction };
             return Ok(ModelResponse { content, stop, usage, thought: false, cost: Some(0.001) });
         }
-        let say = self.script.lock().pop_front().unwrap_or(Say::Text("done"));
+        let own = self.agents.lock().get_mut(&agent).and_then(VecDeque::pop_front);
+        let say = own.or_else(|| self.script.lock().pop_front()).unwrap_or(Say::Text("done"));
         let usage =
             ModelUsage { input_tokens: *self.input.lock(), output_tokens: 2, ..ModelUsage::default() };
         let (content, stop) = match say {
@@ -180,8 +196,8 @@ async fn on_loop(rig: &Rig, model: Arc<Scripted>) -> (Router, Worker) {
 
 /// How a test's worker differs from the default.
 struct Tune {
-    /// Steps it runs at once.
-    steps: usize,
+    /// The share of the memory limit it claims steps below.
+    memory_target: f64,
     budget: Arc<dyn ModelBudget>,
     /// The session rows it reads, when not the rig's.
     sessions: Option<Arc<dyn SessionsStore>>,
@@ -202,7 +218,7 @@ struct Tune {
 impl Default for Tune {
     fn default() -> Self {
         Self {
-            steps: 8,
+            memory_target: f64::INFINITY,
             budget: Arc::new(Unlimited),
             sessions: None,
             guard: shared::net::Guard::default(),
@@ -255,7 +271,7 @@ impl NativeSessionsStore for Unreadable {
 
 /// `on_loop`, with a worker tuned by `tune`.
 async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker) {
-    let Tune { steps, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue } = tune;
+    let Tune { memory_target, budget, sessions, guard, compaction, hooks, mcp_timeout, lease, queue } = tune;
     let turn = SERIAL.lock().await;
     let pg = db().await;
     let mut conn = pg.diesel.get().await.unwrap();
@@ -274,12 +290,17 @@ async fn worker(rig: &Rig, model: Arc<Scripted>, tune: Tune) -> (Router, Worker)
         log: rig.stores.session_events.clone(),
         work: rig.work.clone(),
         files: Arc::new(files::FilesService::new(rig.stores.files.clone())),
+        skills: Arc::new(skills::SkillsService::new(
+            rig.stores.skills.clone(),
+            rig.stores.skill_versions.clone(),
+        )),
         mcp,
         webhooks: hooks,
     };
     let retry = Retry { attempts: 3, first: Duration::from_millis(10), deadline: Duration::from_secs(20) };
     let models = Models { client: model, retry, budget, max_tokens: 1000, compaction };
-    let settings = Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, steps };
+    let settings =
+        Settings { owner: format!("test-{}", common::stamp()), lease, per_workspace: 1000, memory_target };
     (app, Worker { task: Loop::new(stores, models, signals, settings).spawn(), _turn: turn })
 }
 
@@ -582,17 +603,25 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
     let Some(rig) = Rig::new().await else { return };
     let env = rig.environment("cloud").await;
     let name = format!("helper-{}", common::stamp());
-    let model = Scripted::new(vec![
-        Say::Tool("send_to_agent", json!({"agent_name": name, "message": "do it"})),
-        Say::Text("waiting on the helper"),
-        Say::Text("done by the helper"),
-        Say::Text("all done"),
+    let coordinator = format!("coord-{}", common::stamp());
+    // The coordinator and its helper call the model at the same time, each
+    // playing its own script.
+    let model = Scripted::per_agent(vec![
+        (
+            coordinator.clone(),
+            vec![
+                Say::Tool("create_agent", json!({"agent_name": name, "task": "do it"})),
+                Say::Text("waiting"),
+                Say::Text("all done"),
+            ],
+        ),
+        (name.clone(), vec![Say::Text("done by the helper")]),
     ]);
     let (app, _worker) = on_loop(&rig, model.clone()).await;
     let helper = json!({"name": name, "model": "claude-haiku-4-5"});
     let (_, helper) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(helper))).await;
     let coord = json!({
-        "name": format!("coord-{}", common::stamp()), "model": "claude-haiku-4-5",
+        "name": coordinator, "model": "claude-haiku-4-5",
         "multiagent": {"type": "coordinator", "agents": [{"type": "agent", "id": helper["id"], "version": helper["version"]}]},
     });
     let (st, coord) = send_to(&app, request("POST", "/v1/agents", Auth::Key(KEY), Some(coord))).await;
@@ -625,13 +654,10 @@ async fn a_coordinator_delegates_to_a_roster_thread_and_hears_back() {
         "the helper's events are on its thread: {page}"
     );
     let asked = model.asked.lock();
-    assert_eq!(asked.len(), 4);
-    assert_eq!(asked[2].agent, name, "the third call is the helper's");
-    let heard = asked[3]
-        .messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .any(|b| matches!(b, Block::Text { text } if text.starts_with(&format!("Message from {name}"))));
+    assert!(asked.iter().any(|r| r.agent == name), "the helper calls the model");
+    let heard = asked.iter().filter(|r| r.agent == coordinator).any(|r| {
+        r.messages.iter().flat_map(|m| &m.content).any(|b| matches!(b, Block::Text { text } if text.starts_with("<agent-notification thread_id=") && text.contains(&format!("agent_name=\"{name}\""))))
+    });
     assert!(heard, "the coordinator hears the helper's reply");
 }
 
@@ -714,24 +740,28 @@ async fn an_interrupt_answers_a_waiting_built_in_call_with_live_s_text_and_a_sec
 }
 
 #[tokio::test]
-async fn a_worker_runs_no_more_steps_at_once_than_it_is_set_to() {
-    // S-8.
+async fn a_worker_claims_steps_while_its_memory_is_under_the_target() {
+    // S-8: no count caps a worker; at its memory target it holds one step.
     let Some(rig) = Rig::new().await else { return };
-    let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
-    let (app, _worker) = worker(&rig, model.clone(), Tune { steps: 4, ..Tune::default() }).await;
-    let env = rig.environment("cloud").await;
-    for _ in 0..5 {
-        let s = session(&app, &env, json!([])).await;
-        send(&app, &s, message("think for a while")).await;
-    }
-    for _ in 0..200 {
-        if model.asked.lock().len() >= 4 {
-            break;
+    for (target, held) in [(f64::INFINITY, 5), (0.0, 1)] {
+        let model = Scripted::new((0..5).map(|_| Say::Hold).collect());
+        let (app, worker) =
+            worker(&rig, model.clone(), Tune { memory_target: target, ..Tune::default() }).await;
+        let env = rig.environment("cloud").await;
+        for _ in 0..5 {
+            let s = session(&app, &env, json!([])).await;
+            send(&app, &s, message("think for a while")).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..200 {
+            if model.asked.lock().len() >= held {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(model.asked.lock().len(), held, "memory target {target}");
+        drop(worker);
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(model.asked.lock().len(), 4, "a fifth step waits for a free slot");
 }
 
 #[tokio::test]

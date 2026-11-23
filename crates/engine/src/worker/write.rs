@@ -1,10 +1,12 @@
-//! A step's writes, each in one transaction under the session's append lock:
-//! the opening before its model call or each MCP result, and the commit that
-//! ends it. Every replica's streams are told after each.
+//! A step's writes, each in one transaction: the opening before its model
+//! call or each MCP result, and the commit that ends it. A thread's step
+//! changes the session's row only to record a grader's verdict; the session's
+//! own step writes its status and usage. Every replica's streams are told
+//! after each.
 
 use sessions::signals::Signal;
 use sessions::steps::{Claim, SessionChange, StatusDeliveries, StepEnd, StepWrite};
-use sessions::types::{Session, SessionStatus};
+use sessions::types::{OutcomeEvaluation, Session, SessionStatus, ThreadId};
 use shared::BackendError;
 use webhooks::EventKind;
 
@@ -25,24 +27,46 @@ impl Loop {
         to: Option<SessionStatus>,
     ) -> Result<bool, BackendError> {
         let change = move |s: &mut Session| to.filter(|t| s.status != *t).map(|t| s.status = t).is_some();
-        self.land(claim, b, &change, Landing::Write(self.settings.lease_seconds())).await
+        let change = to.is_some().then_some(&change as &SessionChange<'_>);
+        self.land(claim, b, change, Landing::Write(self.settings.lease_seconds()), &[]).await
     }
 
+    /// End a thread's step, recording `verdict` when its grader gave one.
     pub(super) async fn commit(
         &self,
         claim: &Claim,
         end: StepEnd,
         b: &Batch,
+        verdict: Option<&OutcomeEvaluation>,
+    ) -> Result<bool, BackendError> {
+        let change = move |s: &mut Session| {
+            let Some(v) = verdict else { return false };
+            s.outcome_evaluations.retain(|e| e.outcome_id != v.outcome_id);
+            s.outcome_evaluations.push(v.clone());
+            true
+        };
+        let change = verdict.is_some().then_some(&change as &SessionChange<'_>);
+        self.land(claim, b, change, Landing::Commit(end), &[]).await
+    }
+
+    /// End the session's own step with `session`'s status and usage, giving
+    /// each of `wake` a step.
+    pub(super) async fn settled(
+        &self,
+        claim: &Claim,
+        end: StepEnd,
+        b: &Batch,
         session: &Session,
+        wake: &[ThreadId],
     ) -> Result<bool, BackendError> {
         let after = session.clone();
         let change = move |s: &mut Session| {
+            let same = s.status == after.status && s.usage == after.usage;
             s.status = after.status;
             s.usage = after.usage.clone();
-            s.outcome_evaluations = after.outcome_evaluations.clone();
-            true
+            !same
         };
-        self.land(claim, b, &change, Landing::Commit(end)).await
+        self.land(claim, b, Some(&change as &SessionChange<'_>), Landing::Commit(end), wake).await
     }
 
     /// Land `b` with `change` as `how` says; `false` when another worker
@@ -51,8 +75,9 @@ impl Loop {
         &self,
         claim: &Claim,
         b: &Batch,
-        change: &SessionChange<'_>,
+        change: Option<&SessionChange<'_>>,
         how: Landing,
+        wake: &[ThreadId],
     ) -> Result<bool, BackendError> {
         let hooks = &self.stores.webhooks;
         let (ws, id) = (claim.workspace.clone(), claim.session.clone());
@@ -74,6 +99,7 @@ impl Loop {
             engine: &b.engine,
             session: change,
             deliveries: deliveries.as_deref(),
+            wake,
         };
         crate::metrics::appended(&b.events);
         let steps = &self.stores.steps;

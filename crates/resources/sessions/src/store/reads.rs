@@ -8,37 +8,38 @@ use super::{EventFilter, StoreError};
 use crate::events::Event;
 use crate::types::SessionId;
 
+/// An event's place in its session's log: the transaction that wrote it,
+/// then its number. Writers append without a lock, so a lower number can
+/// commit later; a reader that pages by (`xid`, `seq`) below the oldest
+/// running transaction never skips it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pos {
+    /// The writing transaction's id.
+    pub xid: i64,
+    /// The event's number.
+    pub seq: i64,
+}
+
 /// A read of a session's log from a position.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tail {
     /// The session is archived.
     pub archived: bool,
     /// Each event with its position in the log, in log order.
-    pub events: Vec<(i64, Event)>,
+    pub events: Vec<(Pos, Event)>,
 }
 
 /// Where a new stream of a session starts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Head {
-    /// The position of the session's latest event, 0 when it has none.
-    pub seq: i64,
+    /// The position of the session's latest event, the default when it has none.
+    pub pos: Pos,
     /// The positions of its client events not processed yet, in log order.
     pub queued: Vec<i64>,
 }
 
-/// Each event with the `engine` object the loop stored beside it.
-pub type EngineEvents = Vec<(Event, Option<serde_json::Value>)>;
-
 /// A session's event log, read.
 pub trait SessionEventReads: Send + Sync {
-    /// Every event of the session, oldest first, each with the `engine`
-    /// object the loop stored beside it, which no API read serves; none for a
-    /// session that does not exist, which the caller has already read.
-    fn engine_events<'a>(
-        &'a self,
-        ws: &'a WorkspaceId,
-        session: &'a SessionId,
-    ) -> BoxFuture<'a, Result<EngineEvents, StoreError>>;
     /// Full event history, append order.
     fn events<'a>(
         &'a self,
@@ -65,7 +66,7 @@ pub trait SessionEventReads: Send + Sync {
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
-        after: i64,
+        after: Pos,
         pending: &'a [i64],
         limit: usize,
     ) -> BoxFuture<'a, Result<Option<Tail>, StoreError>>;
@@ -75,13 +76,6 @@ pub trait SessionEventReads: Send + Sync {
 
 /// What an adapter implements to provide [`SessionEventReads`]; the methods are documented there.
 pub trait NativeSessionEventReads: Send + Sync {
-    fn engine_events(
-        &self,
-        ws: &WorkspaceId,
-        session: &SessionId,
-    ) -> impl Future<Output = Result<EngineEvents, StoreError>> + Send {
-        async move { Ok(self.events(ws, session).await?.into_iter().map(|e| (e, None)).collect()) }
-    }
     fn events(
         &self,
         ws: &WorkspaceId,
@@ -103,7 +97,7 @@ pub trait NativeSessionEventReads: Send + Sync {
         &self,
         ws: &WorkspaceId,
         id: &SessionId,
-        after: i64,
+        after: Pos,
         pending: &[i64],
         limit: usize,
     ) -> impl Future<Output = Result<Option<Tail>, StoreError>> + Send;
@@ -112,13 +106,6 @@ pub trait NativeSessionEventReads: Send + Sync {
 }
 
 impl<T: NativeSessionEventReads> SessionEventReads for T {
-    fn engine_events<'a>(
-        &'a self,
-        ws: &'a WorkspaceId,
-        session: &'a SessionId,
-    ) -> BoxFuture<'a, Result<EngineEvents, StoreError>> {
-        Box::pin(NativeSessionEventReads::engine_events(self, ws, session))
-    }
     fn events<'a>(
         &'a self,
         ws: &'a WorkspaceId,
@@ -146,7 +133,7 @@ impl<T: NativeSessionEventReads> SessionEventReads for T {
         &'a self,
         ws: &'a WorkspaceId,
         id: &'a SessionId,
-        after: i64,
+        after: Pos,
         pending: &'a [i64],
         limit: usize,
     ) -> BoxFuture<'a, Result<Option<Tail>, StoreError>> {

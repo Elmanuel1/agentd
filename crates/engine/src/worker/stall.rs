@@ -3,11 +3,12 @@
 //! without end.
 
 use serde_json::json;
-use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent};
-use sessions::types::{OutcomeEvaluation, ThreadId};
+use sessions::events::{AgentEvent, Event, EventPayload, ModelUsage, SpanEvent, StopReason};
+use sessions::types::{OutcomeEvaluation, Session, ThreadId};
 
 use super::grade::{Outcome, verdict};
-use super::turn::Turn;
+use super::team::Thread;
+use super::turn::{Turn, thread_idle};
 
 /// Turns a grader may end without its verdict before its round fails.
 const NUDGES: usize = 3;
@@ -31,9 +32,29 @@ pub(super) fn stalled(log: &[Event], thread: &ThreadId) -> bool {
     ended >= NUDGES
 }
 
+/// A thread that stopped on `stop` (the budget or its retries) idles; a
+/// grader also ends its round failed, so the round does not stay open with
+/// no one to grade it, `why` saying which.
+pub(super) fn abandoned(
+    turn: &Turn,
+    session: &Session,
+    thread: &Thread,
+    stop: StopReason,
+    why: &str,
+) -> (Vec<Event>, Option<OutcomeEvaluation>) {
+    let idle = turn.lifecycle(thread_idle(turn, stop));
+    let Some(outcome) = thread.grading.as_ref() else { return (vec![idle], None) };
+    let (end, eval) = failed(&Thread::primary(session).turn(), outcome, ModelUsage::default(), why);
+    (vec![idle, end], Some(eval))
+}
+
 /// The round's end when the grader stalled: it fails.
 pub(super) fn no_verdict(primary: &Turn, outcome: &Outcome, usage: ModelUsage) -> (Event, OutcomeEvaluation) {
-    let grade = json!({"result": "failed", "criteria": [{"criterion": "grade", "met": false,
-        "finding": format!("The grader ended {NUDGES} turns without a grade.")}]});
+    failed(primary, outcome, usage, &format!("The grader ended {NUDGES} turns without a grade."))
+}
+
+fn failed(primary: &Turn, outcome: &Outcome, usage: ModelUsage, finding: &str) -> (Event, OutcomeEvaluation) {
+    let grade =
+        json!({"result": "failed", "criteria": [{"criterion": "grade", "met": false, "finding": finding}]});
     verdict(primary, outcome, &grade, usage)
 }

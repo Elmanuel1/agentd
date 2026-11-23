@@ -8,19 +8,20 @@ use std::collections::HashMap;
 use agents::types::ModelSpeed;
 use sessions::events::{AgentEvent, Event, EventId, SpanEvent, SpanModelUsage, StopReason};
 use sessions::steps::{Claim, StepEnd};
-use sessions::types::{Session, SessionStatus};
+use sessions::types::Session;
 use shared::BackendError;
 
 use super::Loop;
 use super::grade::conversation;
+use super::stall::abandoned;
 use super::team::Thread;
 use super::turn::{Turn, batch};
-use super::usage::{charged, kept, spent};
+use super::usage::{kept, spent};
 use crate::mcp::McpTool;
 use crate::model::{Message, ModelError, ModelProvider};
 use crate::turn::compact::checkpoint;
 use crate::turn::compact::estimate::estimate;
-use crate::turn::compact::prompt::{cap, clear};
+use crate::turn::compact::prompt::cap;
 use crate::turn::compact::{BYTES_PER_TOKEN, Tier, summary};
 use crate::turn::history::{History, Kept, rebuild, thread_events};
 
@@ -37,8 +38,6 @@ pub(super) struct Opened<'a> {
     pub(super) turn: &'a Turn,
     pub(super) thread: &'a Thread,
     pub(super) start: &'a EventId,
-    /// The session's exact list cost before the call.
-    pub(super) spent: u64,
 }
 
 /// What the step's call needs from the thread's log.
@@ -49,8 +48,7 @@ pub(super) struct Log<'a> {
 }
 
 impl Loop {
-    /// Cap and, past the clear tier, clear `history`'s tool results; the
-    /// compaction to run first when the prompt needs one (CP-4, CP-12) and
+    /// Cap `history`'s tool results; the compaction to run first when the prompt needs one (CP-4, CP-12) and
     /// the last call was not a compaction that left no checkpoint (CP-10).
     pub(super) async fn fit(
         &self,
@@ -65,13 +63,7 @@ impl Loop {
         let view = checkpoint::view(&events, log.kept);
         let c = self.models.compaction;
         let tier = c.tier(estimate(&view), window);
-        let tidy = |messages: &mut Vec<Message>| {
-            cap(messages, c.tool_output_limit);
-            if tier != Tier::Whole {
-                clear(messages, c.keep_results);
-            }
-        };
-        tidy(&mut history.messages);
+        cap(&mut history.messages, c.tool_output_limit);
         let redo = view.checkpoint.as_ref().is_some_and(|cp| cp.model != *model);
         if (tier != Tier::Compact && !redo) || view.attempted {
             return Ok(None);
@@ -110,7 +102,7 @@ impl Loop {
         if let Some(cp) = &view.checkpoint {
             messages.insert(0, cp.message());
         }
-        tidy(&mut messages);
+        cap(&mut messages, c.tool_output_limit);
         let Some(last) = cut.checked_sub(1).and_then(|i| view.prompt.get(i)) else { return Ok(None) };
         let seq = log.kept.get(&last.id).and_then(|k| k.get("seq")).and_then(serde_json::Value::as_i64);
         let through = (last.id.clone(), seq.unwrap_or_default());
@@ -122,17 +114,17 @@ impl Loop {
     /// Run `c` with the turn's system prompt and tools, so the prompt cache
     /// holds, and commit its call's end and the thread's checkpoint. A call
     /// that fails or leaves no summary is ended as it came; the next step
-    /// takes the turn with the cleared prompt.
+    /// takes the turn with the whole prompt.
     pub(super) async fn compact(
         &self,
         claim: &Claim,
-        mut session: Session,
+        session: Session,
         opened: Opened<'_>,
         c: Compacting,
         mcp: &[McpTool],
     ) -> Result<(), BackendError> {
-        let Opened { turn, thread, start, spent: before } = opened;
-        let (_, mut request) = self.request(&session, thread, c.messages, mcp);
+        let Opened { turn, thread, start } = opened;
+        let (_, mut request) = self.request(&claim.workspace, &session, thread, c.messages, mcp).await;
         request.compact = Some(c.instructions);
         let model = request.model.clone();
         let provider = ModelProvider::of(&model).name();
@@ -143,7 +135,6 @@ impl Loop {
                 if let Err(e) = self.models.budget.spend(provider, usage.input_tokens).await {
                     tracing::warn!(session = %claim.session, error = %e, "loop: could not count the call's tokens");
                 }
-                charged(&mut session, &usage, cost, before);
                 let end = turn.event(SpanEvent::ModelRequestEnd {
                     model_request_start_id: start.clone(),
                     is_error: false,
@@ -170,24 +161,25 @@ impl Loop {
         }
         let mut done = batch(Vec::new(), Vec::new(), events);
         done.engine = engine;
-        self.commit(claim, StepEnd::Again, &done, &session).await?;
+        self.commit(claim, StepEnd::Again, &done, None).await?;
         Ok(())
     }
 
     /// A call that cannot start because its model has no window ends the
-    /// turn as a failed model call.
+    /// turn as a failed model call; a grader's round fails with it.
     pub(super) async fn unfit(
         &self,
         claim: &Claim,
-        turn: &Turn,
-        mut session: Session,
-        start: &EventId,
+        opened: Opened<'_>,
+        session: &Session,
         e: &ModelError,
     ) -> Result<(), BackendError> {
-        session.status = SessionStatus::Idle;
+        let Opened { turn, thread, start } = opened;
         let mut events = turn.failed(start, Some(e));
-        events.extend(turn.idle(&session, StopReason::RetriesExhausted {}));
-        self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), &session).await?;
+        let why = "The grader's model could not be called, before it gave a grade.";
+        let (stopped, verdict) = abandoned(turn, session, thread, StopReason::RetriesExhausted {}, why);
+        events.extend(stopped);
+        self.commit(claim, StepEnd::Done, &batch(Vec::new(), Vec::new(), events), verdict.as_ref()).await?;
         Ok(())
     }
 }

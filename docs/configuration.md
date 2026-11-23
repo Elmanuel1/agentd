@@ -58,14 +58,51 @@ fakes in test code, never from configuration ([Security](#security)).
 
 ## The loop
 
-Every session runs on agentd's own loop. A client event, or a worker's
-`user.tool_result`, puts its session on the step queue (`loop_steps`) in the
-same commit. A loop worker claims the step under a lease,
-builds one model call's prompt from the session's event log, and commits what
-the reply leads to:
-- the call's start, the running status and the client events it takes, in one
-  commit before the call;
-- its events, in one commit after it.
+Every session runs on agentd's own loop. The step queue (`loop_steps`) holds
+one row per session and per thread with work, each claimed under its own
+lease, so a session's threads call the model at the same time on any replica.
+- **The session's own step.** A client event, or a worker's
+  `user.tool_result`, wakes it in the same commit. It takes the client's
+  events, starts each thread with work (the running status and each thread's
+  running event, then a step for that thread), and makes the decisions that
+  span the threads: an interrupt stops every thread, a grading round starts
+  once the primary thread has replied and no delegate is mid-turn, the session
+  idles when no thread works, and its usage is the sum of every thread's
+  calls. It calls no model.
+- **A thread's step.** It reads its own thread's events and the session-wide
+  events, not the other threads' work. It builds one model call's prompt from
+  them and commits the call's start before the call, then the reply's events
+  after it, then wakes the session's step.
+
+Each thread is a stream of the log (`session_events.thread_id`), and its
+latest compaction checkpoint is the snapshot it resumes from: a step reads a
+thread's events from the event the checkpoint covers through, never the
+events before it. The session-wide events are read whole: every `session.*`
+event, the outcomes' evaluation spans and the client events that answer no
+call (`user.message`, `user.interrupt`, `user.tool_confirmation`,
+`user.define_outcome`, `system.message`), and a thread's step reads the
+answers to its calls by the call they answer. The session's own step reads each thread this way; a thread's
+step reads only its own. A grader that compacted reads its round whole, so
+its count of replies with no grade spans the round. Usage, cost and the
+budget are sums the database computes over every `span.model_request_end`,
+every thread's.
+
+The session's own step builds no prompt, so it reads no processed tool
+result's content. A thread's step reads every result whole: its prompt
+carries each one, capped, until the thread compacts. The stored events stay
+whole.
+
+A worker claims steps while its replica's memory is under
+`AGENTD_MEMORY_TARGET`, with no count of steps: the working set of its
+container (cgroup usage less the page cache it can drop) over its limit, or
+the host's share in use where the container has no limit. At the target it
+claims nothing more until memory falls, but always runs one step; past half
+the target it claims one step per 50 ms, so a burst of claims cannot outrun
+what their reads add. Replicas scale on memory and on `agentd.loop.steps_due`.
+
+Steps take no session-wide lock. Readers serve each event only once every
+older transaction has finished, and page by (transaction, number), so a
+stream never skips an event that commits after a later-numbered one.
 
 While a step runs, its worker renews the lease every third of its length, so
 slow MCP or model work never outlasts it; a step whose claim is gone (another
@@ -80,11 +117,23 @@ which takes the session's work item:
 - a `cloud` session stays `running`, and its worker's results show as
   `agent.tool_result`.
 
+An agent, and the grader, is offered the toolset's `bash`, `read`, `write`, `edit`, `glob` and `grep`.
+`web_fetch` and `web_search` are not offered: on live they are server tools, which agentd does not run yet, and
+no worker runs them.
+
 A roster thread's or the grader's built-in calls show on the session's stream
 with their `session_thread_id`, so the official worker runs them from it, and
-its results land on the call's thread. A coordinator's `send_to_agent` opens a
-roster thread that runs in later steps. An outcome is graded on the grader's
-own thread.
+its results land on the call's thread. A coordinator has live's three roster
+tools, with live's descriptions: `create_agent` (`agent_name`, `task`) opens a
+roster thread that runs beside the coordinator and returns its `thread_id`;
+`send_to_agent` (`thread_id`, `message`) sends that thread a follow-up; and
+`list_agents` lists the threads started, each with its status, and the agents
+on the roster. A delegate's reply reaches the coordinator as a message tagged
+`<agent-notification>` whose header carries the thread's id. An outcome is
+graded on the grader's own thread, in a round that starts when the primary
+thread ends a turn with no roster thread still working. The agent is told to
+work on the outcome on its own until the result is delivered, deciding by its
+instructions where the task is unclear, and gets each round's findings back.
 
 The loop calls the model itself, with one key per provider from the
 environment: `AGENTD_ANTHROPIC_API_KEY` and `AGENTD_OPENROUTER_API_KEY`. A
@@ -110,7 +159,7 @@ step's 10 minute deadline.
 | `AGENTD_TEMPORAL_TLS_SERVER_CA_CERT_PATH` | unset (the operating system's roots) | With an `https://` address: the PEM file the frontend's certificate chains to |
 | `AGENTD_TEMPORAL_NAMESPACE` | `default` | With `temporal`: the namespace that holds agentd's schedules |
 | `AGENTD_TEMPORAL_TASK_QUEUE` | `agentd` | With `temporal`: the task queue agentd's Temporal worker polls |
-| `AGENTD_STEPS_PER_WORKER` | `256` | Steps one replica runs at once |
+| `AGENTD_MEMORY_TARGET` | `0.8` | The share of the replica's memory limit, above 0 and at most 1, below which its loop claims steps |
 | `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` | `32` | Steps of one workspace held at once |
 | `AGENTD_MODEL_ATTEMPTS` | `5` | Tries per model call |
 | `AGENTD_MAX_OUTPUT_TOKENS` | `16000` | The output cap per model call |
@@ -119,8 +168,6 @@ step's 10 minute deadline.
 | `AGENTD_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | The Messages API the loop calls |
 | `AGENTD_MODEL_BASE_URL` | `https://openrouter.ai/api/v1` | The OpenAI-compatible API the loop calls for a model id with a `/` |
 | `AGENTD_MODEL_PRICES_URL` | `https://openrouter.ai/api/v1/models` | The model list Anthropic's list prices are read from, at start and once a day; empty, the built-in table alone |
-| `AGENTD_COMPACTION_CLEAR_AT` | `100000` | The prompt size, in tokens, past which old tool results are cleared; half the model's window when that is lower |
-| `AGENTD_COMPACTION_KEEP_RESULTS` | `3` | The newest tool results kept whole when clearing, from 3 to 5 |
 | `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT` | `16000` | The most of one tool result a prompt carries; the stored event stays whole |
 
 Each model's context window comes from its provider's model list, read once
@@ -128,10 +175,9 @@ per process: the Messages API's `GET /v1/models/{id}` (`max_input_tokens`) and
 the OpenAI-compatible list's `context_length`. A model its provider does not
 list fails its step as a model error. The loop estimates a thread's prompt from
 its last call's tokens and a token per 4 bytes since. Every tool result is
-capped at `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`. Past the clear threshold, tool
-results older than the newest `AGENTD_COMPACTION_KEEP_RESULTS` become
-`[tool result cleared: event <id>]`; inputs and error results stay. Past 80% of
-the window, and when no tool call is waiting, the step runs a compaction call
+capped at `AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`; no result is cleared from a
+prompt, so each call's prompt extends the last one and the provider's prompt
+cache holds. Past 80% of the window, and when no tool call is waiting, the step runs a compaction call
 instead of the turn, with the turn's system prompt and tools: on-demand
 compaction (`compact-2026-09-04`) for an Anthropic model, a handoff prompt for
 any other. It summarises from the thread's latest checkpoint, keeps the last
@@ -139,7 +185,7 @@ two calls verbatim and quotes the user's messages newest first. Its
 `agent.thread_context_compacted` event is the thread's checkpoint; the summary
 is kept beside it and never served. Every later call starts with the signed
 block, sent back unmodified, or with the summary. A compaction that returns
-no summary lets the turn run on the cleared prompt.
+no summary lets the turn run on the whole prompt.
 
 ### MCP servers
 
@@ -625,7 +671,10 @@ and pauses and moves back any partition that delivers a record meanwhile, so
 nothing behind the record is handled first. The group assigns partitions
 `cooperative-sticky`: a join moves only the partitions balance needs, so a
 one-partition topic stays with its holder, and a moved partition's attempt
-ends uncommitted, for its next owner to read. An ordered table's topic has one
+ends uncommitted, for its next owner to read. A topic that does not exist yet,
+a table with no change yet, is waited for on the same subscription: consumers
+read the cluster's topics every 10 s, so its first record is read soon after
+Debezium writes it. An ordered table's topic has one
 partition, which the group gives to one replica at a time. An external scheduler writes
 its fires to the topic `agentd.fires`, each record's value
 `{"spec": …, "scheduled_at": "<RFC 3339>"}`. The topics' retention trims them.

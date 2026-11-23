@@ -16,8 +16,8 @@ use crate::model::{Block, Message, Role};
 use builder::Builder;
 pub use unanswered::Unanswered;
 
-/// The coordinator's delegation tool, as history replays it.
-pub const SEND_TO_AGENT: &str = "send_to_agent";
+use super::delegation;
+pub use super::delegation::SEND_TO_AGENT;
 
 /// What a thread's log says.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -120,13 +120,25 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 to_agent_name,
                 to_session_thread_id,
             }) => {
+                // Replayed as the coordinator called it: the send the loop kept
+                // as opening its thread is the `create_agent` that opened it,
+                // a later one a `send_to_agent` to it, each with live's result.
                 if ev.session_thread_id.is_none() {
-                    let input = serde_json::json!({"agent_name": to_agent_name, "session_thread_id": to_session_thread_id, "message": texts(content)});
-                    b.call(id.clone(), SEND_TO_AGENT, &input);
-                    let note = format!(
-                        "Sent to thread {to_session_thread_id}. The reply arrives as a message from that thread."
-                    );
-                    b.result(id, note, false);
+                    let (thread, message) = (to_session_thread_id, texts(content));
+                    let opened = kept.get(&ev.id).and_then(|k| k["opened"].as_bool()).unwrap_or_default();
+                    let (name, input, result) = match opened {
+                        true => {
+                            let agent = to_agent_name.as_deref().unwrap_or_default();
+                            let input = serde_json::json!({"agent_name": agent, "task": message});
+                            (delegation::CREATE_AGENT, input, delegation::created(thread, agent))
+                        }
+                        false => {
+                            let input = serde_json::json!({"thread_id": thread, "message": message});
+                            (SEND_TO_AGENT, input, delegation::sent(thread))
+                        }
+                    };
+                    b.call(id.clone(), name, &input);
+                    b.result(id, result, false);
                 }
             }
             EventPayload::Agent(AgentEvent::ToolResult { tool_use_id, content, is_error })
@@ -142,10 +154,9 @@ pub fn rebuild(events: &[&Event], rubrics: &HashMap<String, String>, kept: &Kept
                 from_agent_name,
                 from_session_thread_id,
             }) => match ev.session_thread_id {
-                None => b.text(format!(
-                    "Message from {from_agent_name} (thread {from_session_thread_id}):\n{}",
-                    texts(content)
-                )),
+                None => {
+                    b.text(delegation::notification(from_agent_name, from_session_thread_id, &texts(content)))
+                }
                 Some(_) => b.text(texts(content)),
             },
             EventPayload::User(UserEvent::Interrupt {}) if ev.processed_at.is_some() => b.halted = true,

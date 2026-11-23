@@ -114,7 +114,7 @@ fn a_grader_grades_in_its_reply_and_the_round_ends_after_the_call_with_live_s_ex
         stop: StopKind::EndTurn,
         ..reply(&[])
     };
-    let events = lead(&Toolbox::read_only(), &graded, Some(&outcome));
+    let events = lead(&Toolbox::grader(), &graded, Some(&outcome));
     assert_eq!(types(&events), ["agent.message", "span.model_request_end", "span.outcome_evaluation_end"]);
     assert_eq!(events[2]["result"], "satisfied");
     assert_eq!(
@@ -186,4 +186,213 @@ fn a_reply_s_signed_thinking_is_kept_beside_its_agent_thinking() {
         serde_json::to_value(thinking).unwrap().get("content").is_none(),
         "live's agent.thinking carries no content"
     );
+}
+
+#[test]
+fn every_thread_with_work_is_due_and_each_thread_s_step_takes_only_its_own() {
+    // Two delegates both await the model: the session's step starts both,
+    // and each one's step reads its own conversation.
+    use agents::types::{Multiagent, RosterMember};
+    use sessions::events::{AgentEvent, SessionEvent};
+    use shared::ContentBlock;
+    let mut session = session();
+    let member = |name: &str| {
+        let mut a = session.agent.clone();
+        a.config.name = name.into();
+        RosterMember::Snapshot(Box::new(a))
+    };
+    let roster = vec![member("fast"), member("slow")];
+    session.agent.config.multiagent = Some(Multiagent::Coordinator { agents: roster });
+    let on = |thread: &ThreadId, payload: EventPayload| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: Some(thread.clone()),
+        ..Event::new(payload)
+    };
+    let message = |text: &str| AgentEvent::ThreadMessageReceived {
+        content: vec![ContentBlock::text(text)],
+        from_agent_name: "coord".into(),
+        from_session_thread_id: ThreadId::generate(),
+    };
+    let (fast, slow) = (ThreadId::generate(), ThreadId::generate());
+    let log = vec![
+        on(&fast, SessionEvent::ThreadCreated { agent_name: "fast".into() }.into()),
+        on(&slow, SessionEvent::ThreadCreated { agent_name: "slow".into() }.into()),
+        on(&fast, message("go").into()),
+        on(&slow, message("go").into()),
+        on(&fast, SpanEvent::ModelRequestStart {}.into()),
+        on(&fast, AgentEvent::Message { content: vec![ContentBlock::text("on it")] }.into()),
+        on(&fast, message("more").into()),
+    ];
+    let (rubrics, kept) = (Default::default(), Default::default());
+    let taken = super::take::take(&log, &session, false, &rubrics, &kept, None);
+    assert!(taken.due.contains(&fast) && taken.due.contains(&slow), "{:?}", taken.due);
+    let mine = super::take::take(&log, &session, false, &rubrics, &kept, Some(&slow));
+    assert_eq!(mine.thread.id, slow);
+    assert!(mine.taken.is_empty(), "only the session's step takes client events");
+}
+
+#[test]
+fn a_thread_s_step_idles_only_its_thread_and_the_session_s_step_idles_the_session() {
+    use sessions::events::StopReason;
+    use sessions::steps::StepEnd;
+    use sessions::types::SessionStatus;
+    let led = || super::reply::Led {
+        events: Vec::new(),
+        end: StepEnd::Done,
+        idle: Some(StopReason::RequiresAction { event_ids: Vec::new() }),
+        evaluation: None,
+        engine: Vec::new(),
+    };
+    let mut session = session();
+    session.status = SessionStatus::Running;
+    let thread = super::team::Thread::primary(&session);
+    let turn = thread.turn();
+    let r = reply(&[]);
+    let mut out = led();
+    super::settle::settle(&mut out, &turn, &thread, &session, &[], &r);
+    assert_eq!(types(&wire(&out.events)), ["session.thread_status_idle"]);
+    let idle = super::settle::quiet(&mut session, &out.events).expect("no thread works");
+    assert_eq!(session.status, SessionStatus::Idle, "with no thread at work, the session idles");
+    assert_eq!(types(&wire(&idle)), ["session.usage", "session.status_idle"]);
+}
+
+#[test]
+fn only_a_thread_s_own_new_events_keep_its_turn_going() {
+    // A result for another thread's call that lands during this thread's
+    // call must not keep this thread's turn from ending.
+    use sessions::events::AgentEvent;
+    use shared::ContentBlock;
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let mut helper = primary.clone();
+    (helper.id, helper.primary) = (ThreadId::generate(), false);
+    let call = Event {
+        session_thread_id: Some(helper.id.clone()),
+        ..Event::new(
+            AgentEvent::ToolUse {
+                name: "bash".into(),
+                input: json!({}),
+                evaluated_permission: None,
+                evaluation: None,
+            }
+            .into(),
+        )
+    };
+    let result = Event {
+        session_thread_id: Some(helper.id.clone()),
+        ..Event::new(
+            UserEvent::ToolResult { tool_use_id: call.id.clone(), content: Vec::new(), is_error: false }
+                .into(),
+        )
+    };
+    let read = vec![call];
+    let later = vec![result];
+    assert!(!super::status::arrived_for(&primary, &read, &later), "the helper's result is not the primary's");
+    assert!(super::status::arrived_for(&helper, &read, &later));
+    let message = Event::new(UserEvent::Message { content: vec![ContentBlock::text("more")] }.into());
+    assert!(super::status::arrived_for(&primary, &read, std::slice::from_ref(&message)));
+    assert!(!super::status::arrived_for(&helper, &read, &[message]));
+}
+
+#[test]
+fn an_interrupted_delegate_resumes_on_the_answer_to_its_earlier_call() {
+    // The helper's custom call came before the interrupt; its answer arrives
+    // after the helper idled, and matches the call over the whole log.
+    use sessions::events::{AgentEvent, SessionEvent, StopReason};
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let mut helper = primary.clone();
+    (helper.id, helper.primary) = (ThreadId::generate(), false);
+    let on = |payload: EventPayload| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: Some(helper.id.clone()),
+        ..Event::new(payload)
+    };
+    let call = on(AgentEvent::CustomToolUse { name: "lookup".into(), input: json!({}) }.into());
+    let interrupt =
+        Event { processed_at: Some(Timestamp::now()), ..Event::new(UserEvent::Interrupt {}.into()) };
+    let idle = on(SessionEvent::ThreadStatusIdle {
+        agent_name: "helper".into(),
+        stop_reason: StopReason::EndTurn {},
+        stop_details: None,
+    }
+    .into());
+    let mut log = vec![call.clone(), interrupt, idle];
+    assert!(super::status::held(&log, &helper), "idle since the interrupt, with nothing new for it");
+    let answer = UserEvent::CustomToolResult {
+        custom_tool_use_id: call.id.clone(),
+        content: Vec::new(),
+        is_error: false,
+    };
+    log.push(on(answer.into()));
+    assert!(!super::status::held(&log, &helper), "the answer to its call resumes it");
+}
+
+#[test]
+fn an_interrupt_from_an_earlier_turn_does_not_hold_a_thread_that_ended_a_new_one() {
+    // A needs_revision verdict after a later turn must still start a revision.
+    use sessions::events::{SessionEvent, StopReason};
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let at = |payload: EventPayload, thread: bool| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: thread.then(|| primary.id.clone()),
+        ..Event::new(payload)
+    };
+    let interrupt = || at(UserEvent::Interrupt {}.into(), false);
+    let running = || at(SessionEvent::ThreadStatusRunning { agent_name: "a".into() }.into(), true);
+    let idle = || {
+        let stop = SessionEvent::ThreadStatusIdle {
+            agent_name: "a".into(),
+            stop_reason: StopReason::EndTurn {},
+            stop_details: None,
+        };
+        at(stop.into(), true)
+    };
+    let earlier = vec![interrupt(), running(), idle()];
+    assert!(!super::status::held(&earlier, &primary), "the interrupt came before this turn");
+    let during = vec![running(), interrupt(), idle()];
+    assert!(super::status::held(&during, &primary), "the interrupt cut this turn");
+}
+
+#[test]
+fn a_turn_an_interrupt_ended_starts_no_grading_round() {
+    use sessions::events::{AgentEvent, SessionEvent, StopReason};
+    let session = session();
+    let primary = super::team::Thread::primary(&session);
+    let done = |payload: EventPayload, thread: Option<&ThreadId>| Event {
+        processed_at: Some(Timestamp::now()),
+        session_thread_id: thread.cloned(),
+        ..Event::new(payload)
+    };
+    let mine = Some(&primary.id);
+    let turn = |log: &mut Vec<Event>| {
+        log.push(done(SessionEvent::ThreadStatusRunning { agent_name: "a".into() }.into(), mine));
+        log.push(done(AgentEvent::Message { content: vec![] }.into(), None));
+    };
+    let ended = || {
+        done(
+            SessionEvent::ThreadStatusIdle {
+                agent_name: "a".into(),
+                stop_reason: StopReason::EndTurn {},
+                stop_details: None,
+            }
+            .into(),
+            mine,
+        )
+    };
+    let outcome = UserEvent::DefineOutcome {
+        description: "Write a poem.".into(),
+        rubric: Rubric::Text { content: "### Rain\nAbout rain.".into() },
+        max_iterations: None,
+        outcome_id: Some(OutcomeId::generate()),
+    };
+    let mut log = vec![done(outcome.into(), None)];
+    turn(&mut log);
+    log.push(done(UserEvent::Interrupt {}.into(), None));
+    log.push(ended());
+    assert!(super::settle::round(&session, &log).is_none(), "the interrupt ended the turn");
+    turn(&mut log);
+    log.push(ended());
+    assert!(super::settle::round(&session, &log).is_some(), "the next turn's reply is graded");
 }

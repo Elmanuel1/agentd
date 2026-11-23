@@ -125,12 +125,16 @@ fn the_coordinator_replays_delegation_as_a_tool_call_and_the_reply_as_input() {
         from_agent_name: "bid-extractor".into(),
         from_session_thread_id: sub.clone(),
     });
-    let h = build(&[user("go"), s1.clone(), end(&s1), sent, got]);
-    assert!(matches!(&h.messages[1].content[0], Block::ToolUse { name, .. } if name == SEND_TO_AGENT));
+    let kept = HashMap::from([(sent.id.clone(), json!({"opened": true}))]);
+    let log = [user("go"), s1.clone(), end(&s1), sent, got];
+    let h = rebuild(&log.iter().collect::<Vec<_>>(), &HashMap::new(), &kept);
+    assert!(
+        matches!(&h.messages[1].content[0], Block::ToolUse { name, .. } if name == delegation::CREATE_AGENT)
+    );
     let last = h.messages.last().unwrap();
     assert!(matches!(&last.content[0], Block::ToolResult { is_error: false, .. }));
     assert!(
-        matches!(&last.content[1], Block::Text { text } if text.starts_with("Message from bid-extractor"))
+        matches!(&last.content[1], Block::Text { text } if text.starts_with("<agent-notification thread_id="))
     );
 }
 
@@ -201,3 +205,61 @@ fn the_primary_thread_leaves_out_answers_to_another_threads_calls() {
 mod inputs;
 mod interrupts;
 mod thinking;
+
+#[test]
+fn a_coordinator_s_sends_replay_as_live_s_tools_with_their_results() {
+    // Live, 2026-11-21: `create_agent` opens a thread and returns its id;
+    // `send_to_agent` takes that id.
+    let thread = ThreadId::generate();
+    let sent = |text: &str| {
+        ev(AgentEvent::ThreadMessageSent {
+            content: vec![ContentBlock::text(text)],
+            to_agent_name: Some("helper".into()),
+            to_session_thread_id: thread.clone(),
+        })
+    };
+    let (first, again) = (sent("do it"), sent("fix it"));
+    let kept = HashMap::from([
+        (first.id.clone(), json!({"opened": true})),
+        (again.id.clone(), json!({"opened": false})),
+    ]);
+    let h = rebuild(&[&first, &again], &HashMap::new(), &kept);
+    let blocks: Vec<&Block> = h.messages.iter().flat_map(|m| &m.content).collect();
+    let calls: Vec<(&str, &serde_json::Value)> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::ToolUse { name, input, .. } => Some((name.as_str(), input)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls[0], ("create_agent", &json!({"agent_name": "helper", "task": "do it"})));
+    assert_eq!(calls[1], ("send_to_agent", &json!({"thread_id": thread, "message": "fix it"})));
+    let results: Vec<serde_json::Value> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::ToolResult { content, .. } => serde_json::from_str(content).ok(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!((&results[0]["thread_id"], &results[0]["agent_name"]), (&json!(thread), &json!("helper")));
+    assert_eq!((&results[1]["delivered"], &results[1]["queued"]), (&json!(true), &json!(false)));
+}
+
+#[test]
+fn a_follow_up_whose_opening_send_was_compacted_replays_as_send_to_agent() {
+    // The loop keeps beside each send whether it opened its thread, so a
+    // follow-up still replays as one with its thread's first send gone.
+    let thread = ThreadId::generate();
+    let again = ev(AgentEvent::ThreadMessageSent {
+        content: vec![ContentBlock::text("fix it")],
+        to_agent_name: Some("helper".into()),
+        to_session_thread_id: thread.clone(),
+    });
+    let kept = HashMap::from([(again.id.clone(), json!({"opened": false}))]);
+    let h = rebuild(&[&again], &HashMap::new(), &kept);
+    let call = h.messages.iter().flat_map(|m| &m.content).find_map(|b| match b {
+        Block::ToolUse { name, input, .. } => Some((name.as_str(), input)),
+        _ => None,
+    });
+    assert_eq!(call, Some(("send_to_agent", &json!({"thread_id": thread, "message": "fix it"}))));
+}

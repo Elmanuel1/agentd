@@ -1,7 +1,7 @@
 //! Threads (L-15): which thread a step runs, and delegation. A coordinator's
-//! `send_to_agent` opens or follows up a roster agent's thread, which runs
-//! in later steps on its own; its final text goes back to the coordinator
-//! as a message from that thread.
+//! `create_agent` opens a roster agent's thread and `send_to_agent` follows
+//! one up; the thread runs in later steps on its own, and its final text goes
+//! back to the coordinator as a message from that thread.
 
 use agents::AgentSnapshot;
 use serde_json::Value;
@@ -10,9 +10,9 @@ use sessions::types::{Session, ThreadId, primary_thread_id};
 use shared::ContentBlock;
 
 use super::grade::Outcome;
+use super::status::{busy, parked};
 use super::turn::Turn;
-use crate::turn::history::SEND_TO_AGENT;
-use crate::turn::policy::LIST_AGENTS;
+use crate::turn::delegation::{CREATE_AGENT, LIST_AGENTS, SEND_TO_AGENT, listing};
 
 /// A thread a step can run, with the agent it runs.
 #[derive(Clone)]
@@ -58,19 +58,6 @@ pub(super) fn threads(session: &Session, log: &[Event]) -> Vec<Thread> {
     std::iter::once(primary).chain(opened).collect()
 }
 
-/// A thread is at work: its last status in `log` is running.
-pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
-    log.iter()
-        .rev()
-        .filter(|e| e.session_thread_id.as_ref() == Some(thread))
-        .find_map(|e| match e.payload {
-            EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }) => Some(true),
-            EventPayload::Session(SessionEvent::ThreadStatusIdle { .. }) => Some(false),
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
 /// A coordinator's call to a roster tool: its `agent.tool_use` and what it
 /// leads to, in live's order.
 pub(super) fn delegate(
@@ -94,14 +81,15 @@ pub(super) fn delegate(
         })
     };
     if name == LIST_AGENTS {
-        let listed: Vec<String> = roster(session)
-            .iter()
-            .map(|a| format!("- {}: {}", a.config.name, a.config.description.as_deref().unwrap_or("")))
+        let started: Vec<(ThreadId, String, bool, Option<&str>)> = threads(session, log)
+            .into_iter()
+            .filter(|t| !t.primary)
+            .map(|t| (t.id.clone(), t.agent.config.name.clone(), busy(log, &t.id), parked(log, &t.id)))
             .collect();
-        let result = answer(listed.join("\n"), false);
+        let result = answer(listing(&started, &roster(session)), false);
         return vec![call, result];
     }
-    match send(turn, session, log, input) {
+    match send(turn, session, log, name, input) {
         Ok(events) => events,
         Err(why) => {
             let result = answer(why, true);
@@ -110,32 +98,35 @@ pub(super) fn delegate(
     }
 }
 
-fn send(turn: &Turn, session: &Session, log: &[Event], input: &Value) -> Result<Vec<Event>, String> {
-    let text = input
-        .get("message")
-        .and_then(Value::as_str)
-        .ok_or(format!("{SEND_TO_AGENT}: `message` is required"))?;
-    let known = threads(session, log);
-    let (thread, opened) = match (
-        input.get("session_thread_id").and_then(Value::as_str),
-        input.get("agent_name").and_then(Value::as_str),
-    ) {
-        (Some(tid), _) => {
-            let thread = known.into_iter().find(|t| !t.primary && t.id.as_str() == tid);
-            (thread.ok_or_else(|| format!("no thread {tid} of yours to send to"))?, false)
-        }
-        (None, Some(name)) => {
+fn send(
+    turn: &Turn,
+    session: &Session,
+    log: &[Event],
+    name: &str,
+    input: &Value,
+) -> Result<Vec<Event>, String> {
+    let field =
+        |key: &str| input.get(key).and_then(Value::as_str).ok_or(format!("{name}: `{key}` is required"));
+    let (thread, opened, text) = match name == CREATE_AGENT {
+        true => {
+            let (agent_name, task) = (field("agent_name")?, field("task")?);
             let roster = roster(session);
-            let agent = roster.iter().find(|a| a.config.name == name).ok_or_else(|| {
+            let agent = roster.iter().find(|a| a.config.name == agent_name).ok_or_else(|| {
                 let names: Vec<&str> = roster.iter().map(|a| a.config.name.as_str()).collect();
-                format!("`{name}` is not on your roster ({})", names.join(", "))
+                format!("`{agent_name}` is not on your roster ({})", names.join(", "))
             })?;
-            (
-                Thread { id: ThreadId::generate(), agent: (*agent).clone(), primary: false, grading: None },
-                true,
-            )
+            let thread =
+                Thread { id: ThreadId::generate(), agent: (*agent).clone(), primary: false, grading: None };
+            (thread, true, task)
         }
-        (None, None) => return Err(format!("{SEND_TO_AGENT}: give `agent_name` or `session_thread_id`")),
+        false => {
+            let (tid, message) = (field("thread_id")?, field("message")?);
+            let thread = threads(session, log).into_iter().find(|t| !t.primary && t.id.as_str() == tid);
+            let thread = thread.ok_or_else(|| {
+                format!("{SEND_TO_AGENT}: no thread {tid} of yours; {LIST_AGENTS} gives your threads' ids")
+            })?;
+            (thread, false, message)
+        }
     };
     let to = thread.turn();
     let content = vec![ContentBlock::text(text)];

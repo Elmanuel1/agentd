@@ -1,79 +1,19 @@
 //! The writes of a held step: each lands only while its claim still holds
-//! the step, under the session's append lock.
+//! the step. Steps take no session-wide lock: a thread's step writes only
+//! its events, and the session's row is locked only by a write that changes
+//! it, the session's own step.
 
 use ::sessions::steps::{Claim, StepEnd, StepWrite};
 use ::sessions::store::StoreError;
-use ::sessions::types::Session;
-use diesel::OptionalExtension;
-use diesel::sql_types::{BigInt, Jsonb, Text};
-use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
-use shared::Timestamp;
+use diesel::sql_types::{BigInt, Text};
+use diesel_async::{AsyncConnection, RunQueryDsl};
 
-use super::super::session_events::{insert, lock, stamp};
 use super::super::work_items::stop::requeue;
-use super::rows::Doc;
-use super::{HELD, KEY};
-use crate::entities::webhook_deliveries::status_changed;
-use crate::{PgBackend, diesel_be, enum_str, pool_be, to_doc};
+use super::land::land;
+use super::{HELD, wake};
+use crate::{PgBackend, diesel_be, pool_be};
 
-/// The step's events and session changes, after the held step was checked.
-async fn land(
-    c: &mut AsyncPgConnection,
-    claim: &Claim,
-    write: &StepWrite<'_>,
-) -> Result<(), diesel::result::Error> {
-    let (ws, id) = (&claim.workspace, &claim.session);
-    stamp(c, ws, id, write.read, write.at).await?;
-    let ids: Vec<&str> = write.events.iter().map(|e| e.id.as_str()).collect();
-    let mut docs =
-        write.events.iter().map(to_doc).collect::<Result<Vec<_>, StoreError>>().map_err(serde_be)?;
-    for (doc, event) in docs.iter_mut().zip(write.events) {
-        let kept = write.engine.iter().find(|(e, _)| *e == event.id).map(|(_, kept)| kept.clone());
-        let (Some(kept), Some(doc)) = (kept, doc.as_object_mut()) else { continue };
-        // A checkpoint's covered seq at the path V11's unique index reads.
-        let seq = kept.get("checkpoint").and_then(|c| c.get("through_seq")).cloned();
-        doc.extend(seq.map(|seq| ("checkpoint".to_owned(), serde_json::json!({ "through_seq": seq }))));
-        doc.insert("engine".into(), kept);
-    }
-    if insert(c, ws, id, &ids, docs).await? != ids.len() {
-        return Err(diesel::result::Error::RollbackTransaction);
-    }
-    let row: Option<Doc> = diesel::sql_query(format!("SELECT doc FROM sessions WHERE {KEY} FOR UPDATE"))
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .get_result(c)
-        .await
-        .optional()?;
-    let Some(row) = row else {
-        return Err(diesel::result::Error::RollbackTransaction);
-    };
-    let mut session: Session =
-        serde_json::from_value(row.doc).map_err(|e| diesel::result::Error::DeserializationError(e.into()))?;
-    let before = session.status;
-    if !(write.session)(&mut session) {
-        return Ok(());
-    }
-    session.updated_at = Timestamp::now();
-    let doc =
-        serde_json::to_value(&session).map_err(|e| diesel::result::Error::SerializationError(e.into()))?;
-    diesel::sql_query(format!("UPDATE sessions SET status = $3, doc = $4 WHERE {KEY}"))
-        .bind::<Text, _>(ws.as_str())
-        .bind::<Text, _>(id.as_str())
-        .bind::<Text, _>(enum_str(&session.status))
-        .bind::<Jsonb, _>(doc)
-        .execute(c)
-        .await?;
-    match (session.status == before, write.deliveries) {
-        (false, Some(deliveries)) => status_changed(c, ws, id, |org| deliveries(org, session.status)).await,
-        _ => Ok(()),
-    }
-}
-
-fn serde_be(e: StoreError) -> diesel::result::Error {
-    diesel::result::Error::SerializationError(Box::new(e))
-}
-
-/// `$3` the holder and `$4` the attempts, after the session's key.
+/// `$3` the holder, `$4` the attempts and `$5` the thread, after the session's key.
 fn held(
     sql: String,
     claim: &Claim,
@@ -84,6 +24,7 @@ fn held(
         .bind::<Text, _>(claim.session.as_str())
         .bind::<Text, _>(&claim.owner)
         .bind::<BigInt, _>(claim.attempts)
+        .bind::<Text, _>(claim.thread.as_ref().map_or("", |t| t.as_str()))
 }
 
 /// The transaction's result: `Ok(false)` when the claim no longer holds the
@@ -111,9 +52,8 @@ pub(super) async fn write(
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
-        lock(c, &claim.session).await?;
         let kept = held(
-            format!("UPDATE loop_steps SET lease_until = now() + make_interval(secs => $5) WHERE {HELD}"),
+            format!("UPDATE loop_steps SET lease_until = now() + make_interval(secs => $6) WHERE {HELD}"),
             claim,
         )
         .bind::<BigInt, _>(lease)
@@ -137,12 +77,18 @@ pub(super) async fn commit(
 ) -> Result<bool, StoreError> {
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
-                lock(c, &claim.session).await?;
+                // Rows are locked in one order, the session's own step first,
+                // then threads' steps, then the session: a thread's step wakes
+                // the session's step before it releases its own row, which
+                // ends, and the session's step wakes threads after its own.
+                if claim.thread.is_some() {
+                    wake(c, &claim.workspace, &claim.session, &[""]).await?;
+                }
                 // Woken while it ran, or asked to go on: the step stays, due at once.
                 let deleted = match end {
                     StepEnd::Again => 0,
                     StepEnd::Done | StepEnd::Requeue => {
-                        held(format!("DELETE FROM loop_steps WHERE {HELD} AND wakes = $5"), claim)
+                        held(format!("DELETE FROM loop_steps WHERE {HELD} AND wakes = $6"), claim)
                             .bind::<BigInt, _>(claim.wakes)
                             .execute(c)
                             .await?
@@ -160,6 +106,8 @@ pub(super) async fn commit(
                 if released == 0 {
                     return Err(diesel::result::Error::RollbackTransaction);
                 }
+                let woken: Vec<&str> = write.wake.iter().map(|t| t.as_str()).collect();
+                wake(c, &claim.workspace, &claim.session, &woken).await?;
                 land(c, claim, &write).await?;
                 if end == StepEnd::Requeue {
                     requeue(c, &claim.workspace, claim.session.as_str()).await?;
@@ -175,7 +123,7 @@ pub(super) async fn defer(backend: &PgBackend, claim: &Claim, seconds: i64) -> R
     let mut conn = backend.diesel.write().await.map_err(pool_be)?;
     held(
             format!(
-                "UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now() + make_interval(secs => $5) WHERE {HELD}"
+                "UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = now() + make_interval(secs => $6) WHERE {HELD}"
             ),
             claim,
         )

@@ -1,0 +1,126 @@
+//! A thread's state as its lifecycle events in the log say it: working,
+//! mid-turn, or parked on what it waits for.
+
+use std::collections::HashSet;
+
+use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, StopReason, UserEvent};
+use sessions::types::ThreadId;
+
+use super::team::Thread;
+use crate::turn::history::thread_events;
+
+/// A thread's last status in `log`: running (`Some(None)`), idle and why
+/// (`Some(Some(_))`), or none yet.
+fn status<'a>(log: &'a [Event], thread: &ThreadId) -> Option<Option<&'a StopReason>> {
+    log.iter().rev().filter(|e| e.session_thread_id.as_ref() == Some(thread)).find_map(|e| match &e.payload {
+        EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }) => Some(None),
+        EventPayload::Session(SessionEvent::ThreadStatusIdle { stop_reason, .. }) => Some(Some(stop_reason)),
+        _ => None,
+    })
+}
+
+/// How a thread's last turn stopped, while it is idle.
+pub(super) fn stopped<'a>(log: &'a [Event], thread: &ThreadId) -> Option<&'a StopReason> {
+    status(log, thread).flatten()
+}
+
+/// The last interrupt the agent took came during `thread`'s turn that ran up
+/// to `end`, an index into `log`: after that turn began and before `end`.
+pub(super) fn interrupted(log: &[Event], thread: &ThreadId, end: usize) -> bool {
+    let last = log.iter().rposition(|e| {
+        e.processed_at.is_some() && matches!(e.payload, EventPayload::User(UserEvent::Interrupt {}))
+    });
+    let Some(i) = last.filter(|i| *i < end) else { return false };
+    let began = log.get(..end).unwrap_or_default().iter().rposition(|e| {
+        e.session_thread_id.as_ref() == Some(thread)
+            && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusRunning { .. }))
+    });
+    began.is_none_or(|b| i > b)
+}
+
+/// A thread stopped on its retries or on the budget, or idle since an
+/// interrupt, and nothing has come in for it since: its turn is over until a
+/// message or an answer arrives.
+pub(super) fn held(log: &[Event], thread: &Thread) -> bool {
+    let over = |r: Option<&StopReason>| {
+        matches!(r, Some(StopReason::RetriesExhausted {} | StopReason::BudgetReached {}))
+    };
+    let stop = log.iter().rposition(|e| {
+        e.session_thread_id.as_ref() == Some(&thread.id)
+            && matches!(&e.payload, EventPayload::Session(SessionEvent::ThreadStatusIdle { .. }))
+    });
+    // Only an interrupt during the turn that stopped holds the thread: an
+    // earlier turn's does not.
+    let cut = stop.is_some_and(|s| interrupted(log, &thread.id, s));
+    let (Some(at), true) = (stop, cut || over(stopped(log, &thread.id))) else { return false };
+    let scope = (!thread.primary).then(|| thread.id.clone());
+    // Answers are matched to the thread's calls over the whole log, then
+    // counted only when they came after the stop.
+    let after: HashSet<&EventId> = log.get(at + 1..).unwrap_or_default().iter().map(|e| &e.id).collect();
+    let input = |e: &&Event| {
+        after.contains(&e.id)
+            && e.processed_at.is_some()
+            && matches!(
+                e.payload,
+                EventPayload::User(_) | EventPayload::Agent(AgentEvent::ThreadMessageReceived { .. })
+            )
+    };
+    !thread_events(log, scope.as_ref()).iter().any(input)
+}
+
+/// A thread is at work: its last status in `log` is running.
+pub(super) fn busy(log: &[Event], thread: &ThreadId) -> bool {
+    matches!(status(log, thread), Some(None))
+}
+
+/// A thread is mid-turn: running, or idle on a call it waits for, not on
+/// the end of its turn.
+pub(super) fn unfinished(log: &[Event], thread: &ThreadId) -> bool {
+    match status(log, thread) {
+        // Its retries ran out: the turn is over, as at its end.
+        Some(Some(reason)) => !matches!(reason, StopReason::EndTurn {} | StopReason::RetriesExhausted {}),
+        Some(None) => true,
+        None => false,
+    }
+}
+
+/// What a thread waits for while idle: the calls it stopped on, or the
+/// budget (`None` while it works or has ended its turn).
+pub(super) fn parked(log: &[Event], thread: &ThreadId) -> Option<&'static str> {
+    match status(log, thread) {
+        Some(Some(StopReason::RequiresAction { .. })) => Some("requires_action"),
+        Some(Some(StopReason::BudgetReached {})) => Some("budget_reached"),
+        _ => None,
+    }
+}
+
+/// The calls thread `thread` waits on, when it stopped on some.
+pub(super) fn awaited(log: &[Event], thread: &ThreadId) -> Vec<EventId> {
+    match status(log, thread) {
+        Some(Some(StopReason::RequiresAction { event_ids })) => event_ids.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// `created` opens the thread `sent` sends its first message to.
+pub(super) fn opens(created: &Event, sent: &Event) -> bool {
+    matches!(created.payload, EventPayload::Session(SessionEvent::ThreadCreated { .. }))
+        && matches!(&sent.payload, EventPayload::Agent(AgentEvent::ThreadMessageSent { to_session_thread_id, .. })
+            if created.session_thread_id.as_ref() == Some(to_session_thread_id))
+}
+
+/// `e` is a coordinator's message to one of its threads.
+pub(super) fn is_send(e: &Event) -> bool {
+    matches!(e.payload, EventPayload::Agent(AgentEvent::ThreadMessageSent { .. }))
+}
+
+/// Of `later`, the events not in `read`, one is `thread`'s: its client's
+/// message, or a result for one of its calls. Events for other threads do
+/// not keep its turn from ending.
+pub(super) fn arrived_for(thread: &Thread, read: &[Event], later: &[Event]) -> bool {
+    let known: HashSet<&EventId> = read.iter().map(|e| &e.id).collect();
+    let fresh: Vec<Event> = later.iter().filter(|e| !known.contains(&e.id)).cloned().collect();
+    let all: Vec<Event> = read.iter().cloned().chain(fresh.iter().cloned()).collect();
+    let scope = (!thread.primary).then(|| thread.id.clone());
+    thread_events(&all, scope.as_ref()).iter().any(|e| fresh.iter().any(|f| f.id == e.id))
+}

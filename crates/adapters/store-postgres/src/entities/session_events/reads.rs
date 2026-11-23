@@ -1,16 +1,23 @@
 //! The session event log's reads.
 
 use ::sessions::events::Event;
-use ::sessions::store::{EventFilter, Head, NativeSessionEventReads, Order, StoreError, Tail};
+use ::sessions::store::{
+    EventFilter, Head, NativeEngineReads, NativeSessionEventReads, Order, Pos, StoreError, Tail,
+};
 use ::sessions::types::SessionId;
-use diesel::sql_types::{Array, BigInt, Bool, Jsonb, Nullable, Text, Timestamptz};
+use diesel::sql_types::{Array, BigInt, Nullable, Text, Timestamptz};
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl};
 use diesel_async::RunQueryDsl;
 use shared::{Pagination, WorkspaceId};
 
 use super::PgSessionEventLog;
-use crate::schema::{session_events, sessions};
+use super::rows::{CountRow, HeadRow, StateRow, TailRow};
+use crate::schema::sessions;
 use crate::{DocRow, diesel_be, parse_doc, pool_be};
+
+/// Committed by every transaction older than the oldest one still running:
+/// an event below it can no longer be overtaken by one that commits late.
+const SETTLED: &str = "xid < pg_snapshot_xmin(pg_current_snapshot())";
 
 /// A client event the agent has not taken yet.
 const QUEUED: &str =
@@ -34,33 +41,7 @@ impl PgSessionEventLog {
 impl NativeSessionEventReads for PgSessionEventLog {
     async fn events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
         self.require_session(ws, id).await?;
-        Ok(self.engine_events(ws, id).await?.into_iter().map(|(e, _)| e).collect())
-    }
-
-    async fn engine_events(
-        &self,
-        ws: &WorkspaceId,
-        id: &SessionId,
-    ) -> Result<Vec<(Event, Option<serde_json::Value>)>, StoreError> {
-        let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let rows: Vec<(i64, serde_json::Value)> = session_events::table
-            .filter(session_events::workspace_id.eq(ws.as_str()))
-            .filter(session_events::session_id.eq(id.as_str()))
-            .order(session_events::seq.asc())
-            .select((session_events::seq, session_events::doc))
-            .load(&mut conn)
-            .await
-            .map_err(diesel_be)?;
-        // Each event's kept object names its `seq`, which a checkpoint records.
-        rows.into_iter()
-            .map(|(seq, doc)| {
-                let mut kept = doc.get("engine").cloned().unwrap_or_else(|| serde_json::json!({}));
-                if let Some(k) = kept.as_object_mut() {
-                    k.insert("seq".into(), serde_json::json!(seq));
-                }
-                Ok((parse_doc(doc)?, Some(kept)))
-            })
-            .collect()
+        Ok(NativeEngineReads::engine_events(self, ws, id).await?.into_iter().map(|(e, _)| e).collect())
     }
 
     async fn unprocessed_events(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Vec<Event>, StoreError> {
@@ -94,6 +75,7 @@ impl NativeSessionEventReads for PgSessionEventLog {
         let rows: Vec<DocRow> = diesel::sql_query(format!(
             "SELECT doc FROM session_events
              WHERE workspace_id = $1 AND session_id = $2
+               AND {SETTLED}
                AND (cardinality($3::text[]) = 0 OR doc->>'type' = ANY($3))
                AND ($4::timestamptz IS NULL OR {processed} > $4)
                AND ($5::timestamptz IS NULL OR {processed} >= $5)
@@ -104,7 +86,7 @@ impl NativeSessionEventReads for PgSessionEventLog {
                       OR (doc->>'type' = 'agent.tool_use' AND jsonb_typeof(doc->'evaluation') = 'object')
                       OR doc->>'type' = 'agent.custom_tool_use'
                     ELSE doc->>'session_thread_id' = $10 AND doc->>'type' <> 'session.thread_created' END)
-             ORDER BY {processed} {order} NULLS LAST, seq {order}
+             ORDER BY {processed} {order} NULLS LAST, xid {order}, seq {order}
              LIMIT $8 OFFSET $9"
         ))
         .bind::<Text, _>(ws.as_str())
@@ -127,35 +109,59 @@ impl NativeSessionEventReads for PgSessionEventLog {
         &self,
         ws: &WorkspaceId,
         id: &SessionId,
-        after: i64,
+        after: Pos,
         pending: &[i64],
         limit: usize,
     ) -> Result<Option<Tail>, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        // The session row comes back with no event when nothing matched, and
-        // no row at all once the session is gone.
-        let rows: Vec<TailRow> = diesel::sql_query(
-            "SELECT s.doc->>'archived_at' IS NOT NULL AS archived, e.seq, e.doc FROM sessions s
-             LEFT JOIN session_events e ON e.workspace_id = s.workspace_id AND e.session_id = s.session_id
-               AND (e.seq > $3 OR e.seq = ANY($4))
-             WHERE s.workspace_id = $1 AND s.session_id = $2
-             ORDER BY e.seq LIMIT $5",
-        )
+        // An archived session reads as archived only once no event is left
+        // unsettled, counted before the events are read: an event settled
+        // then is settled for the read after it. No row once the session is gone.
+        let state: Option<StateRow> =
+            diesel::sql_query("SELECT doc->>'archived_at' IS NOT NULL AS archived FROM sessions WHERE workspace_id = $1 AND session_id = $2")
+                .bind::<Text, _>(ws.as_str())
+                .bind::<Text, _>(id.as_str())
+                .get_result(&mut conn)
+                .await
+                .optional()
+                .map_err(diesel_be)?;
+        let Some(state) = state else { return Ok(None) };
+        let unsettled = match state.archived {
+            false => 0,
+            true => {
+                let row: CountRow = diesel::sql_query(format!(
+                    "SELECT count(*) AS n FROM session_events
+                     WHERE workspace_id = $1 AND session_id = $2 AND NOT {SETTLED}"
+                ))
+                .bind::<Text, _>(ws.as_str())
+                .bind::<Text, _>(id.as_str())
+                .get_result(&mut conn)
+                .await
+                .map_err(diesel_be)?;
+                row.n
+            }
+        };
+        // Only settled events are served, a pending one too, so the cursor
+        // never passes an earlier one still being written.
+        let rows: Vec<TailRow> = diesel::sql_query(format!(
+            "SELECT xid::text::bigint AS xid, seq, doc FROM session_events
+             WHERE workspace_id = $1 AND session_id = $2
+               AND {SETTLED} AND ((xid::text::bigint, seq) > ($3, $4) OR seq = ANY($5))
+             ORDER BY xid, seq LIMIT $6"
+        ))
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
-        .bind::<BigInt, _>(after)
+        .bind::<BigInt, _>(after.xid)
+        .bind::<BigInt, _>(after.seq)
         .bind::<Array<BigInt>, _>(pending)
         .bind::<BigInt, _>(i64::try_from(limit + pending.len()).unwrap_or(i64::MAX))
         .load(&mut conn)
         .await
         .map_err(diesel_be)?;
-        let Some(archived) = <[TailRow]>::first(&rows).map(|r| r.archived) else {
-            return Ok(None);
-        };
+        let archived = state.archived && unsettled == 0;
         let events = rows
             .into_iter()
-            .filter_map(|r| r.seq.zip(r.doc))
-            .map(|(seq, doc)| parse_doc(doc).map(|e| (seq, e)))
+            .map(|r| parse_doc(r.doc).map(|e| (Pos { xid: r.xid, seq: r.seq }, e)))
             .collect::<Result<_, StoreError>>()?;
         Ok(Some(Tail { archived, events }))
     }
@@ -163,32 +169,17 @@ impl NativeSessionEventReads for PgSessionEventLog {
     async fn head(&self, ws: &WorkspaceId, id: &SessionId) -> Result<Head, StoreError> {
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
         let head: HeadRow = diesel::sql_query(format!(
-            "SELECT coalesce(max(seq), 0) AS seq, coalesce(array_agg(seq ORDER BY seq) FILTER (WHERE {QUEUED}), '{{}}')
-             AS queued FROM session_events WHERE workspace_id = $1 AND session_id = $2"
+            "SELECT (array_agg(xid::text::bigint ORDER BY xid DESC, seq DESC) FILTER (WHERE {SETTLED}))[1] AS xid,
+                    (array_agg(seq ORDER BY xid DESC, seq DESC) FILTER (WHERE {SETTLED}))[1] AS seq,
+                    coalesce(array_agg(seq ORDER BY seq) FILTER (WHERE {QUEUED}), '{{}}') AS queued
+             FROM session_events WHERE workspace_id = $1 AND session_id = $2"
         ))
         .bind::<Text, _>(ws.as_str())
         .bind::<Text, _>(id.as_str())
         .get_result(&mut conn)
         .await
         .map_err(diesel_be)?;
-        Ok(Head { seq: head.seq, queued: head.queued })
+        let pos = head.xid.zip(head.seq).map(|(xid, seq)| Pos { xid, seq }).unwrap_or_default();
+        Ok(Head { pos, queued: head.queued })
     }
-}
-
-#[derive(diesel::QueryableByName)]
-struct HeadRow {
-    #[diesel(sql_type = BigInt)]
-    seq: i64,
-    #[diesel(sql_type = Array<BigInt>)]
-    queued: Vec<i64>,
-}
-
-#[derive(diesel::QueryableByName)]
-struct TailRow {
-    #[diesel(sql_type = Bool)]
-    archived: bool,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    seq: Option<i64>,
-    #[diesel(sql_type = Nullable<Jsonb>)]
-    doc: Option<serde_json::Value>,
 }

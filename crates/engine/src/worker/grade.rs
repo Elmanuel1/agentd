@@ -38,15 +38,19 @@ pub(super) struct Outcome {
 impl Outcome {
     /// The grader's thread for the open round, named after its start.
     pub(super) fn thread(&self, session: &Session) -> Option<Thread> {
-        let start = self.open.as_ref()?;
-        let body = start.as_str().strip_prefix("sevt_").unwrap_or(start.as_str());
-        let id = ThreadId::parse(&format!("sthr_{body}")).ok()?;
+        let id = grader(self.open.as_ref()?)?;
         let mut agent: AgentSnapshot = session.agent.clone();
         agent.config.name = "grader".into();
         agent.config.system = Some(GRADER_SYSTEM.into());
         agent.config.multiagent = None;
         Some(Thread { id, agent, primary: false, grading: Some(self.clone()) })
     }
+}
+
+/// The grader's thread of the round `start` opened, named after it.
+pub(super) fn grader(start: &EventId) -> Option<ThreadId> {
+    let body = start.as_str().strip_prefix("sevt_").unwrap_or(start.as_str());
+    ThreadId::parse(&format!("sthr_{body}")).ok()
 }
 
 /// The outcome in `log` with no final verdict yet: the last one defined.

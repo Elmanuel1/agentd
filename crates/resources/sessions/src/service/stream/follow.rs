@@ -9,7 +9,7 @@ use shared::{Timestamp, WorkspaceId};
 
 use super::{Tail, Tails, listed};
 use crate::events::{Event, SessionEvent};
-use crate::store::{Head, SessionEventLog};
+use crate::store::{Head, Pos, SessionEventLog};
 use crate::types::SessionId;
 
 /// Events one read of the log takes.
@@ -32,7 +32,7 @@ pub(super) struct Follow {
 impl Follow {
     pub(super) async fn run(self, head: Head) {
         // Client events not processed yet: each is sent once it is.
-        let (mut cursor, mut pending) = (head.seq, head.queued);
+        let (mut cursor, mut pending) = (head.pos, head.queued);
         loop {
             let jitter = Duration::from_millis(rand::rng().random_range(0..=JITTER_MS));
             tokio::select! {
@@ -64,11 +64,12 @@ impl Follow {
                     let _ = self.tail.tx.send(last);
                     return self.close();
                 };
-                let fresh = read.events.iter().filter(|(seq, _)| *seq > cursor).count();
-                for (seq, ev) in read.events {
-                    self.send(&mut cursor, &mut pending, seq, ev);
+                let fresh = read.events.iter().filter(|(pos, _)| *pos > cursor).count();
+                for (pos, ev) in read.events {
+                    self.send(&mut cursor, &mut pending, pos, ev);
                 }
-                if read.archived && self.ends_on_archive {
+                // An archived session's stream ends once every page is sent.
+                if read.archived && self.ends_on_archive && fresh < PAGE {
                     return self.close();
                 }
                 if fresh < PAGE {
@@ -78,9 +79,10 @@ impl Follow {
         }
     }
 
-    fn send(&self, cursor: &mut i64, pending: &mut Vec<i64>, seq: i64, ev: Event) {
-        let fresh = seq > *cursor;
-        *cursor = (*cursor).max(seq);
+    fn send(&self, cursor: &mut Pos, pending: &mut Vec<i64>, pos: Pos, ev: Event) {
+        let fresh = pos > *cursor;
+        *cursor = (*cursor).max(pos);
+        let seq = pos.seq;
         // Live streams a client event once, when it is processed.
         if fresh && ev.processed_at.is_none() && ev.payload.is_user_event() {
             pending.push(seq);

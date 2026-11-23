@@ -18,7 +18,7 @@ use sessions::events::{AgentEvent, Event, EventId, EventPayload, SessionEvent, U
 use sessions::signals::{LocalSignals, Signal, Signals};
 use sessions::store::{
     AnswerCheck, Append, DatabaseLoad, EventFilter, Head, NativeSessionEventLog, NativeSessionEventReads,
-    NativeSessionReplace, NativeSessionsStore, SessionFilter, StoreError, Tail, Wake,
+    NativeSessionReplace, NativeSessionsStore, Pos, SessionFilter, StoreError, Tail, Wake,
 };
 use sessions::{NativeSessionDeps, SessionId, SessionsService, Streams, Subscription};
 use shared::limits::ModelCatalog;
@@ -32,6 +32,8 @@ struct Scripted {
     reads: Mutex<VecDeque<Result<Option<Tail>, StoreError>>>,
     asked: Mutex<Vec<(i64, Vec<i64>)>>,
 }
+
+impl sessions::store::NativeEngineReads for Scripted {}
 
 impl NativeSessionEventReads for Scripted {
     async fn events(&self, _: &WorkspaceId, _: &SessionId) -> Result<Vec<Event>, StoreError> {
@@ -53,11 +55,11 @@ impl NativeSessionEventReads for Scripted {
         &self,
         _: &WorkspaceId,
         _: &SessionId,
-        after: i64,
+        after: Pos,
         pending: &[i64],
         _: usize,
     ) -> Result<Option<Tail>, StoreError> {
-        self.asked.lock().push((after, pending.to_vec()));
+        self.asked.lock().push((after.seq, pending.to_vec()));
         self.reads.lock().pop_front().unwrap_or(Ok(Some(Tail::default())))
     }
     async fn head(&self, _: &WorkspaceId, _: &SessionId) -> Result<Head, StoreError> {
@@ -226,6 +228,7 @@ fn processed(e: &Event) -> Event {
 }
 
 fn read(archived: bool, events: Vec<(i64, Event)>) -> Result<Option<Tail>, StoreError> {
+    let events = events.into_iter().map(|(seq, e)| (Pos { xid: 0, seq }, e)).collect();
     Ok(Some(Tail { archived, events }))
 }
 
@@ -252,7 +255,7 @@ async fn a_client_event_is_sent_once_when_processed_and_never_queued() {
 async fn a_client_event_queued_before_the_stream_opened_is_sent_once_processed() {
     let e = message();
     let done = processed(&e);
-    let head = Head { seq: 7, queued: vec![7] };
+    let head = Head { pos: Pos { xid: 0, seq: 7 }, queued: vec![7] };
     let rig = rig(head, false, vec![read(false, vec![(7, e.clone())]), read(false, vec![(7, done.clone())])]);
     let mut sub = rig.subscribe().await;
     rig.signal().await;
@@ -349,4 +352,24 @@ async fn a_failed_head_read_refuses_the_stream_and_the_next_one_starts_its_own_t
     let mut sub = rig.subscribe().await;
     rig.signal().await;
     assert_eq!(next(&mut sub).await.unwrap(), e);
+}
+
+#[tokio::test]
+async fn an_archived_stream_sends_every_page_before_it_ends() {
+    let agent = || Event::new(EventPayload::Agent(AgentEvent::Message { content: vec![] }));
+    let page: Vec<(i64, Event)> = (1..=1000).map(|seq| (seq, agent())).collect();
+    let last = agent();
+    // Open before the session is archived, so its stream ends on the archive.
+    let rig = rig(Head::default(), false, vec![read(true, page), read(true, vec![(1001, last.clone())])]);
+    let mut sub = rig.subscribe().await;
+    rig.signal().await;
+    let mut seen = false;
+    loop {
+        match next(&mut sub).await {
+            Ok(e) => seen |= e == last,
+            Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => break,
+        }
+    }
+    assert!(seen, "the page after a full one is sent before the stream ends");
 }

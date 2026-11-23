@@ -75,7 +75,7 @@ impl<T: NativeSessionsStore> SessionsStore for T {
 }
 
 /// What an adapter implements to provide [`SessionEventLog`]; the methods are documented there.
-pub trait NativeSessionEventLog: NativeSessionEventReads {
+pub trait NativeSessionEventLog: NativeEngineReads {
     fn append_events(
         &self,
         ws: &WorkspaceId,

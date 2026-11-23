@@ -297,9 +297,9 @@ async fn a_message_racing_a_delete_lands_before_it_or_is_refused_and_leaves_no_e
         assert!(matches!(sent, StatusCode::OK | StatusCode::NOT_FOUND), "{sent}");
         outcomes.insert(sent.as_u16());
         let id = SessionId::parse(&session).unwrap();
-        assert_eq!(
-            rig.stores.session_events.head(&ws, &id).await.unwrap().seq,
-            0,
+        // Every row, settled or not: `head` serves only settled ones.
+        assert!(
+            rig.stores.session_events.step_events(&ws, &id).await.unwrap().is_empty(),
             "no event outlives its session"
         );
         let (_, item) =

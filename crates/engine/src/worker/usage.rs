@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 use sessions::steps::Claim;
+use sessions::store::Calls;
 use sessions::types::Session;
 use shared::BackendError;
 use shared::{MonetaryAmount, Usage};
@@ -10,7 +11,6 @@ use super::Loop;
 use crate::model::budget::Admit;
 
 use crate::model::{Block, ModelResponse};
-use crate::turn::history::Kept;
 
 /// Billionths of a US dollar in a cent.
 const NANOS_PER_CENT: u64 = 10_000_000;
@@ -40,20 +40,19 @@ pub(super) fn kept(nanos: u64) -> Value {
     Value::Object([(KEPT.to_owned(), nanos.into())].into_iter().collect())
 }
 
-/// The session's exact list cost so far, from what the log keeps beside its calls.
-pub(super) fn so_far(kept: &Kept) -> u64 {
-    kept.values().filter_map(|v| v.get(KEPT)?.as_u64()).sum()
-}
-
-/// `session` after a call that used `usage` and cost `cost`, on top of the
-/// exact `before`. As on live, `usage.list_cost` is rounded to the nearest cent.
-pub(super) fn charged(session: &mut Session, usage: &Usage, cost: Option<u64>, before: u64) {
-    let measured = !session.usage.cost_unmeasured();
-    session.usage.add(usage);
-    session.usage.list_cost = match (measured, cost) {
-        (true, Some(c)) => Some(MonetaryAmount::usd((before + c + NANOS_PER_CENT / 2) / NANOS_PER_CENT)),
-        _ => None,
+/// `session`'s usage as its calls add up, every thread's. As on live,
+/// `usage.list_cost` is rounded to the nearest cent, and is unknown once a
+/// call of a model with no list price ran.
+pub(super) fn tally(session: &mut Session, calls: &Calls) {
+    let mut usage = Usage {
+        cache_read_input_tokens: calls.cache_read_input_tokens,
+        input_tokens: calls.input_tokens,
+        output_tokens: calls.output_tokens,
+        ..Usage::default()
     };
+    let cents = (calls.cost + NANOS_PER_CENT / 2) / NANOS_PER_CENT;
+    usage.list_cost = (calls.unpriced == 0).then(|| MonetaryAmount::usd(cents));
+    session.usage = usage;
 }
 
 /// The session's budget is spent: its exact list cost so far, `spent`,
@@ -79,6 +78,12 @@ pub(super) fn final_text(r: &ModelResponse) -> String {
 }
 
 impl Loop {
+    /// The session's calls added up, every thread's.
+    pub(super) async fn calls(&self, claim: &Claim) -> Result<Calls, BackendError> {
+        let calls = self.stores.log.calls(&claim.workspace, &claim.session, KEPT).await;
+        calls.map_err(BackendError::new)
+    }
+
     /// The account-wide budget lets `claim`'s step call `provider` now (M-4);
     /// otherwise the step is deferred, to the next minute or, with the budget
     /// unreadable, for a second.
