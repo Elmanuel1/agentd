@@ -663,11 +663,12 @@ async fn an_archive_and_a_delete_of_one_session_at_once_never_deadlock() {
         archived.archived_at = Some(now());
         archived.status = SessionStatus::Terminated;
         let (archive, deleted) =
-            tokio::join!(store.replace(&ws, &s, archived, &[]), store.delete(&ws, &s.id));
-        assert!(
-            matches!(archive, Ok(()) | Err(StoreError::NotFound)),
-            "the archive ends without a deadlock: {archive:?}"
-        );
-        deleted.expect("the delete ends without a deadlock");
+            tokio::join!(store.replace(&ws, &s, archived.clone(), &[]), store.delete(&ws, &s.id));
+        match archive {
+            Ok(()) => assert_eq!(deleted, Ok(archived), "the archive went first and the delete removed it"),
+            Err(StoreError::NotFound) => assert_eq!(deleted, Ok(s.clone()), "the delete went first"),
+            other => panic!("the archive ends without a deadlock: {other:?}"),
+        }
+        assert_eq!(store.get(&ws, &s.id).await, Err(StoreError::NotFound));
     }
 }
