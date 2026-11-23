@@ -63,7 +63,7 @@ by the user, each with the signal that reopens it.
 | C3 | Context editing `clear_tool_uses_20250919` (beta `context-management-2025-06-27`): trigger default 100,000 input tokens, keeps 3 tool uses, `clear_tool_inputs` false. | VERIFIED | platform.claude.com/docs/en/build-with-claude/context-editing |
 | C4 | `GET /v1/models/{model_id}` returns `max_input_tokens` and `max_tokens`. | VERIFIED | platform.claude.com/docs/en/api/models/retrieve |
 | C5 | Codex compacts at `min(configured limit, 90% of the context window)`, with a handoff prompt ("Create a handoff summary for another LLM that will resume the task.") and the user's messages kept newest first up to 20,000 tokens. | VERIFIED | github.com/openai/codex at 6107b98: `codex-rs/protocol/src/openai_models.rs` 579-590, `codex-rs/prompts/templates/compact/prompt.md`, `codex-rs/core/src/compact.rs` 64 |
-| C6 | Clearing old tool output is about as effective as summarising and cheaper, so it comes first (JetBrains "The Complexity Trap"; Factory and Manus describe the same tiering). | OPEN | named in the user's brief of 2026-11-08, not re-read for this spec; the design does not rest on it (C3 and C5 set the numbers) |
+| C6 | Clearing old tool output is about as effective as summarising and cheaper, so it comes first (JetBrains "The Complexity Trap"; Factory and Manus describe the same tiering). | OPEN | named in the user's brief of 2026-11-08, not re-read for this spec; the design does not follow it: clearing breaks the provider's prompt cache (D31) |
 
 ## Cloudflare Containers (read 2026-11-08)
 

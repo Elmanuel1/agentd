@@ -20,15 +20,17 @@ sequenceDiagram
     participant M as Model
     participant W as Worker (agentd-worker)
     C->>A: user.message
-    A->>L: wakes the session's loop step
-    L->>M: prompt built from the event log
+    A->>L: wakes the session's own step
+    L->>L: starts the primary thread's step
+    L->>M: prompt built from the thread's events
     M-->>L: reply asks for a tool
     L->>A: agent.tool_use, work item queued
     W->>A: polls and takes the work item
     A-->>W: agent.tool_use on the event stream
     W->>W: runs the tool
     W->>A: user.tool_result
-    A->>L: wakes the next loop step
+    A->>L: wakes the session's own step
+    L->>L: wakes the thread's step
     L->>M: prompt with the tool result
     M-->>L: final reply
     L->>A: agent.message, session idle
@@ -43,10 +45,11 @@ sequenceDiagram
 - **MCP server**: an outside tool server the agent can call; agentd connects to it with the credential stored in
   the session's vaults.
 - **Loop worker**: an agentd server whose job is running loop steps; the **step queue** is the list of sessions
-  with a step to run.
+  and threads with a step to run.
 - **Work token**: the credential a worker gets with a work item; it reaches only that session.
 - **Environment key**: the key a worker uses to ask for work; the **runtime queue** is where `cloud` work waits.
-- **Loop step**: one pass of a session's loop: read the session's event log, ask the model, record what it said.
+- **Loop step**: one pass of the loop. A thread's step reads its thread's events, asks the model and records what it
+  said; the session's own step starts the threads' steps and makes the decisions that span them, with no model call.
   A tool call ends a step; the tool's result starts the next one, an allowed MCP call the loop makes itself runs
   in the next step, and an `ask` call after its confirmation.
 - **Work item**: a queue entry that tells a worker "this session needs you"; its id is the session id.
@@ -62,8 +65,8 @@ sequenceDiagram
   is an optional egress proxy. `self_hosted` sandboxes get no placeholders, as on live.
 - **Durable Object**: Cloudflare's per-name server object; each session's container has one, addressed by the
   session id, which starts the container, stages its files and runs the swap.
-- **Compaction**: keeping a long conversation inside the model's window. First old tool results are cleared from the
-  prompt; later the conversation is summarised into a checkpoint. Compaction deletes no event.
+- **Compaction**: keeping a long conversation inside the model's window by summarising it into a checkpoint. No
+  tool result is cleared from a prompt before then, so the provider's prompt cache holds. Compaction deletes no event.
 - **`cloud` and `self_hosted`**: the two kinds of environment. A `self_hosted` environment's workers run on the
   customer's machines; a `cloud` environment's workers run on ours. agentd treats both the same way.
 
@@ -84,7 +87,7 @@ agentd (one stack, each PR on your go-ahead):
    Postgres; DynamoDB for large workspaces is a later step, behind the same port, when its signal passes its threshold.
 6. The loop: the engine brought back, steps from a Postgres queue with leases, the `api` and `loop` roles, model
    limits per workspace and across the account, and every session on the loop.
-7. The rest, in one PR: compaction (clear old tool results, then summarise into checkpoints); MCP servers called
+7. The rest, in one PR: compaction (summaries into checkpoints); MCP servers called
    from the loop with cached connections, vault credentials read per step, one OAuth refresh at a time, deployments
    paused when the environment blocks an MCP host, and vaults as Anthropic documents them; thinking, and a grader
    that grades in its reply; schedules and webhooks through outboxes that a change feed reads from Postgres's WAL;
@@ -124,8 +127,8 @@ agentd (one stack, each PR on your go-ahead):
 - agentd serves MCP servers from the loop with the session's vault credentials (2026-11-08), read once per loop step
   that uses them, with the MCP session and tool list kept per session in Postgres (2026-11-08).
 - Vaults behave as Anthropic documents them (2026-11-08).
-- Compaction in two tiers: clear old tool results at 100,000 tokens or half the window, summarise at 80% of each
-  model's own window with no fixed cap (2026-11-08).
+- Compaction by summary at 80% of each model's own window with no fixed cap (2026-11-08); no tool result is cleared
+  before then, so the provider's prompt cache holds (2026-11-22).
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
   a departure from live (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).

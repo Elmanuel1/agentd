@@ -86,7 +86,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | F-2 | When a session is deleted, the API shall end its streams on every replica with `session.deleted`. |
 | F-3 | When a session is archived, the API shall end its streams on every replica. |
 | F-6 | When a session is archived, the API shall terminate it in the archive's commit: status `terminated`, `session.status_terminated` appended, and its webhook deliveries written (D61). |
-| F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s. |
+| F-4 | While a stream waits for a signal, the API shall also read its session's log on a 5 s timer with up to 1 s of random jitter, so that a dropped signal delays an event by at most about 6 s after every transaction holding a transaction id older than the event's, on any database of the server, has ended (F1). |
 | F-5 | While Postgres is overloaded (a connection waits more than 1 s for the pool, or the database's connections pass 90% of `max_connections`), the API shall refuse a new event stream with 529 `overloaded_error` "Overloaded" and keep the streams already open. |
 | E-2 | Where an event retention period is set (`AGENTD_EVENT_RETENTION_DAYS`, unset by default), the API shall delete the events of sessions archived longer ago than that period. |
 | E-4 | When a session is deleted, the API shall delete its events through the event-log port after the commit that deletes the session row. |
@@ -97,13 +97,14 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 | ID | Requirement |
 |---|---|
 | S-1 | When a client event, `user.tool_result` or `user.custom_tool_result` is appended, the API shall put the session on the step queue in the same commit. |
-| S-2 | The loop shall claim a due step with `FOR UPDATE SKIP LOCKED` under a lease of 12 min, longer than the step's 10 min model deadline, which the step renews every third of its length while it runs and stops when its claim is gone, so that two loop workers never run one session's step at once. |
-| S-3 | The loop shall read the session's log, build the prompt and call the model with no transaction open, then in one commit release its claim, stamp the client events it read processed, and append its events. |
+| S-2 | The loop shall keep a step row for each thread with work and one for the session's own step, and claim a due one with `FOR UPDATE SKIP LOCKED` under a lease of 12 min, longer than the step's 10 min model deadline, which the step renews every third of its length while it runs and stops when its claim is gone, so that two loop workers never run one thread's step at once. |
+| S-3 | A thread's step shall read its own events from the thread's latest checkpoint (a grader that compacted during its round, its round whole), the session-wide events (every `session.*` event, the outcome evaluation spans, and `user.message`, `user.interrupt`, `user.tool_confirmation`, `user.define_outcome` and `system.message`) and the answers to its calls, build the prompt and call the model with no transaction open, commit the call's start before the call, then in one commit release its claim, stamp the client events it read processed, append its events and wake the session's own step. |
 | S-4 | If a loop worker's commit finds its claim gone (a takeover), then the loop shall roll the commit back. |
 | S-5 | When a claim's lease runs out before its commit, the loop shall let another loop worker take the step over and run it again from the log. |
 | S-6 | When a session is woken while its step runs, the loop shall run another step after the commit. |
 | S-7 | The loop shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
-| S-8 | A loop worker shall run at most `AGENTD_STEPS_PER_WORKER` steps at once (default 256), from one database pool of `AGENTD_PG_POOL_SIZE` connections (default 16), holding a connection only while it claims, reads or commits. |
+| S-8 | A loop worker shall claim steps while its replica's memory is under `AGENTD_MEMORY_TARGET` of its limit (default 0.8; the container's memory use less the page cache it can drop, its working set, over its limit, or the host's share in use where the container has no limit), with no count of steps, always running at least one, from one database pool of `AGENTD_DB_POOL_SIZE` connections (default 10), holding a connection only while it claims, reads or writes. |
+| S-9 | The session's own step shall read every thread as S-3 reads one, with the content left out of each processed tool result that is not an error, and call no model. |
 | R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api`, `loop`, or `all`. |
 | R-2 | agentd shall export the number of due, unclaimed steps (`agentd.loop.steps_due`) and of leased steps (`agentd.loop.steps_leased`) as metrics, which the loop workers' autoscaler follows. |
 | M-1 | The loop shall run at most `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` model calls at once per workspace. |
@@ -140,15 +141,15 @@ Decision D31; evidence C1 to C5.
 | ID | Requirement |
 |---|---|
 | CP-1 | The loop shall estimate a thread's prompt size as the previous model call's input, cache read, cache creation and output tokens plus one token per 4 bytes of the events appended since, with no token-counting call. |
-| CP-2 | When a thread's estimated prompt passes the lower of `compaction.clear_at` (`AGENTD_COMPACTION_CLEAR_AT`, default 100,000 tokens) and 50% of the model's window, the loop shall build the prompt with each tool result older than the last `compaction.keep_results` (default 3, from 3 to 5) replaced by a placeholder naming its event id, keeping every tool input and every result with `is_error` true. |
+| CP-2 | The loop shall clear no tool result from a thread's prompt: each result stays in every later prompt, capped (CP-3), until the thread compacts (CP-4), so that each call's prompt extends the last one and the provider's prompt cache holds. |
 | CP-3 | The loop shall cap each tool result at `tool_output_token_limit` (`AGENTD_TOOL_OUTPUT_TOKEN_LIMIT`, default 16,000 tokens) when it appends the result to the prompt, marking the cut; the stored event stays whole. |
 | CP-4 | When a thread's estimated prompt passes 80% of the model's window, the loop shall run a compaction step for that thread before its next turn. |
-| CP-5 | The loop shall run a compaction step only between turns, while the thread has no tool call waiting for its result, as the session's one running step (S-2), so that a thread has at most one compaction running. |
+| CP-5 | The loop shall run a compaction only between turns, while the thread has no tool call waiting for its result, as the thread's own step (S-2), so that a thread has at most one compaction running. |
 | CP-6 | A compaction step shall summarise from the thread's latest checkpoint and the events after it, never the whole log, keeping the user's messages verbatim newest first up to 20,000 tokens (the message that overflows truncated), and for an Anthropic model only as many as fit the Messages API's 16,384-character `instructions` limit (C1), and the last 2 turns, and asking for the goal, constraints, decisions, files touched, open todos, unresolved errors and next steps. |
 | CP-7 | Where the thread's model is an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools, beta `compact-2026-09-04` and `"compaction": {"type": "summarize"}` carrying CP-6's instructions, and every later call of the thread shall send the returned `compaction` block back unmodified, first in `messages`, with the `compact-2026-09-04` beta header (C1). |
 | CP-8 | Where the thread's model is not an Anthropic model, the compaction step shall call it with the main loop's system prompt and tools and a handoff prompt carrying CP-6's instructions, and put the summary first in the thread's later prompts. |
 | CP-9 | When a compaction step finishes, the loop shall append `agent.thread_context_compacted` as the thread's checkpoint, holding the summary, the last event it covers and the model that wrote it, unique per thread and covered event; the API shall serve the event with live's fields only, and no event is deleted. |
-| CP-10 | If a compaction call fails or returns no summary, then the loop shall make the thread's next model call with CP-2's prompt, and run the compaction step again before the model call after it while CP-4's threshold is still passed. |
+| CP-10 | If a compaction call fails or returns no summary, then the loop shall make the thread's next model call with the whole prompt, each tool result capped (CP-3), and run the compaction again before the model call after it while CP-4's threshold is still passed. |
 | CP-11 | If a compaction request would be larger than the window, then the loop shall leave the oldest model calls after the checkpoint out of that request, before the call and with no retry, until it fits or only its latest model call is left. |
 | CP-12 | When a thread's latest checkpoint was written by another model, the loop shall compact again before the thread's next turn. |
 | CP-13 | The loop shall take each model's window from its provider's model list, read once per process: Anthropic's `GET /v1/models/{id}` `max_input_tokens` (C4) and OpenRouter's `GET /api/v1/models` `context_length` (D42), with no setting that overrides it. |
@@ -324,7 +325,8 @@ The Fargate launcher's fleet (D33):
 | Durable execution: state in a log, each step replayable | Temporal (workflow history replayed by any worker), AWS Step Functions | Followed: the event log is the history; a step derives its action from it, so a rerun is safe, except a step that called an MCP tool, which may call it again (MC-25). |
 | A lease with an expiry instead of a held connection or lock | The SRE review of 2026-11-06; Temporal activity timeouts | Followed; a commit checks its claim is still its own. |
 | Fan-out by signal, data from the source of truth | Common pub/sub notify-then-read designs | Followed with Valkey signals and log reads. |
-| Context management in tiers: clear old tool output first, summarise later, keep the raw log | Anthropic context editing (C3) and compaction (C1); Codex (C5) | Followed (D31): the same 100,000-token clearing default and 3 kept results as context editing; summaries at 80% of the window with no fixed cap, below Codex's 90% (C5). |
+| Context management: summarise a long conversation, keep the raw log | Anthropic compaction (C1); Codex (C5); clearing old tool output first, as Anthropic context editing does (C3) | Followed for summaries (D31): at 80% of the window with no fixed cap, below Codex's 90% (C5). Clearing is not followed: it changes the prompt's prefix from call to call, so the provider's prompt cache misses (D31). |
+| Admitting work by a worker's resource use, not a fixed count of slots | Temporal's resource-based worker tuner | Followed (S-8): a worker claims steps while its memory is under its target. |
 | Credentials attached at egress, outside the sandbox | Live `cloud` (B19); Cloudflare outbound handlers (G5) | Followed for our `cloud` (D25, D38). |
 | A per-session sandbox Durable Object with an outbound egress hook and R2 backups | Cloudflare's `claude-managed-agents` template (G9) | Followed and credited (D38); it differs where the template departs from live (CF-8 to CF-10). |
 | Single-use workers scaled on queue depth | ECS target tracking on backlog per task, with task scale-in protection (Q3) | Followed for the Fargate launcher and the loop workers (D33). |
@@ -403,10 +405,10 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   `(queue, session_id)` and `(queue, created_at desc)`, built `CONCURRENTLY` in V12, in PR 4a.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
-- **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
-  primary key (workspace_id, session_id)) with (fillfactor = 70, autovacuum_vacuum_scale_factor = 0.01,
+- **Sm.** `create table loop_steps (workspace_id, session_id, thread_id default '', due_at, wakes, lease_owner,
+  lease_until, attempts, primary key (workspace_id, session_id, thread_id)) with (fillfactor = 70, autovacuum_vacuum_scale_factor = 0.01,
   autovacuum_analyze_scale_factor = 0.02, autovacuum_vacuum_cost_limit = 2000)`, since every step updates and
-  deletes its row; partial index on `due_at` where `lease_until is null`; index on `lease_until`.
+  deletes its row; `thread_id` `''` is the session's own step (V26); partial index on `due_at` where `lease_until is null`; index on `lease_until`.
 - **E4m.** In its own file: `create index concurrently sessions_archived_at on sessions ((doc->>'archived_at'),
   session_id) where doc->>'archived_at' is not null`, for E4's walk.
 - **Km.** `create table schedules (target, workspace_id, spec, next_fire_at, paused, primary key (target))`; index on
@@ -482,9 +484,14 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   unnest(…) WITH ORDINALITY`; `update_processed_at(ws, session,
   ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
   doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. The
-  `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append, each
-  taking it first in its transaction, so a session's `seq` order is its commit order and a
-  keyset read on `seq` never skips an event that commits late. No migration: `processed_at` stays in `doc`, as
+  `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append of
+  client events and answers, each taking it first in its transaction; a step's commit takes none. Each event records
+  its transaction id (`xid`, V27), and a reader serves events only below the oldest transaction still running
+  (`pg_snapshot_xmin`, server-wide) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late.
+  An event therefore waits until every older transaction holding a transaction id, on any database of the server, has
+  ended: agentd holds none open across a model call, a tool or a stream (S-3), so the wait is its own short writes,
+  and a long writing transaction from elsewhere delays every stream and every `events.list` read until it ends, seen
+  as the largest `age(backend_xid)` in `pg_stat_activity` and the oldest entry in `pg_prepared_xacts`. No migration: `processed_at` stays in `doc`, as
   today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
   concurrent appends to one session are read back in commit order, each once.
 - **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
@@ -493,7 +500,7 @@ Every table and index of the plan ships here, production-safe, except V12's two 
 - **F3.** `sessions/src/service/stream.rs`: the fallback timer of 5 s plus up to 1 s of jitter; the overload gate
   reads the pool's wait time and a 10 s cached `SELECT count(*) FROM pg_stat_activity` against `max_connections`;
   `store-postgres/src/pool.rs` opens the replica pool when `AGENTD_PG_READ_URL` is set and `events.list` uses it.
-  Tests: with signals off, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
+  Tests: with signals off and no long transaction open, an event reaches the stream within 6 s; with the gate forced, a new stream gets 529
   `overloaded_error` and an open one keeps streaming; with a replica URL set, `events.list` reads it and a step
   reads the primary.
 - **E4.** Every event-log access stays behind its port (D18): `SessionEventReads` reads, and `SessionEventLog`,
@@ -516,11 +523,12 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   oldest. Its test: the
   metric advances after a run. Session delete, in
   `sessions/src/service/lifecycle.rs` and `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one
-  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1) and, from PR 6, every step commit, so an append in flight finishes first and a later one finds no session; 1 `DELETE FROM sessions WHERE
-  workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status FROM
-  sessions WHERE …` on the failure path to answer 404 or today's `cannot delete a running session` error; from PR 6, 1 `DELETE
-  FROM loop_steps WHERE workspace_id = $1 AND session_id = $2`, so a queued step is gone and a running one finds its
-  claim gone at commit and rolls back (S-4); from PR 4, W3's stop (W-11: 1 UPDATE); from PR 7, MC1's `mcp_connections` delete
+  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes first and a later one finds no session; from PR 6, 2 `DELETE FROM loop_steps`, the
+  session's own step, then its threads' steps, before the session row, in the lock order a step's commit takes, so a
+  queued step is gone and a running one finds its claim gone at commit and rolls back (S-4); 1 `DELETE FROM sessions
+  WHERE workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status
+  FROM sessions WHERE …` on the failure path to answer 404 or today's `cannot delete a running session` error, the
+  steps' delete rolling back with it; from PR 4, W3's stop (W-11: 1 UPDATE); from PR 7, MC1's `mcp_connections` delete
   (MC-22: 1 `DELETE FROM mcp_connections WHERE workspace_id = $1 AND session_id = $2`). `SessionsStore::delete` calls
   those two methods with its transaction, so each has one version, taking the caller's connection. Today's pre-read of the session goes.
   After the commit, 1 `delete_events_of` with the one session (E-4), outside the transaction because the log sits
@@ -546,12 +554,12 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   once; a lease that runs out is taken over and the late commit is rolled back; a wake during a step runs another
   step; deleting a session during a running step makes that step's commit roll back, and no step runs after the
   delete.
-- **S2.** `crates/engine/src/worker.rs` (claim, run one step, commit), `api/src/config/role.rs` (`AGENTD_ROLE`,
-  `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`, `AGENTD_MODEL_ATTEMPTS`, `AGENTD_STEPS_PER_WORKER`,
-  `AGENTD_PG_POOL_SIZE`); the two gauges come from 1 `SELECT count(*) FILTER (WHERE lease_until IS NULL AND due_at <=
+- **S2.** `crates/engine/src/worker/` (claim, run one step, commit; `memory.rs` for admission),
+  `api/src/config/role.rs` (`AGENTD_ROLE`, `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`, `AGENTD_MODEL_ATTEMPTS`,
+  `AGENTD_MEMORY_TARGET`) and `api/src/config/store.rs` (`AGENTD_DB_POOL_SIZE`); the two gauges come from 1 `SELECT count(*) FILTER (WHERE lease_until IS NULL AND due_at <=
   now()), count(*) FILTER (WHERE lease_until > now()) FROM loop_steps` every 10 s per replica. Tests: an `api`
   replica claims no step; two `loop` replicas share the queue; a workspace at its limit leaves its next step for
-  later and others run; a worker set to 4 steps runs no fifth at once; the gauges match the table.
+  later and others run; a worker claims steps while its memory is under the target; the gauges match the table.
 - **M1.** `engine/src/model/budget.rs` (new): per provider and minute, one Valkey `INCRBY` of requests and of the
   estimated input tokens (CP-1) on a key that expires after 120 s; over the budget, the step is deferred with the
   statement in the step queue table and no model call. Tests: with a budget of 2 requests a minute, a third step is
@@ -568,22 +576,20 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   models endpoint per provider gives the window once; a model its provider does not list refuses to start a step
   with a clear log line.
 - **CP1.** `engine/src/turn/compact/` (new, each file under 200 lines): `estimate.rs` (CP-1 from the last
-  `span.model_request_end` usage and the bytes since), `clear.rs` (CP-2 placeholders `[tool result cleared: event
-  <id>]`), `cap.rs` (CP-3). Prompt building only; no statement. Tests (thresholds set to 15% of a scripted model's
-  window): past it, results older than the last 3 are placeholders naming their event ids, inputs and error results
-  stay; below it, nothing changes; a 50,000-token result reaches the prompt cut at the limit and the stored event is
-  whole.
+  `span.model_request_end` usage and the bytes since), `prompt.rs` (CP-3). Prompt building only; no statement.
+  Tests: a 50,000-token result reaches the prompt cut at the limit and the stored event is whole; no result is
+  cleared from a later prompt (CP-2).
 - **CP2.** `engine/src/worker/compact.rs` and `turn/compact/summary.rs`: the step chooses compaction when CP-4's threshold is
   passed and CP-5 holds; the summary call reuses the turn's system prompt and tools (so the prompt cache hits) with
   `compact-2026-09-04`; the checkpoint event's stored `checkpoint` object holds the block, `through_seq` and the
   model, and the API's typed event drops it on read. Statements: the step's commit (step queue table) appends the
-  checkpoint in its multi-row INSERT; the step queue's Run read reads the session's whole log, and the step builds
-  each thread's prompt from its latest checkpoint and the events after it. Tests (a scripted model with a 20,000-token
+  checkpoint in its multi-row INSERT; a thread's step reads its thread from its latest checkpoint and the events after it
+  (S-3) and builds its prompt from them. Tests (a scripted model with a 20,000-token
   window, so 80% is reached in a few turns): a long scripted conversation compacts once, writes one `agent.thread_context_compacted` with live's
   fields only on list and stream, and the next call sends the block first and unmodified; a fact planted in an early
   user message is in the first prompt after compaction (verbatim or in the summary); a second compaction starts from
   the first checkpoint; a step with a tool call waiting does not compact; a summary call that returns no block
-  leaves the cleared prompt, the next model call takes the turn, and compaction runs again before the model call after it; every call after compaction sends the
+  leaves the whole, capped prompt, the next model call takes the turn, and compaction runs again before the model call after it; every call after compaction sends the
   `compact-2026-09-04` beta header with the block (CP-7). A recall check against a real model runs only with the
   user's OK (D22).
 - **CP3.** `engine/src/turn/compact/summary.rs` (the handoff prompt) and `engine/src/worker/compact.rs` (the trim
@@ -825,12 +831,16 @@ The removals are in PR 7 (D44).
 
 | Operation | Statements |
 |---|---|
-| Enqueue, in the commit that appends the waking event (after its session append lock) | 1 `INSERT INTO loop_steps … ON CONFLICT (workspace_id, session_id) DO UPDATE SET wakes = loop_steps.wakes + 1` |
-| Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `UPDATE loop_steps SET due_at = now() + interval '1 second' WHERE workspace_id = $1 AND lease_until IS NULL` defers the whole workspace and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Run, no transaction open | 1 `SELECT seq, doc` of the session's events (the whole log), noting the ids of the client events it read; the model call. The checkpoint-bounded read (1 `SELECT DISTINCT ON (doc->>'session_thread_id')` of each thread's latest checkpoint on CPm's index, then 1 keyset SELECT of the events after the oldest) is the scale-up step for this read, taken when the load test or the log-reads trigger shows the log read growing (SRE) |
-| Commit, one transaction | 1 `SELECT pg_advisory_xact_lock(hashtext($session))` first, the same lock every append of the session takes before touching `loop_steps`, so the two never wait on each other in a cycle; when the step leaves an allowed `agent.mcp_tool_use` unanswered (MC-24), or ran MCP calls with no model call (MC-25), both MC1's, 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed` and no DELETE; otherwise 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing, the same UPDATE; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `UPDATE session_events SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($read_ids) AND doc->>'processed_at' IS NULL`; 1 multi-row INSERT of the step's events; the session row writes those events cause, as `record` does today; when the step changes the session's status or a refresh failed, 1 multi-row `INSERT INTO webhook_deliveries` (H1) |
+| Enqueue, in the commit that appends the waking event | 1 `INSERT INTO loop_steps (workspace_id, session_id, thread_id) SELECT … FROM sessions CROSS JOIN unnest($threads) … ORDER BY thread_id ON CONFLICT (workspace_id, session_id, thread_id) DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())`, for the session's own step (`thread_id` `''`) or the threads a step wakes; a session that is gone gets no step |
+| Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `WITH free AS (SELECT … WHERE workspace_id = $1 AND (lease_until IS NULL OR lease_until < now()) FOR UPDATE SKIP LOCKED) UPDATE loop_steps SET due_at = greatest(due_at, now() + interval '1 second') FROM free …` defers the workspace's free steps, skipping rows another transaction holds, and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
+| Thread step read, no transaction open | 1 `SELECT doc FROM sessions`; 1 `WITH cuts AS (…) SELECT … FROM session_events` of the thread from its latest checkpoint, the session-wide events and the answers to its calls by `LEFT JOIN` (S-3), run once more whole for a grader that compacted; the rubric file reads; 1 `SELECT sum(…) FILTER (…) FROM session_events` (usage); 1 `SELECT DISTINCT ON … FROM unnest(…) JOIN skill_versions` (the agent's skills); 1 `SELECT doc FROM session_events` of the session's queued client events (`unprocessed_events`) when the call starts, on each session signal during it, and after the reply; the model call |
+| Thread step opening write, one transaction | 1 `UPDATE loop_steps SET lease_until` (held); 1 `stamp` UPDATE of the client events it read; 1 `INSERT … SELECT` of the call's start; with a status change only, 1 `SELECT doc FROM sessions … FOR NO KEY UPDATE`, 1 `UPDATE sessions` and the status webhooks' inserts (H1) |
+| Thread step commit, one transaction | the Enqueue statement, waking the session's own step; 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing (woken, or an allowed `agent.mcp_tool_use` left for the next step, MC-24), 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of the step's events; with a verdict only, 1 `SELECT … FOR NO KEY UPDATE` and 1 `UPDATE sessions` |
+| Session step, no transaction open | 1 `SELECT doc FROM sessions`; the thread step read for every thread, processed tool results without their content; the rubric file reads; the usage sum; on a second interrupt, the work item's halt; no model call |
+| Session step commit, one transaction | the DELETE or release of its own row, as a thread step's; 1 Enqueue statement waking every thread it gives a step; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of its events; 1 `SELECT … FOR NO KEY UPDATE` and, when the status or usage changed, 1 `UPDATE sessions` and the status webhooks' inserts (H1) |
+| Lock order | a client append, an answer, the delete and every step take their locks in one order: the session's advisory lock (`pg_advisory_xact_lock(hashtext($session))`, which no step takes), then the session's own step row, then the threads' step rows (by `thread_id`), then the session row; so no step waits on the advisory lock while holding a row. The archive takes the session row `FOR UPDATE` first and the advisory lock after it, when it appends `session.status_terminated`, so an archive and a delete of one session at once can deadlock, and Postgres aborts one of them |
 | Defer at the account-wide model budget (M-4), a credential claimed by another worker (MC-20), or a lost refresh claim whose stored token is still expired (MC-23) | 1 `UPDATE loop_steps SET lease_owner = NULL, lease_until = NULL, due_at = $when WHERE … AND lease_owner = $me AND attempts = $claimed` |
-| Compaction step (CP2) | the Run and Commit statements; the Commit's multi-row INSERT carries the checkpoint |
+| Compaction step (CP2) | the thread step's read, opening write and commit; the commit's INSERT carries the checkpoint |
 | Takeover | the Claim statements: a lease that has run out is claimable |
 
 ## Rollout
@@ -878,7 +888,7 @@ The launch deployment (D34) and the scale-up path, each switch a setting:
 | Part | Launch | Scale-up, and its switch |
 |---|---|---|
 | agentd | one container, `AGENTD_ROLE=all`, on tosspaper's existing host or ECS, behind its load balancer and NAT | separate `api` and `loop` services (`AGENTD_ROLE`), loop workers autoscaled on `agentd.loop.steps_due` |
-| Postgres | its own `agentd` schema in tosspaper's Postgres, a pool of 16 per replica | its own RDS instance (`AGENTD_PG_URL`), then RDS Proxy in front (the same setting), then a read replica (`AGENTD_PG_READ_URL`) |
+| Postgres | its own `agentd` schema in tosspaper's Postgres, a pool of 10 per replica (`AGENTD_DB_POOL_SIZE`) | its own RDS instance (`AGENTD_PG_URL`), then RDS Proxy in front (the same setting), then a read replica (`AGENTD_PG_READ_URL`) |
 | Pub/sub | tosspaper's Valkey | its own Valkey (`AGENTD_VALKEY_URL`), or a Valkey cluster (`AGENTD_VALKEY_CLUSTER=true`) |
 | Change feed | Debezium Server, one instance, reading Postgres's WAL (`wal_level=logical`) into self-hosted Kafka (`AGENTD_KAFKA_BROKERS`), so Valkey needs no durability (D52) | unchanged; with `AGENTD_KAFKA_BROKERS` unset the feed is Valkey Streams |
 | agentd's keys | environment variables, filled however the deployment chooses (D59) | unchanged |
@@ -916,14 +926,14 @@ metric of agentd's yet.
 | Event appends | 500 steps/s × about 10 events per step (N3) | 5×10^3 events/s, one multi-row INSERT per step |
 | Step statements | about 10 per step, plus 1 when the step changes the session's status (a webhook delivery INSERT) | about 5×10^3/s on Postgres |
 | A workspace at its limit | 4 statements per claim that finds it at the limit; a step enqueued during the deferral can cause one more | bounded by the enqueue rate of workspaces at their limit plus one deferral per second each |
-| Log reads | 500 steps/s × the session's whole log, which each step reads; compaction bounds the prompt, not the read | measured in the load test; the step moves to the checkpoint-bounded read (Run row) and `events.list` to the read replica when it grows |
+| Log reads | 500 steps/s × a thread's events since its latest checkpoint plus the session-wide events (S-3) | a thread's own events are bounded by its compaction; the session-wide events and a compacted grader's whole round are not; measured in the load test; `events.list` moves to the read replica when it grows |
 | Model calls | 500/s at most, 32 at once per workspace (D13), and the account-wide budget (M-4) | bounded by M-1 and M-4 |
 | Compaction calls | one per thread each time it reaches the summary threshold; a step that compacts makes no turn call | at most the model call rate, measured in the load test |
 | MCP per step | an MCP tool call adds two steps, the tool step and the model step after it (MC-24, MC-25); 1 `mcp_connections` SELECT and 1 credential SELECT per step; `initialize` and `tools/list` only on a reconnect (MC-15); 1 `GetSecretValue` per server the step connects to or calls (MC-6) | at most 500 secret reads/s when every step calls one server, about 1.3×10^9 a month, about $6.5k a month at $0.05 per 10,000 calls (Q1); a step that calls no MCP tool reads none |
 | Swap reads (Cloudflare) | each credential read at most once per 5 minutes per session object (CF-6) | 10^4 sessions × c credentials / 300 s = 33c reads/s |
 | Secrets Manager in all | MCP plus swap reads against the fixed 10,000/s regional `GetSecretValue` limit (Q1) | under 600/s with one credential each; the envelope trigger fires at 5,000/s |
-| Loop workers | steps in flight = 500/s × model latency; each worker runs up to 256 steps at once (S-8) | about 60 workers at a 30 s latency; the autoscaler follows `agentd.loop.steps_due` |
-| Database connections | loop workers and API replicas × a pool of 16 | about 1,000 at 60 workers: past a single instance's comfortable `max_connections`, so RDS Proxy is on before this peak (trigger below) |
+| Loop workers | steps in flight = 500/s × model latency; each worker claims steps while its memory is under `AGENTD_MEMORY_TARGET` (S-8) | about 15,000 steps in flight at a 30 s latency; the worker count follows each step's memory, measured in the load test; replicas scale on memory and `agentd.loop.steps_due` |
+| Database connections | loop workers and API replicas × a pool of 10 (`AGENTD_DB_POOL_SIZE`) | about 1,000 at an assumed 100 replicas, the count the load test measures: past a single instance's comfortable `max_connections`, so RDS Proxy is on before this peak (trigger below) |
 | `cloud` sandboxes on Cloudflare | 10^4 sessions × 1/4 to 1/2 vCPU against the 1,500 vCPU default (G1) | 2,500 to 5,000 vCPU: a capacity raise is agreed with Cloudflare before production volume |
 | Fargate fleet (AWS-only operators) | one task per active session | the Fargate vCPU and ENI quotas (Q4) are raised with AWS before production volume |
 
@@ -936,7 +946,7 @@ Each trigger is a signal and a threshold for the deployment's monitoring backend
 |---|---|---|---|
 | Postgres connections | `AWS/RDS` `DatabaseConnections` over `max_connections` | above 70% for 15 minutes; also checked at deploy time as loop workers × pool size | add RDS Proxy (transaction pooling) |
 | Secrets Manager reads | `AWS/Usage` `CallCount` for Secrets Manager `GetSecretValue` | above 5,000/s (50% of the limit) for 15 minutes | plan envelope encryption (D30) |
-| Log reads | `events.list` p99 latency | above 500 ms for 1 hour | configure the read replica, and move the step to the checkpoint-bounded read (the step queue's Run row) |
+| Log reads | `events.list` p99 latency | above 500 ms for 1 hour | configure the read replica |
 | Event-log load | events appended per second, and `AWS/RDS` `WriteIOPS` and `CPUUtilization` | appends above 2,500/s (half the sizing peak) or Postgres CPU above 70% for 1 hour | plan the DynamoDB event log (Out of scope) |
 | Sandbox start | time from work item queued to first `user.tool_result` | p99 above 10 s for 1 hour | a warm buffer on Fargate, or a capacity raise on Cloudflare |
 
