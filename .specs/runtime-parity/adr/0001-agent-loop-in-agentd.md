@@ -59,7 +59,7 @@ customer; a `cloud` environment's workers belong to Anthropic.
 - Every built-in tool call round-trips through the event log: the loop parks it as `agent.tool_use`, a worker answers
   with `user.tool_result`, and the result queues the session's next step.
 - agentd runs two roles from one binary, the API and loop workers, each scaled on its own.
-- The loop owns each thread's context: it clears old tool results and writes summary checkpoints into the event log
+- The loop owns each thread's context: it caps each tool result and writes summary checkpoints into the event log
   (D31), and never deletes an event.
 - At launch agentd runs as one container on tosspaper's existing host and Postgres (D34); the separate services,
   RDS Proxy and envelope encryption are settings and later plans, each with its trigger.
