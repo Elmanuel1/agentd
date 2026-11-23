@@ -98,12 +98,13 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 |---|---|
 | S-1 | When a client event, `user.tool_result` or `user.custom_tool_result` is appended, the API shall put the session on the step queue in the same commit. |
 | S-2 | The loop shall keep a step row for each thread with work and one for the session's own step, and claim a due one with `FOR UPDATE SKIP LOCKED` under a lease of 12 min, longer than the step's 10 min model deadline, which the step renews every third of its length while it runs and stops when its claim is gone, so that two loop workers never run one thread's step at once. |
-| S-3 | A thread's step shall read its own events from the thread's latest checkpoint, the session-wide events (every `session.*` event, the outcome evaluation spans and the client events that answer no call) and the answers to its calls, build the prompt and call the model with no transaction open, commit the call's start before the call, then in one commit release its claim, stamp the client events it read processed, append its events and wake the session's own step. The session's own step shall read every thread the same way and call no model. |
+| S-3 | A thread's step shall read its own events from the thread's latest checkpoint (a grader that compacted during its round, its round whole), the session-wide events (every `session.*` event, the outcome evaluation spans, and `user.message`, `user.interrupt`, `user.tool_confirmation`, `user.define_outcome` and `system.message`) and the answers to its calls, build the prompt and call the model with no transaction open, commit the call's start before the call, then in one commit release its claim, stamp the client events it read processed, append its events and wake the session's own step. |
 | S-4 | If a loop worker's commit finds its claim gone (a takeover), then the loop shall roll the commit back. |
 | S-5 | When a claim's lease runs out before its commit, the loop shall let another loop worker take the step over and run it again from the log. |
 | S-6 | When a session is woken while its step runs, the loop shall run another step after the commit. |
 | S-7 | The loop shall hold no session state in a replica's memory between steps and nothing while a tool runs. |
-| S-8 | A loop worker shall claim steps while its replica's memory is under `AGENTD_MEMORY_TARGET` of its limit (default 0.8; the container's working set less the page cache it can drop, or the host's share in use where the container has no limit), with no count of steps, always running at least one, from one database pool of `AGENTD_DB_POOL_SIZE` connections (default 10), holding a connection only while it claims, reads or writes. |
+| S-8 | A loop worker shall claim steps while its replica's memory is under `AGENTD_MEMORY_TARGET` of its limit (default 0.8; the container's memory use less the page cache it can drop, its working set, over its limit, or the host's share in use where the container has no limit), with no count of steps, always running at least one, from one database pool of `AGENTD_DB_POOL_SIZE` connections (default 10), holding a connection only while it claims, reads or writes. |
+| S-9 | The session's own step shall read every thread as S-3 reads one, with each processed tool result's content left out, and call no model. |
 | R-1 | agentd shall run in the role its `AGENTD_ROLE` setting names: `api`, `loop`, or `all`. |
 | R-2 | agentd shall export the number of due, unclaimed steps (`agentd.loop.steps_due`) and of leased steps (`agentd.loop.steps_leased`) as metrics, which the loop workers' autoscaler follows. |
 | M-1 | The loop shall run at most `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE` model calls at once per workspace. |
@@ -404,10 +405,10 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   `(queue, session_id)` and `(queue, created_at desc)`, built `CONCURRENTLY` in V12, in PR 4a.
 - **W6m.** `create table environment_keys (environment_key_id, org_id, workspace_id, environment_id, name,
   key_digest unique, partial_key_hint, created_at, revoked_at)`.
-- **Sm.** `create table loop_steps (workspace_id, session_id, due_at, wakes, lease_owner, lease_until, attempts,
-  primary key (workspace_id, session_id)) with (fillfactor = 70, autovacuum_vacuum_scale_factor = 0.01,
+- **Sm.** `create table loop_steps (workspace_id, session_id, thread_id default '', due_at, wakes, lease_owner,
+  lease_until, attempts, primary key (workspace_id, session_id, thread_id)) with (fillfactor = 70, autovacuum_vacuum_scale_factor = 0.01,
   autovacuum_analyze_scale_factor = 0.02, autovacuum_vacuum_cost_limit = 2000)`, since every step updates and
-  deletes its row; partial index on `due_at` where `lease_until is null`; index on `lease_until`.
+  deletes its row; `thread_id` `''` is the session's own step (V26); partial index on `due_at` where `lease_until is null`; index on `lease_until`.
 - **E4m.** In its own file: `create index concurrently sessions_archived_at on sessions ((doc->>'archived_at'),
   session_id) where doc->>'archived_at' is not null`, for E4's walk.
 - **Km.** `create table schedules (target, workspace_id, spec, next_fire_at, paused, primary key (target))`; index on
@@ -482,10 +483,10 @@ Every table and index of the plan ships here, production-safe, except V12's two 
 - **F1.** `entities/session_events.rs`: append stays L6's one multi-row `INSERT … SELECT … FROM sessions s,
   unnest(…) WITH ORDINALITY`; `update_processed_at(ws, session,
   ids, at)` is one `UPDATE … SET doc = jsonb_set(doc, '{processed_at}', …) WHERE … AND event_id = ANY($ids) AND
-  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. The
-  `pg_advisory_xact_lock(hashtext(session))` that L6 takes for a work token's results extends to every append, each
-  taking it first in its transaction, so a session's `seq` order is its commit order and a
-  keyset read on `seq` never skips an event that commits late. No migration: `processed_at` stays in `doc`, as
+  doc->>'processed_at' IS NULL RETURNING seq, doc`, so a step stamps exactly the events it read. Each event
+  records its transaction id (`xid`, V27), and a reader serves events only below the oldest transaction still
+  running (`pg_snapshot_xmin`) and pages by (`xid`, `seq`), so a keyset read never skips an event that commits late;
+  no append or step takes a session-wide lock. No migration: `processed_at` stays in `doc`, as
   today. Tests: two stamps get disjoint events; a stamp leaves an unread event and a status event unstamped;
   concurrent appends to one session are read back in commit order, each once.
 - **F2.** `sessions/src/service/events.rs` and a `signals` adapter over Valkey; per replica one log read per tick
@@ -517,7 +518,7 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   oldest. Its test: the
   metric advances after a run. Session delete, in
   `sessions/src/service/lifecycle.rs` and `store-postgres/src/entities/sessions.rs`: `SessionsStore::delete` is one
-  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1) and, from PR 6, every step commit, so an append in flight finishes first and a later one finds no session; 1 `DELETE FROM sessions WHERE
+  transaction: 1 `SELECT pg_advisory_xact_lock(hashtext($session))`, the lock every append takes (F1), so an append in flight finishes first and a later one finds no session; 1 `DELETE FROM sessions WHERE
   workspace_id = $1 AND session_id = $2 AND status <> 'running' RETURNING doc`, and on 0 rows 1 `SELECT status FROM
   sessions WHERE …` on the failure path to answer 404 or today's `cannot delete a running session` error; from PR 6, 1 `DELETE
   FROM loop_steps WHERE workspace_id = $1 AND session_id = $2`, so a queued step is gone and a running one finds its
@@ -547,9 +548,9 @@ Every table and index of the plan ships here, production-safe, except V12's two 
   once; a lease that runs out is taken over and the late commit is rolled back; a wake during a step runs another
   step; deleting a session during a running step makes that step's commit roll back, and no step runs after the
   delete.
-- **S2.** `crates/engine/src/worker.rs` (claim, run one step, commit), `api/src/config/role.rs` (`AGENTD_ROLE`,
-  `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`, `AGENTD_MODEL_ATTEMPTS`, `AGENTD_MEMORY_TARGET`,
-  `AGENTD_DB_POOL_SIZE`); the two gauges come from 1 `SELECT count(*) FILTER (WHERE lease_until IS NULL AND due_at <=
+- **S2.** `crates/engine/src/worker/` (claim, run one step, commit; `memory.rs` for admission),
+  `api/src/config/role.rs` (`AGENTD_ROLE`, `AGENTD_MODEL_CONCURRENCY_PER_WORKSPACE`, `AGENTD_MODEL_ATTEMPTS`,
+  `AGENTD_MEMORY_TARGET`) and `api/src/config/store.rs` (`AGENTD_DB_POOL_SIZE`); the two gauges come from 1 `SELECT count(*) FILTER (WHERE lease_until IS NULL AND due_at <=
   now()), count(*) FILTER (WHERE lease_until > now()) FROM loop_steps` every 10 s per replica. Tests: an `api`
   replica claims no step; two `loop` replicas share the queue; a workspace at its limit leaves its next step for
   later and others run; a worker claims steps while its memory is under the target; the gauges match the table.
@@ -826,7 +827,7 @@ The removals are in PR 7 (D44).
 |---|---|
 | Enqueue, in the commit that appends the waking event | 1 `INSERT INTO loop_steps (workspace_id, session_id, thread_id) SELECT … FROM sessions CROSS JOIN unnest($threads) … ORDER BY thread_id ON CONFLICT (workspace_id, session_id, thread_id) DO UPDATE SET wakes = loop_steps.wakes + 1, due_at = least(loop_steps.due_at, now())`, for the session's own step (`thread_id` `''`) or the threads a step wakes; a session that is gone gets no step |
 | Claim, one transaction | 1 `SELECT … WHERE due_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY due_at FOR UPDATE SKIP LOCKED LIMIT 1`; 1 `SELECT pg_try_advisory_xact_lock(hashtext($workspace))`, and when it returns false the claim ends, so no claimer waits on the lock while holding a row; 1 `SELECT count(*) FROM loop_steps WHERE workspace_id = $1 AND lease_until > now()`; at the limit, 1 `WITH free AS (SELECT … WHERE workspace_id = $1 AND (lease_until IS NULL OR lease_until < now()) FOR UPDATE SKIP LOCKED) UPDATE loop_steps SET due_at = greatest(due_at, now() + interval '1 second') FROM free …` defers the workspace's free steps, skipping rows another transaction holds, and the claim ends; under it, 1 `UPDATE … SET lease_owner = $me, lease_until = now() + interval '12 minutes', attempts = attempts + 1` |
-| Thread step read, no transaction open | 1 `SELECT doc FROM sessions`; 1 `WITH cuts AS (…) SELECT … FROM session_events` of the thread from its latest checkpoint, the session-wide events and the answers to its calls by `LEFT JOIN` (S-3), run once more whole for a grader that compacted; the rubric file reads; 1 `SELECT sum(…) FILTER (…) FROM session_events` (usage); 1 `SELECT DISTINCT ON … FROM unnest(…) JOIN skill_versions` (the agent's skills); the model call |
+| Thread step read, no transaction open | 1 `SELECT doc FROM sessions`; 1 `WITH cuts AS (…) SELECT … FROM session_events` of the thread from its latest checkpoint, the session-wide events and the answers to its calls by `LEFT JOIN` (S-3), run once more whole for a grader that compacted; the rubric file reads; 1 `SELECT sum(…) FILTER (…) FROM session_events` (usage); 1 `SELECT DISTINCT ON … FROM unnest(…) JOIN skill_versions` (the agent's skills); 1 `SELECT doc FROM session_events` of the session's queued client events (`unprocessed_events`) when the call starts, on each session signal during it, and after the reply; the model call |
 | Thread step opening write, one transaction | 1 `UPDATE loop_steps SET lease_until` (held); 1 `stamp` UPDATE of the client events it read; 1 `INSERT … SELECT` of the call's start; with a status change only, 1 `SELECT doc FROM sessions … FOR NO KEY UPDATE`, 1 `UPDATE sessions` and the status webhooks' inserts (H1) |
 | Thread step commit, one transaction | the Enqueue statement, waking the session's own step; 1 `DELETE FROM loop_steps WHERE … AND lease_owner = $me AND attempts = $claimed AND wakes = $claimed_wakes`, and when it deletes nothing (woken, or an allowed `agent.mcp_tool_use` left for the next step, MC-24), 1 `UPDATE … SET lease_owner = NULL, lease_until = NULL, due_at = now() WHERE … AND lease_owner = $me AND attempts = $claimed`; when that UPDATE updates nothing, the claim was taken over: roll back; 1 `stamp` UPDATE; 1 `INSERT … SELECT` of the step's events; with a verdict only, 1 `SELECT … FOR NO KEY UPDATE` and 1 `UPDATE sessions` |
 | Session step, no transaction open | 1 `SELECT doc FROM sessions`; the thread step read for every thread, processed tool results without their content; the rubric file reads; the usage sum; on a second interrupt, the work item's halt; no model call |
@@ -926,7 +927,7 @@ metric of agentd's yet.
 | Swap reads (Cloudflare) | each credential read at most once per 5 minutes per session object (CF-6) | 10^4 sessions × c credentials / 300 s = 33c reads/s |
 | Secrets Manager in all | MCP plus swap reads against the fixed 10,000/s regional `GetSecretValue` limit (Q1) | under 600/s with one credential each; the envelope trigger fires at 5,000/s |
 | Loop workers | steps in flight = 500/s × model latency; each worker claims steps while its memory is under `AGENTD_MEMORY_TARGET` (S-8) | about 15,000 steps in flight at a 30 s latency; the worker count follows each step's memory, measured in the load test; replicas scale on memory and `agentd.loop.steps_due` |
-| Database connections | loop workers and API replicas × a pool of 10 (`AGENTD_DB_POOL_SIZE`) | about 1,000 at 100 replicas: past a single instance's comfortable `max_connections`, so RDS Proxy is on before this peak (trigger below) |
+| Database connections | loop workers and API replicas × a pool of 10 (`AGENTD_DB_POOL_SIZE`) | about 1,000 at an assumed 100 replicas, the count the load test measures: past a single instance's comfortable `max_connections`, so RDS Proxy is on before this peak (trigger below) |
 | `cloud` sandboxes on Cloudflare | 10^4 sessions × 1/4 to 1/2 vCPU against the 1,500 vCPU default (G1) | 2,500 to 5,000 vCPU: a capacity raise is agreed with Cloudflare before production volume |
 | Fargate fleet (AWS-only operators) | one task per active session | the Fargate vCPU and ENI quotas (Q4) are raised with AWS before production volume |
 

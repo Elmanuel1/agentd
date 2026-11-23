@@ -125,7 +125,7 @@ agentd (one stack, each PR on your go-ahead):
   that uses them, with the MCP session and tool list kept per session in Postgres (2026-11-08).
 - Vaults behave as Anthropic documents them (2026-11-08).
 - Compaction by summary at 80% of each model's own window with no fixed cap (2026-11-08); no tool result is cleared
-  before then, so the provider's prompt cache holds (2026-11-23).
+  before then, so the provider's prompt cache holds (2026-11-22).
 - A session's work token may read its own mounted files and save its outputs through the existing files endpoints,
   a departure from live (2026-11-08).
 - No session state held in a replica: steps from a Postgres queue, any replica runs the next step (2026-11-08).
