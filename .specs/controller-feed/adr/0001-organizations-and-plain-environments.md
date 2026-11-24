@@ -46,8 +46,9 @@ Departures:
    organization fails.
 3. `agentd organization delete <org_id>` deletes the organization and everything it owns in one transaction:
    workspace-scoped rows explicitly, org-scoped rows by cascade, and a schedule delete in the outbox for each removed
-   deployment not yet archived. Secrets, file blobs, skill bundles and memory contents go after the commit; a
-   feed consumer purges the secret of every deleted credential again, so an interrupted delete leaves none.
+   deployment not yet archived. Secrets, file blobs, skill bundles and memory contents go after the commit;
+   where the change feed runs, a feed consumer purges the secret of every deleted credential again, so an
+   interrupted delete leaves none.
 4. `updated_at` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, set by one trigger.
 5. `environments` is a plain table again, its live rows copied from `environment_revisions`, which is dropped with
    the view, its triggers and `revisions_append_only()`.

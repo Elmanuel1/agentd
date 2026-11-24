@@ -18,7 +18,6 @@ decided and when.
 | D6 | Every row the delete removes reaches the feed as a delete, through each tracked table's `history_deleted` trigger; Postgres fires row triggers on rows a foreign key cascade removes. | User, 2026-11-23 (the brief) |
 | D7 | No Admin API route creates or deletes an organization. Anthropic's Admin API has none, and agentd adds no endpoint Anthropic lacks; `GET /v1/organizations/me` is unchanged. | Memory `feedback-agentd-match-anthropic`; user, 2026-11-06 ("dont add an endpoint anthropic never added") |
 | D8 | An organization delete queues no webhook deliveries for the rows it removes; the organization they would report to is gone. Deliveries already queued in `webhook_deliveries`, which carries no org or workspace id, go out as queued. | Plan audit, 2026-11-23: live has no organization delete to match |
-| D17 | A secret left in the secret store after its credential row is deleted is purged from the change feed: a consumer beside the history consumer purges the secret each `credentials` delete event names (workspace, vault, credential), and commits its feed position only after the purge succeeds. A purge of a secret already gone succeeds, so a replay is harmless. The purge right after the commit stays as the fast path; the feed consumer covers an organization delete and a vault delete alike. A Postgres-only agentd runs no feed, so it has only the fast path. | User, 2026-11-23 ("but we have the change event from kafka"; no pending-purge table) |
 | D9 | The migration creates `organizations` empty and backfills nothing from existing key rows: agentd is not in production. | Memory `project-agentd-not-in-production` |
 
 ## Change times
@@ -42,5 +41,11 @@ decided and when.
 | # | Decision | Source |
 |---|---|---|
 | D16 | This spec ships as its own PR; the code ships as one PR of ordered commits under 100 files. | Memory `feedback-agentd-fewer-prs` |
+
+## Secret cleanup
+
+| # | Decision | Source |
+|---|---|---|
+| D17 | A secret left in the secret store after its credential row is deleted is purged from the change feed: a consumer beside the history consumer purges the secret each `credentials` delete event names (workspace, vault, credential), reading in a consumer group of its own (Kafka `agentd.<topic>.secret-purge`, a Valkey group `agentd-secret-purge` on the stream) so it shares no records or position with the history recorder, and commits its feed position only after the purge succeeds. A purge of a secret already gone succeeds, so a replay is harmless. The purge right after the commit stays as the fast path; the feed consumer covers an organization delete and a vault delete alike. A Postgres-only agentd runs no feed, so it has only the fast path. An archive's or rotation's secret purge reaches the feed as an update and is not retried from it. | User, 2026-11-23 ("but we have the change event from kafka"; no pending-purge table) |
 
 Out of scope: [requirements.md](requirements.md#out-of-scope).

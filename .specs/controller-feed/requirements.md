@@ -35,7 +35,7 @@ and environment keys (D5).
 | CF-9 | When an organization delete removes a deployment that is not archived, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
 | CF-14 | If removing a secret or blob fails after an organization delete commits, then agentd shall print each secret and blob it did not remove and exit with failure. |
-| CF-15 | When the change feed carries a delete of a `credentials` row, agentd shall delete that credential's secret from the secret store, treat a secret already gone as deleted, and commit its feed position only after the delete succeeds. |
+| CF-15 | When the change feed carries a delete of a `credentials` row, agentd shall, reading in a consumer group of its own, delete that credential's secret from the secret store, treat a secret already gone as deleted, and commit its feed position only after the delete succeeds. |
 
 ## Change times
 
@@ -84,5 +84,7 @@ and environment keys (D5).
   tables have no foreign key, so its row stays. The delete removes the keys in its transaction, so no request
   authenticates after it commits.
 - Retrying a blob removal that fails after the commit: the blob stays, as it does after a file delete today, and the
-  delete names it in its output (CF-14). Secrets are retried from the feed (CF-15).
+  delete names it in its output (CF-14). Where the change feed runs, secrets are retried from it (CF-15); a
+  Postgres-only agentd leaves a failed secret removal and names it (CF-14).
+- Retrying from the feed a secret purge that an archive or rotation makes (D17).
 - Stopping a sandbox that is running for a session an organization delete removes.
