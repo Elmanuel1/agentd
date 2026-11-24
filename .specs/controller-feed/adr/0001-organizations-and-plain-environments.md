@@ -13,10 +13,11 @@ reconciles per organization. It needs three things the schema lacks:
 
 1. Organization rows and their deletes in the feed. agentd keeps no organization record; an org id is whatever
    `--org` a key command was given (dependencies A3).
-2. A change time per row, which the controller compares per organization with what it has applied. `updated_at` is
-   the writing transaction's start time, not its commit order: a transaction that starts first can commit last, so
-   a check of row count plus latest `updated_at` alone can miss a change; the controller orders changes by the
-   feed's log position and compares row ids and their `updated_at`. `vaults`, `credentials` and `workspaces` have only `created_at` (A7).
+2. A version per row that changes on every write, so the controller can check per organization, without the feed,
+   that it holds every change: the row count plus the sum of `version` across the tracked tables. A change time
+   cannot serve: `updated_at` is the writing transaction's start time, and a transaction that starts first can
+   commit last, leaving the count and the newest `updated_at` as they were. `vaults`, `credentials` and
+   `workspaces` have only `created_at` (A7).
 3. Environments in the feed. Migration V8 made `environments` a view over an append-only `environment_revisions`
    table, and a publication cannot carry a view (P1).
 
@@ -35,12 +36,12 @@ Departures:
 - The workspace-scoped tables carry no `org_id` and get no foreign key; the organization delete removes their rows
   explicitly in its transaction (decisions D5). Adding `org_id` and a foreign key to about 20 tables, and requiring
   a `workspaces` row before a workspace key, is a larger change the controller does not need.
-- `stamp_updated_at()` uses the transaction's `now()` instead of `moddatetime`'s `current_timestamp` per row: the
+- `stamp_change()` uses the transaction's `now()` instead of `moddatetime`'s `current_timestamp` per row: the
   same value, without the `spi` extension.
 
 ## Decision
 
-1. A table `organizations` (`org_id`, `created_at`, `updated_at`, `actor`, `request_id`). `agentd organization
+1. A table `organizations` (`org_id`, `created_at`, `updated_at`, `version`, `actor`, `request_id`). `agentd organization
    create [--id <org_id>]` is the one way to make one.
 2. A foreign key from each org-scoped table to `organizations`, `on delete cascade`. Key creation for an unknown
    organization fails.
@@ -49,7 +50,8 @@ Departures:
    deployment not yet archived. Secrets, file blobs, skill bundles and memory contents go after the commit;
    where the change feed runs, a feed consumer purges the secret of every deleted credential again, so an
    interrupted delete leaves none.
-4. `updated_at` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, set by one trigger.
+4. `version` and `updated_at` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, kept by
+   one trigger: `version` starts at 1 and goes up by one on every update; `updated_at` is for display and debugging.
 5. `environments` is a plain table again, its live rows copied from `environment_revisions`, which is dropped with
    the view, its triggers and `revisions_append_only()`.
 6. `environments` and `organizations` join the tracked tables and Debezium's include list.

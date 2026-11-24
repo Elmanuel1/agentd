@@ -18,13 +18,13 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 and environment keys (D5).
 
 **Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9 and CF-13 to CF-15
-(organizations), then CF-10 to CF-12 (change times), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
+(organizations), then CF-10 to CF-12 and CF-16 (change times and versions), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
 
 ## Organizations
 
 | ID | Requirement |
 |---|---|
-| CF-1 | The store shall keep one `organizations` row per organization with `org_id` as its key, `created_at`, `updated_at`, `actor` and `request_id`. |
+| CF-1 | The store shall keep one `organizations` row per organization with `org_id` as its key, `created_at`, `updated_at`, `version`, `actor` and `request_id`. |
 | CF-2 | When `agentd organization create` runs, agentd shall insert an `organizations` row with a new `org_` id and print the id. |
 | CF-3 | When `agentd organization create --id <org_id>` runs, agentd shall insert the row with that id and print it. |
 | CF-4 | If `agentd organization create --id` names an existing organization, then agentd shall exit with failure naming the id, and insert nothing. |
@@ -44,6 +44,7 @@ and environment keys (D5).
 | CF-10 | The store shall keep a column `updated_at timestamptz not null` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`. |
 | CF-11 | When a row of one of those tables is inserted or updated, by any statement, the store shall set its `updated_at` to the writing transaction's `now()`. |
 | CF-12 | agentd shall keep every wire `updated_at` value and response shape as it is today. |
+| CF-16 | The store shall keep a column `version bigint not null default 1` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, and when a row of one of those tables is updated, by any statement, shall set its `version` to the old row's `version` plus one. |
 
 ## Environments
 
