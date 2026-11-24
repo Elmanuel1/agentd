@@ -43,7 +43,8 @@ Departures:
 2. A foreign key from each org-scoped table to `organizations`, `on delete cascade`. Key creation for an unknown
    organization fails.
 3. `agentd organization delete <org_id>` deletes the organization and everything it owns in one transaction:
-   workspace-scoped rows explicitly, org-scoped rows by cascade. Secrets and file blobs go after the commit.
+   workspace-scoped rows explicitly, org-scoped rows by cascade, and a schedule delete in the outbox for each removed
+   deployment. Secrets, file blobs, skill bundles and memory contents go after the commit.
 4. `updated_at` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, set by one trigger.
 5. `environments` is a plain table again, its live rows copied from `environment_revisions`, which is dropped with
    the view, its triggers and `revisions_append_only()`.
@@ -66,5 +67,5 @@ Departures:
   an explicit command.
 - **Keep revisions and publish `environment_revisions`.** The controller would rebuild the live row from revision
   rows; the user chose "no more revisions".
-- **Set `updated_at` in Rust.** Twelve write statements, three of them raw SQL, would each have to set it, and a
+- **Set `updated_at` in Rust.** Ten insert and update statements, three of them raw SQL, would each have to set it, and a
   missed one breaks the controller's check silently.

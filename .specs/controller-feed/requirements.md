@@ -17,8 +17,8 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 (resource-history D4). *an organization's workspaces*: the workspace ids of its `workspaces` rows and of its API
 and environment keys (D5).
 
-**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-10 to CF-12 (change
-times), then CF-1 to CF-8 (organizations), then CF-30 and CF-31 (the feed).
+**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9 and CF-13
+(organizations), then CF-10 to CF-12 (change times), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
 
 ## Organizations
 
@@ -26,12 +26,14 @@ times), then CF-1 to CF-8 (organizations), then CF-30 and CF-31 (the feed).
 |---|---|
 | CF-1 | The store shall keep one `organizations` row per organization with `org_id` as its key, `created_at`, `updated_at`, `actor` and `request_id`. |
 | CF-2 | When `agentd organization create` runs, agentd shall insert an `organizations` row with a new `org_` id and print the id. |
-| CF-3 | When `agentd organization create --id <org_id>` runs, agentd shall insert the row with that id and print it, and shall fail naming the id if it already exists. |
-| CF-4 | If a `workspaces`, `environments`, `admin_keys`, `api_keys`, `environment_keys` or `work_items` row names an `org_id` with no `organizations` row, then the store shall refuse the write. |
-| CF-5 | If `agentd keys`, `admin-keys` or `environment-keys create` names an organization with no row, then agentd shall exit with failure naming the organization, and create no key. |
-| CF-6 | When `agentd organization delete <org_id>` runs, agentd shall delete, in one transaction, the `organizations` row, every row of the org-scoped tables with that `org_id`, and every row of the workspace-scoped tables whose workspace is one of the organization's workspaces. |
-| CF-7 | When an organization delete commits, agentd shall delete the secrets of the credentials it removed from the secret store and the blobs of the files it removed from the blob store, and shall print what it removed. |
-| CF-8 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
+| CF-3 | When `agentd organization create --id <org_id>` runs, agentd shall insert the row with that id and print it. |
+| CF-4 | If `agentd organization create --id` names an existing organization, then agentd shall exit with failure naming the id, and insert nothing. |
+| CF-5 | If a `workspaces`, `environments`, `admin_keys`, `api_keys`, `environment_keys` or `work_items` row names an `org_id` with no `organizations` row, then the store shall refuse the write. |
+| CF-6 | If `agentd keys`, `admin-keys` or `environment-keys create` names an organization with no row, then agentd shall exit with failure naming the organization, and create no key. |
+| CF-7 | When `agentd organization delete <org_id>` runs, agentd shall delete, in one transaction, the `organizations` row, every row of the org-scoped tables with that `org_id`, and every row of the workspace-scoped tables whose workspace is one of the organization's workspaces. |
+| CF-8 | When an organization delete commits, agentd shall delete from the secret store the secrets of the credentials it removed, and from the blob store the blobs of the files, skill versions and memory versions it removed, and shall print what it removed. |
+| CF-9 | When an organization delete removes a deployment, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
+| CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
 
 ## Change times
 
@@ -58,6 +60,15 @@ times), then CF-1 to CF-8 (organizations), then CF-30 and CF-31 (the feed).
 | CF-30 | The store shall track `environments` and `organizations` as it tracks the other tracked tables: `actor` and `request_id` columns, `replica identity full`, the `history_stamp` and `history_deleted` triggers, a `history.environments` and a `history.organizations` table, and a branch of each in `history.changes`. |
 | CF-31 | The change feed shall capture `public.organizations` and `public.environments`, so it carries each insert, update and delete of every organization, environment, workspace, vault and credential row, the rows an organization delete removes included. |
 
+## Rollout
+
+1. The code PR's migrations run on start, as every agentd migration does.
+2. Debezium restarts with the longer include list; `publication.autocreate.mode=filtered` adds `environments` and
+   `organizations` to the publication `agentd_changes`, and the sink makes the topics
+   `agentd.public.environments` and `agentd.public.organizations`.
+3. Every script that makes keys runs `agentd organization create --id <org_id>` first: CI, docker-compose, perf,
+   conformance and `docs/configuration.md`.
+
 ## Out of scope
 
 - An Admin API route that creates or deletes an organization (D7).
@@ -66,4 +77,5 @@ times), then CF-1 to CF-8 (organizations), then CF-30 and CF-31 (the feed).
 - Foreign keys between workspace-scoped tables and `workspaces`.
 - Two organizations whose keys name the same workspace id: the workspace-scoped tables carry no `org_id`, so they
   share that workspace's rows today, and an organization delete removes them.
+- Withdrawing webhook deliveries already queued before an organization delete (D8).
 - Stopping a sandbox that is running for a session an organization delete removes.
