@@ -20,13 +20,13 @@ decided and when.
 | D8 | An organization delete queues no webhook deliveries for the rows it removes; the organization they would report to is gone. Deliveries already queued in `webhook_deliveries`, which carries no org or workspace id, go out as queued. | Plan audit, 2026-11-23: live has no organization delete to match |
 | D9 | The migration creates `organizations` empty and backfills nothing from existing key rows: agentd is not in production. | Memory `project-agentd-not-in-production` |
 
-## Change times
+## Change times and versions
 
 | # | Decision | Source |
 |---|---|---|
 | D10 | `vaults`, `credentials`, `workspaces`, `environments` and `organizations` each have a column `updated_at timestamptz not null`, set on every insert and update, archive and secret rotation included. | User, 2026-11-23 ("fix 1, 2, 3") |
-| D11 | One `before insert or update` trigger function, `stamp_change()`, sets `updated_at` to the transaction's `now()` and, on an update, sets `version` to the old row's `version` plus one, the shape `history_stamp()` (V16) already uses. A trigger reaches the raw SQL writes too (the credential claim, the vault archive cascade), which a Rust-set column would each have to repeat. The wire `doc.updated_at` keeps its value; the column is the row's write time. It is the transaction's start time, not its commit order, so it is for display and debugging; the controller's check reads `version` (D18). | Plan audit, 2026-11-23: 10 insert and update statements (5 credential, 3 vault, 2 workspace), 3 of them raw SQL |
-| D18 | `vaults`, `credentials`, `workspaces`, `environments` and `organizations` each have a column `version bigint not null default 1`, raised by one on every update by `stamp_change()` (D11). The controller's check per organization is the row count plus the sum of `version` across those tables, so it holds whatever the commit order. | User, 2026-11-23 ("yes" to a version column over the feed's log position) |
+| D11 | One `before insert or update` trigger function, `stamp_change()`, in the shape `history_stamp()` (V16) already uses, sets `updated_at` to the transaction's `now()` and, on an update, sets `version` to the old row's `version` plus one. A trigger reaches the raw SQL writes too (the credential claim, the vault archive cascade), which a Rust-set column would each have to repeat. The wire `doc.updated_at` keeps its value; the column is the row's write time. It is the transaction's start time, not its commit order, so it is for display and debugging; the controller's check reads `version` (D18). | Plan audit, 2026-11-23: 10 insert and update statements (5 credential, 3 vault, 2 workspace), 3 of them raw SQL |
+| D18 | `vaults`, `credentials`, `workspaces`, `environments` and `organizations` each have a column `version bigint not null default 1`, raised by one on every update by `stamp_change()` (D11). The controller's check per organization is the row count plus the sum of `version` across those tables, so commit order cannot hide a change; a delete and an insert between two checks that leave both numbers equal can, and the controller's own design decides how it closes that case. | User, 2026-11-23 ("yes" to a version column over the feed's log position) |
 
 ## Environments
 

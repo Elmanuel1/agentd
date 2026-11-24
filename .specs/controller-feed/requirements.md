@@ -1,6 +1,6 @@
 # Controller feed: requirements
 
-EARS requirements for the organizations table, the change times and plain environments
+EARS requirements for the organizations table, the change times and versions, and plain environments
 ([decisions](decisions.md), [ADR 0001](adr/0001-organizations-and-plain-environments.md)).
 
 | Pattern | Form |
@@ -18,7 +18,7 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 and environment keys (D5).
 
 **Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9 and CF-13 to CF-15
-(organizations), then CF-10 to CF-12 and CF-16 (change times and versions), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
+(organizations), then CF-10 to CF-12, CF-16 and CF-19 (change times and versions), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
 
 ## Organizations
 
@@ -37,14 +37,15 @@ and environment keys (D5).
 | CF-14 | If removing a secret or blob fails after an organization delete commits, then agentd shall print each secret and blob it did not remove and exit with failure. |
 | CF-15 | When the change feed carries a delete of a `credentials` row, agentd shall, reading in a consumer group of its own, delete that credential's secret from the secret store, treat a secret already gone as deleted, and commit its feed position only after the delete succeeds. |
 
-## Change times
+## Change times and versions
 
 | ID | Requirement |
 |---|---|
 | CF-10 | The store shall keep a column `updated_at timestamptz not null` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`. |
 | CF-11 | When a row of one of those tables is inserted or updated, by any statement, the store shall set its `updated_at` to the writing transaction's `now()`. |
 | CF-12 | agentd shall keep every wire `updated_at` value and response shape as it is today. |
-| CF-16 | The store shall keep a column `version bigint not null default 1` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, and when a row of one of those tables is updated, by any statement, shall set its `version` to the old row's `version` plus one. |
+| CF-16 | The store shall keep a column `version bigint not null default 1` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`. |
+| CF-19 | When a row of one of those tables is updated, by any statement, the store shall set its `version` to the old row's `version` plus one. |
 
 ## Environments
 

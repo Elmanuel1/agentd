@@ -1,4 +1,4 @@
-# ADR 0001: Organizations get a table, tracked rows get a change time, environments become a plain table
+# ADR 0001: Organizations get a table, tracked rows get a change time and a version, environments become a plain table
 
 Status: Proposed
 Date: 2026-11-23
@@ -13,8 +13,9 @@ reconciles per organization. It needs three things the schema lacks:
 
 1. Organization rows and their deletes in the feed. agentd keeps no organization record; an org id is whatever
    `--org` a key command was given (dependencies A3).
-2. A version per row that changes on every write, so the controller can check per organization, without the feed,
-   that it holds every change: the row count plus the sum of `version` across the tracked tables. A change time
+2. A version per row that goes up on every update, so the controller can check per organization, without the feed,
+   that it holds the changes: the row count plus the sum of `version` across the tracked tables. A delete and an
+   insert that leave both numbers equal escape that check; the controller's design decides how it closes that. A change time
    cannot serve: `updated_at` is the writing transaction's start time, and a transaction that starts first can
    commit last, leaving the count and the newest `updated_at` as they were. `vaults`, `credentials` and
    `workspaces` have only `created_at` (A7).
@@ -27,6 +28,8 @@ reconciles per organization. It needs three things the schema lacks:
   "Constraints: Foreign Keys", `ON DELETE CASCADE`).
 - An `updated_at` column kept by a `before update` trigger is the standard way to stamp every write, whatever
   statement makes it (Postgres `contrib/spi` `moddatetime`; Rails and Django set the same column on every save).
+- A row version raised on every update is the standard way to tell one write of a row from the next (Rails
+  `lock_version`, JPA `@Version`).
 - Change data capture reads base tables; history lives in the CDC consumer's store, not in revision rows in the
   live table (Debezium Postgres connector docs). agentd already does this for 18 tables (resource-history ADR
   0001).
@@ -73,5 +76,7 @@ Departures:
   an explicit command.
 - **Keep revisions and publish `environment_revisions`.** The controller would rebuild the live row from revision
   rows; the user chose "no more revisions".
+- **Order by the feed's log position.** The check exists to catch what the feed missed, so it must not depend on
+  the feed; the user chose a version column.
 - **Set `updated_at` in Rust.** Ten insert and update statements, three of them raw SQL, would each have to set it, and a
   missed one breaks the controller's check silently.
