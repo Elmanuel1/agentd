@@ -18,7 +18,7 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 and environment keys (D5).
 
 **Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9 and CF-13 to CF-15
-(organizations), then CF-10 to CF-12, CF-16 and CF-19 (change times and versions), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
+(organizations), then CF-10 to CF-12, CF-16 and CF-19 (change times and versions), then CF-17 and CF-18 (cleanup retries), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
 
 ## Organizations
 
@@ -36,6 +36,8 @@ and environment keys (D5).
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
 | CF-14 | If removing a secret or blob fails after an organization delete commits, then agentd shall print each secret and blob it did not remove and exit with failure. |
 | CF-15 | When the change feed carries a delete of a `credentials` row, agentd shall, reading in a consumer group of its own, delete that credential's secret from the secret store, treat a secret already gone as deleted, and commit its feed position only after the delete succeeds. |
+| CF-17 | When the change feed carries a delete of a `files`, `skill_versions` or `memory_versions` row, agentd shall, reading in a consumer group of its own, remove the blob that row names from the blob store, treat a blob already gone as removed, and commit its feed position only after the removal succeeds. |
+| CF-18 | While agentd runs with no change feed, agentd shall periodically remove from the secret store every secret no `credentials` row names, and from the blob store every blob no `files`, `skill_versions` or `memory_versions` row names. |
 
 ## Change times and versions
 
@@ -85,8 +87,5 @@ and environment keys (D5).
 - A workspace write that authenticated before an organization delete and commits after it: the workspace-scoped
   tables have no foreign key, so its row stays. The delete removes the keys in its transaction, so no request
   authenticates after it commits.
-- Retrying a blob removal that fails after the commit: the blob stays, as it does after a file delete today, and the
-  delete names it in its output (CF-14). Where the change feed runs, secrets are retried from it (CF-15); a
-  Postgres-only agentd leaves a failed secret removal and names it (CF-14).
 - Retrying from the feed a secret purge that an archive or rotation makes (D17).
 - Stopping a sandbox that is running for a session an organization delete removes.

@@ -51,8 +51,9 @@ Departures:
 3. `agentd organization delete <org_id>` deletes the organization and everything it owns in one transaction:
    workspace-scoped rows explicitly, org-scoped rows by cascade, and a schedule delete in the outbox for each removed
    deployment not yet archived. Secrets, file blobs, skill bundles and memory contents go after the commit;
-   where the change feed runs, a feed consumer purges the secret of every deleted credential again, so an
-   interrupted delete leaves none.
+   where the change feed runs, feed consumers in groups of their own remove the secret of every deleted credential
+   and the blob of every deleted file, skill version and memory version again, so an interrupted delete leaves
+   none; a Postgres-only agentd sweeps for secrets and blobs no row names instead.
 4. `version` and `updated_at` on `vaults`, `credentials`, `workspaces`, `environments` and `organizations`, kept by
    one trigger: `version` starts at 1 and goes up by one on every update; `updated_at` is for display and debugging.
 5. `environments` is a plain table again, its live rows copied from `environment_revisions`, which is dropped with
