@@ -13,8 +13,10 @@ reconciles per organization. It needs three things the schema lacks:
 
 1. Organization rows and their deletes in the feed. agentd keeps no organization record; an org id is whatever
    `--org` a key command was given (dependencies A3).
-2. A change time per row, so a per-organization check of row count plus latest `updated_at` can tell whether the
-   controller has missed a change. `vaults`, `credentials` and `workspaces` have only `created_at` (A7).
+2. A change time per row, which the controller compares per organization with what it has applied. `updated_at` is
+   the writing transaction's start time, not its commit order: a transaction that starts first can commit last, so
+   a check of row count plus latest `updated_at` alone can miss a change; the controller orders changes by the
+   feed's log position and compares row ids and their `updated_at`. `vaults`, `credentials` and `workspaces` have only `created_at` (A7).
 3. Environments in the feed. Migration V8 made `environments` a view over an append-only `environment_revisions`
    table, and a publication cannot carry a view (P1).
 

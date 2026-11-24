@@ -17,7 +17,7 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 (resource-history D4). *an organization's workspaces*: the workspace ids of its `workspaces` rows and of its API
 and environment keys (D5).
 
-**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9 and CF-13
+**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9, CF-13 and CF-14
 (organizations), then CF-10 to CF-12 (change times), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
 
 ## Organizations
@@ -34,6 +34,7 @@ and environment keys (D5).
 | CF-8 | When an organization delete commits, agentd shall delete from the secret store the secrets of the credentials it removed, and from the blob store the blobs of the files, skill versions and memory versions it removed, and shall print what it removed. |
 | CF-9 | When an organization delete removes a deployment that is not archived, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
+| CF-14 | If removing a secret or blob fails after an organization delete commits, then agentd shall print each secret and blob it did not remove and exit with failure. |
 
 ## Change times
 
@@ -78,4 +79,9 @@ and environment keys (D5).
 - Two organizations whose keys name the same workspace id: the workspace-scoped tables carry no `org_id`, so they
   share that workspace's rows today, and an organization delete removes them.
 - Withdrawing webhook deliveries already queued before an organization delete (D8).
+- A workspace write that authenticated before an organization delete and commits after it: the workspace-scoped
+  tables have no foreign key, so its row stays. The delete removes the keys in its transaction, so no request
+  authenticates after it commits.
+- Durable, retryable cleanup after the commit: a secret or blob whose removal fails after the commit stays, as it
+  does after a vault or file delete today, and the delete names it in its output.
 - Stopping a sandbox that is running for a session an organization delete removes.
