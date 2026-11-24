@@ -32,7 +32,7 @@ and environment keys (D5).
 | CF-6 | If `agentd keys`, `admin-keys` or `environment-keys create` names an organization with no row, then agentd shall exit with failure naming the organization, and create no key. |
 | CF-7 | When `agentd organization delete <org_id>` runs, agentd shall delete, in one transaction, the `organizations` row, every row of the org-scoped tables with that `org_id`, and every row of the workspace-scoped tables whose workspace is one of the organization's workspaces. |
 | CF-8 | When an organization delete commits, agentd shall delete from the secret store the secrets of the credentials it removed, and from the blob store the blobs of the files, skill versions and memory versions it removed, and shall print what it removed. |
-| CF-9 | When an organization delete removes a deployment, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
+| CF-9 | When an organization delete removes a deployment that is not archived, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
 
 ## Change times
