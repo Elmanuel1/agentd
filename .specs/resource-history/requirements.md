@@ -15,7 +15,7 @@
 *agentd* (the one binary).
 
 **Terms:**
-- **Tracked table:** one of the 18 resource tables of decision D4.
+- **Tracked table:** one of the 20 resource tables of decision D4.
 - **History table:** `history.<table>`, a tracked table's history.
 - **Actor, request id:** the writing connection's `agentd.actor` and `agentd.request_id` settings.
 
@@ -67,7 +67,7 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 - agentd is not deployed (runtime-parity D45): the PR merges on green CI and a local run against Postgres 16, Kafka
   and Debezium Server.
 - A deployment runs V16 and V17 with Flyway (V16 sets a 5 s `lock_timeout`; rerun it when a busy table refuses the
-  locks), makes the Kafka topics `agentd.public.<table>` for the 18 tracked tables and `agentd.message`, adds the
+  locks), makes the Kafka topics `agentd.public.<table>` for the 20 tracked tables and `agentd.message`, adds the
   tables to the publication, then restarts Debezium Server with the longer `table.include.list`.
 - A database that already has rows runs the baseline of `docs/history.md` once, so every live row has a history row.
 - `max_slot_wal_keep_size` is sized as `docs/history.md` says before the tracked tables join the feed.
@@ -76,6 +76,6 @@ Source decisions: [decisions.md](decisions.md). Evidence: [dependencies.md](depe
 
 - The blob and secret content of a deleted file, skill, memory or credential: the delete removes it in the request
   (D1); history keeps the record.
-- Moving environments to the feed history (D5); the actor by name.
+- The actor by name.
 - The ClickHouse adapter and its setting (D14).
 - An API route for history (D9).
