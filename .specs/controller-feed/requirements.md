@@ -17,7 +17,7 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 (resource-history D4). *an organization's workspaces*: the workspace ids of its `workspaces` rows and of its API
 and environment keys (D5).
 
-**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9, CF-13 and CF-14
+**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9 and CF-13 to CF-15
 (organizations), then CF-10 to CF-12 (change times), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
 
 ## Organizations
@@ -35,6 +35,7 @@ and environment keys (D5).
 | CF-9 | When an organization delete removes a deployment that is not archived, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
 | CF-14 | If removing a secret or blob fails after an organization delete commits, then agentd shall print each secret and blob it did not remove and exit with failure. |
+| CF-15 | When the change feed carries a delete of a `credentials` row, agentd shall delete that credential's secret from the secret store, treat a secret already gone as deleted, and commit its feed position only after the delete succeeds. |
 
 ## Change times
 
@@ -82,6 +83,6 @@ and environment keys (D5).
 - A workspace write that authenticated before an organization delete and commits after it: the workspace-scoped
   tables have no foreign key, so its row stays. The delete removes the keys in its transaction, so no request
   authenticates after it commits.
-- Durable, retryable cleanup after the commit: a secret or blob whose removal fails after the commit stays, as it
-  does after a vault or file delete today, and the delete names it in its output.
+- Retrying a blob removal that fails after the commit: the blob stays, as it does after a file delete today, and the
+  delete names it in its output (CF-14). Secrets are retried from the feed (CF-15).
 - Stopping a sandbox that is running for a session an organization delete removes.
