@@ -7,7 +7,7 @@
 //! - every SQL statement feeds `db.client.operation.duration` ([`db`]),
 //! - every blob and secret operation is a span and feeds
 //!   `agentd.port.operation.duration` ([`ports`]),
-//! - the change feed's slot and the history apply delay feed `agentd.feed.*` and `agentd.history.*` ([`feed`]),
+//! - the change feed's slot feeds `agentd.feed.*` ([`feed`]),
 //! - the scheduler's fires feed `agentd.scheduler.*` ([`scheduler`]),
 //! - each of these carries `outcome` (`ok` or `error`) or the status code. A
 //!   5xx, a failed statement or a failed connection is logged at `error`, a

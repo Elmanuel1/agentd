@@ -1,6 +1,6 @@
 # ADR 0001: Resource history is built from the change feed into one history table per entity
 
-Status: Accepted
+Status: Superseded by controller-feed decision D21 (`.specs/controller-feed/decisions.md`): agentd keeps no history store
 Date: 2026-11-16
 Deciders: the user (Elmanuel1)
 Scope: agentd's resource tables, its change feed and a new history store; the wire does not change

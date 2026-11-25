@@ -288,7 +288,7 @@ salt and names the master key's id; the master keys themselves are
 only in `AGENTD_SECRET_KEYS`, never in the database, a log or an error. A put,
 a read and a delete are one statement each, on the primary. A row that does
 not open (its key left the ring, or the row was altered) is an error, logged
-at `ERROR`. The table is not on the change feed and keeps no history.
+at `ERROR`. The table is not on the change feed.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -696,7 +696,7 @@ In production:
 - **Postgres** runs with `wal_level=logical` (on RDS and Aurora, the parameter
   `rds.logical_replication=1`, then a reboot) and `max_slot_wal_keep_size` sized as `docs/history.md` says
   ("WAL sizing"), so a stalled slot cannot fill the disk. A slot past that size is invalidated and the changes
-  in it are lost, to the feed's handlers and to history.
+  in it are lost to the feed's handlers.
 - **Debezium's role** has `REPLICATION` (on RDS, `GRANT rds_replication`),
   `SELECT` on the captured tables, and `CREATE` on the schema for its offsets
   table. The publication is made once by the tables' owner,

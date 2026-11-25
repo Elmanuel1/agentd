@@ -78,7 +78,6 @@ dependencies = [
  "environments",
  "files",
  "futures",
- "history",
  "http",
  "http-body-util",
  "memory",
@@ -1889,18 +1888,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "history"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "parking_lot 0.13.0",
- "serde_json",
- "shared",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "hmac"

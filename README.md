@@ -34,7 +34,7 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
    │    agents · environments · vaults(+credentials) · memory(+versions)
    │    files · skills · sessions(+events/SSE) · deployments(+runs) · dreams(+runs)
    │    api-keys (workspace and environment keys) · organizations (Admin API: me, workspaces; admin keys only)
-   │    webhooks (deliveries to each organization's endpoints) · history (every change, from the change feed)
+   │    webhooks (deliveries to each organization's endpoints)
    ├─ shared           ids · limits (exact strings) · error envelope · cron/DST engine · ports
    ├─ engine           the agent loop: one model call per step, from the event log (ModelClient, ModelBudget ports)
    └─ conformance      the swappability oracle (fixture diff, normalized)
@@ -42,7 +42,7 @@ SDK / ant CLI → api (auth · beta gate · envelopes)
 
 **Swappable ports:** `SchedulerPort`
 (Postgres, or Temporal Schedules; every sink writes its occurrences to the Postgres fire queue), `ModelClient` (Anthropic Messages API, OpenAI-compatible API, routed by model id),
-`BlobStore` (S3), `SecretStore`, `KeySource`, `HistoryLog`, storage traits per entity
+`BlobStore` (S3), `SecretStore`, `KeySource`, storage traits per entity
 (in-memory/Postgres). Holders keep each port as `Arc<dyn Port>`. A port with a
 native twin, such as `BlobStore` and `NativeBlobStore` (`shared::ports::blobs`),
 is implemented through the twin: a backend writes plain `async fn` methods that

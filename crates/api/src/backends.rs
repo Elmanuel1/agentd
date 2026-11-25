@@ -23,11 +23,12 @@ use sessions::signals::Signals;
 use sessions::store::DatabaseLoad;
 use shared::hash::KeyRing;
 use shared::ports::blobs::BlobStore;
+use shared::ports::changes::ChangeHandler;
 use shared::ports::fire::FireRegistry;
 use shared::ports::keys::{AdminKeySource, EnvironmentKeySource, KeySource, PepperRing};
 use shared::ports::secrets::SecretError;
 use signals_valkey::{Valkey, ValkeySignals};
-use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, PgHistoryLog, ScheduleOutbox};
+use store_postgres::{PgDeliveryMarks, PgError, PgFireClaims, ScheduleOutbox};
 use webhooks::WebhookSender;
 
 use crate::config::{BlobsConfig, Config, Role, StoreConfig, WorkConfig};
@@ -158,10 +159,8 @@ impl Backends {
                     WebhookSender::new(hooks, PgDeliveryMarks::new(pg.backend.clone()), WEBHOOK_RETRY)
                         .map_err(BootError::Signals)?;
                 drop(telemetry::feed::watch(&meter, pg.backend.diesel.clone(), &streams.changes_slot));
-                let log = Arc::new(PgHistoryLog::load(pg.backend.clone()).await?);
-                let mut handlers = history::recorders(log, telemetry::feed::apply_delay(&meter));
-                handlers.push(Arc::new(ScheduleOutbox::new(sink.port())));
-                handlers.push(Arc::new(sender));
+                let handlers: Vec<Arc<dyn ChangeHandler>> =
+                    vec![Arc::new(ScheduleOutbox::new(sink.port())), Arc::new(sender)];
                 drop(feed.spawn(handlers));
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));

@@ -1,134 +1,44 @@
-# Resource history
+# Change records
 
-agentd keeps every change to its resources, with who made it and when, in the Postgres schema `history`. The live
-tables and the API do not change: there is no history route, and reading, searching and rolling back history are
-the SQL statements below. The design is `.specs/resource-history/` (ADR 0001).
+agentd keeps no history of its own. Every change to a tracked table reaches the change feed (`configuration.md`,
+"The change feed") with who made it and the whole row, and the feed's consumers keep whatever record they need.
+The API does not change: there is no history route.
 
-## What is kept
+## What the feed carries
 
 The tracked tables are `agents`, `deployments`, `deployment_runs`, `files`, `vaults`, `credentials`, `skills`,
 `skill_versions`, `memory_stores`, `memories`, `memory_versions`, `sessions`, `dreams`, `dream_runs`, `api_keys`,
-`workspaces`, `environment_keys` and `admin_keys`. Each has a history table, `history.<table>`, with the same
-columns and types and four of its own:
-
-| Column | Meaning |
-|---|---|
-| `lsn` | Where the change sits in the WAL; with the live key, the history table's key |
-| `tx_id` | The change's transaction |
-| `op` | `insert`, `update`, `delete`, or `baseline` for a row recorded by the baseline below |
-| `committed_at` | When the change's transaction committed |
-
-`actor` and `request_id` are the writer of that change: the key behind the request (`apikey_…`, `adminkey_…`, an
-environment key id), `runtime`, a work token's session (`sesn_…`), `operator` for the CLI, or `system` for the
-agent loop, the scheduler and retention, each with its request id. A `delete` row holds the row as it was, with the
-deleter as its actor.
-
-Not kept: environments, which keep their own revisions (`environment_revisions`); the coordination tables
-(`work_items`, `loop_steps`, `mcp_connections`, `schedules`, `fire_claims`, `schedule_outbox`,
-`webhook_deliveries`); the session event log, which is the session's history; the Postgres secret store's sealed
-credentials (`vault_secrets`, [configuration.md](configuration.md#postgres)); and the blob and secret content of a
-deleted file, skill, memory or credential, which the delete removes.
-
-## How it is recorded
+`workspaces`, `environment_keys` and `admin_keys`.
 
 Each tracked table's `history_stamp()` trigger sets `actor` and `request_id` on every insert and update from the
-writing connection (`agentd.actor`, `agentd.request_id`, which every write sets). Its `history_deleted()` trigger
-writes each delete to the WAL as a logical message, `agentd-history`, in the deleting transaction. Each tracked
-table has `REPLICA IDENTITY FULL`, so an update that leaves a large `doc` unchanged still reaches the feed whole.
+writing connection (`agentd.actor`, `agentd.request_id`, which every write sets). `actor` is the key behind the
+request (`apikey_…`, `adminkey_…`, an environment key id), `runtime`, a work token's session (`sesn_…`), `operator`
+for the CLI, or `system` for the agent loop, the scheduler and retention. Its `history_deleted()` trigger writes
+each delete to the WAL as a logical message, `agentd-history`, in the deleting transaction, carrying the table,
+the row as it was, and the deleter as its actor. Each tracked table has `REPLICA IDENTITY FULL`, so an update that
+leaves a large `doc` unchanged still reaches the feed whole, and a delete carries its old row.
 
-Debezium Server reads these changes and messages into the change feed (`configuration.md`, "The change feed"), and
-every replica's history consumer records each one into its history table, once however often it is delivered. A
-change that cannot be recorded (a table with no history table, a row that does not decode) is logged at `ERROR`
-(`history: a change cannot be recorded; passed over`) and is a gap a person must look at.
+Debezium Server reads these changes into the topics `agentd.public.<table>` and the delete messages into
+`agentd.message` (`docker/debezium/application.properties`).
 
-While history catches up after a feed outage, its recorders share the replica's Postgres pool, one connection per
-tracked table at a time; `db.client.connection.pending_requests` shows when requests wait for them.
-
-Redacting a memory version removes its `content_sha256`, `content_size_bytes` and `path` from that version's
-history rows and from the rows of every head of its memory that held it, a head deleted later included, in
-whichever order the feed delivers them. Each row of a memory version or head commits with that removal, one row of
-the version at a time, so no reader sees the redaction and the content together.
-
-## Read a row's history
-
-```sql
-select lsn, op, actor, request_id, committed_at, display_name, doc
-  from history.vaults
- where workspace_id = '<workspace_id>' and vault_id = '<vault_id>'
- order by lsn;
-```
-
-## Search
-
-`history.changes` unions every history table's `table_name`, `row_key` (the live key as JSON), `lsn`, `op`,
-`actor`, `request_id` and `committed_at`. Each history table has an index on `(actor, committed_at)` and one on
-`request_id`, so both searches read each table by index.
-
-What an actor changed in a time range:
-
-```sql
-select table_name, row_key, op, request_id, committed_at
-  from history.changes
- where actor = '<actor>' and committed_at >= '<from>' and committed_at < '<to>'
- order by committed_at;
-```
-
-What one request changed:
-
-```sql
-select table_name, row_key, op, actor, committed_at
-  from history.changes
- where request_id = '<request_id>'
- order by committed_at;
-```
-
-## Roll back a row
-
-Run as `operator`, so the stamp trigger records the rollback as a change by `operator`, which the feed then
-records like any other. Name the table's own columns, less `actor` and `request_id`, which the trigger sets. Pick
-the `lsn` of the history row to go back to: the row as it was after that change.
-
-A live row, back to how it was at that change:
-
-```sql
-set agentd.actor = 'operator';
-set agentd.request_id = '<ticket>';
-update vaults v
-   set display_name = h.display_name, created_at = h.created_at, doc = h.doc
-  from history.vaults h
- where h.workspace_id = '<workspace_id>' and h.vault_id = '<vault_id>' and h.lsn = '<lsn>'
-   and v.workspace_id = h.workspace_id and v.vault_id = h.vault_id;
-```
-
-A deleted row, back as it was at that change (the `delete` row's `lsn` brings it back as it was deleted):
-
-```sql
-set agentd.actor = 'operator';
-set agentd.request_id = '<ticket>';
-insert into vaults (workspace_id, vault_id, display_name, created_at, doc)
-select workspace_id, vault_id, display_name, created_at, doc
-  from history.vaults
- where workspace_id = '<workspace_id>' and vault_id = '<vault_id>' and lsn = '<lsn>';
-```
-
-A rollback restores the row, not what lived outside it: a deleted file's, skill's or memory's blob and a deleted
-credential's secret are gone.
+Not on the feed: the coordination tables (`work_items`, `loop_steps`, `mcp_connections`, `schedules`,
+`fire_claims`), the session event log, the Postgres secret store's sealed credentials (`vault_secrets`), and the
+blob and secret content of a file, skill, memory or credential.
 
 ## The slot
 
 The change feed's replication slot (`AGENTD_CHANGES_SLOT`, default `agentd_changes`) holds every change not yet
-on the feed; "Faults" lists the other ways history can lose a change. It keeps all the WAL Debezium has not confirmed, of every table, while Debezium, Kafka or Valkey is down.
-Past `max_slot_wal_keep_size` Postgres invalidates it (`wal_status = 'lost'`), and the changes it held never reach
-history.
+on the feed. It keeps all the WAL Debezium has not confirmed, of every table, while Debezium, Kafka or Valkey is
+down. Past `max_slot_wal_keep_size` Postgres invalidates it (`wal_status = 'lost'`), and the changes it held never
+reach the feed.
 
 agentd reads the slot every 10 s on every replica (take the maximum across replicas):
 
 | Signal | Alarm when | What it means, and what to do |
 |---|---|---|
 | `agentd.feed.slot.safe_wal` | below 25% of `max_slot_wal_keep_size` (page) | the feed has stalled long enough to near the limit: bring Debezium and its sink back before the slot is lost |
-| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts: a new deployment has no gap only if no change commits before Debezium Server first creates the slot; any earlier change is lost, and the baseline and scrub (steps 5 and 6, with agentd stopped and after Debezium Server has made the slot) recover only the rows that still exist |
+| `agentd.feed.slot.lost` | 1 (page) | the slot is invalidated (`wal_status = 'lost'`) and the feed has a gap: follow "After a lost slot". It also reads 1 while the slot does not exist yet, before Debezium Server first starts |
 | `agentd.feed.slot.retained_wal` | growing for 15 minutes (ticket) | Debezium is not confirming: check its health (`GET /q/health`) and logs |
-| `agentd.history.apply_delay` p99 | over 5 minutes (ticket) | history lags its commits: check the feed backlog and the `history:` log lines |
 
 While a replica cannot read the slot, its slot values are absent, never the last reading: alarm when no replica
 reports `agentd.feed.slot.lost` for 5 minutes (page). `agentd.feed.wal_written` counts the WAL Postgres writes, for
@@ -141,106 +51,25 @@ out. At the sizing peak (10,000 sessions) the WAL is about 20 MB a second: event
 updates with their old rows about 4 MB, the rest about 1 MB. That is 72 GB an hour; riding out 4 hours takes
 about 290 GB of disk. Compose keeps 1 GB, which covers about 50 s at the peak and about 85 minutes at 1% of it.
 
-History itself grows about 170 GB a day at the peak in Postgres, most of it sessions; a deployment near the peak
-moves history to a columnar store behind the same `HistoryLog` port.
-
 ### The feed's own durability
 
-On Kafka, the topics' retention must exceed the longest time every replica may be down, or records expire before
-history reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up to 1 s of entries on a Valkey crash;
+On Kafka, the topics' retention must exceed the longest time every consumer may be down, or records expire before
+it reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up to 1 s of entries on a Valkey crash;
 `appendfsync always` closes that.
-
-### Faults
-
-Each boundary on the way to history recovers on its own: while the feed keeps its records and each change can be
-recorded, the changes made during a fault reach history once, and a row's history read in `lsn` order gives its
-changes in their commit order: a row's writes take its lock in turn, so its `lsn` order is its commit order, and
-across rows `lsn` is the write's place in the WAL. History is not recorded in that order: a change handled again
-can land after a later one.
-
-| Fault | What happens |
-|---|---|
-| Debezium Server stops or crashes | the slot keeps what Debezium has not confirmed; once it runs again it reads from its last flushed offset, and history keeps a change sent twice once. It must be restarted when it stops ([configuration.md](configuration.md)) |
-| Kafka or Valkey is down or hangs | Debezium retries its sink; when the sink fails, it restarts its connector (or exits and is restarted) and reads again from the slot. The recorders reconnect |
-| An agentd replica stops mid-batch | what its recorders had not acknowledged (an uncommitted Kafka offset, a pending Valkey entry) is delivered again; a pending Valkey entry waits 60 s before another replica claims it |
-| agentd's connections to Postgres are cut, or Postgres hangs | the history write fails and the change is handled again |
-| Postgres restarts | Debezium reconnects to the slot within about 20 s; each pooled connection fails its first statement, and the change is handled again |
-
-`crates/api/tests/history_faults.rs` makes each of these faults while changes are written, on Kafka and on Valkey.
-
-These lose changes instead:
-
-| Loss | Signal | Recovery |
-|---|---|---|
-| The slot passes `max_slot_wal_keep_size` | `agentd.feed.slot.lost` | "After a lost slot" |
-| A Kafka record expires before a replica reads it (every replica down longer than the topic's retention) | none from agentd: watch the `agentd.<topic>` consumer groups' lag against the retention | the baseline and scrub, "After a lost slot" steps 5 and 6, with agentd stopped; the baseline holds only live rows, so a lost delete or update stays lost |
-| Valkey crashes under `appendfsync everysec` | none: up to 1 s of entries | the baseline and scrub, with agentd stopped; the baseline holds only live rows, so a lost delete or update stays lost |
-| A change cannot be recorded (its table has no history table, or its row is not a row) | the `ERROR` line `history: a change cannot be recorded; passed over`, with the table and lsn | fix the cause, then the baseline and scrub, with agentd stopped; the baseline holds only live rows, so a lost delete or update stays lost |
 
 ## After a lost slot
 
-1. Stop every agentd replica, so nothing writes a tracked table until the baseline is done: a write that commits
-   while the baseline reads its table can leave the older row as the latest one, and a redaction made then can leave
-   its content in the baseline.
-2. Stop Debezium Server.
-3. Note the slot's `confirmed_flush_lsn`, if it still reports one: history may lack changes from there on. Drop
-   the slot, if it still exists, and Debezium's offsets, with `<slot>` the configured `AGENTD_CHANGES_SLOT`
-   (default `agentd_changes`):
+1. Stop Debezium Server.
+2. Drop the slot, if it still exists, and Debezium's offsets, with `<slot>` the configured `AGENTD_CHANGES_SLOT`:
    `select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = '<slot>';` and
    `delete from debezium_offsets;`.
-4. Start Debezium Server. It makes a new slot and streams changes from then on.
-5. Record every live row as a `baseline`, one statement per tracked table:
+3. Start Debezium Server. It makes a new slot and streams changes from then on.
 
-```sql
-do $$
-declare
-    t text;
-    cols text;
-begin
-    for t in select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-              where n.nspname = 'history' and c.relkind = 'r'
-    loop
-        select string_agg(quote_ident(a.attname), ', ' order by a.attnum) into cols
-          from pg_attribute a
-         where a.attrelid = format('public.%I', t)::regclass and a.attnum > 0 and not a.attisdropped;
-        execute format(
-            'insert into history.%I (%s, lsn, op, committed_at) select %s, pg_current_wal_lsn(), %L, now() '
-            'from public.%I on conflict do nothing',
-            t, cols, cols, 'baseline', t);
-    end loop;
-end $$;
-```
+Changes committed between the slot's last confirmed position and the new slot are not on the feed; consumers that
+keep a record rebuild it from the live tables.
 
-6. Clear the content of every redacted memory version from history, the baseline's rows included. A soft-deleted
-   memory keeps its last version's path and digest, and that version can be redacted after the delete, so the
-   baseline can copy them:
+## A new tracked table
 
-```sql
-begin;
-update history.memory_versions h
-   set doc = h.doc || '{"content_sha256": null, "content_size_bytes": null, "path": null}'
-  from public.memory_versions r
- where jsonb_typeof(r.doc->'redacted_at') = 'string'
-   and h.workspace_id = r.workspace_id and h.store_id = r.store_id and h.version_id = r.version_id;
-update history.memories h
-   set path = null, doc = h.doc || '{"content_sha256": null, "content_size_bytes": null, "path": null}'
-  from public.memory_versions r
- where jsonb_typeof(r.doc->'redacted_at') = 'string'
-   and h.workspace_id = r.workspace_id and h.store_id = r.store_id
-   and h.memory_id = r.memory_id and h.head_version_id = r.version_id;
-commit;
-```
-
-7. Start agentd.
-
-Changes committed after the slot's last confirmed position, before the baseline, may be missing from history: the gap can start before
-the loss was seen, since `agentd.feed.slot.lost` bounds when the loss was observed, not when the oldest lost change
-committed. The same baseline and scrub, with agentd stopped, start history on a database that already has rows.
-
-## A new column or tracked table
-
-A migration that adds a column to a tracked table adds it to `history.<table>` in the same migration. A new
-tracked table gets the two triggers, `REPLICA IDENTITY FULL`, a history table with its two indexes, a branch of
-`history.changes` and an entry in Debezium's `table.include.list`, in the same change. Tests fail when a tracked
-table's columns differ from its history table's, when a history table is missing from `history.changes`, or when
-the include list misses one.
+A new tracked table gets the two triggers, the `actor` and `request_id` columns, `REPLICA IDENTITY FULL` and an
+entry in Debezium's `table.include.list`, in the same change. A test fails when the include list misses a table
+with a `_history_stamp` trigger (`store-postgres/tests/debezium_include.rs`).
