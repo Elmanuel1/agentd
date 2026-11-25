@@ -15,10 +15,9 @@ use crate::entities::blob_keys;
 use crate::entities::schedules::outbox;
 
 /// The workspace-scoped tables with nothing outside Postgres to remove.
-const PLAIN: [&str; 16] = [
+const PLAIN: [&str; 14] = [
     "agents",
     "deployment_runs",
-    "deployments",
     "vaults",
     "skills",
     "memory_stores",
@@ -26,7 +25,6 @@ const PLAIN: [&str; 16] = [
     "session_events",
     "sessions",
     "dream_runs",
-    "dreams",
     "loop_steps",
     "mcp_connections",
     "schedules",
@@ -98,22 +96,22 @@ pub(super) async fn organization(conn: &mut AsyncPgConnection, org: &OrgId) -> R
 
 /// Delete every workspace-scoped row of `workspaces`, keeping what lives outside Postgres.
 async fn rows(c: &mut AsyncPgConnection, workspaces: Vec<String>) -> Result<Removed, diesel::result::Error> {
-    let deployments = ids(
+    let deployments: Vec<Three> = in_workspaces(
         c,
-        "SELECT deployment_id AS a FROM deployments
-                               WHERE workspace_id = ANY($1) AND status <> 'archived'",
+        "DELETE FROM deployments WHERE workspace_id = ANY($1)
+         RETURNING deployment_id AS a, status AS b, ''::text AS c",
         &workspaces,
     )
     .await?;
     let schedule_deletes: Vec<ScheduleChange> = deployments
-        .into_iter()
-        .map(|id| ScheduleChange::Delete { target: FireTarget::new(deployments::fire::KIND, id) })
+        .iter()
+        .filter(|r| r.b != "archived")
+        .map(|r| ScheduleChange::Delete { target: FireTarget::new(deployments::fire::KIND, r.a.clone()) })
         .collect();
     outbox::record(c, &schedule_deletes).await?;
-    let dreams = ids(
+    let dreams: Vec<Three> = in_workspaces(
         c,
-        "SELECT dream_id AS a FROM dreams
-                          WHERE workspace_id = ANY($1) AND status <> 'archived'",
+        "DELETE FROM dreams WHERE workspace_id = ANY($1) RETURNING dream_id AS a, status AS b, ''::text AS c",
         &workspaces,
     )
     .await?;
@@ -145,6 +143,8 @@ async fn rows(c: &mut AsyncPgConnection, workspaces: Vec<String>) -> Result<Remo
     )
     .await?;
     let mut counts = vec![
+        ("deployments", len(&deployments)),
+        ("dreams", len(&dreams)),
         ("credentials", len(&credentials)),
         ("files", len(&files)),
         ("skill_versions", len(&skill_versions)),
@@ -169,17 +169,12 @@ async fn rows(c: &mut AsyncPgConnection, workspaces: Vec<String>) -> Result<Remo
                 .map(|r| blob_keys::memory_version(&r.a, &r.b, &r.c)),
         )
         .collect();
-    let dreams = dreams.into_iter().map(|id| FireTarget::new(dreams::fire::KIND, id)).collect();
+    let dreams = dreams
+        .into_iter()
+        .filter(|r| r.b != "archived")
+        .map(|r| FireTarget::new(dreams::fire::KIND, r.a))
+        .collect();
     Ok(Removed { workspaces, rows: counts, secrets, blobs, dreams })
-}
-
-async fn ids(
-    c: &mut AsyncPgConnection,
-    sql: &str,
-    workspaces: &[String],
-) -> Result<Vec<String>, diesel::result::Error> {
-    let rows: Vec<One> = in_workspaces(c, sql, workspaces).await?;
-    Ok(rows.into_iter().map(|r| r.a).collect())
 }
 
 async fn in_workspaces<T: QueryableByName<diesel::pg::Pg> + 'static>(

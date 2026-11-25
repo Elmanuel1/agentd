@@ -13,7 +13,6 @@ struct Table {
     name: String,
 }
 
-/// The tracked tables of `pg`, by name.
 pub async fn tracked_tables(pg: &PgBackend) -> Result<Vec<String>, PgError> {
     let mut conn = pg.diesel.get().await.map_err(|e| PgError::Query(e.to_string()))?;
     let tables: Vec<Table> = diesel::sql_query(

@@ -7,7 +7,7 @@ Postgres documentation.
 
 | # | Fact | Status | Evidence |
 |---|---|---|---|
-| A1 | Every environment read and write goes through the `environments` view: insert, get, replace, delete and list in `PgEnvironmentsStore`. No route, response field or store method reads `environment_revisions`, `revision`, `superseded_by` or `deleted_by`; only V7, V8 and the test `pg_revisions.rs` do. | VERIFIED | `store-postgres/src/entities/environments.rs`; `resources/environments/src/{store,service,routes,types}.rs` |
+| A1 | Every environment read and write is an insert, get, replace, delete or list of the six columns in `PgEnvironmentsStore`; no route, response field or store method reads a revision column. | VERIFIED | `store-postgres/src/entities/environments.rs`; `resources/environments/src/{store,service,routes,types}.rs` |
 | A2 | Diesel's `environments` table already has the six columns a plain table keeps (`org_id`, `environment_id`, `name`, `state`, `created_at`, `doc`). | VERIFIED | `store-postgres/src/schema.rs:66` |
 | A3 | agentd keeps no organization record. An org id is the free-text `--org` of `agentd keys`, `admin-keys` and `environment-keys create`, copied into the key row; an admin key resolves to `AdminContext { org }` from `admin_keys.org_id`. | VERIFIED | `api/src/cli/command.rs:45`; `resources/api-keys/src/admin.rs:38,70`; `resources/organizations/src/lib.rs:5` |
 | A4 | The tables with `org_id` are `environments` (V2), `api_keys` (V5), `workspaces` (V6), `work_items` and `environment_keys` (V9) and `admin_keys` (V15). Every other resource table is keyed by `workspace_id` with no `org_id`. | VERIFIED | migrations V1, V2, V5, V6, V9, V15, V20 |
