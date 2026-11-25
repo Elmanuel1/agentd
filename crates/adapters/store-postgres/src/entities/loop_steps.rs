@@ -1,7 +1,7 @@
 //! `Steps` on Postgres: the `loop_steps` queue, claimed with `FOR UPDATE
-//! SKIP LOCKED` under a lease. Every write of a held step takes the
-//! session's append lock first, as every append does, so the two never wait
-//! on each other in a cycle.
+//! SKIP LOCKED` under a lease. A held step's writes take no session-wide
+//! lock: they lock the session's own step row, then the threads' rows, then
+//! the session row, the order every other write of a session keeps.
 
 use ::sessions::steps::{Claim, NativeSteps, StepCounts, StepEnd, StepWrite};
 use ::sessions::store::{StoreError, Wake};
