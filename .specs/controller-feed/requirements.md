@@ -17,8 +17,8 @@ table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose c
 (resource-history D4). *an organization's workspaces*: the workspace ids of its `workspaces` rows and of its API
 and environment keys (D5).
 
-**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9, CF-13 and CF-14
-(organizations), then CF-10 to CF-12, CF-16 and CF-19 (change times and versions), then CF-18 (the sweep), then CF-30 and CF-31 (the feed, `docs/history.md` with it).
+**Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9, CF-13, CF-14 and CF-33
+(organizations), then CF-10 to CF-12, CF-16 and CF-19 (change times and versions), then CF-18 (the sweep), then CF-30 to CF-32 (the feed, `docs/history.md` with it).
 
 ## Organizations
 
@@ -34,7 +34,8 @@ and environment keys (D5).
 | CF-8 | When an organization delete commits, agentd shall delete from the secret store the secrets of the credentials it removed, and from the blob store the blobs of the files, skill versions and memory versions it removed, and shall print what it removed. |
 | CF-9 | When an organization delete removes a deployment that is not archived, agentd shall write that deployment's schedule delete into `schedule_outbox` in the delete's transaction. |
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
-| CF-14 | If removing a secret or blob fails after an organization delete commits, then agentd shall print each secret and blob it did not remove and exit with failure. |
+| CF-33 | When an organization delete commits, agentd shall delete from the scheduler the schedule of each dream it removed that was not archived. |
+| CF-14 | If removing a secret, blob or dream schedule fails after an organization delete commits, then agentd shall print each one it did not remove and exit with failure. |
 | CF-18 | agentd shall, once an hour on one replica, remove from the secret store every secret no `credentials` row names, and from the blob store every blob no `files`, `skill_versions` or `memory_versions` row names, leaving any written less than 24 hours ago. |
 
 ## Change times and versions
@@ -61,7 +62,8 @@ and environment keys (D5).
 
 | ID | Requirement |
 |---|---|
-| CF-30 | The store shall track `environments` and `organizations` as it tracks the other tracked tables: `actor` and `request_id` columns, `replica identity full`, the `history_stamp` and `history_deleted` triggers, a `history.environments` and a `history.organizations` table, and a branch of each in `history.changes`. |
+| CF-30 | The store shall track `environments` and `organizations` as it tracks the other tracked tables: `actor` and `request_id` columns, `replica identity full`, and the `history_stamp` and `history_deleted` triggers. |
+| CF-32 | The store shall keep no `history` schema and agentd shall run no history consumer. |
 | CF-31 | The change feed shall capture `public.organizations` and `public.environments`, so it carries each insert, update and delete of every organization, environment, workspace, vault and credential row, the rows an organization delete removes included. |
 
 ## Rollout
