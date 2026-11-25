@@ -8,7 +8,7 @@ use async_trait::async_trait;
 pub use secrecy::{ExposeSecret, SecretString};
 
 use crate::charset::is_id_charset;
-pub use crate::ports::blobs::Stored;
+pub use crate::ports::blobs::{Page, Stored};
 
 /// Secret-store failure. No variant ever carries secret material.
 #[derive(Debug, thiserror::Error)]
@@ -114,8 +114,8 @@ pub trait SecretStore: Send + Sync {
     async fn get(&self, key: &SecretKey) -> Result<SecretString, SecretError>;
     /// Delete `key`; a missing key is not an error.
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError>;
-    /// Every secret the store holds.
-    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError>;
+    /// One page of the secrets the store holds, from where `after`, a page's `next`, left off.
+    async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError>;
 }
 
 #[cfg(test)]

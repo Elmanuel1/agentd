@@ -154,10 +154,23 @@ async fn list_returns_each_parameter_under_the_prefix_with_its_write_time() {
         keys.push(key.to_string());
     }
     other.put(&key(), &SecretString::from("s")).await.unwrap();
-    let listed = store.list().await.unwrap();
+    let listed = listed(&store).await;
     let mut seen: Vec<String> = listed.iter().map(|s| s.key.to_string()).collect();
     seen.sort();
     keys.sort();
     assert_eq!(seen, keys, "every parameter under the prefix, across pages of ten");
     assert!(listed.iter().all(|s| s.written_at > before), "each carries its write time");
+}
+
+/// Every page of `store`'s listing.
+async fn listed(store: &impl SecretStore) -> Vec<shared::ports::secrets::Stored<SecretKey>> {
+    let (mut all, mut after) = (vec![], None);
+    loop {
+        let page = store.list(after).await.unwrap();
+        all.extend(page.items);
+        after = page.next;
+        if after.is_none() {
+            return all;
+        }
+    }
 }

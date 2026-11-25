@@ -10,9 +10,8 @@ use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
 use shared::Timestamp;
 use shared::hash::SecretKeys;
-use shared::ports::secrets::{SecretKey, SecretStore, SecretString};
+use shared::ports::secrets::{SecretKey, SecretStore, SecretString, Stored};
 use store_postgres::{PgBackend, PgSecretStore, Sweep};
-use test_support::MemorySecretStore;
 
 fn enabled() -> bool {
     std::env::var("AGENTD_PG_TESTS").as_deref() == Ok("1") && std::env::var("AGENTD_AWS_ENDPOINT").is_ok()
@@ -26,6 +25,10 @@ async fn backend() -> PgBackend {
 
 fn stamp() -> i64 {
     Timestamp::now().as_datetime().timestamp_micros()
+}
+
+fn keys() -> SecretKeys {
+    SecretKeys::parse("k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap()
 }
 
 async fn exec(pg: &PgBackend, sql: &str, ws: &str) {
@@ -59,7 +62,7 @@ async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
     exec(&pg, "INSERT INTO memory_versions (workspace_id, store_id, memory_id, version_id, has_blob, created_at, doc)
                VALUES ($1, 'memstore_a', 'mem_a', 'memver_named', true, now(), '{}')", &ws).await;
 
-    let secrets = Arc::new(MemorySecretStore::default());
+    let secrets = Arc::new(PgSecretStore::new(pg.clone(), keys()));
     let key = |c: &str| SecretKey::new(&ws, "vlt_a", c).unwrap();
     secrets.put(&key("vcrd_named"), &SecretString::from("s")).await.unwrap();
     secrets.put(&key("vcrd_orphan"), &SecretString::from("s")).await.unwrap();
@@ -92,11 +95,12 @@ async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
     for key in named.iter().chain(&orphans) {
         assert!(blobs.get(key).await.is_ok(), "{key} is under a day old and stays");
     }
+    assert!(secrets.get(&key("vcrd_orphan")).await.is_ok(), "a secret under a day old stays");
 
     let later = Timestamp::from_datetime(Timestamp::now().as_datetime() + chrono::Duration::days(2));
     assert!(sweep.run(later).await.unwrap());
-    assert!(secrets.exposed(&key("vcrd_named")).is_some());
-    assert!(secrets.exposed(&key("vcrd_orphan")).is_none(), "no credential names it");
+    assert!(secrets.get(&key("vcrd_named")).await.is_ok());
+    assert!(secrets.get(&key("vcrd_orphan")).await.is_err(), "no credential names it");
     for key in &named {
         assert!(blobs.get(key).await.is_ok(), "{key} has its row");
     }
@@ -110,15 +114,26 @@ async fn the_postgres_secret_store_lists_each_secret_with_its_last_write() {
     if std::env::var("AGENTD_PG_TESTS").as_deref() != Ok("1") {
         return;
     }
-    let keys =
-        SecretKeys::parse("k1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap();
-    let store = PgSecretStore::new(backend().await, keys);
+    let store = PgSecretStore::new(backend().await, keys());
     let key = SecretKey::new(&format!("wrkspc_list{}", stamp()), "vlt_a", "vcrd_a").unwrap();
     store.put(&key, &SecretString::from("one")).await.unwrap();
-    let first = store.list().await.unwrap().into_iter().find(|s| s.key == key).unwrap();
+    let first = listed(&store).await.into_iter().find(|s| s.key == key).unwrap();
     store.put(&key, &SecretString::from("two")).await.unwrap();
-    let second = store.list().await.unwrap().into_iter().find(|s| s.key == key).unwrap();
+    let second = listed(&store).await.into_iter().find(|s| s.key == key).unwrap();
     assert!(second.written_at > first.written_at, "an overwrite moves the write time");
     store.delete(&key).await.unwrap();
-    assert!(!store.list().await.unwrap().iter().any(|s| s.key == key));
+    assert!(!listed(&store).await.iter().any(|s| s.key == key));
+}
+
+/// Every page of `store`'s listing.
+async fn listed(store: &PgSecretStore) -> Vec<Stored<SecretKey>> {
+    let (mut all, mut after) = (vec![], None);
+    loop {
+        let page = store.list(after).await.unwrap();
+        all.extend(page.items);
+        after = page.next;
+        if after.is_none() {
+            return all;
+        }
+    }
 }

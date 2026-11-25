@@ -2,57 +2,33 @@
 //! delete commits is retried here. Once an hour, on the one replica holding its lock, every secret
 //! no `credentials` row names and every blob no `files`, `skill_versions` or `memory_versions` row
 //! names is removed, unless it was written in the last day: a secret or blob is written before its
-//! row commits.
+//! row commits. Each store is walked a page at a time.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use diesel::QueryableByName;
-use diesel::sql_types::{Array, Text};
+use diesel::sql_types::{Array, BigInt, Text};
 use diesel_async::RunQueryDsl;
 use sessions::retention::RunLock;
 use sessions::store::StoreError;
+use shared::Timestamp;
 use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::secrets::{SecretKey, SecretStore};
-use shared::{BackendError, Timestamp};
 
+use crate::entities::blob_keys::{self, Kind};
 use crate::entities::run_lock::PgRunLock;
-use crate::{PgBackend, diesel_be, pool_be};
+use crate::{PgBackend, blob_be, diesel_be, pool_be, secret_be};
 
 const EVERY: Duration = Duration::from_secs(3600);
 const GRACE: Duration = Duration::from_secs(24 * 3600);
 const LOCK: &str = "cleanup_sweep";
-/// Keys checked against their table in one statement.
-const BATCH: usize = 1000;
-
-/// For each blob kind, its key prefix and the rows that name its keys' parts.
-const BLOBS: [(&str, &str); 3] = [
-    (
-        "skills/",
-        "LEFT JOIN skill_versions r ON r.workspace_id = k.a AND r.skill_id = k.b AND r.doc->>'id' = k.c
-                 WHERE r.skill_id IS NULL",
-    ),
-    (
-        "memory/",
-        "LEFT JOIN memory_versions r ON r.workspace_id = k.a AND r.store_id = k.b AND r.version_id = k.c
-                 WHERE r.version_id IS NULL",
-    ),
-    ("", "LEFT JOIN files r ON r.workspace_id = k.a AND r.file_id = k.b WHERE r.file_id IS NULL"),
-];
-const CREDENTIALS: &str =
-    "LEFT JOIN credentials r ON r.workspace_id = k.a AND r.vault_id = k.b AND r.credential_id = k.c
-     WHERE r.credential_id IS NULL";
+const KINDS: [Kind; 3] = [Kind::File, Kind::SkillVersion, Kind::MemoryVersion];
 
 #[derive(QueryableByName)]
 struct Unnamed {
-    #[diesel(sql_type = Text)]
-    key: String,
-}
-
-/// A listed key and its parts, as the query that finds the rows naming it reads them.
-struct Listed {
-    key: String,
-    parts: [String; 3],
+    #[diesel(sql_type = BigInt)]
+    i: i64,
 }
 
 /// Removes what no row names from the secret and blob stores.
@@ -109,71 +85,109 @@ impl Sweep {
     }
 
     async fn secrets(&self, before: Timestamp) -> Result<Removed, StoreError> {
-        let listed = self.secrets.list().await.map_err(backend)?;
-        let old: Vec<Listed> = listed
-            .into_iter()
-            .filter(|s| s.written_at < before)
-            .map(|s| Listed {
-                parts: [s.key.workspace(), s.key.vault(), s.key.credential()].map(str::to_owned),
-                key: s.key.to_string(),
-            })
-            .collect();
-        let mut removed = Removed::default();
-        for key in self.unnamed(CREDENTIALS, old).await? {
-            let deleted = match key.parse::<SecretKey>() {
-                Ok(secret) => self.secrets.delete(&secret).await.map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
-            };
-            removed.count(&key, deleted);
+        let (mut removed, mut after) = (Removed::default(), None);
+        loop {
+            let page = self.secrets.list(after).await.map_err(secret_be)?;
+            let old: Vec<SecretKey> =
+                page.items.into_iter().filter(|s| s.written_at < before).map(|s| s.key).collect();
+            let parts = old.iter().map(|k| [k.workspace(), k.vault(), k.credential()].map(str::to_owned));
+            for key in self.unnamed(Join::Credentials, parts.collect()).await?.filter_map(|i| old.get(i)) {
+                let deleted = self.secrets.delete(key).await.map_err(|e| e.to_string());
+                removed.count(&key.to_string(), deleted);
+            }
+            after = page.next;
+            if after.is_none() {
+                return Ok(removed);
+            }
         }
-        Ok(removed)
     }
 
     async fn blobs(&self, before: Timestamp) -> Result<Removed, StoreError> {
-        let listed = self.blobs.list("").await.map_err(backend)?;
-        let old: Vec<String> = listed.into_iter().filter(|b| b.written_at < before).map(|b| b.key).collect();
-        let mut removed = Removed::default();
-        for (prefix, join) in BLOBS {
-            let of_kind: Vec<Listed> = old.iter().filter_map(|key| kind(key, prefix)).collect();
-            for key in self.unnamed(join, of_kind).await? {
-                let deleted = match self.blobs.delete(&key).await {
-                    Ok(()) | Err(BlobError::NotFound(_)) => Ok(()),
-                    Err(e) => Err(e.to_string()),
-                };
-                removed.count(&key, deleted);
+        let (mut removed, mut after) = (Removed::default(), None);
+        loop {
+            let page = self.blobs.list("", after).await.map_err(blob_be)?;
+            let old: Vec<(String, Kind, [String; 3])> = page
+                .items
+                .into_iter()
+                .filter(|b| b.written_at < before)
+                .filter_map(|b| blob_keys::parse(&b.key).map(|(kind, parts)| (b.key, kind, parts)))
+                .collect();
+            for kind in KINDS {
+                let of_kind: Vec<&(String, Kind, [String; 3])> = old.iter().filter(|b| b.1 == kind).collect();
+                let parts = of_kind.iter().map(|b| b.2.clone()).collect();
+                for (key, _, _) in self.unnamed(Join::Blob(kind), parts).await?.filter_map(|i| of_kind.get(i))
+                {
+                    let deleted = match self.blobs.delete(key).await {
+                        Ok(()) | Err(BlobError::NotFound(_)) => Ok(()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    removed.count(key, deleted);
+                }
+            }
+            after = page.next;
+            if after.is_none() {
+                return Ok(removed);
             }
         }
-        Ok(removed)
     }
 
-    /// The keys of `listed` no row names, by `join` over `unnest(...) AS k(key, a, b, c)`, a batch at a
-    /// time.
-    async fn unnamed(&self, join: &str, listed: Vec<Listed>) -> Result<Vec<String>, StoreError> {
+    /// The positions in `parts` of the keys no row names.
+    async fn unnamed(
+        &self,
+        join: Join,
+        parts: Vec<[String; 3]>,
+    ) -> Result<impl Iterator<Item = usize>, StoreError> {
+        let (mut a, mut b, mut c) = (vec![], vec![], vec![]);
+        for [pa, pb, pc] in parts {
+            a.push(pa);
+            b.push(pb);
+            c.push(pc);
+        }
         let sql = format!(
-            "SELECT k.key FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS k(key, a, b, c) {join}"
+            "SELECT k.i - 1 AS i FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS k(a, b, c, i) {}",
+            join.sql()
         );
         let mut conn = self.backend.diesel.get().await.map_err(pool_be)?;
-        let mut unnamed = vec![];
-        let mut rest = listed.into_iter().peekable();
-        while rest.peek().is_some() {
-            let (mut keys, mut a, mut b, mut c) = (vec![], vec![], vec![], vec![]);
-            for Listed { key, parts: [pa, pb, pc] } in rest.by_ref().take(BATCH) {
-                keys.push(key);
-                a.push(pa);
-                b.push(pb);
-                c.push(pc);
-            }
-            let rows: Vec<Unnamed> = diesel::sql_query(&sql)
-                .bind::<Array<Text>, _>(keys)
+        let rows: Vec<Unnamed> = match a.is_empty() {
+            true => vec![],
+            false => diesel::sql_query(sql)
                 .bind::<Array<Text>, _>(a)
                 .bind::<Array<Text>, _>(b)
                 .bind::<Array<Text>, _>(c)
                 .load(&mut conn)
                 .await
-                .map_err(diesel_be)?;
-            unnamed.extend(rows.into_iter().map(|r| r.key));
+                .map_err(diesel_be)?,
+        };
+        Ok(rows.into_iter().filter_map(|r| usize::try_from(r.i).ok()))
+    }
+}
+
+/// The rows that name a key's parts `k.a`, `k.b` and `k.c`.
+#[derive(Clone, Copy)]
+enum Join {
+    Credentials,
+    Blob(Kind),
+}
+
+impl Join {
+    fn sql(self) -> &'static str {
+        match self {
+            Self::Credentials => {
+                "LEFT JOIN credentials r ON r.workspace_id = k.a AND r.vault_id = k.b AND r.credential_id = k.c
+                 WHERE r.credential_id IS NULL"
+            }
+            Self::Blob(Kind::File) => {
+                "LEFT JOIN files r ON r.workspace_id = k.a AND r.file_id = k.b WHERE r.file_id IS NULL"
+            }
+            Self::Blob(Kind::SkillVersion) => {
+                "LEFT JOIN skill_versions r ON r.workspace_id = k.a AND r.skill_id = k.b AND r.doc->>'id' = k.c
+                 WHERE r.skill_id IS NULL"
+            }
+            Self::Blob(Kind::MemoryVersion) => {
+                "LEFT JOIN memory_versions r ON r.workspace_id = k.a AND r.store_id = k.b AND r.version_id = k.c
+                 WHERE r.version_id IS NULL"
+            }
         }
-        Ok(unnamed)
     }
 }
 
@@ -194,44 +208,5 @@ impl Removed {
                 tracing::warn!(key, error = %e, "sweep: could not remove; the next run tries again");
             }
         }
-    }
-}
-
-/// A blob key and its parts under `prefix`: two for a file (`<workspace>/<file>`), three for the
-/// others; none for a key of another kind.
-fn kind(key: &str, prefix: &str) -> Option<Listed> {
-    let rest = key.strip_prefix(prefix)?;
-    let parts: Vec<&str> = rest.split('/').collect();
-    let parts = match (prefix, parts.as_slice()) {
-        ("", [ws, file]) => [(*ws).to_owned(), (*file).to_owned(), String::new()],
-        ("", _) => return None,
-        (_, [ws, owner, version]) => [(*ws).to_owned(), (*owner).to_owned(), (*version).to_owned()],
-        _ => return None,
-    };
-    Some(Listed { key: key.to_owned(), parts })
-}
-
-fn backend(e: impl std::error::Error + Send + Sync + 'static) -> StoreError {
-    StoreError::Backend(BackendError::new(e))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::kind;
-
-    #[test]
-    fn each_blob_key_reads_as_its_kind_only() {
-        let parts = |a: &str, b: &str, c: &str| Some([a.to_owned(), b.to_owned(), c.to_owned()]);
-        assert_eq!(
-            kind("skills/wrkspc_a/skill_a/skver_a", "skills/"),
-            parts("wrkspc_a", "skill_a", "skver_a")
-        );
-        assert_eq!(
-            kind("memory/wrkspc_a/memstore_a/memver_a", "memory/"),
-            parts("wrkspc_a", "memstore_a", "memver_a")
-        );
-        assert_eq!(kind("wrkspc_a/file_a", ""), parts("wrkspc_a", "file_a", ""));
-        assert_eq!(kind("skills/wrkspc_a/skill_a/skver_a", ""), None);
-        assert_eq!(kind("memory/wrkspc_a/x", "memory/"), None);
     }
 }

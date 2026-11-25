@@ -16,6 +16,8 @@ use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
+use shared::ports::blobs::NativeBlobStore;
+
 use super::Metrics;
 use super::ports::Observed;
 use failing::Failing;

@@ -10,7 +10,7 @@ use aws_sdk_ssm::operation::put_parameter::PutParameterError;
 use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
 use aws_sdk_ssm::types::{ParameterTier, ParameterType, ResourceTypeForTagging, Tag};
 use shared::ports::secrets::{
-    ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, Stored, into_secret,
+    ExposeSecret, Page, SecretError, SecretKey, SecretStore, SecretString, into_secret,
 };
 
 use crate::failure::failure;
@@ -129,28 +129,24 @@ impl SecretStore for AwsParameterStore {
         }
     }
 
-    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+    async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
         let path = format!("/{}", self.prefix);
         let under = format!("{path}/");
-        let (mut found, mut token) = (vec![], None);
-        loop {
-            let page = self
-                .client
-                .get_parameters_by_path()
-                .path(&path)
-                .recursive(true)
-                .set_next_token(token)
-                .send()
-                .await
-                .map_err(|e| failure("ssm:GetParametersByPath", &path, &e))?;
-            for parameter in page.parameters() {
-                found.extend(name::stored(parameter.name(), &under, parameter.last_modified_date()));
-            }
-            token = page.next_token().map(str::to_owned);
-            if token.is_none() {
-                return Ok(found);
-            }
-        }
+        let page = self
+            .client
+            .get_parameters_by_path()
+            .path(&path)
+            .recursive(true)
+            .set_next_token(after)
+            .send()
+            .await
+            .map_err(|e| failure("ssm:GetParametersByPath", &path, &e))?;
+        let items = page
+            .parameters()
+            .iter()
+            .filter_map(|p| name::stored(p.name(), &under, p.last_modified_date()))
+            .collect();
+        Ok(Page { items, next: page.next_token().map(str::to_owned) })
     }
 }
 

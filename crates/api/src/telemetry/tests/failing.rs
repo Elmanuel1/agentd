@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use shared::ports::blobs::{BlobError, NativeBlobStore, Stored};
+use shared::ports::blobs::{BlobError, NativeBlobStore, Page};
 
 /// A blob store whose reads and writes fail with not-found and whose deletes succeed.
 pub(super) struct Failing;
@@ -14,7 +14,7 @@ impl NativeBlobStore for Failing {
     async fn delete(&self, _key: &str) -> Result<(), BlobError> {
         Ok(())
     }
-    async fn list(&self, _prefix: &str) -> Result<Vec<Stored<String>>, BlobError> {
-        Ok(vec![])
+    async fn list(&self, _prefix: &str, _after: Option<String>) -> Result<Page<String>, BlobError> {
+        Ok(Page { items: vec![], next: None })
     }
 }

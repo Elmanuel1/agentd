@@ -11,12 +11,13 @@ pub use reseal::Resealed;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use diesel::sql_types::{BigInt, Text, Timestamptz};
 use diesel::upsert::excluded;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
 use shared::Timestamp;
 use shared::hash::SecretKeys;
-use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString, Stored};
+use shared::ports::secrets::{Page, SecretError, SecretKey, SecretStore, SecretString, Stored};
 
 use self::cipher::Sealed;
 use crate::schema::vault_secrets as t;
@@ -48,6 +49,21 @@ impl PgSecretStore {
     fn open(&self, key: &SecretKey, row: &Sealed) -> Result<SecretString, SecretError> {
         cipher::open(&self.keys, key, row).inspect_err(|e| tracing::error!(error = %e, "vault secret"))
     }
+}
+
+/// A listing's page size.
+const PAGE: i64 = 1000;
+
+#[derive(diesel::QueryableByName)]
+struct Listed {
+    #[diesel(sql_type = Text)]
+    workspace_id: String,
+    #[diesel(sql_type = Text)]
+    vault_id: String,
+    #[diesel(sql_type = Text)]
+    credential_id: String,
+    #[diesel(sql_type = Timestamptz)]
+    written_at: DateTime<Utc>,
 }
 
 #[async_trait]
@@ -102,18 +118,33 @@ impl SecretStore for PgSecretStore {
         Ok(())
     }
 
-    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
-        let mut conn = self.conn().await?;
-        let rows: Vec<(String, String, String, DateTime<Utc>)> = t::table
-            .select((t::workspace_id, t::vault_id, t::credential_id, t::written_at))
-            .load(&mut conn)
-            .await
-            .map_err(backend_error)?;
-        let stored = |(ws, vault, cred, at): (String, String, String, DateTime<Utc>)| {
-            SecretKey::new(&ws, &vault, &cred)
-                .ok()
-                .map(|key| Stored { key, written_at: Timestamp::from_datetime(at) })
+    async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
+        let after: SecretKey = match after {
+            Some(raw) => raw.parse()?,
+            None => SecretKey::new("0", "0", "0")?,
         };
-        Ok(rows.into_iter().filter_map(stored).collect())
+        let mut conn = self.conn().await?;
+        let rows: Vec<Listed> = diesel::sql_query(
+            "SELECT workspace_id, vault_id, credential_id, written_at FROM vault_secrets
+             WHERE (workspace_id, vault_id, credential_id) > ($1, $2, $3)
+             ORDER BY workspace_id, vault_id, credential_id LIMIT $4",
+        )
+        .bind::<Text, _>(after.workspace())
+        .bind::<Text, _>(after.vault())
+        .bind::<Text, _>(after.credential())
+        .bind::<BigInt, _>(PAGE)
+        .load(&mut conn)
+        .await
+        .map_err(backend_error)?;
+        let items: Vec<Stored<SecretKey>> = rows
+            .into_iter()
+            .filter_map(|r| {
+                let key = SecretKey::new(&r.workspace_id, &r.vault_id, &r.credential_id).ok()?;
+                Some(Stored { key, written_at: Timestamp::from_datetime(r.written_at) })
+            })
+            .collect();
+        let full = items.len() == usize::try_from(PAGE).unwrap_or(usize::MAX);
+        let next = items.last().filter(|_| full).map(|s| s.key.to_string());
+        Ok(Page { items, next })
     }
 }

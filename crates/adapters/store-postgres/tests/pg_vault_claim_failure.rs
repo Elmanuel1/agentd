@@ -46,8 +46,11 @@ impl SecretStore for StoresThenFails {
             false => self.inner.delete(key).await,
         }
     }
-    async fn list(&self) -> Result<Vec<shared::ports::secrets::Stored<SecretKey>>, SecretError> {
-        self.inner.list().await
+    async fn list(
+        &self,
+        after: Option<String>,
+    ) -> Result<shared::ports::secrets::Page<SecretKey>, SecretError> {
+        self.inner.list(after).await
     }
 }
 

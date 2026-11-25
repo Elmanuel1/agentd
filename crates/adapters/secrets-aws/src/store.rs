@@ -7,7 +7,7 @@ use aws_sdk_secretsmanager::operation::describe_secret::DescribeSecretError;
 use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError;
 use aws_sdk_secretsmanager::types::{Filter, FilterNameStringType};
 use shared::ports::secrets::{
-    ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, Stored, into_secret,
+    ExposeSecret, Page, SecretError, SecretKey, SecretStore, SecretString, into_secret,
 };
 
 use crate::failure::failure;
@@ -133,27 +133,22 @@ impl SecretStore for AwsSecretStore {
         self.delete_named(&name, &name).await
     }
 
-    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+    async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
         let under = format!("{}/", self.prefix);
         let filter = Filter::builder().key(FilterNameStringType::Name).values(&under).build();
-        let (mut found, mut token) = (vec![], None);
-        loop {
-            let page = self
-                .client
-                .list_secrets()
-                .filters(filter.clone())
-                .set_next_token(token)
-                .send()
-                .await
-                .map_err(|e| failure("secretsmanager:ListSecrets", &under, &e))?;
-            for secret in page.secret_list() {
-                let written = secret.last_changed_date().or(secret.created_date());
-                found.extend(name::stored(secret.name(), &under, written));
-            }
-            token = page.next_token().map(str::to_owned);
-            if token.is_none() {
-                return Ok(found);
-            }
-        }
+        let page = self
+            .client
+            .list_secrets()
+            .filters(filter)
+            .set_next_token(after)
+            .send()
+            .await
+            .map_err(|e| failure("secretsmanager:ListSecrets", &under, &e))?;
+        let items = page
+            .secret_list()
+            .iter()
+            .filter_map(|s| name::stored(s.name(), &under, s.last_changed_date().or(s.created_date())))
+            .collect();
+        Ok(Page { items, next: page.next_token().map(str::to_owned) })
     }
 }

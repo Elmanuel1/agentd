@@ -4,7 +4,7 @@
 pub mod admin_keys;
 pub mod agents;
 pub mod api_keys;
-mod blob_keys;
+pub(crate) mod blob_keys;
 pub mod deployments;
 pub mod dreams;
 pub mod environment_keys;

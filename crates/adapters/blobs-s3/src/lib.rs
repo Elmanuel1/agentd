@@ -12,8 +12,8 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
 use shared::Timestamp;
-use shared::ports::blobs::Stored;
 pub use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore};
+use shared::ports::blobs::{Page, Stored};
 
 /// Where and how to reach the bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,29 +154,25 @@ impl NativeBlobStore for S3BlobStore {
         Ok(())
     }
 
-    async fn list(&self, prefix: &str) -> Result<Vec<Stored<String>>, BlobError> {
-        let (mut found, mut token) = (vec![], None);
-        loop {
-            let page = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(prefix)
-                .set_continuation_token(token)
-                .send()
-                .await
-                .map_err(|e| BlobError::Backend(aws_sdk_s3::error::DisplayErrorContext(&e).to_string()))?;
-            for object in page.contents() {
-                let written =
-                    object.last_modified().and_then(|t| Timestamp::from_unix(t.secs(), t.subsec_nanos()));
-                if let (Some(key), Some(written_at)) = (object.key(), written) {
-                    found.push(Stored { key: key.to_owned(), written_at });
-                }
-            }
-            token = page.next_continuation_token().map(str::to_owned);
-            if token.is_none() {
-                return Ok(found);
-            }
-        }
+    async fn list(&self, prefix: &str, after: Option<String>) -> Result<Page<String>, BlobError> {
+        let page = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(prefix)
+            .set_continuation_token(after)
+            .send()
+            .await
+            .map_err(|e| BlobError::Backend(aws_sdk_s3::error::DisplayErrorContext(&e).to_string()))?;
+        let items = page
+            .contents()
+            .iter()
+            .filter_map(|object| {
+                let written = object.last_modified()?;
+                let written_at = Timestamp::from_unix(written.secs(), written.subsec_nanos())?;
+                Some(Stored { key: object.key()?.to_owned(), written_at })
+            })
+            .collect();
+        Ok(Page { items, next: page.next_continuation_token().map(str::to_owned) })
     }
 }
