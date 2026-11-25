@@ -27,7 +27,7 @@ fn debezium_reads_every_tracked_table() {
         properties.lines().find_map(|l| l.strip_prefix("debezium.source.table.include.list=")).unwrap();
     let included: Vec<&str> = list.split(',').filter_map(|t| t.strip_prefix("public.")).collect();
     let tables = tracked_tables();
-    assert_eq!(tables.len(), 18);
+    assert_eq!(tables.len(), 20);
     let missing: Vec<&String> = tables.iter().filter(|t| !included.contains(&t.as_str())).collect();
     assert_eq!(missing, Vec::<&String>::new());
 }

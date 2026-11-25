@@ -225,3 +225,38 @@ async fn a_delete_writes_a_schedule_delete_for_each_deployment_not_archived() {
     exec(&pg, "SELECT 1 FROM pg_drop_replication_slot($1) WHERE $2 = $2", &slot, "").await.unwrap();
     assert_eq!((live, archived), (1, 0));
 }
+
+#[tokio::test]
+async fn an_organization_delete_announces_the_organization_and_each_cascaded_environment() {
+    if !enabled() || std::env::var("AGENTD_CDC_TESTS").as_deref() != Ok("1") {
+        return;
+    }
+    let pg = backend().await;
+    let slot = format!("orgfeed{}", tag());
+    exec(
+        &pg,
+        "SELECT 1 FROM pg_create_logical_replication_slot($1, 'test_decoding') WHERE $2 = $2",
+        &slot,
+        "",
+    )
+    .await
+    .unwrap();
+    let org = OrgId::new(format!("org_feed{}", tag()));
+    PgOrganizationsStore::new(pg.clone()).create(&org).await.unwrap();
+    let env = "INSERT INTO environments (org_id, environment_id, name, state, created_at, doc)
+               VALUES ($1, $2, 'e', 'active', now(), '{}')";
+    exec(&pg, env, org.as_str(), &format!("env_feed{}", tag())).await.unwrap();
+    PgOrganizationsStore::new(pg.clone()).delete(&org).await.unwrap();
+    let announced = |table: &str| {
+        format!(
+            "SELECT count(*) AS n FROM pg_logical_slot_peek_changes($1, NULL, NULL)
+             WHERE data LIKE 'message:%agentd-history%' AND data LIKE '%\"table\": \"{table}\"%'
+               AND data LIKE '%{}%'",
+            org.as_str()
+        )
+    };
+    let orgs = count(&pg, &announced("organizations"), &slot).await;
+    let envs = count(&pg, &announced("environments"), &slot).await;
+    exec(&pg, "SELECT 1 FROM pg_drop_replication_slot($1) WHERE $2 = $2", &slot, "").await.unwrap();
+    assert_eq!((orgs, envs), (1, 1));
+}

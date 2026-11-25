@@ -8,7 +8,7 @@ The API does not change: there is no history route.
 
 The tracked tables are `agents`, `deployments`, `deployment_runs`, `files`, `vaults`, `credentials`, `skills`,
 `skill_versions`, `memory_stores`, `memories`, `memory_versions`, `sessions`, `dreams`, `dream_runs`, `api_keys`,
-`workspaces`, `environment_keys` and `admin_keys`.
+`workspaces`, `environment_keys`, `admin_keys`, `environments` and `organizations`.
 
 Each tracked table's `history_stamp()` trigger sets `actor` and `request_id` on every insert and update from the
 writing connection (`agentd.actor`, `agentd.request_id`, which every write sets). `actor` is the key behind the
