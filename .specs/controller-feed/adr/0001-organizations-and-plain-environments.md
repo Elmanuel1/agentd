@@ -30,9 +30,8 @@ reconciles per organization. It needs three things the schema lacks:
   statement makes it (Postgres `contrib/spi` `moddatetime`; Rails and Django set the same column on every save).
 - A row version raised on every update is the standard way to tell one write of a row from the next (Rails
   `lock_version`, JPA `@Version`).
-- Change data capture reads base tables; history lives in the CDC consumer's store, not in revision rows in the
-  live table (Debezium Postgres connector docs). agentd already does this for 18 tables (resource-history ADR
-  0001).
+- Change data capture reads base tables, and a row's history is the stream of its change events, not revision rows
+  in the live table (Debezium Postgres connector docs). agentd's feed carries 18 tables this way.
 
 Departures:
 
@@ -61,8 +60,8 @@ Departures:
 ## Consequences
 
 - The feed carries every organization, environment, workspace, vault and credential change, each delete included.
-- Past environment revisions are gone; environment history comes from the feed like every other tracked table, so
-  a Postgres-only agentd keeps none (resource-history D5).
+- Past environment revisions are not kept; an environment's changes are its feed events, as every tracked table's
+  are, and agentd keeps no history store (decisions D21).
 - Every script that makes keys first runs `agentd organization create`: CI, docker-compose, perf, conformance and
   the configuration docs.
 - An organization delete is one long transaction for a large organization; it is an operator command, not a

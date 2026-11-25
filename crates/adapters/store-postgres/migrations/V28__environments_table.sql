@@ -1,4 +1,4 @@
--- Environments are one plain table again, one row per environment, so the change feed carries
+-- Environments are one plain table, one row per environment, so the change feed carries
 -- them and a delete removes the row. Each current revision becomes the environment's row; past
 -- revisions are not kept.
 set local lock_timeout = '5s';

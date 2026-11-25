@@ -163,6 +163,7 @@ impl Backends {
                 let handlers: Vec<Arc<dyn ChangeHandler>> =
                     vec![Arc::new(ScheduleOutbox::new(sink.port())), Arc::new(sender)];
                 drop(feed.spawn(handlers));
+                feed.trim_unread(&store_postgres::tracked_tables(&pg.backend).await?);
                 let keys = ApiKeysService::new(pg.stores.api_keys.clone(), peppers.clone());
                 let keys: Arc<dyn KeySource> = Arc::new(Observed::new(Arc::new(keys), metrics.clone()));
                 (pg.stores, pg.load, keys, fires, FireSources::new(sink, feed, queue, scheduling))

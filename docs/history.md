@@ -55,7 +55,10 @@ about 290 GB of disk. Compose keeps 1 GB, which covers about 50 s at the peak an
 
 On Kafka, the topics' retention must exceed the longest time every consumer may be down, or records expire before
 it reads them. On Valkey Streams, AOF with `appendfsync everysec` loses up to 1 s of entries on a Valkey crash;
-`appendfsync always` closes that.
+`appendfsync always` closes that. Once a minute every replica trims each tracked table's stream and `agentd.message`,
+which no agentd handler reads, below the oldest entry a consumer group still needs; while no group reads one, it
+keeps the last 7 days. A consumer that starts later, or is down longer than 7 days with no group, starts from what
+is left.
 
 ## After a lost slot
 

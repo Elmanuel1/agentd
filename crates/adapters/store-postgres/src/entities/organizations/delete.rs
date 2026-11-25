@@ -62,7 +62,6 @@ struct MemoryVersion {
     has_blob: bool,
 }
 
-/// Delete `org` and everything it owns on `conn`.
 pub(super) async fn organization(conn: &mut AsyncPgConnection, org: &OrgId) -> Result<Removed, StoreError> {
     conn.transaction::<_, diesel::result::Error, _>(async move |c| {
         // Precondition: the row lock blocks a key insert for this org (its foreign key check takes
@@ -106,10 +105,11 @@ async fn rows(c: &mut AsyncPgConnection, workspaces: Vec<String>) -> Result<Remo
         &workspaces,
     )
     .await?;
-    for id in deployments {
-        let target = FireTarget::new(deployments::fire::KIND, id);
-        outbox::record(c, &ScheduleChange::Delete { target }).await?;
-    }
+    let schedule_deletes: Vec<ScheduleChange> = deployments
+        .into_iter()
+        .map(|id| ScheduleChange::Delete { target: FireTarget::new(deployments::fire::KIND, id) })
+        .collect();
+    outbox::record(c, &schedule_deletes).await?;
     let dreams = ids(
         c,
         "SELECT dream_id AS a FROM dreams
@@ -182,7 +182,7 @@ async fn ids(
     Ok(rows.into_iter().map(|r| r.a).collect())
 }
 
-async fn returning<T: QueryableByName<diesel::pg::Pg> + 'static>(
+async fn in_workspaces<T: QueryableByName<diesel::pg::Pg> + 'static>(
     c: &mut AsyncPgConnection,
     sql: &str,
     workspaces: &[String],

@@ -102,7 +102,44 @@ fn report(deleted: &Deleted) -> (Vec<String>, ExitCode) {
 
 #[cfg(test)]
 mod tests {
-    use super::OrganizationCommand;
+    use std::process::ExitCode;
+
+    use organizations::deletion::Deleted;
+    use organizations::registry::Removed;
+    use shared::ports::FireTarget;
+    use shared::ports::secrets::SecretKey;
+
+    use super::{OrganizationCommand, report};
+
+    fn deleted(left: &[&str]) -> Deleted {
+        let removed = Removed {
+            workspaces: vec!["wrkspc_a".into(), "wrkspc_b".into()],
+            rows: vec![("credentials", 1), ("agents", 0)],
+            secrets: vec![SecretKey::new("wrkspc_a", "vlt_a", "vcrd_a").unwrap()],
+            blobs: vec!["wrkspc_a/file_a".into()],
+            dreams: vec![FireTarget::new("dream", "drm_a")],
+        };
+        Deleted { removed, left: left.iter().map(|l| (*l).to_owned()).collect() }
+    }
+
+    #[test]
+    fn a_delete_prints_what_it_removed_and_fails_while_anything_is_left() {
+        let (lines, code) = report(&deleted(&[]));
+        assert_eq!(
+            lines,
+            [
+                "deleted the organization's workspaces: wrkspc_a wrkspc_b",
+                "deleted 1 credentials",
+                "removed secret wrkspc_a/vlt_a/vcrd_a",
+                "removed blob wrkspc_a/file_a",
+                "removed schedule dream/drm_a",
+            ]
+        );
+        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
+        let (lines, code) = report(&deleted(&["blob wrkspc_a/file_a: blob backend: refused"]));
+        assert_eq!(lines.last().unwrap(), "not removed: blob wrkspc_a/file_a: blob backend: refused");
+        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
+    }
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| (*w).to_owned()).collect()

@@ -2,8 +2,7 @@
 
 mod delete;
 
-use ::organizations::registry::{OrganizationsStore, Removed, StoreError};
-use async_trait::async_trait;
+use ::organizations::registry::{NativeOrganizationsStore, Removed, StoreError};
 use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
 use shared::OrgId;
@@ -23,8 +22,7 @@ impl PgOrganizationsStore {
     }
 }
 
-#[async_trait]
-impl OrganizationsStore for PgOrganizationsStore {
+impl NativeOrganizationsStore for PgOrganizationsStore {
     async fn create(&self, org: &OrgId) -> Result<(), StoreError> {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         let inserted =

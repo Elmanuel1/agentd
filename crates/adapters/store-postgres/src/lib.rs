@@ -25,12 +25,14 @@ pub mod schema;
 mod slot;
 mod target;
 mod tls;
+mod tracked;
 
 pub use checkout::{DieselPgPool, PooledConnection};
 pub use conninfo::redacted;
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 pub use slot::{Slot, read_slot};
+pub use tracked::tracked_tables;
 
 pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;
@@ -78,6 +80,9 @@ pub enum PgError {
     /// Could not connect.
     #[error("connect: {0}")]
     Connect(String),
+    /// A query at boot failed.
+    #[error("query: {0}")]
+    Query(String),
 }
 
 /// Map a Diesel query error to a store `Backend` variant, preserving it as the

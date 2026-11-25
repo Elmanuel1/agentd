@@ -5,18 +5,20 @@ use parking_lot::Mutex;
 use shared::OrgId;
 use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
-use shared::ports::{BoxFuture, FakeScheduler, FireTarget, ScheduleSpec, SchedulerPort, TenantRef};
+use shared::ports::{
+    BoxFuture, FakeScheduler, FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort,
+    TenantRef,
+};
 
 use super::{Deleted, OrganizationDeletion};
-use crate::registry::{OrganizationsStore, Removed, StoreError};
+use crate::registry::{NativeOrganizationsStore, Removed, StoreError};
 
 /// Every key a fake was asked to delete.
 type Recorded = Mutex<Vec<String>>;
 
 struct Rows(Removed);
 
-#[async_trait]
-impl OrganizationsStore for Rows {
+impl NativeOrganizationsStore for Rows {
     async fn create(&self, _: &OrgId) -> Result<(), StoreError> {
         Ok(())
     }
@@ -143,6 +145,46 @@ async fn what_could_not_be_removed_is_named_and_the_rest_still_goes() {
     );
     assert_eq!(*secrets.deleted.lock(), ["wrkspc_a/vlt_a/vcrd_b"]);
     assert_eq!(*blobs.deleted.lock(), ["wrkspc_a/file_b"]);
+}
+
+/// A scheduler that is down.
+struct Down;
+
+#[async_trait]
+impl SchedulerPort for Down {
+    async fn upsert(&self, _: ScheduleSpec) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn pause(&self, _: &FireTarget) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn unpause(&self, _: &FireTarget) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn delete(&self, _: &FireTarget) -> Result<(), SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+    async fn describe(&self, _: &FireTarget) -> Result<ScheduleState, SchedulerError> {
+        Err(SchedulerError::Unavailable("down".into()))
+    }
+}
+
+#[tokio::test]
+async fn a_dream_schedule_the_scheduler_cannot_delete_is_named() {
+    let deletion = OrganizationDeletion::new(
+        Arc::new(Rows(removed(&[]))),
+        Arc::new(Secrets::default()),
+        Arc::new(Blobs::default()),
+        Arc::new(Down),
+    );
+    let deleted = deletion.delete(&OrgId::new("org_a")).await.unwrap();
+    assert_eq!(
+        deleted.left,
+        [
+            "schedule dream/drm_a: scheduler unavailable: down",
+            "schedule dream/drm_b: scheduler unavailable: down"
+        ]
+    );
 }
 
 #[tokio::test]

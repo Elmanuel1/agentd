@@ -1,9 +1,10 @@
 //! The organization rows: made by `agentd organization create`, removed with everything they own by
 //! `agentd organization delete`.
 
-use async_trait::async_trait;
-use shared::ports::FireTarget;
+use std::future::Future;
+
 use shared::ports::secrets::SecretKey;
+use shared::ports::{BoxFuture, FireTarget};
 use shared::{Id, OrgId, Resource};
 
 /// Marker for generated `org_…` ids.
@@ -49,11 +50,24 @@ pub struct Removed {
 }
 
 /// Persistence port for organizations.
-#[async_trait]
 pub trait OrganizationsStore: Send + Sync {
-    /// Insert the organization `org`.
-    async fn create(&self, org: &OrgId) -> Result<(), StoreError>;
+    fn create<'a>(&'a self, org: &'a OrgId) -> BoxFuture<'a, Result<(), StoreError>>;
     /// Delete `org` and every row it owns in one transaction, writing each removed deployment's
     /// schedule delete into the outbox.
-    async fn delete(&self, org: &OrgId) -> Result<Removed, StoreError>;
+    fn delete<'a>(&'a self, org: &'a OrgId) -> BoxFuture<'a, Result<Removed, StoreError>>;
+}
+
+/// What an adapter implements to provide [`OrganizationsStore`]; the methods are documented there.
+pub trait NativeOrganizationsStore: Send + Sync {
+    fn create(&self, org: &OrgId) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn delete(&self, org: &OrgId) -> impl Future<Output = Result<Removed, StoreError>> + Send;
+}
+
+impl<T: NativeOrganizationsStore> OrganizationsStore for T {
+    fn create<'a>(&'a self, org: &'a OrgId) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(NativeOrganizationsStore::create(self, org))
+    }
+    fn delete<'a>(&'a self, org: &'a OrgId) -> BoxFuture<'a, Result<Removed, StoreError>> {
+        Box::pin(NativeOrganizationsStore::delete(self, org))
+    }
 }

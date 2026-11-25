@@ -13,8 +13,8 @@ EARS requirements for the organizations table, the change times and versions, an
 change feed (Debezium Server reading the store).
 
 **Terms:** *org-scoped table*: a table with an `org_id` column (dependencies A4). *workspace-scoped table*: a
-table keyed by `workspace_id` with no `org_id`. *tracked table*: a table whose changes the history consumer keeps
-(resource-history D4). *an organization's workspaces*: the workspace ids of its `workspaces` rows and of its API
+table keyed by `workspace_id` with no `org_id`. *tracked table*: a table with the `history_stamp` and `history_deleted`
+triggers, `replica identity full` and an entry in Debezium's include list (`docs/history.md`). *an organization's workspaces*: the workspace ids of its `workspaces` rows and of its API
 and environment keys (D5).
 
 **Build order:** one code PR of ordered commits: CF-20 to CF-24 (environments), then CF-1 to CF-9, CF-13, CF-14 and CF-33

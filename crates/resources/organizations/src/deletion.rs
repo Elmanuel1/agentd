@@ -27,6 +27,12 @@ pub struct OrganizationDeletion {
     scheduler: Arc<dyn SchedulerPort>,
 }
 
+impl std::fmt::Debug for OrganizationDeletion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrganizationDeletion").finish_non_exhaustive()
+    }
+}
+
 impl OrganizationDeletion {
     /// Over the rows in `store` and the stores outside it.
     pub fn new(
