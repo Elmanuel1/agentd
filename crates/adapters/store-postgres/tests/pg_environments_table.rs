@@ -75,7 +75,7 @@ async fn the_list_index_orders_by_creation_then_id_descending() {
 }
 
 #[tokio::test]
-async fn the_migration_copied_each_live_revision_and_nothing_else() {
+async fn the_migration_copied_each_current_revision_and_nothing_else() {
     if !enabled() || std::env::var("AGENTD_MIGRATION_SEED").as_deref() != Ok("1") {
         return;
     }
