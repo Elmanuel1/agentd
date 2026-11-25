@@ -2,7 +2,8 @@
 //! delete commits is retried here. Once an hour, on the one replica holding its lock, every secret
 //! no `credentials` row names and every blob no `files`, `skill_versions` or `memory_versions` row
 //! names is removed, unless it was written in the last day: a secret or blob is written before its
-//! row commits. Each store is walked a page at a time.
+//! row commits. Each store is walked a page at a time, and only keys in the form agentd writes are
+//! read as its own: the bucket and the secret prefix belong to one agentd database.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,9 +13,10 @@ use diesel::sql_types::{Array, BigInt, Text};
 use diesel_async::RunQueryDsl;
 use sessions::retention::RunLock;
 use sessions::store::StoreError;
-use shared::Timestamp;
 use shared::ports::blobs::{BlobError, BlobStore};
 use shared::ports::secrets::{SecretKey, SecretStore};
+use shared::{Id, Timestamp};
+use vaults::types::{CredentialResource, VaultResource};
 
 use crate::entities::blob_keys::{self, Kind};
 use crate::entities::run_lock::PgRunLock;
@@ -71,10 +73,10 @@ impl Sweep {
         self.lock.exclusive(LOCK, Box::pin(pass)).await
     }
 
-    /// Try a run every hour.
+    /// Try a run every hour, the first an hour after the start.
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut every = tokio::time::interval(EVERY);
+            let mut every = tokio::time::interval_at(tokio::time::Instant::now() + EVERY, EVERY);
             loop {
                 every.tick().await;
                 if let Err(e) = self.run(Timestamp::now()).await {
@@ -88,8 +90,12 @@ impl Sweep {
         let (mut removed, mut after) = (Removed::default(), None);
         loop {
             let page = self.secrets.list(after).await.map_err(secret_be)?;
-            let old: Vec<SecretKey> =
-                page.items.into_iter().filter(|s| s.written_at < before).map(|s| s.key).collect();
+            let old: Vec<SecretKey> = page
+                .items
+                .into_iter()
+                .filter(|s| s.written_at < before && agentd_wrote(&s.key))
+                .map(|s| s.key)
+                .collect();
             let parts = old.iter().map(|k| [k.workspace(), k.vault(), k.credential()].map(str::to_owned));
             for key in self.unnamed(Join::Credentials, parts.collect()).await?.filter_map(|i| old.get(i)) {
                 let deleted = self.secrets.delete(key).await.map_err(|e| e.to_string());
@@ -160,6 +166,12 @@ impl Sweep {
         };
         Ok(rows.into_iter().filter_map(|r| usize::try_from(r.i).ok()))
     }
+}
+
+/// Whether `key` names a vault and credential in the form agentd makes them.
+fn agentd_wrote(key: &SecretKey) -> bool {
+    Id::<VaultResource>::parse(key.vault()).is_ok()
+        && Id::<CredentialResource>::parse(key.credential()).is_ok()
 }
 
 /// The rows that name a key's parts `k.a`, `k.b` and `k.c`.

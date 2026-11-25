@@ -120,8 +120,8 @@ impl SecretStore for PgSecretStore {
 
     async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
         let after = after.unwrap_or_else(|| "//".to_owned());
-        let Some([workspace, vault, credential]) = after.splitn(3, '/').collect::<Vec<_>>().try_into().ok()
-        else {
+        let parts: Vec<&str> = after.splitn(3, '/').collect();
+        let Ok([workspace, vault, credential]) = <[&str; 3]>::try_from(parts) else {
             return Err(SecretError::InvalidKey("a page starts after workspace/vault/credential".into()));
         };
         let mut conn = self.conn().await?;

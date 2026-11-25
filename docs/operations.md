@@ -16,7 +16,9 @@ One binary serves three roles, chosen with `AGENTD_ROLE`:
 
 Once an hour, one replica (under the advisory lock `cleanup_sweep`) removes every secret no `credentials` row
 names and every blob no `files`, `skill_versions` or `memory_versions` row names, leaving anything written in the
-last 24 hours: it retries a removal that failed after a delete committed. Each run logs `sweep: removed the secrets
+last 24 hours and any key not in the form agentd writes (a typed id for each vault, credential, file, skill,
+memory store and version): it retries a removal that failed after a delete committed. The first run is an hour
+after the process starts. Each run logs `sweep: removed the secrets
 and blobs no row names` at `INFO` with the counts, and a failed run `warn`s and is tried again the next hour.
 
 Every role runs the fire workers and the change feed's handlers (schedules, webhooks), and either ticks

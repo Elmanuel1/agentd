@@ -1,5 +1,5 @@
 //! The cleanup sweep removes the secrets and blobs no row names once they are a day old, and
-//! leaves the rest. Gated by `AGENTD_PG_TESTS=1`, `DATABASE_URL` and `AGENTD_AWS_ENDPOINT` (S3).
+//! leaves the rest, objects and secrets in a form agentd never writes included. Gated by `AGENTD_PG_TESTS=1`, `DATABASE_URL` and `AGENTD_AWS_ENDPOINT` (S3).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -36,6 +36,11 @@ async fn exec(pg: &PgBackend, sql: &str, ws: &str) {
     diesel::sql_query(sql).bind::<Text, _>(ws).execute(&mut *conn).await.unwrap();
 }
 
+/// An id in agentd's form: `prefix`, then `01` and 22 letters ending in `tag`.
+fn id(prefix: &str, tag: &str) -> String {
+    format!("{prefix}_01{tag:A>22}")
+}
+
 #[tokio::test]
 async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
     if !enabled() {
@@ -43,29 +48,39 @@ async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
     }
     let pg = backend().await;
     let ws = format!("wrkspc_sweep{}", stamp());
-    exec(&pg, "INSERT INTO credentials (workspace_id, vault_id, credential_id, display_name, has_secret, created_at, doc)
-               VALUES ($1, 'vlt_a', 'vcrd_named', 'c', true, now(), '{}')", &ws).await;
+    let (vault, skill, store) = (id("vlt", "a"), id("skill", "a"), id("memstore", "a"));
+    let (cred_named, cred_orphan) = (id("vcrd", "named"), id("vcrd", "orphan"));
+    let (file_named, skver_named, memver_named) =
+        (id("file", "named"), id("skver", "named"), id("memver", "named"));
+    exec(&pg, &format!("INSERT INTO credentials (workspace_id, vault_id, credential_id, display_name, has_secret, created_at, doc)
+               VALUES ($1, '{vault}', '{cred_named}', 'c', true, now(), '{{}}')"), &ws).await;
     exec(
         &pg,
-        "INSERT INTO files (workspace_id, file_id, filename, size_bytes, created_at, doc)
-               VALUES ($1, 'file_named', 'f', 1, now(), '{}')",
+        &format!(
+            "INSERT INTO files (workspace_id, file_id, filename, size_bytes, created_at, doc)
+               VALUES ($1, '{file_named}', 'f', 1, now(), '{{}}')"
+        ),
         &ws,
     )
     .await;
     exec(
         &pg,
-        "INSERT INTO skill_versions (workspace_id, skill_id, version, created_at, doc)
-               VALUES ($1, 'skill_a', 1, now(), '{\"id\": \"skver_named\"}')",
+        &format!(
+            "INSERT INTO skill_versions (workspace_id, skill_id, version, created_at, doc)
+               VALUES ($1, '{skill}', 1, now(), '{{\"id\": \"{skver_named}\"}}')"
+        ),
         &ws,
     )
     .await;
-    exec(&pg, "INSERT INTO memory_versions (workspace_id, store_id, memory_id, version_id, has_blob, created_at, doc)
-               VALUES ($1, 'memstore_a', 'mem_a', 'memver_named', true, now(), '{}')", &ws).await;
+    exec(&pg, &format!("INSERT INTO memory_versions (workspace_id, store_id, memory_id, version_id, has_blob, created_at, doc)
+               VALUES ($1, '{store}', 'mem_a', '{memver_named}', true, now(), '{{}}')"), &ws).await;
 
     let secrets = Arc::new(PgSecretStore::new(pg.clone(), keys()));
-    let key = |c: &str| SecretKey::new(&ws, "vlt_a", c).unwrap();
-    secrets.put(&key("vcrd_named"), &SecretString::from("s")).await.unwrap();
-    secrets.put(&key("vcrd_orphan"), &SecretString::from("s")).await.unwrap();
+    let key = |v: &str, c: &str| SecretKey::new(&ws, v, c).unwrap();
+    let foreign_secret = key("shared", "token");
+    for k in [key(&vault, &cred_named), key(&vault, &cred_orphan), foreign_secret.clone()] {
+        secrets.put(&k, &SecretString::from("s")).await.unwrap();
+    }
     let blobs: Arc<dyn BlobStore> = Arc::new(
         S3BlobStore::connect(&S3Config {
             endpoint: std::env::var("AGENTD_AWS_ENDPOINT").ok(),
@@ -77,16 +92,17 @@ async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
         .unwrap(),
     );
     let named = [
-        format!("{ws}/file_named"),
-        format!("skills/{ws}/skill_a/skver_named"),
-        format!("memory/{ws}/memstore_a/memver_named"),
+        format!("{ws}/{file_named}"),
+        format!("skills/{ws}/{skill}/{skver_named}"),
+        format!("memory/{ws}/{store}/{memver_named}"),
     ];
     let orphans = [
-        format!("{ws}/file_orphan"),
-        format!("skills/{ws}/skill_a/skver_orphan"),
-        format!("memory/{ws}/memstore_a/memver_orphan"),
+        format!("{ws}/{}", id("file", "orphan")),
+        format!("skills/{ws}/{skill}/{}", id("skver", "orphan")),
+        format!("memory/{ws}/{store}/{}", id("memver", "orphan")),
     ];
-    for key in named.iter().chain(&orphans) {
+    let foreign = [format!("{ws}/notes"), "backups/db.dump".to_owned(), format!("skills/{ws}/{skill}/v1")];
+    for key in named.iter().chain(&orphans).chain(&foreign) {
         blobs.put(key, bytes::Bytes::from_static(b"b")).await.unwrap();
     }
     let sweep = Sweep::new(pg.clone(), secrets.clone(), blobs.clone());
@@ -95,16 +111,20 @@ async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
     for key in named.iter().chain(&orphans) {
         assert!(blobs.get(key).await.is_ok(), "{key} is under a day old and stays");
     }
-    assert!(secrets.get(&key("vcrd_orphan")).await.is_ok(), "a secret under a day old stays");
+    assert!(secrets.get(&key(&vault, &cred_orphan)).await.is_ok(), "a secret under a day old stays");
 
     let later = Timestamp::from_datetime(Timestamp::now().as_datetime() + chrono::Duration::days(2));
     assert!(sweep.run(later).await.unwrap());
-    assert!(secrets.get(&key("vcrd_named")).await.is_ok());
-    assert!(secrets.get(&key("vcrd_orphan")).await.is_err(), "no credential names it");
+    assert!(secrets.get(&key(&vault, &cred_named)).await.is_ok());
+    assert!(secrets.get(&key(&vault, &cred_orphan)).await.is_err(), "no credential names it");
+    assert!(secrets.get(&foreign_secret).await.is_ok(), "agentd never makes that key");
     for key in &named {
         assert!(blobs.get(key).await.is_ok(), "{key} has its row");
     }
     for key in &orphans {
         assert!(blobs.get(key).await.is_err(), "{key} has no row");
+    }
+    for key in &foreign {
+        assert!(blobs.get(key).await.is_ok(), "{key} is not a key agentd writes");
     }
 }

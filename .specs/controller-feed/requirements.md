@@ -36,7 +36,7 @@ and environment keys (D5).
 | CF-13 | If `agentd organization delete` names an organization with no row, then agentd shall exit with failure naming it, and delete nothing. |
 | CF-33 | When an organization delete commits, agentd shall delete from the scheduler the schedule of each dream it removed that was not archived. |
 | CF-14 | If removing a secret, blob or dream schedule fails after an organization delete commits, then agentd shall print each one it did not remove and exit with failure. |
-| CF-18 | agentd shall, once an hour on one replica, remove from the secret store every secret no `credentials` row names, and from the blob store every blob no `files`, `skill_versions` or `memory_versions` row names, leaving any written less than 24 hours ago. |
+| CF-18 | agentd shall, once an hour on one replica, the first an hour after it starts, remove from the secret store every secret no `credentials` row names, and from the blob store every blob no `files`, `skill_versions` or `memory_versions` row names, leaving any written less than 24 hours ago and any whose key is not in the form agentd writes (typed vault, credential, file, skill, memory store and version ids). |
 
 ## Change times and versions
 
