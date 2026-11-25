@@ -177,7 +177,7 @@ async fn rows(c: &mut AsyncPgConnection, workspaces: Vec<String>) -> Result<Remo
     Ok(Removed { workspaces, rows: counts, secrets, blobs, dreams })
 }
 
-async fn in_workspaces<T: QueryableByName<diesel::pg::Pg> + 'static>(
+async fn in_workspaces<T: QueryableByName<diesel::pg::Pg> + Send + 'static>(
     c: &mut AsyncPgConnection,
     sql: &str,
     workspaces: &[String],
