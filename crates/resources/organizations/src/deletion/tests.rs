@@ -149,6 +149,15 @@ async fn what_could_not_be_removed_is_named_and_the_rest_still_goes() {
         deleted.left,
         ["secret wrkspc_a/vlt_a/vcrd_a: secret backend: refused", "blob refused: blob backend: refused"]
     );
+    assert_eq!(
+        deleted.gone,
+        [
+            "secret wrkspc_a/vlt_a/vcrd_b",
+            "blob wrkspc_a/file_b",
+            "schedule dream/drm_a",
+            "schedule dream/drm_b"
+        ]
+    );
     assert_eq!(*secrets.deleted.lock(), ["wrkspc_a/vlt_a/vcrd_b"]);
     assert_eq!(*blobs.deleted.lock(), ["wrkspc_a/file_b"]);
 }
