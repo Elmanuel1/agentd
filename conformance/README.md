@@ -13,6 +13,7 @@ The SDK suites run against a running agentd, with only the base URL changed:
 
 ```sh
 export AGENTD_BASE_URL=http://127.0.0.1:8080
+agentd organization create --id org_sdk
 export AGENTD_TEST_KEY=$(agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)
 export AGENTD_TEST_ADMIN_KEY=$(agentd admin-keys create --org org_sdk --name sdk)
 (cd conformance/python && pip install -r requirements.txt && pytest -q)

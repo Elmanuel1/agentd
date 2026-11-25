@@ -2732,6 +2732,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "bytes",
  "http-body-util",
  "parking_lot 0.13.0",
  "serde",

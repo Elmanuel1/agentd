@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::collections::BTreeMap;
 
 use chrono::SubsecRound;
@@ -69,6 +71,7 @@ async fn each_write_leaves_its_own_writer_on_the_connection() {
     let backend = backend().await;
     let store = PgWorkspacesStore::new(backend.clone());
     let org = OrgId::new(format!("org_writer{}", Timestamp::now().as_datetime().timestamp_micros()));
+    org::ensure(&backend, org.as_str()).await;
     let mut ws = workspace();
 
     let first = Writer::fresh("apikey_a");
@@ -89,6 +92,7 @@ async fn a_write_outside_any_writer_scope_runs_as_system() {
     let backend = backend().await;
     let store = PgWorkspacesStore::new(backend.clone());
     let org = OrgId::new(format!("org_writersys{}", Timestamp::now().as_datetime().timestamp_micros()));
+    org::ensure(&backend, org.as_str()).await;
 
     store.insert(&org, &workspace()).await.unwrap();
     let seen = setting(&backend).await;

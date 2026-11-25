@@ -7,6 +7,7 @@ use std::sync::Arc;
 use blobs_s3::{BlobError, S3BlobStore};
 
 mod feed;
+pub(crate) mod outside;
 pub(crate) mod postgres;
 mod scheduler;
 mod secrets;

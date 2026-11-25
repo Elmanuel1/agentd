@@ -63,14 +63,16 @@ services:
         condition: service_healthy
 
   # ── the dev API key, made through the CLI at startup ───────────────────
-  # Each start revokes the previous dev key and prints a new one, so exactly
-  # one is ever active.
+  # Each start makes the dev organization (on a restart it exists already, and
+  # the create says so), revokes the previous dev key and prints a new one, so
+  # exactly one is ever active.
   keys:
     <<: *agentd
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
-        agentd keys list
+        { agentd organization create --id org_dev || true; }
+        && agentd keys list
         | awk -F '\t' '$$3 == "wrkspc_01dev" && $$4 == "active" && $$7 == "dev" { print $$1 }'
         | xargs -r -n1 agentd keys revoke
         && agentd keys create --org org_dev --workspace wrkspc_01dev --name dev

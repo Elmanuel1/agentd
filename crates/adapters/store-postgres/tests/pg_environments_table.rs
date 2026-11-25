@@ -41,8 +41,11 @@ async fn environments_is_a_plain_table_with_no_revision_machinery() {
         return;
     }
     let pg = backend().await;
-    let kind = count(&pg, "SELECT count(*) AS n FROM pg_class WHERE relname = 'environments' AND relkind = 'r'").await;
-    let revisions = count(&pg, "SELECT count(*) AS n FROM pg_class WHERE relname = 'environment_revisions'").await;
+    let kind =
+        count(&pg, "SELECT count(*) AS n FROM pg_class WHERE relname = 'environments' AND relkind = 'r'")
+            .await;
+    let revisions =
+        count(&pg, "SELECT count(*) AS n FROM pg_class WHERE relname = 'environment_revisions'").await;
     let functions = count(
         &pg,
         "SELECT count(*) AS n FROM pg_proc WHERE proname IN

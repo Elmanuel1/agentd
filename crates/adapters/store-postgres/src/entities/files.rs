@@ -43,7 +43,7 @@ impl PgFilesStore {
     }
 
     fn key(ws: &WorkspaceId, id: &FileId) -> String {
-        format!("{}/{}", ws.as_str(), id.as_str())
+        super::blob_keys::file(ws.as_str(), id.as_str())
     }
 }
 

@@ -219,6 +219,8 @@ jobs:
           model="mock-model-key-$(openssl rand -hex 8)"
           echo "::add-mask::$model"
           echo "AGENTD_OPENROUTER_API_KEY=$model" >> "$GITHUB_ENV"
+      - name: Create the SDK organization with the CLI
+        run: ./target/debug/agentd organization create --id org_sdk
       - name: Create the SDK API key with the CLI
         run: |
           key=$(./target/debug/agentd keys create --org org_sdk --workspace wrkspc_sdk --name sdk)

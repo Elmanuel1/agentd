@@ -4,6 +4,7 @@
 pub mod admin_keys;
 pub mod agents;
 pub mod api_keys;
+mod blob_keys;
 pub mod deployments;
 pub mod dreams;
 pub mod environment_keys;
@@ -13,6 +14,7 @@ pub mod fire_claims;
 pub mod loop_steps;
 pub mod mcp_connections;
 pub mod memory;
+pub mod organizations;
 pub mod run_lock;
 pub mod schedules;
 pub mod session_events;

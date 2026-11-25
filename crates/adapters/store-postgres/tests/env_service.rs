@@ -5,6 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,12 +27,16 @@ async fn svc() -> EnvironmentsService {
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
-fn uniq_org() -> String {
-    format!(
+async fn uniq_org() -> String {
+    let id = format!(
         "org_t{}_{}",
         Timestamp::now().as_datetime().timestamp_micros(),
         SEQ.fetch_add(1, Ordering::Relaxed)
-    )
+    );
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    org::ensure(&PgBackend::connect(&url).await.unwrap(), &id).await;
+    id
 }
 
 fn ctx(org: &str) -> AuthContext {
@@ -64,7 +70,7 @@ async fn create_matches_live_canonical_shape() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.create(&ctx(&org), minimal()).await.unwrap();
     let v = serde_json::to_value(&e).unwrap();
     assert_eq!(v["type"], "environment");
@@ -82,7 +88,7 @@ async fn duplicate_names_allowed_like_live_api() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let a = s.create(&ctx(&org), minimal()).await.unwrap();
     let b = s.create(&ctx(&org), minimal()).await.unwrap();
     assert_ne!(a.id, b.id);
@@ -106,7 +112,7 @@ async fn org_scoped_visible_across_workspaces() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.create(&ctx(&org), minimal()).await.unwrap();
     let got = s.get(&ctx_other_ws(&org), e.id.as_str()).await.unwrap();
     assert_eq!(got.id, e.id);
@@ -118,7 +124,7 @@ async fn name_is_required_and_config_defaults_to_cloud() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.create(&ctx(&org), CreateEnvironmentRequest::default()).await.unwrap_err();
     assert_eq!(e.message, "name: Field required");
     let env = s
@@ -135,7 +141,7 @@ async fn malformed_id_message_uses_environment_label() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.get(&ctx(&org), "env_00bogus").await.unwrap_err();
     assert_eq!(e.status, 400);
     assert_eq!(e.message, "Invalid environment ID.");
@@ -147,7 +153,7 @@ async fn archive_then_update_conflicts() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.create(&ctx(&org), minimal()).await.unwrap();
     let archived = s.archive(&ctx(&org), e.id.as_str()).await.unwrap();
     assert!(archived.archived_at.is_some());
@@ -162,7 +168,7 @@ async fn delete_removes() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.create(&ctx(&org), minimal()).await.unwrap();
     s.delete(&ctx(&org), e.id.as_str()).await.unwrap();
     assert_eq!(s.get(&ctx(&org), e.id.as_str()).await.unwrap_err().status, 404);
@@ -196,7 +202,7 @@ async fn update_replaces_config_and_bumps_updated_at() {
         return;
     }
     let s = svc().await;
-    let org = uniq_org();
+    let org = uniq_org().await;
     let e = s.create(&ctx(&org), minimal()).await.unwrap();
     let updated = s
         .update(
@@ -227,8 +233,9 @@ mod routes {
         let url = std::env::var("DATABASE_URL")
             .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
         let backend = PgBackend::connect(&url).await.unwrap();
-        let svc = Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend))));
         let org = format!("org_rt{}", Timestamp::now().as_datetime().timestamp_micros());
+        super::org::ensure(&backend, &org).await;
+        let svc = Arc::new(EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend))));
         let ctx = AuthContext {
             org: OrgId::new(org),
             workspace: WorkspaceId::new("wrkspc_01t"),

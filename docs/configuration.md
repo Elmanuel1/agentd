@@ -452,6 +452,15 @@ digests alone verify nothing. With 512 bits of entropy a key cannot be guessed, 
 hash such as argon2id would only add cost to every request. Nothing is
 cached, so a revoke holds from the next request.
 
+- **Organizations** are rows of the Postgres `organizations` table, made by
+  `agentd organization create`, which prints the id given with `--id` or a
+  generated `org_…` one. Every workspace, environment, key and work item names
+  an existing organization: a key create for an unknown one fails and names it.
+  `agentd organization delete` removes the organization and everything it owns
+  in one transaction (its workspaces' rows, its environments and keys), writes a
+  schedule delete for each deployment not archived, then removes the secrets,
+  blobs and dream schedules those rows named; it prints each one it could not
+  remove and exits with failure.
 - **Workspace keys** (`sk-ant-api03-…`, `apikey_…`) act for one org and one
   workspace. Each is a row in the Postgres `api_keys` table: its digest under
   a unique index, its id, org, workspace, name, partial key hint, and the time
@@ -476,6 +485,8 @@ cached, so a revoke holds from the next request.
   its id, org, name, partial key hint, and the time it was created and revoked.
 
 ```bash
+agentd organization create [--id <org_id>]                                    # prints the new org id, on stdout
+agentd organization delete <org_id>                                           # removes the org and everything it owns
 agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]   # prints the key once, on stdout
 agentd keys list                                                              # id, org, workspace, status, hint, created, name
 agentd keys revoke <apikey_id>

@@ -106,7 +106,7 @@ impl AdminKeysStore for PgAdminKeysStore {
             .execute(&mut conn)
             .await
             .map(drop)
-            .map_err(diesel_be)
+            .map_err(|e| super::api_keys::insert_error(e, &key.org))
     }
 
     async fn list(&self) -> Result<Vec<AdminKey>, StoreError> {

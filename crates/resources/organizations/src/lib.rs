@@ -2,11 +2,13 @@
 //! reached with an admin key only, which the auth edge resolves to an
 //! [`shared::AdminContext`].
 //!
-//! agentd keeps no organization record: an organization is the id its keys
-//! carry, so `GET /v1/organizations/me` names the organization by that id.
+//! An organization is one `organizations` row ([`registry`]), made and deleted with the `agentd
+//! organization` command; `GET /v1/organizations/me` names it by its id.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing))]
 
+pub mod deletion;
+pub mod registry;
 pub mod routes;
 pub mod types;
 pub mod workspaces;

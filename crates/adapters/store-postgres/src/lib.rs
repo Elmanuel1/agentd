@@ -44,6 +44,7 @@ pub use entities::fire_claims::PgFireClaims;
 pub use entities::loop_steps::PgSteps;
 pub use entities::mcp_connections::PgMcpConnections;
 pub use entities::memory::PgMemoryStore;
+pub use entities::organizations::PgOrganizationsStore;
 pub use entities::run_lock::PgRunLock;
 pub use entities::schedules::PgScheduler;
 pub use entities::schedules::outbox::ScheduleOutbox;
@@ -118,6 +119,7 @@ from_backend!(
     dreams::store::StoreError,
     memory::store::StoreError,
     organizations::workspaces::StoreError,
+    organizations::registry::StoreError,
     work::store::StoreError,
 );
 

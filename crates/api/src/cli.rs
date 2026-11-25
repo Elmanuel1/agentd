@@ -7,6 +7,7 @@
 pub mod admin_keys;
 mod command;
 pub mod environment_keys;
+pub mod organization;
 pub mod vault_secrets;
 
 use std::process::ExitCode;
