@@ -89,9 +89,7 @@ fn report(deleted: &Deleted) -> (Vec<String>, ExitCode) {
     let mut lines = vec![format!("deleted the organization's workspaces: {}", removed.workspaces.join(" "))];
     lines
         .extend(removed.rows.iter().filter(|(_, n)| *n > 0).map(|(table, n)| format!("deleted {n} {table}")));
-    lines.extend(removed.secrets.iter().map(|k| format!("removed secret {k}")));
-    lines.extend(removed.blobs.iter().map(|k| format!("removed blob {k}")));
-    lines.extend(removed.dreams.iter().map(|t| format!("removed schedule {}", t.key())));
+    lines.extend(deleted.gone.iter().map(|g| format!("removed {g}")));
     let code = match deleted.left.is_empty() {
         true => ExitCode::SUCCESS,
         false => ExitCode::FAILURE,
@@ -119,7 +117,15 @@ mod tests {
             blobs: vec!["wrkspc_a/file_a".into()],
             dreams: vec![FireTarget::new("dream", "drm_a")],
         };
-        Deleted { removed, left: left.iter().map(|l| (*l).to_owned()).collect() }
+        let gone = ["secret wrkspc_a/vlt_a/vcrd_a", "blob wrkspc_a/file_a", "schedule dream/drm_a"];
+        let (gone, left): (Vec<String>, Vec<String>) = match left {
+            [] => (gone.iter().map(|g| (*g).to_owned()).collect(), vec![]),
+            _ => (
+                vec!["secret wrkspc_a/vlt_a/vcrd_a".to_owned(), "schedule dream/drm_a".to_owned()],
+                left.iter().map(|l| (*l).to_owned()).collect(),
+            ),
+        };
+        Deleted { removed, gone, left }
     }
 
     #[test]
@@ -137,7 +143,16 @@ mod tests {
         );
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
         let (lines, code) = report(&deleted(&["blob wrkspc_a/file_a: blob backend: refused"]));
-        assert_eq!(lines.last().unwrap(), "not removed: blob wrkspc_a/file_a: blob backend: refused");
+        assert_eq!(
+            lines,
+            [
+                "deleted the organization's workspaces: wrkspc_a wrkspc_b",
+                "deleted 1 credentials",
+                "removed secret wrkspc_a/vlt_a/vcrd_a",
+                "removed schedule dream/drm_a",
+                "not removed: blob wrkspc_a/file_a: blob backend: refused",
+            ]
+        );
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
     }
 

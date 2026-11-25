@@ -17,6 +17,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 api = { workspace = true }
+organizations = { workspace = true }
 test-support = { workspace = true }
 store-postgres = { workspace = true }
 blobs-s3 = { workspace = true }
