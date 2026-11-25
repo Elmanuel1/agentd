@@ -19,6 +19,8 @@ use crate::entities::blob_keys::{self, Kind};
 use crate::entities::run_lock::PgRunLock;
 use crate::{PgBackend, blob_be, secret_be};
 
+#[cfg(test)]
+mod tests;
 mod unnamed;
 use unnamed::{Join, unnamed};
 
@@ -70,7 +72,7 @@ impl Sweep {
     /// Try a run every hour, the first an hour after the start.
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            let mut every = tokio::time::interval_at(tokio::time::Instant::now() + EVERY, EVERY);
+            let mut every = hourly();
             loop {
                 every.tick().await;
                 if let Err(e) = self.run(Timestamp::now()).await {
@@ -133,6 +135,11 @@ impl Sweep {
             }
         }
     }
+}
+
+/// Ticks every hour, the first an hour from now, so a restart does not sweep.
+fn hourly() -> tokio::time::Interval {
+    tokio::time::interval_at(tokio::time::Instant::now() + EVERY, EVERY)
 }
 
 /// Whether `key` names a vault and credential in the form agentd makes them.

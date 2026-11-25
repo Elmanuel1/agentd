@@ -43,7 +43,7 @@ aws-lc-rs = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 api-keys = { workspace = true }
 chrono = { workspace = true }
 blobs-s3 = { workspace = true }
