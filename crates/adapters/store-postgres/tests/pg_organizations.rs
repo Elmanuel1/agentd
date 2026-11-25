@@ -188,6 +188,19 @@ async fn a_delete_removes_the_organization_and_everything_it_owns() {
     );
     let dreams: Vec<String> = removed.dreams.iter().map(|d| d.key()).collect();
     assert_eq!(dreams, ["dream/drm_a"]);
+    let counted: Vec<(&str, u64)> = removed.rows.iter().copied().filter(|(_, n)| *n > 0).collect();
+    assert_eq!(
+        counted,
+        [
+            ("deployments", 2),
+            ("dreams", 2),
+            ("credentials", 2),
+            ("files", 1),
+            ("skill_versions", 1),
+            ("memory_versions", 2),
+            ("agents", 1)
+        ]
+    );
 
     for table in
         ["credentials", "files", "skill_versions", "memory_versions", "deployments", "dreams", "agents"]

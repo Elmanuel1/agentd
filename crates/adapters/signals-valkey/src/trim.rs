@@ -57,7 +57,9 @@ pub(crate) async fn trim(valkey: &Valkey, stream: &str, keep: Keep) -> RedisResu
             None => return Ok(0),
         },
         (true, Keep::NeededOrNewer(age)) => {
-            let (ms, seq) = needed(&mut conn, stream).await?.unwrap_or((newer_than(age), 0));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let newer_than = u64::try_from(now.saturating_sub(age).as_millis()).unwrap_or(0);
+            let (ms, seq) = needed(&mut conn, stream).await?.unwrap_or((newer_than, 0));
             StreamTrimOptions::minid(StreamTrimmingMode::Exact, format!("{ms}-{seq}"))
         }
     };
@@ -81,12 +83,6 @@ async fn needed(conn: &mut Conn, stream: &str) -> RedisResult<Option<(u64, u64)>
         oldest = Some(oldest.map_or(id, |o: (u64, u64)| o.min(id)));
     }
     Ok(oldest)
-}
-
-/// The entry-id milliseconds `age` before now; 0, keeping everything, before the epoch plus `age`.
-fn newer_than(age: Duration) -> u64 {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    u64::try_from(now.saturating_sub(age).as_millis()).unwrap_or(0)
 }
 
 /// An entry id `<ms>-<seq>`; one that does not parse keeps everything.

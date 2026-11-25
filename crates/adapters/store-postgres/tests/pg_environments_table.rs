@@ -1,5 +1,5 @@
-//! Environments are one plain table (V28). Gated by `AGENTD_PG_TESTS=1`; the copy test also needs
-//! `AGENTD_MIGRATION_SEED=1`, set where CI seeded `fixtures/environment_revisions.sql` before V28.
+//! The store's shape after V28 and V29: environments are one plain table, and there is no history
+//! schema. Gated by `AGENTD_PG_TESTS=1`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -62,6 +62,15 @@ async fn environments_is_a_plain_table_with_no_revision_machinery() {
 }
 
 #[tokio::test]
+async fn the_store_keeps_no_history_schema() {
+    if !enabled() {
+        return;
+    }
+    let pg = backend().await;
+    assert_eq!(count(&pg, "SELECT count(*) AS n FROM pg_namespace WHERE nspname = 'history'").await, 0);
+}
+
+#[tokio::test]
 async fn the_list_index_orders_by_creation_then_id_descending() {
     if !enabled() {
         return;
@@ -75,22 +84,4 @@ async fn the_list_index_orders_by_creation_then_id_descending() {
     .await
     .unwrap();
     assert!(row.line.ends_with("(org_id, created_at DESC, environment_id DESC)"), "{}", row.line);
-}
-
-#[tokio::test]
-async fn the_migration_copied_each_current_revision_and_nothing_else() {
-    if !enabled() || std::env::var("AGENTD_MIGRATION_SEED").as_deref() != Ok("1") {
-        return;
-    }
-    let pg = backend().await;
-    let mut conn = pg.diesel.get().await.unwrap();
-    let rows: Vec<Line> = diesel::sql_query(
-        "SELECT environment_id || ' ' || name || ' ' || state || ' ' || (doc->>'name') AS line
-           FROM environments WHERE org_id = 'org_seed' ORDER BY environment_id",
-    )
-    .load(&mut *conn)
-    .await
-    .unwrap();
-    let lines: Vec<String> = rows.into_iter().map(|r| r.line).collect();
-    assert_eq!(lines, vec!["env_seedlive second active second".to_owned()]);
 }
