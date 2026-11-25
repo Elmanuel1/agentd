@@ -14,7 +14,7 @@ reconciles per organization. It needs three things the schema lacks:
 1. Organization rows and their deletes in the feed. agentd keeps no organization record; an org id is whatever
    `--org` a key command was given (dependencies A3).
 2. A version per row that goes up on every update, so the controller can check per organization, without the feed,
-   that it holds the changes: an order-independent sum of a 64-bit hash of each row's (table, id, `version`),
+   that it holds the changes: an order-independent sum of a 64-bit hash of each row's (table, id, `created_at`, `version`),
    which a delete paired with an insert changes too. A change time
    cannot serve: `updated_at` is the writing transaction's start time, and a transaction that starts first can
    commit last, leaving the count and the newest `updated_at` as they were. `vaults`, `credentials` and
