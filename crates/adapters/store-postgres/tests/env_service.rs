@@ -166,6 +166,28 @@ async fn delete_removes() {
     let e = s.create(&ctx(&org), minimal()).await.unwrap();
     s.delete(&ctx(&org), e.id.as_str()).await.unwrap();
     assert_eq!(s.get(&ctx(&org), e.id.as_str()).await.unwrap_err().status, 404);
+    assert_eq!(rows(&org).await, 0, "a delete removes the environment's row");
+}
+
+#[derive(diesel::QueryableByName)]
+struct Count {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    n: i64,
+}
+
+/// The `environments` rows of `org`.
+async fn rows(org: &str) -> i64 {
+    use diesel_async::RunQueryDsl;
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    let backend = PgBackend::connect(&url).await.unwrap();
+    let mut conn = backend.diesel.get().await.unwrap();
+    let row: Count = diesel::sql_query("SELECT count(*) AS n FROM environments WHERE org_id = $1")
+        .bind::<diesel::sql_types::Text, _>(org)
+        .get_result(&mut *conn)
+        .await
+        .unwrap();
+    row.n
 }
 
 #[tokio::test]

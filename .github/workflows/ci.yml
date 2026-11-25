@@ -63,6 +63,7 @@ jobs:
       DATABASE_URL: postgres://agentd:agentd@localhost:5432/agentd
       AGENTD_PG_TESTS: "1"
       AGENTD_CDC_TESTS: "1"
+      AGENTD_MIGRATION_SEED: "1"
       AGENTD_AWS_ENDPOINT: http://localhost:4566
       AGENTD_VALKEY_URL: redis://localhost:6379
       AGENTD_VALKEY_CLUSTER_URL: redis://127.0.0.1:7001
@@ -87,13 +88,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install protoc and the well-known protobuf types (the Temporal SDK's build), and OpenSSL's headers (librdkafka's TLS)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev libssl-dev
-      - name: Migrate the schema with Flyway
+      - name: Migrate the schema with Flyway, seeding environment revisions before V28 copies them
         run: |
-          docker run --rm --network host \
-            -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
-            flyway/flyway:11 \
-            -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
-            -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false migrate
+          flyway() {
+            docker run --rm --network host \
+              -v "$PWD/crates/adapters/store-postgres/migrations:/flyway/sql" \
+              flyway/flyway:11 \
+              -url=jdbc:postgresql://localhost:5432/agentd -user=agentd -password=agentd \
+              -locations=filesystem:/flyway/sql -postgresql.transactional.lock=false "$@" migrate
+          }
+          flyway -target=27
+          docker exec -i "${{ job.services.postgres.id }}" psql -v ON_ERROR_STOP=1 -U agentd agentd \
+            < crates/adapters/store-postgres/tests/fixtures/environment_revisions.sql
+          flyway
       - name: Start Kafka
         run: docker/kafka/start.sh
       - name: Start the change feed (logical WAL, Debezium Server into Kafka)
