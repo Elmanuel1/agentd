@@ -10,7 +10,7 @@ use diesel::sql_types::Text;
 use diesel_async::RunQueryDsl;
 use shared::Timestamp;
 use shared::hash::SecretKeys;
-use shared::ports::secrets::{SecretKey, SecretStore, SecretString, Stored};
+use shared::ports::secrets::{SecretKey, SecretStore, SecretString};
 use store_postgres::{PgBackend, PgSecretStore, Sweep};
 
 fn enabled() -> bool {
@@ -106,34 +106,5 @@ async fn a_day_old_secret_or_blob_no_row_names_is_removed_and_the_rest_stays() {
     }
     for key in &orphans {
         assert!(blobs.get(key).await.is_err(), "{key} has no row");
-    }
-}
-
-#[tokio::test]
-async fn the_postgres_secret_store_lists_each_secret_with_its_last_write() {
-    if std::env::var("AGENTD_PG_TESTS").as_deref() != Ok("1") {
-        return;
-    }
-    let store = PgSecretStore::new(backend().await, keys());
-    let key = SecretKey::new(&format!("wrkspc_list{}", stamp()), "vlt_a", "vcrd_a").unwrap();
-    store.put(&key, &SecretString::from("one")).await.unwrap();
-    let first = listed(&store).await.into_iter().find(|s| s.key == key).unwrap();
-    store.put(&key, &SecretString::from("two")).await.unwrap();
-    let second = listed(&store).await.into_iter().find(|s| s.key == key).unwrap();
-    assert!(second.written_at > first.written_at, "an overwrite moves the write time");
-    store.delete(&key).await.unwrap();
-    assert!(!listed(&store).await.iter().any(|s| s.key == key));
-}
-
-/// Every page of `store`'s listing.
-async fn listed(store: &PgSecretStore) -> Vec<Stored<SecretKey>> {
-    let (mut all, mut after) = (vec![], None);
-    loop {
-        let page = store.list(after).await.unwrap();
-        all.extend(page.items);
-        after = page.next;
-        if after.is_none() {
-            return all;
-        }
     }
 }

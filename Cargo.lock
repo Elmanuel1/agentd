@@ -3665,6 +3665,7 @@ dependencies = [
  "aws-smithy-types",
  "serde_json",
  "shared",
+ "test-support",
  "tokio",
  "uuid",
 ]

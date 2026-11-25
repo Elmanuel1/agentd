@@ -130,3 +130,16 @@ impl EnvironmentKeySource for NoEnvironmentKeys {
         Ok(None)
     }
 }
+
+/// Every page of `store`'s listing.
+pub async fn all_pages(store: &(impl SecretStore + ?Sized)) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+    let (mut all, mut after) = (vec![], None);
+    loop {
+        let page = store.list(after).await?;
+        all.extend(page.items);
+        after = page.next;
+        if after.is_none() {
+            return Ok(all);
+        }
+    }
+}

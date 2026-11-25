@@ -119,9 +119,10 @@ impl SecretStore for PgSecretStore {
     }
 
     async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
-        let after: SecretKey = match after {
-            Some(raw) => raw.parse()?,
-            None => SecretKey::new("0", "0", "0")?,
+        let after = after.unwrap_or_else(|| "//".to_owned());
+        let Some([workspace, vault, credential]) = after.splitn(3, '/').collect::<Vec<_>>().try_into().ok()
+        else {
+            return Err(SecretError::InvalidKey("a page starts after workspace/vault/credential".into()));
         };
         let mut conn = self.conn().await?;
         let rows: Vec<Listed> = diesel::sql_query(
@@ -129,22 +130,25 @@ impl SecretStore for PgSecretStore {
              WHERE (workspace_id, vault_id, credential_id) > ($1, $2, $3)
              ORDER BY workspace_id, vault_id, credential_id LIMIT $4",
         )
-        .bind::<Text, _>(after.workspace())
-        .bind::<Text, _>(after.vault())
-        .bind::<Text, _>(after.credential())
+        .bind::<Text, _>(workspace)
+        .bind::<Text, _>(vault)
+        .bind::<Text, _>(credential)
         .bind::<BigInt, _>(PAGE)
         .load(&mut conn)
         .await
         .map_err(backend_error)?;
-        let items: Vec<Stored<SecretKey>> = rows
+        let full = rows.len() == usize::try_from(PAGE).unwrap_or(usize::MAX);
+        let next = rows
+            .last()
+            .filter(|_| full)
+            .map(|r| format!("{}/{}/{}", r.workspace_id, r.vault_id, r.credential_id));
+        let items = rows
             .into_iter()
             .filter_map(|r| {
                 let key = SecretKey::new(&r.workspace_id, &r.vault_id, &r.credential_id).ok()?;
                 Some(Stored { key, written_at: Timestamp::from_datetime(r.written_at) })
             })
             .collect();
-        let full = items.len() == usize::try_from(PAGE).unwrap_or(usize::MAX);
-        let next = items.last().filter(|_| full).map(|s| s.key.to_string());
         Ok(Page { items, next })
     }
 }

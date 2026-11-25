@@ -139,23 +139,10 @@ async fn list_returns_each_secret_under_the_prefix_with_its_write_time() {
         keys.push(key.to_string());
     }
     other.put(&key(&id("wrkspc")), &secret("s")).await.unwrap();
-    let listed = listed(&store).await;
+    let listed = test_support::all_pages(&store).await.unwrap();
     let mut seen: Vec<String> = listed.iter().map(|s| s.key.to_string()).collect();
     seen.sort();
     keys.sort();
     assert_eq!(seen, keys);
     assert!(listed.iter().all(|s| s.written_at > before), "each carries its write time");
-}
-
-/// Every page of `store`'s listing.
-async fn listed(store: &impl SecretStore) -> Vec<shared::ports::secrets::Stored<SecretKey>> {
-    let (mut all, mut after) = (vec![], None);
-    loop {
-        let page = store.list(after).await.unwrap();
-        all.extend(page.items);
-        after = page.next;
-        if after.is_none() {
-            return all;
-        }
-    }
 }
