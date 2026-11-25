@@ -1,5 +1,5 @@
 //! The change feed's replication slot as Postgres reports it, and the WAL
-//! written, for the slot and history metrics.
+//! written, for the `agentd.feed.*` metrics.
 
 use diesel::sql_types::{BigInt, Bool, Nullable, Text};
 use diesel_async::RunQueryDsl;
