@@ -125,3 +125,24 @@ async fn connect_fails_clearly_without_a_usable_key() {
     let err = AwsSecretStore::connect(&config).await.unwrap_err().to_string();
     assert!(err.contains("7 to 30 days"), "{err}");
 }
+
+#[tokio::test]
+async fn list_returns_each_secret_under_the_prefix_with_its_write_time() {
+    let Some(endpoint) = endpoint() else { return };
+    let store = common::store(&endpoint, &format!("agentd_test/{}", id("list"))).await;
+    let other = common::store(&endpoint, &format!("agentd_test/{}", id("other"))).await;
+    let before = shared::Timestamp::now().earlier_by(std::time::Duration::from_secs(60));
+    let mut keys: Vec<String> = Vec::new();
+    for _ in 0..3 {
+        let key = key(&id("wrkspc"));
+        store.put(&key, &secret("s")).await.unwrap();
+        keys.push(key.to_string());
+    }
+    other.put(&key(&id("wrkspc")), &secret("s")).await.unwrap();
+    let listed = store.list().await.unwrap();
+    let mut seen: Vec<String> = listed.iter().map(|s| s.key.to_string()).collect();
+    seen.sort();
+    keys.sort();
+    assert_eq!(seen, keys);
+    assert!(listed.iter().all(|s| s.written_at > before), "each carries its write time");
+}

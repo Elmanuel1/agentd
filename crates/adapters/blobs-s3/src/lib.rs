@@ -11,6 +11,8 @@ use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use bytes::Bytes;
+use shared::Timestamp;
+use shared::ports::blobs::Stored;
 pub use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore};
 
 /// Where and how to reach the bucket.
@@ -150,5 +152,31 @@ impl NativeBlobStore for S3BlobStore {
             .await
             .map_err(|e| BlobError::Backend(e.to_string()))?;
         Ok(())
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<Stored<String>>, BlobError> {
+        let (mut found, mut token) = (vec![], None);
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(token)
+                .send()
+                .await
+                .map_err(|e| BlobError::Backend(aws_sdk_s3::error::DisplayErrorContext(&e).to_string()))?;
+            for object in page.contents() {
+                let written =
+                    object.last_modified().and_then(|t| Timestamp::from_unix(t.secs(), t.subsec_nanos()));
+                if let (Some(key), Some(written_at)) = (object.key(), written) {
+                    found.push(Stored { key: key.to_owned(), written_at });
+                }
+            }
+            token = page.next_continuation_token().map(str::to_owned);
+            if token.is_none() {
+                return Ok(found);
+            }
+        }
     }
 }

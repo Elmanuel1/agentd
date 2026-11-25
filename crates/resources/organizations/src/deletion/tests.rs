@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use shared::OrgId;
-use shared::ports::blobs::{BlobError, BlobStore};
+use shared::ports::blobs::{BlobError, BlobStore, Stored};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
 use shared::ports::{
     BoxFuture, FakeScheduler, FireTarget, ScheduleSpec, ScheduleState, SchedulerError, SchedulerPort,
@@ -52,6 +52,9 @@ impl SecretStore for Secrets {
         self.deleted.lock().push(key.to_string());
         Ok(())
     }
+    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+        Ok(vec![])
+    }
 }
 
 /// Deletes every blob but `gone`, already gone, and `refused`, which fails.
@@ -78,6 +81,9 @@ impl BlobStore for Blobs {
                 }
             }
         })
+    }
+    fn list<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Vec<Stored<String>>, BlobError>> {
+        Box::pin(async { Ok(vec![]) })
     }
 }
 

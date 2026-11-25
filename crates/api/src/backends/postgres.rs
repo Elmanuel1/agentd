@@ -13,6 +13,7 @@ use shared::ports::credentials::PasswordSource;
 use shared::ports::fire::{FireRegistry, FireWorker};
 use store_postgres::{
     PgBackend, PgError, PgFireClaims, PgLoad, PgRunLock, PgSessionEventLog, PgSessionsStore, PoolSettings,
+    Sweep,
 };
 
 use super::Stores;
@@ -56,8 +57,8 @@ async fn login(auth: PgAuth) -> Option<Arc<dyn PasswordSource>> {
     }
 }
 
-/// Connect the pools; the load measure and, with a `retention` period, the
-/// retention runs start here.
+/// Connect the pools; the load measure, the cleanup sweep and, with a
+/// `retention` period, the retention runs start here.
 pub(super) async fn connect(
     store: &StoreConfig,
     retention: Option<Duration>,
@@ -71,7 +72,9 @@ pub(super) async fn connect(
     let meter = opentelemetry::global::meter("agentd");
     telemetry::db::watch_pool(&meter, pg.diesel.clone());
     let Outside { blobs, secrets } = outside;
-    let mut stores = Stores::postgres(pg.clone(), blobs, secrets.on(&pg, metrics));
+    let secrets = secrets.on(&pg, metrics);
+    drop(Sweep::new(pg.clone(), secrets.clone(), blobs.clone()).spawn());
+    let mut stores = Stores::postgres(pg.clone(), blobs, secrets);
     if let Some(read_url) = read_url {
         stores = stores
             .reading_events_from(PgBackend::connect_as(read_url, pool, Some(observer), password).await?);

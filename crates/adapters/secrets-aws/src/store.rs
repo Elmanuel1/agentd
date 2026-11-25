@@ -5,7 +5,10 @@ use aws_sdk_secretsmanager::operation::create_secret::CreateSecretError;
 use aws_sdk_secretsmanager::operation::delete_secret::DeleteSecretError;
 use aws_sdk_secretsmanager::operation::describe_secret::DescribeSecretError;
 use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError;
-use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
+use aws_sdk_secretsmanager::types::{Filter, FilterNameStringType};
+use shared::ports::secrets::{
+    ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, Stored, into_secret,
+};
 
 use crate::failure::failure;
 use crate::{AwsSecretStore, name};
@@ -128,5 +131,29 @@ impl SecretStore for AwsSecretStore {
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         let name = self.secret_name(key);
         self.delete_named(&name, &name).await
+    }
+
+    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+        let under = format!("{}/", self.prefix);
+        let filter = Filter::builder().key(FilterNameStringType::Name).values(&under).build();
+        let (mut found, mut token) = (vec![], None);
+        loop {
+            let page = self
+                .client
+                .list_secrets()
+                .filters(filter.clone())
+                .set_next_token(token)
+                .send()
+                .await
+                .map_err(|e| failure("secretsmanager:ListSecrets", &under, &e))?;
+            for secret in page.secret_list() {
+                let written = secret.last_changed_date().or(secret.created_date());
+                found.extend(name::stored(secret.name(), &under, written));
+            }
+            token = page.next_token().map(str::to_owned);
+            if token.is_none() {
+                return Ok(found);
+            }
+        }
     }
 }

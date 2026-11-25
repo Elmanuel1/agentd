@@ -10,7 +10,7 @@ pub use tls::TlsFront;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use shared::ports::keys::{AdminKeySource, EnvironmentGrant, EnvironmentKeySource, KeyError, KeySource};
-use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
+use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, Stored};
 use shared::{AdminContext, AuthContext, OrgId, WorkspaceId};
 
 /// Secrets held in memory, by key, with the keys put as `environment_variable` credentials'.
@@ -66,6 +66,13 @@ impl SecretStore for MemorySecretStore {
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         self.0.lock().remove(&key.to_string());
         Ok(())
+    }
+
+    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+        let written_at =
+            shared::Timestamp::from_unix(0, 0).ok_or_else(|| SecretError::Backend("epoch".into()))?;
+        let keys: Vec<String> = self.0.lock().keys().cloned().collect();
+        Ok(keys.iter().filter_map(|k| k.parse().ok()).map(|key| Stored { key, written_at }).collect())
     }
 }
 

@@ -9,7 +9,9 @@ use aws_sdk_ssm::operation::get_parameter::GetParameterError;
 use aws_sdk_ssm::operation::put_parameter::PutParameterError;
 use aws_sdk_ssm::operation::put_parameter::builders::PutParameterFluentBuilder;
 use aws_sdk_ssm::types::{ParameterTier, ParameterType, ResourceTypeForTagging, Tag};
-use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
+use shared::ports::secrets::{
+    ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, Stored, into_secret,
+};
 
 use crate::failure::failure;
 use crate::{AwsSecretsConfig, key, name};
@@ -124,6 +126,30 @@ impl SecretStore for AwsParameterStore {
                 Ok(())
             }
             Err(e) => Err(failure("ssm:DeleteParameter", &name, &e)),
+        }
+    }
+
+    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+        let path = format!("/{}", self.prefix);
+        let under = format!("{path}/");
+        let (mut found, mut token) = (vec![], None);
+        loop {
+            let page = self
+                .client
+                .get_parameters_by_path()
+                .path(&path)
+                .recursive(true)
+                .set_next_token(token)
+                .send()
+                .await
+                .map_err(|e| failure("ssm:GetParametersByPath", &path, &e))?;
+            for parameter in page.parameters() {
+                found.extend(name::stored(parameter.name(), &under, parameter.last_modified_date()));
+            }
+            token = page.next_token().map(str::to_owned);
+            if token.is_none() {
+                return Ok(found);
+            }
         }
     }
 }

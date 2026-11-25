@@ -46,6 +46,9 @@ impl SecretStore for StoresThenFails {
             false => self.inner.delete(key).await,
         }
     }
+    async fn list(&self) -> Result<Vec<shared::ports::secrets::Stored<SecretKey>>, SecretError> {
+        self.inner.list().await
+    }
 }
 
 async fn vault(svc: &VaultsService, ctx: &AuthContext, name: &str) -> String {

@@ -39,7 +39,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
-| `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |
+| `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in. It belongs to one agentd database and holds only its blobs: the cleanup sweep removes an object no row names, and it lists the bucket (`s3:ListBucket`) |
 | `AGENTD_S3_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Bucket region |
 | `AGENTD_AWS_ENDPOINT` | unset (AWS S3) | Custom S3 endpoint (MinIO, LocalStack): `https://` to any host, or `http://` only to a loopback address, `localhost` or a single-label container name |
 | `AGENTD_S3_PATH_STYLE` | `1` with a custom endpoint, else `0` | Path-style bucket addressing |
@@ -364,7 +364,7 @@ Parameter Store's limits, as AWS states them:
 | Variable | Default | Meaning |
 |---|---|---|
 | `AGENTD_SECRETS_KMS_KEY_ID` | required for `aws_sm` and `aws_ssm` | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. An AWS managed key (`aws/secretsmanager`, `aws/ssm`) is refused |
-| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters |
+| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters. It belongs to one agentd database: the cleanup sweep removes a secret under it that no credential names |
 | `AGENTD_SECRETS_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Region |
 | `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager or SSM, and KMS (LocalStack), under the same rule as `AGENTD_AWS_ENDPOINT` |
 | `AGENTD_SECRETS_ROLE_ARN` | unset | Role to assume with the default-chain credentials |

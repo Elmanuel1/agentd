@@ -1,4 +1,4 @@
-//! `vault_secrets` (V20, the salt from V21).
+//! `vault_secrets` (V20, the salt from V21, `written_at` from V33).
 
 diesel::table! {
     vault_secrets (workspace_id, vault_id, credential_id) {
@@ -9,5 +9,6 @@ diesel::table! {
         key_id -> Text,
         sealed_value -> Bytea,
         salt -> Bytea,
+        written_at -> Timestamptz,
     }
 }

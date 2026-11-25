@@ -14,6 +14,11 @@ One binary serves three roles, chosen with `AGENTD_ROLE`:
 | `loop` | loop workers only; every route answers 404 | `agentd.loop.steps_due` |
 | `all` | both, for a single replica or a small deployment | either |
 
+Once an hour, one replica (under the advisory lock `cleanup_sweep`) removes every secret no `credentials` row
+names and every blob no `files`, `skill_versions` or `memory_versions` row names, leaving anything written in the
+last 24 hours: it retries a removal that failed after a delete committed. Each run logs `sweep: removed the secrets
+and blobs no row names` at `INFO` with the counts, and a failed run `warn`s and is tried again the next hour.
+
 Every role runs the fire workers and the change feed's handlers (schedules, webhooks), and either ticks
 the built-in scheduler (`AGENTD_SCHEDULER=postgres`) or runs agentd's Temporal worker (`temporal`). Replicas hold nothing between requests or steps, so any number of each role run side by side
 and any one of them can stop at any time.

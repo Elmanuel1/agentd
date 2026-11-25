@@ -23,6 +23,7 @@ mod load;
 mod pool;
 pub mod schema;
 mod slot;
+mod sweep;
 mod target;
 mod tls;
 mod tracked;
@@ -32,6 +33,7 @@ pub use conninfo::redacted;
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 pub use slot::{Slot, read_slot};
+pub use sweep::Sweep;
 pub use tracked::tracked_tables;
 
 pub use entities::admin_keys::PgAdminKeysStore;

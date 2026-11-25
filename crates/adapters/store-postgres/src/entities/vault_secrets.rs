@@ -10,11 +10,13 @@ mod reseal;
 pub use reseal::Resealed;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use diesel::upsert::excluded;
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
+use shared::Timestamp;
 use shared::hash::SecretKeys;
-use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
+use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString, Stored};
 
 use self::cipher::Sealed;
 use crate::schema::vault_secrets as t;
@@ -70,6 +72,7 @@ impl SecretStore for PgSecretStore {
                 t::key_id.eq(excluded(t::key_id)),
                 t::salt.eq(excluded(t::salt)),
                 t::sealed_value.eq(excluded(t::sealed_value)),
+                t::written_at.eq(excluded(t::written_at)),
             ))
             .execute(&mut conn)
             .await
@@ -97,5 +100,20 @@ impl SecretStore for PgSecretStore {
             .await
             .map_err(backend_error)?;
         Ok(())
+    }
+
+    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<(String, String, String, DateTime<Utc>)> = t::table
+            .select((t::workspace_id, t::vault_id, t::credential_id, t::written_at))
+            .load(&mut conn)
+            .await
+            .map_err(backend_error)?;
+        let stored = |(ws, vault, cred, at): (String, String, String, DateTime<Utc>)| {
+            SecretKey::new(&ws, &vault, &cred)
+                .ok()
+                .map(|key| Stored { key, written_at: Timestamp::from_datetime(at) })
+        };
+        Ok(rows.into_iter().filter_map(stored).collect())
     }
 }

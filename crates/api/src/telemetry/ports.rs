@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use opentelemetry::KeyValue;
-use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore};
+use shared::ports::blobs::{BlobError, BlobStore, NativeBlobStore, Stored};
 use shared::ports::fire::{FireError, FireHandler};
 use shared::ports::keys::{AdminKeySource, KeyError, KeySource};
 use shared::ports::secrets::{SecretError, SecretKey, SecretStore, SecretString};
@@ -76,6 +76,10 @@ impl<T: BlobStore + ?Sized> NativeBlobStore for Observed<T> {
     async fn delete(&self, key: &str) -> Result<(), BlobError> {
         self.run("blobs", "delete", self.inner.delete(key)).await
     }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<Stored<String>>, BlobError> {
+        self.run("blobs", "list", self.inner.list(prefix)).await
+    }
 }
 
 #[async_trait]
@@ -90,6 +94,10 @@ impl<T: SecretStore + ?Sized> SecretStore for Observed<T> {
 
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         self.run("secrets", "delete", self.inner.delete(key)).await
+    }
+
+    async fn list(&self) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+        self.run("secrets", "list", self.inner.list()).await
     }
 }
 

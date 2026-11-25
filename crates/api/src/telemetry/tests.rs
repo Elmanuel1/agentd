@@ -13,12 +13,14 @@ use opentelemetry::{KeyValue, Value};
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
 use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use shared::ports::blobs::{BlobError, NativeBlobStore};
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
 use super::Metrics;
 use super::ports::Observed;
+use failing::Failing;
+
+mod failing;
 
 struct Harness {
     metrics: Arc<Metrics>,
@@ -163,20 +165,6 @@ async fn an_event_stream_is_open_until_its_body_is_dropped() {
     assert_eq!(open(&h), 1);
     drop(res);
     assert_eq!(open(&h), 0);
-}
-
-struct Failing;
-
-impl NativeBlobStore for Failing {
-    async fn put(&self, key: &str, _bytes: Bytes) -> Result<(), BlobError> {
-        Err(BlobError::NotFound(key.to_owned()))
-    }
-    async fn get(&self, key: &str) -> Result<Bytes, BlobError> {
-        Err(BlobError::NotFound(key.to_owned()))
-    }
-    async fn delete(&self, _key: &str) -> Result<(), BlobError> {
-        Ok(())
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]

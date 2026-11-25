@@ -134,3 +134,30 @@ async fn a_configured_timeout_reaches_the_clients() {
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "the configured timeouts did not apply");
     held.abort();
 }
+
+#[tokio::test]
+async fn list_returns_each_parameter_under_the_prefix_with_its_write_time() {
+    let Some(endpoint) = endpoint() else { return };
+    let kms = kms_key(&endpoint).await;
+    let under = |prefix: String| {
+        let mut config = AwsSecretsConfig::new(prefix, kms.clone());
+        config.endpoint = Some(endpoint.clone());
+        config
+    };
+    let store = AwsParameterStore::connect(&under(format!("agentd_test/{}", id("list")))).await.unwrap();
+    let other = AwsParameterStore::connect(&under(format!("agentd_test/{}", id("other")))).await.unwrap();
+    let before = shared::Timestamp::now().earlier_by(std::time::Duration::from_secs(60));
+    let mut keys: Vec<String> = Vec::new();
+    for _ in 0..12 {
+        let key = key();
+        store.put(&key, &SecretString::from("s")).await.unwrap();
+        keys.push(key.to_string());
+    }
+    other.put(&key(), &SecretString::from("s")).await.unwrap();
+    let listed = store.list().await.unwrap();
+    let mut seen: Vec<String> = listed.iter().map(|s| s.key.to_string()).collect();
+    seen.sort();
+    keys.sort();
+    assert_eq!(seen, keys, "every parameter under the prefix, across pages of ten");
+    assert!(listed.iter().all(|s| s.written_at > before), "each carries its write time");
+}
