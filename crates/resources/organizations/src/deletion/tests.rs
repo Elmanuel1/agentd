@@ -122,7 +122,13 @@ async fn a_delete_removes_the_secrets_blobs_and_dream_schedules_its_rows_named()
         scheduler.clone(),
     );
     let deleted = deletion.delete(&OrgId::new("org_a")).await.unwrap();
-    assert_eq!(deleted, Deleted { removed, left: vec![] });
+    let gone =
+        ["secret wrkspc_a/vlt_a/vcrd_a", "secret wrkspc_a/vlt_a/vcrd_b", "blob wrkspc_a/file_a", "blob gone"]
+            .into_iter()
+            .chain(["schedule dream/drm_a", "schedule dream/drm_b"])
+            .map(str::to_owned)
+            .collect();
+    assert_eq!(deleted, Deleted { removed, gone, left: vec![] });
     assert_eq!(*secrets.deleted.lock(), ["wrkspc_a/vlt_a/vcrd_a", "wrkspc_a/vlt_a/vcrd_b"]);
     assert_eq!(*blobs.deleted.lock(), ["wrkspc_a/file_a"]);
     assert!(scheduler.registered().is_empty(), "the dream's schedule is gone; one already gone counts");

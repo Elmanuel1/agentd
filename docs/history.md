@@ -62,14 +62,18 @@ is left.
 
 ## After a lost slot
 
-1. Stop Debezium Server.
-2. Drop the slot, if it still exists, and Debezium's offsets, with `<slot>` the configured `AGENTD_CHANGES_SLOT`:
+1. Stop every agentd replica, so no write commits while there is no slot: a schedule change reaches the scheduler
+   and a webhook delivery is sent only from the feed.
+2. Stop Debezium Server.
+3. Drop the slot, if it still exists, and Debezium's offsets, with `<slot>` the configured `AGENTD_CHANGES_SLOT`:
    `select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = '<slot>';` and
    `delete from debezium_offsets;`.
-3. Start Debezium Server. It makes a new slot and streams changes from then on.
+4. Start Debezium Server. It makes a new slot and streams changes from then on.
+5. Start agentd once `agentd.feed.slot.lost` reads 0.
 
-Changes committed between the slot's last confirmed position and the new slot are not on the feed; consumers that
-keep a record rebuild it from the live tables.
+Changes committed between the slot's last confirmed position and step 1 are not on the feed: schedule changes and
+webhook deliveries of that window are not applied or sent, and consumers that keep a record rebuild it from the
+live tables.
 
 ## A new tracked table
 

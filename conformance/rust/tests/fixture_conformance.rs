@@ -17,10 +17,11 @@ use axum::http::{Request, StatusCode};
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use conformance::diff;
 use http_body_util::BodyExt;
+use organizations::registry::OrganizationsStore;
 use shared::ports::fire::FireRegistry;
 
 use shared::Timestamp;
-use store_postgres::{PgBackend, PgFireClaims};
+use store_postgres::{PgBackend, PgFireClaims, PgOrganizationsStore};
 use tower::ServiceExt;
 
 const KEY: &str = "conformance-key";
@@ -49,8 +50,10 @@ async fn app() -> Option<Router> {
         .await
         .unwrap(),
     );
+    let org = format!("org_c{stamp}");
+    PgOrganizationsStore::new(backend.clone()).create(&shared::OrgId::new(&org)).await.unwrap();
     let mut keys = StaticKeySource::default();
-    keys.register(KEY, &format!("org_c{stamp}"), &format!("wrkspc_c{stamp}"), "apikey_01conf");
+    keys.register(KEY, &org, &format!("wrkspc_c{stamp}"), "apikey_01conf");
     let load = Arc::new(store_postgres::PgLoad::new(backend.diesel.clone()));
     let backends = Backends {
         fires: Arc::new(FireRegistry::new(Arc::new(PgFireClaims::new(backend.clone())))),

@@ -15,6 +15,8 @@ use crate::registry::{OrganizationsStore, Removed, StoreError};
 pub struct Deleted {
     /// The rows and keys the transaction removed.
     pub removed: Removed,
+    /// Each secret, blob or schedule removed after the commit, as `<kind> <key>`.
+    pub gone: Vec<String>,
     /// Each secret, blob or schedule left, as `<kind> <key>: <error>`.
     pub left: Vec<String>,
 }
@@ -47,25 +49,33 @@ impl OrganizationDeletion {
     /// Delete `org`; once its rows are gone, remove what they named outside the database.
     pub async fn delete(&self, org: &OrgId) -> Result<Deleted, StoreError> {
         let removed = self.store.delete(org).await?;
-        let mut left = vec![];
+        let mut outcomes = vec![];
         for key in &removed.secrets {
-            if let Err(e) = self.secrets.delete(key).await {
-                left.push(format!("secret {key}: {e}"));
-            }
+            outcomes
+                .push((format!("secret {key}"), self.secrets.delete(key).await.map_err(|e| e.to_string())));
         }
         for key in &removed.blobs {
-            match self.blobs.delete(key).await {
-                Ok(()) | Err(BlobError::NotFound(_)) => {}
-                Err(e) => left.push(format!("blob {key}: {e}")),
-            }
+            let deleted = match self.blobs.delete(key).await {
+                Ok(()) | Err(BlobError::NotFound(_)) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            };
+            outcomes.push((format!("blob {key}"), deleted));
         }
         for target in &removed.dreams {
-            match self.scheduler.delete(target).await {
-                Ok(()) | Err(SchedulerError::Unknown(_)) => {}
-                Err(e) => left.push(format!("schedule {}: {e}", target.key())),
+            let deleted = match self.scheduler.delete(target).await {
+                Ok(()) | Err(SchedulerError::Unknown(_)) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            };
+            outcomes.push((format!("schedule {}", target.key()), deleted));
+        }
+        let (mut gone, mut left) = (vec![], vec![]);
+        for (what, deleted) in outcomes {
+            match deleted {
+                Ok(()) => gone.push(what),
+                Err(e) => left.push(format!("{what}: {e}")),
             }
         }
-        Ok(Deleted { removed, left })
+        Ok(Deleted { removed, gone, left })
     }
 }
 

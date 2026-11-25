@@ -121,7 +121,8 @@ async fn deleting_an_unknown_organization_deletes_nothing() {
 
 /// An organization with a workspace row, a key naming a workspace with no row, and in those two
 /// workspaces a credential, a file, a skill version, a memory version with a blob and one without,
-/// a live and an archived deployment and dream, and an agent.
+/// a live and an archived deployment and dream, and an agent. Deployment and dream ids carry the
+/// workspace id, so no two seeds name the same schedule.
 async fn seeded(pg: &PgBackend) -> (OrgId, String, String) {
     let t = tag();
     let (org, ws, keyed) = (format!("org_d{t}"), format!("wrkspc_d{t}"), format!("wrkspc_k{t}"));
@@ -144,9 +145,9 @@ async fn seeded(pg: &PgBackend) -> (OrgId, String, String) {
          VALUES ($1, 'memstore_a', 'mem_a', 'memver_a', true, now(), $2::jsonb),
                 ($1, 'memstore_a', 'mem_a', 'memver_b', false, now(), $2::jsonb)",
         "INSERT INTO deployments (workspace_id, deployment_id, name, status, created_at, doc)
-         VALUES ($1, 'depl_a', 'd', 'active', now(), $2::jsonb), ($1, 'depl_b', 'd', 'archived', now(), $2::jsonb)",
+         VALUES ($1, 'depl_a' || $1, 'd', 'active', now(), $2::jsonb), ($1, 'depl_b' || $1, 'd', 'archived', now(), $2::jsonb)",
         "INSERT INTO dreams (workspace_id, dream_id, name, status, created_at, doc)
-         VALUES ($1, 'drm_a', 'd', 'active', now(), $2::jsonb), ($1, 'drm_b', 'd', 'archived', now(), $2::jsonb)",
+         VALUES ($1, 'drm_a' || $1, 'd', 'active', now(), $2::jsonb), ($1, 'drm_b' || $1, 'd', 'archived', now(), $2::jsonb)",
         "INSERT INTO agents (workspace_id, agent_id, version, name, created_at, doc)
          VALUES ($1, 'agent_a', 1, 'a', now(), $2::jsonb)",
     ];
@@ -164,6 +165,7 @@ async fn a_delete_removes_the_organization_and_everything_it_owns() {
     }
     let pg = backend().await;
     let (org, ws, keyed) = seeded(&pg).await;
+    let (other, other_ws, other_keyed) = seeded(&pg).await;
     let removed = PgOrganizationsStore::new(pg.clone()).delete(&org).await.unwrap();
 
     let mut workspaces = removed.workspaces.clone();
@@ -187,7 +189,7 @@ async fn a_delete_removes_the_organization_and_everything_it_owns() {
         ]
     );
     let dreams: Vec<String> = removed.dreams.iter().map(|d| d.key()).collect();
-    assert_eq!(dreams, ["dream/drm_a"]);
+    assert_eq!(dreams, [format!("dream/drm_a{ws}")]);
     let counted: Vec<(&str, u64)> = removed.rows.iter().copied().filter(|(_, n)| *n > 0).collect();
     assert_eq!(
         counted,
@@ -212,6 +214,39 @@ async fn a_delete_removes_the_organization_and_everything_it_owns() {
         let sql = format!("SELECT count(*) AS n FROM {table} WHERE org_id = $1");
         assert_eq!(count(&pg, &sql, org.as_str()).await, 0, "{table}");
     }
+    let kept = [("credentials", 2), ("files", 1), ("deployments", 2), ("dreams", 2), ("agents", 1)];
+    for (table, n) in kept {
+        let sql = format!("SELECT count(*) AS n FROM {table} WHERE workspace_id IN ($1, '{other_keyed}')");
+        assert_eq!(count(&pg, &sql, &other_ws).await, n, "another organization's {table} stay");
+    }
+    for table in ["organizations", "workspaces", "api_keys"] {
+        let sql = format!("SELECT count(*) AS n FROM {table} WHERE org_id = $1");
+        assert_eq!(count(&pg, &sql, other.as_str()).await, 1, "another organization's {table} stay");
+    }
+}
+
+/// A temporary logical slot on a connection of its own, so it goes when the connection closes, on
+/// every exit.
+async fn slot() -> (diesel_async::AsyncPgConnection, String) {
+    use diesel_async::AsyncConnection;
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    let mut conn = diesel_async::AsyncPgConnection::establish(&url).await.unwrap();
+    let name = format!("orgtest{}", tag());
+    diesel::sql_query("SELECT 1 FROM pg_create_logical_replication_slot($1, 'test_decoding', true)")
+        .bind::<Text, _>(&name)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    (conn, name)
+}
+
+/// How many of the slot's changes match `filter`.
+async fn changes(slot: &mut (diesel_async::AsyncPgConnection, String), filter: &str) -> i64 {
+    let sql =
+        format!("SELECT count(*) AS n FROM pg_logical_slot_peek_changes($1, NULL, NULL) WHERE {filter}");
+    let row: Count = diesel::sql_query(sql).bind::<Text, _>(&slot.1).get_result(&mut slot.0).await.unwrap();
+    row.n
 }
 
 #[tokio::test]
@@ -220,22 +255,12 @@ async fn a_delete_writes_a_schedule_delete_for_each_deployment_not_archived() {
         return;
     }
     let pg = backend().await;
-    let slot = format!("orgdel{}", tag());
-    exec(
-        &pg,
-        "SELECT 1 FROM pg_create_logical_replication_slot($1, 'test_decoding') WHERE $2 = $2",
-        &slot,
-        "",
-    )
-    .await
-    .unwrap();
-    let (org, _, _) = seeded(&pg).await;
+    let mut slot = slot().await;
+    let (org, ws, _) = seeded(&pg).await;
     PgOrganizationsStore::new(pg.clone()).delete(&org).await.unwrap();
-    let inserts = "SELECT count(*) AS n FROM pg_logical_slot_peek_changes($1, NULL, NULL)
-                   WHERE data LIKE 'table public.schedule_outbox: INSERT:%'";
-    let live = count(&pg, &format!("{inserts} AND data LIKE '%deployment/depl_a%'"), &slot).await;
-    let archived = count(&pg, &format!("{inserts} AND data LIKE '%deployment/depl_b%'"), &slot).await;
-    exec(&pg, "SELECT 1 FROM pg_drop_replication_slot($1) WHERE $2 = $2", &slot, "").await.unwrap();
+    let inserts = "data LIKE 'table public.schedule_outbox: INSERT:%'";
+    let live = changes(&mut slot, &format!("{inserts} AND data LIKE '%deployment/depl_a{ws}%'")).await;
+    let archived = changes(&mut slot, &format!("{inserts} AND data LIKE '%deployment/depl_b{ws}%'")).await;
     assert_eq!((live, archived), (1, 0));
 }
 
@@ -245,15 +270,7 @@ async fn an_organization_delete_announces_the_organization_and_each_cascaded_env
         return;
     }
     let pg = backend().await;
-    let slot = format!("orgfeed{}", tag());
-    exec(
-        &pg,
-        "SELECT 1 FROM pg_create_logical_replication_slot($1, 'test_decoding') WHERE $2 = $2",
-        &slot,
-        "",
-    )
-    .await
-    .unwrap();
+    let mut slot = slot().await;
     let org = OrgId::new(format!("org_feed{}", tag()));
     PgOrganizationsStore::new(pg.clone()).create(&org).await.unwrap();
     let env = "INSERT INTO environments (org_id, environment_id, name, state, created_at, doc)
@@ -262,14 +279,11 @@ async fn an_organization_delete_announces_the_organization_and_each_cascaded_env
     PgOrganizationsStore::new(pg.clone()).delete(&org).await.unwrap();
     let announced = |table: &str| {
         format!(
-            "SELECT count(*) AS n FROM pg_logical_slot_peek_changes($1, NULL, NULL)
-             WHERE data LIKE 'message:%agentd-history%' AND data LIKE '%\"table\": \"{table}\"%'
-               AND data LIKE '%{}%'",
+            "data LIKE 'message:%agentd-history%' AND data LIKE '%\"table\": \"{table}\"%' AND data LIKE '%{}%'",
             org.as_str()
         )
     };
-    let orgs = count(&pg, &announced("organizations"), &slot).await;
-    let envs = count(&pg, &announced("environments"), &slot).await;
-    exec(&pg, "SELECT 1 FROM pg_drop_replication_slot($1) WHERE $2 = $2", &slot, "").await.unwrap();
+    let orgs = changes(&mut slot, &announced("organizations")).await;
+    let envs = changes(&mut slot, &announced("environments")).await;
     assert_eq!((orgs, envs), (1, 1));
 }
