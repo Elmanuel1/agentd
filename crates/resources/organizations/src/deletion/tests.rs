@@ -200,6 +200,7 @@ async fn a_dream_schedule_the_scheduler_cannot_delete_is_named() {
             "schedule dream/drm_b: scheduler unavailable: down"
         ]
     );
+    assert_eq!(deleted.gone, ["secret wrkspc_a/vlt_a/vcrd_a", "secret wrkspc_a/vlt_a/vcrd_b"]);
 }
 
 #[tokio::test]

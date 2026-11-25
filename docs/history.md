@@ -69,7 +69,8 @@ is left.
    `select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = '<slot>';` and
    `delete from debezium_offsets;`.
 4. Start Debezium Server. It makes a new slot and streams changes from then on.
-5. Start agentd once `agentd.feed.slot.lost` reads 0.
+5. Start agentd once the new slot exists:
+   `select 1 from pg_replication_slots where slot_name = '<slot>';` returns a row.
 
 Changes committed between the slot's last confirmed position and step 1 are not on the feed: schedule changes and
 webhook deliveries of that window are not applied or sent, and consumers that keep a record rebuild it from the

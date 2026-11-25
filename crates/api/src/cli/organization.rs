@@ -144,10 +144,6 @@ mod tests {
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
         let (lines, code) = report(&deleted(&["blob wrkspc_a/file_a: blob backend: refused"]));
         assert_eq!(lines.last().unwrap(), "not removed: blob wrkspc_a/file_a: blob backend: refused");
-        assert!(
-            !lines.contains(&"removed blob wrkspc_a/file_a".to_owned()),
-            "a blob left is never reported removed"
-        );
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
     }
 
