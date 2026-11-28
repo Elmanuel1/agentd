@@ -15,7 +15,7 @@ use redis::streams::{
     StreamAutoClaimOptions, StreamAutoClaimReply, StreamId, StreamReadOptions, StreamReadReply,
 };
 use redis::{AsyncCommands, RedisResult, SetExpiry, SetOptions};
-use shared::ports::changes::{self, ChangeHandler};
+use shared::ports::changes::{self, ChangeHandler, Source};
 use shared::ports::fire::FireRegistry;
 
 use crate::fires::Fires;
@@ -79,6 +79,16 @@ impl ValkeyChanges {
                 tokio::spawn(self.clone().run(stream, Arc::new(Changes(h))))
             })
             .collect()
+    }
+
+    /// Trim the streams of `tables` and the delete messages, which no agentd handler reads: each
+    /// keeps what its readers' groups need, or its last week while no group reads it.
+    pub fn trim_unread(&self, tables: &[String]) {
+        let sources = tables.iter().map(|t| Source::Table(t.clone())).chain([Source::Messages]);
+        for source in sources {
+            let stream = source.topic(&self.prefix);
+            drop(tokio::spawn(trim::every(self.valkey.clone(), stream, Keep::NeededOrNewer(trim::UNREAD))));
+        }
     }
 
     /// Run the fires an external scheduler writes to `<prefix>.fires`.

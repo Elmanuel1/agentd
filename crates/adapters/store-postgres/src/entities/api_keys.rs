@@ -110,7 +110,7 @@ impl ApiKeysStore for PgApiKeysStore {
             })
             .execute(&mut conn)
             .await
-            .map_err(diesel_be)?;
+            .map_err(|e| insert_error(e, &key.org))?;
         Ok(())
     }
 
@@ -154,5 +154,15 @@ impl ApiKeysStore for PgApiKeysStore {
         .execute(&mut conn)
         .await
         .map_err(diesel_be)
+    }
+}
+
+/// A key insert's error: a foreign key violation names the key's unknown organization.
+pub(crate) fn insert_error(e: diesel::result::Error, org: &shared::OrgId) -> StoreError {
+    match e {
+        diesel::result::Error::DatabaseError(diesel::result::DatabaseErrorKind::ForeignKeyViolation, _) => {
+            StoreError::UnknownOrganization(org.as_str().to_owned())
+        }
+        e => diesel_be(e),
     }
 }

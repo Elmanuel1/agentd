@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::sync::Arc;
 
 use ::api_keys::AdminKeysService;
@@ -35,6 +37,7 @@ async fn an_admin_key_resolves_to_its_org_until_it_is_revoked_and_only_its_diges
     let peppers = Arc::new(PepperRing::single(KeyPepper::new(&[5; 32])));
     let keys = AdminKeysService::new(Arc::new(PgAdminKeysStore::new(pg.clone())), peppers);
     let org = format!("org_admin{}", Timestamp::now().as_datetime().timestamp_micros());
+    org::ensure(&pg, &org).await;
     let (record, key) = keys.create(&org, "ops").await.unwrap();
     assert!(record.id.starts_with("adminkey_01") && key.expose_secret().starts_with("sk-ant-admin01-"));
     let ctx = keys.resolve(key.expose_secret()).await.unwrap().unwrap();

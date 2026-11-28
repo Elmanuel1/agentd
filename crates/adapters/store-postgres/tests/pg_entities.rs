@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::sync::Arc;
 
 use blobs_s3::{BlobStore, S3BlobStore, S3Config};
@@ -81,8 +83,10 @@ async fn pg_environments_service_roundtrip() {
         return;
     }
     use environments::EnvironmentsService;
-    let svc = EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(backend().await)));
+    let pg = backend().await;
+    let svc = EnvironmentsService::new(Arc::new(PgEnvironmentsStore::new(pg.clone())));
     let ctx = ctx_org("env");
+    org::ensure(&pg, ctx.org.as_str()).await;
     let env = svc
         .create(
             &ctx,

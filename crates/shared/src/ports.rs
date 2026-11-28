@@ -6,7 +6,6 @@ pub mod blobs;
 pub mod changes;
 pub mod credentials;
 pub mod fire;
-pub mod history;
 pub mod keys;
 pub mod scheduler;
 pub mod secrets;

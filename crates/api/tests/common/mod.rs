@@ -23,8 +23,9 @@ use shared::ports::keys::material::{self, KeyKind};
 use shared::ports::keys::{KeyPepper, PepperRing};
 use shared::ports::secrets::{ExposeSecret, SecretString};
 
+use organizations::registry::OrganizationsStore;
 use shared::{AuthContext, OrgId, Timestamp, WorkspaceId};
-use store_postgres::{PgBackend, PgFireClaims};
+use store_postgres::{PgBackend, PgFireClaims, PgOrganizationsStore};
 use test_support::{MemorySecretStore, StaticAdminKeys, StaticKeySource};
 use tower::ServiceExt;
 use vaults::variables::VaultCredentials;
@@ -155,6 +156,7 @@ impl Rig {
             .unwrap(),
         );
         let (org, ws, ws_b) = (format!("org_w{s}"), format!("wrkspc_a{s}"), format!("wrkspc_b{s}"));
+        PgOrganizationsStore::new(backend.clone()).create(&OrgId::new(&org)).await.unwrap();
         let mut keys = StaticKeySource::default();
         keys.register(KEY, &org, &ws, "apikey_01a");
         keys.register(KEY_B, &org, &ws_b, "apikey_01b");

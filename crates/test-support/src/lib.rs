@@ -10,7 +10,7 @@ pub use tls::TlsFront;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use shared::ports::keys::{AdminKeySource, EnvironmentGrant, EnvironmentKeySource, KeyError, KeySource};
-use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString};
+use shared::ports::secrets::{ExposeSecret, Page, SecretError, SecretKey, SecretStore, SecretString, Stored};
 use shared::{AdminContext, AuthContext, OrgId, WorkspaceId};
 
 /// Secrets held in memory, by key, with the keys put as `environment_variable` credentials'.
@@ -67,6 +67,15 @@ impl SecretStore for MemorySecretStore {
         self.0.lock().remove(&key.to_string());
         Ok(())
     }
+
+    async fn list(&self, _after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
+        let written_at =
+            shared::Timestamp::from_unix(0, 0).ok_or_else(|| SecretError::Backend("epoch".into()))?;
+        let keys: Vec<String> = self.0.lock().keys().cloned().collect();
+        let items =
+            keys.iter().filter_map(|k| k.parse().ok()).map(|key| Stored { key, written_at }).collect();
+        Ok(Page { items, next: None })
+    }
 }
 
 /// API keys registered in memory.
@@ -119,5 +128,18 @@ pub struct NoEnvironmentKeys;
 impl EnvironmentKeySource for NoEnvironmentKeys {
     async fn resolve(&self, _: &str) -> Result<Option<EnvironmentGrant>, KeyError> {
         Ok(None)
+    }
+}
+
+/// Every page of `store`'s listing.
+pub async fn all_pages(store: &(impl SecretStore + ?Sized)) -> Result<Vec<Stored<SecretKey>>, SecretError> {
+    let (mut all, mut after) = (vec![], None);
+    loop {
+        let page = store.list(after).await?;
+        all.extend(page.items);
+        after = page.next;
+        if after.is_none() {
+            return Ok(all);
+        }
     }
 }

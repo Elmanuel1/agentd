@@ -23,14 +23,18 @@ mod load;
 mod pool;
 pub mod schema;
 mod slot;
+mod sweep;
 mod target;
 mod tls;
+mod tracked;
 
 pub use checkout::{DieselPgPool, PooledConnection};
 pub use conninfo::redacted;
 pub use load::PgLoad;
 pub use pool::{PgObserver, PoolSettings};
 pub use slot::{Slot, read_slot};
+pub use sweep::Sweep;
+pub use tracked::tracked_tables;
 
 pub use entities::admin_keys::PgAdminKeysStore;
 pub use entities::agents::PgAgentsStore;
@@ -41,10 +45,10 @@ pub use entities::environment_keys::PgEnvironmentKeysStore;
 pub use entities::environments::PgEnvironmentsStore;
 pub use entities::files::PgFilesStore;
 pub use entities::fire_claims::PgFireClaims;
-pub use entities::history::PgHistoryLog;
 pub use entities::loop_steps::PgSteps;
 pub use entities::mcp_connections::PgMcpConnections;
 pub use entities::memory::PgMemoryStore;
+pub use entities::organizations::PgOrganizationsStore;
 pub use entities::run_lock::PgRunLock;
 pub use entities::schedules::PgScheduler;
 pub use entities::schedules::outbox::ScheduleOutbox;
@@ -78,6 +82,9 @@ pub enum PgError {
     /// Could not connect.
     #[error("connect: {0}")]
     Connect(String),
+    /// A query at boot failed.
+    #[error("query: {0}")]
+    Query(String),
 }
 
 /// Map a Diesel query error to a store `Backend` variant, preserving it as the
@@ -119,8 +126,8 @@ from_backend!(
     dreams::store::StoreError,
     memory::store::StoreError,
     organizations::workspaces::StoreError,
+    organizations::registry::StoreError,
     work::store::StoreError,
-    shared::ports::history::HistoryError,
 );
 
 /// Serialize a snake_case enum to its wire string for a filter column

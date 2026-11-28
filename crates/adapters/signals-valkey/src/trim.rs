@@ -2,7 +2,8 @@
 //! [`EVERY`] each replica trims each stream it reads below the oldest entry a
 //! group still needs: the group's oldest pending entry, else the last one it
 //! was delivered. Debezium's heartbeat stream, which no group reads, keeps its
-//! last [`HEARTBEATS`] entries.
+//! last [`HEARTBEATS`] entries; a feed stream no agentd handler reads keeps what
+//! its readers' groups need, or its last [`UNREAD`] while no group reads it.
 
 use std::time::Duration;
 
@@ -15,6 +16,8 @@ use crate::valkey::{Conn, Valkey};
 const EVERY: Duration = Duration::from_secs(60);
 /// The heartbeat entries kept.
 const HEARTBEATS: usize = 100;
+/// How far back a stream no group reads is kept.
+pub(crate) const UNREAD: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// What a trim keeps.
 #[derive(Debug, Clone, Copy)]
@@ -23,6 +26,8 @@ pub(crate) enum Keep {
     Needed,
     /// The last entries, this many.
     Last(usize),
+    /// Every entry a group still needs; while no group reads, the entries newer than this.
+    NeededOrNewer(Duration),
 }
 
 impl Keep {
@@ -51,6 +56,12 @@ pub(crate) async fn trim(valkey: &Valkey, stream: &str, keep: Keep) -> RedisResu
             Some((ms, seq)) => StreamTrimOptions::minid(StreamTrimmingMode::Exact, format!("{ms}-{seq}")),
             None => return Ok(0),
         },
+        (true, Keep::NeededOrNewer(age)) => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let newer_than = u64::try_from(now.saturating_sub(age).as_millis()).unwrap_or(0);
+            let (ms, seq) = needed(&mut conn, stream).await?.unwrap_or((newer_than, 0));
+            StreamTrimOptions::minid(StreamTrimmingMode::Exact, format!("{ms}-{seq}"))
+        }
     };
     conn.xtrim_options(stream, &options).await
 }

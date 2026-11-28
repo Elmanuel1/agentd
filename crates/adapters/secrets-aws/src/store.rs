@@ -5,7 +5,10 @@ use aws_sdk_secretsmanager::operation::create_secret::CreateSecretError;
 use aws_sdk_secretsmanager::operation::delete_secret::DeleteSecretError;
 use aws_sdk_secretsmanager::operation::describe_secret::DescribeSecretError;
 use aws_sdk_secretsmanager::operation::get_secret_value::GetSecretValueError;
-use shared::ports::secrets::{ExposeSecret, SecretError, SecretKey, SecretStore, SecretString, into_secret};
+use aws_sdk_secretsmanager::types::{Filter, FilterNameStringType};
+use shared::ports::secrets::{
+    ExposeSecret, Page, SecretError, SecretKey, SecretStore, SecretString, into_secret,
+};
 
 use crate::failure::failure;
 use crate::{AwsSecretStore, name};
@@ -128,5 +131,24 @@ impl SecretStore for AwsSecretStore {
     async fn delete(&self, key: &SecretKey) -> Result<(), SecretError> {
         let name = self.secret_name(key);
         self.delete_named(&name, &name).await
+    }
+
+    async fn list(&self, after: Option<String>) -> Result<Page<SecretKey>, SecretError> {
+        let under = format!("{}/", self.prefix);
+        let filter = Filter::builder().key(FilterNameStringType::Name).values(&under).build();
+        let page = self
+            .client
+            .list_secrets()
+            .filters(filter)
+            .set_next_token(after)
+            .send()
+            .await
+            .map_err(|e| failure("secretsmanager:ListSecrets", &under, &e))?;
+        let items = page
+            .secret_list()
+            .iter()
+            .filter_map(|s| name::stored(s.name(), &under, s.last_changed_date().or(s.created_date())))
+            .collect();
+        Ok(Page { items, next: page.next_token().map(str::to_owned) })
     }
 }

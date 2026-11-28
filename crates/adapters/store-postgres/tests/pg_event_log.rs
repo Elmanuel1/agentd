@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +35,9 @@ fn url() -> String {
 }
 
 async fn backend() -> PgBackend {
-    PgBackend::connect(&url()).await.unwrap()
+    let pg = PgBackend::connect(&url()).await.unwrap();
+    org::ensure(&pg, "org_w").await;
+    pg
 }
 
 fn uniq_ws(tag: &str) -> WorkspaceId {

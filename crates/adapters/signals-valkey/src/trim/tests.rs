@@ -69,3 +69,29 @@ async fn a_stream_no_group_reads_is_left_whole_unless_it_keeps_its_last_entries(
         let _: () = conn.del(&stream).await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn a_stream_no_group_reads_keeps_only_its_newer_entries() {
+    for valkey in test_valkeys() {
+        let mut conn = valkey.connection().await.unwrap();
+        let stream = stream_of(&mut conn, 5).await;
+        let week = Keep::NeededOrNewer(std::time::Duration::from_secs(7 * 24 * 3600));
+        assert_eq!(trim(&valkey, &stream, week).await.unwrap(), 0, "every entry is newer than a week");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let none = Keep::NeededOrNewer(std::time::Duration::ZERO);
+        assert_eq!(trim(&valkey, &stream, none).await.unwrap(), 5);
+        assert!(ids(&mut conn, &stream).await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_stream_a_group_reads_keeps_what_the_group_needs_however_old() {
+    for valkey in test_valkeys() {
+        let mut conn = valkey.connection().await.unwrap();
+        let stream = stream_of(&mut conn, 3).await;
+        let _: () = conn.xgroup_create(&stream, "readers", "0").await.unwrap();
+        let none = Keep::NeededOrNewer(std::time::Duration::ZERO);
+        assert_eq!(trim(&valkey, &stream, none).await.unwrap(), 0, "the group has read nothing yet");
+        assert_eq!(ids(&mut conn, &stream).await.len(), 3);
+    }
+}

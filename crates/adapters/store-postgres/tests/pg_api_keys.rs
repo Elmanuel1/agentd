@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::sync::Arc;
 
 use ::api_keys::{ApiKey, ApiKeysService, ApiKeysStore};
@@ -22,7 +24,10 @@ fn enabled() -> bool {
 async fn backend() -> PgBackend {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
-    PgBackend::connect(&url).await.unwrap()
+    let pg = PgBackend::connect(&url).await.unwrap();
+    org::ensure(&pg, "org_keys").await;
+    org::ensure(&pg, "org_other").await;
+    pg
 }
 
 fn stamp() -> i64 {

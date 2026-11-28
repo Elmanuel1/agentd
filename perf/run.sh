@@ -30,5 +30,6 @@ done
 # Each run starts from empty volumes, so runs are comparable.
 compose --profile run down -v >/dev/null 2>&1 || true
 compose up -d --build --wait agentd
+compose run --rm --no-deps -T agentd organization create --id org_perf >/dev/null
 API_KEY=$(compose run --rm --no-deps -T agentd keys create --org org_perf --workspace wrkspc_perf --name perf)
 compose --profile run run --rm k6

@@ -38,7 +38,7 @@ impl PgMemoryStore {
     }
 
     fn blob_key(ws: &WorkspaceId, store: &MemoryStoreId, version: &MemoryVersionId) -> String {
-        format!("memory/{}/{}/{}", ws.as_str(), store.as_str(), version.as_str())
+        super::blob_keys::memory_version(ws.as_str(), store.as_str(), version.as_str())
     }
 
     async fn require_store(&self, ws: &WorkspaceId, store: &MemoryStoreId) -> Result<(), StoreError> {

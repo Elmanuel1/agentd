@@ -116,7 +116,7 @@ impl EnvironmentKeysStore for PgEnvironmentKeysStore {
             })
             .execute(&mut conn)
             .await
-            .map_err(diesel_be)?;
+            .map_err(|e| super::api_keys::insert_error(e, &key.org))?;
         Ok(())
     }
 

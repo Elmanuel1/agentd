@@ -35,10 +35,8 @@ impl PgSkillsStore {
         Self { backend, blobs }
     }
 
-    /// A bundle's object key, by the version's id: two versions numbered in
-    /// the same microsecond still get their own objects.
     pub(crate) fn key(ws: &WorkspaceId, id: &SkillId, version_id: &str) -> String {
-        format!("skills/{}/{}/{version_id}", ws.as_str(), id.as_str())
+        super::blob_keys::skill_version(ws.as_str(), id.as_str(), version_id)
     }
 }
 

@@ -1,7 +1,7 @@
 # Operations
 
 How to run agentd and what to watch. Every setting is in `configuration.md`; every metric, span and log line in
-`observability.md`; resource history's runbooks in `history.md`. agentd exports metrics over OTLP and chooses no
+`observability.md`; the change feed's records and slot runbook in `history.md`. agentd exports metrics over OTLP and chooses no
 monitoring backend: the alarms below are for whatever backend the deployment runs.
 
 ## Roles
@@ -14,7 +14,14 @@ One binary serves three roles, chosen with `AGENTD_ROLE`:
 | `loop` | loop workers only; every route answers 404 | `agentd.loop.steps_due` |
 | `all` | both, for a single replica or a small deployment | either |
 
-Every role runs the fire workers and the change feed's handlers (schedules, webhooks, history), and either ticks
+Once an hour, one replica (under the advisory lock `cleanup_sweep`) removes every secret no `credentials` row
+names and every blob no `files`, `skill_versions` or `memory_versions` row names, leaving anything written in the
+last 24 hours and any key not in the form agentd writes (a typed id for each vault, credential, file, skill,
+memory store and version): it retries a removal that failed after a delete committed. The first run is an hour
+after the process starts. Each run logs `sweep: removed the secrets
+and blobs no row names` at `INFO` with the counts, and a failed run `warn`s and is tried again the next hour.
+
+Every role runs the fire workers and the change feed's handlers (schedules, webhooks), and either ticks
 the built-in scheduler (`AGENTD_SCHEDULER=postgres`) or runs agentd's Temporal worker (`temporal`). Replicas hold nothing between requests or steps, so any number of each role run side by side
 and any one of them can stop at any time.
 
@@ -47,9 +54,8 @@ A `self_hosted` environment's tools run on the customer's worker (`ant beta:work
 | `agentd.loop.mcp_calls` with outcome `unreachable` | above 10% for 15 minutes | MCP servers fail: usually one tenant's server; check the `session.error` events and the `is_error` `agent.mcp_tool_result` events for its name |
 | `http.server.request.duration` 5xx ratio | above 1% for 5 minutes | the API fails: read the `request failed` log lines and their spans |
 | `db.client.connection.pending_requests` | above 0 for 5 minutes | the pool is saturated: raise `AGENTD_DB_POOL_SIZE` or add replicas within the database's connection limit |
-| Slot, Debezium health, feed backlog | as `configuration.md`'s change feed section says | the change feed stalls: schedules, webhooks and history wait until it moves again |
-| `agentd.feed.slot.lost` | 1, or absent from every replica for 5 minutes | the slot is invalidated (`wal_status = 'lost'`) and history has a gap: re-baseline as `history.md` says ("After a lost slot"). A slot that does not exist yet, on a new deployment, is no gap only if nothing committed before Debezium Server first made it. Absent: no replica can read the slot |
-| `agentd.history.apply_delay` p99 | over 5 minutes | history lags its commits: check the feed backlog and the `history:` log lines |
+| Slot, Debezium health, feed backlog | as `configuration.md`'s change feed section says | the change feed stalls: schedules and webhooks wait until it moves again |
+| `agentd.feed.slot.lost` | 1, or absent from every replica for 5 minutes | the slot is invalidated (`wal_status = 'lost'`) and the feed has a gap: follow `history.md` ("After a lost slot"). A slot that does not exist yet, on a new deployment, is no gap only if nothing committed before Debezium Server first made it. Absent: no replica can read the slot |
 | `webhook_deliveries` rows with `dropped_at` set | any for a configured endpoint | an endpoint refused three attempts: check the endpoint and its secret |
 | `agentd.retention.last_success` | older than 15 minutes while retention is set | retention stopped: read its `warn` lines |
 | `agentd.scheduler.fires.due` (max across replicas) | above 0 for 5 minutes | due fires wait: the workers are failing or behind; read the `fires:` log lines and `agentd.scheduler.fires` with outcome `retried` |

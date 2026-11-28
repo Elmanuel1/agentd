@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -27,7 +29,9 @@ fn enabled() -> bool {
 async fn backend() -> PgBackend {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
-    PgBackend::connect(&url).await.unwrap()
+    let pg = PgBackend::connect(&url).await.unwrap();
+    org::ensure(&pg, "org_w").await;
+    pg
 }
 
 fn uniq_ws(tag: &str) -> WorkspaceId {

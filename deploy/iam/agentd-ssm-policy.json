@@ -31,6 +31,15 @@
       }
     },
     {
+      "Sid": "ListUnderThePrefixForTheCleanupSweep",
+      "Effect": "Allow",
+      "Action": "ssm:GetParametersByPath",
+      "Resource": [
+        "arn:aws:ssm:*:*:parameter/PREFIX",
+        "arn:aws:ssm:*:*:parameter/PREFIX/*"
+      ]
+    },
+    {
       "Sid": "CheckTheKeyAtBoot",
       "Effect": "Allow",
       "Action": "kms:DescribeKey",

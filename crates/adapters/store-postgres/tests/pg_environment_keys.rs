@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::sync::Arc;
 
 use ::api_keys::EnvironmentKeysService;
@@ -23,6 +25,7 @@ async fn only_the_digest_is_stored_and_a_key_resolves_to_its_environment_until_r
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
     let pg = PgBackend::connect(&url).await.unwrap();
+    org::ensure(&pg, "org_env").await;
     let keys = EnvironmentKeysService::new(
         Arc::new(PgEnvironmentKeysStore::new(pg.clone())),
         Arc::new(PepperRing::single(KeyPepper::new(&[7; 32]))),

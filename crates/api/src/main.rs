@@ -33,13 +33,17 @@ async fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "environment-keys" => {
             return api::cli::environment_keys::environment_keys(&config, rest).await;
         }
+        Some((cmd, rest)) if cmd == "organization" => {
+            return api::cli::organization::organization(&config, rest).await;
+        }
         Some((cmd, rest)) if cmd == "vault-secrets" => {
             return api::cli::vault_secrets::vault_secrets(&config, rest).await;
         }
         Some(_) => {
             let cli = api::cli::USAGE;
             let (env, vault) = (api::cli::environment_keys::USAGE, api::cli::vault_secrets::USAGE);
-            eprintln!("{cli}\n{env}\n{vault}");
+            let org = api::cli::organization::USAGE;
+            eprintln!("{org}\n{cli}\n{env}\n{vault}");
             return ExitCode::FAILURE;
         }
     }

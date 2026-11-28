@@ -62,6 +62,19 @@ pub(crate) fn parameter_name(prefix: &str, key: &SecretKey) -> String {
     format!("/{prefix}/{key}")
 }
 
+/// The key a listed secret or parameter `name` under `under` holds, and when it was written; none for
+/// a name that is not one of agentd's keys.
+pub(crate) fn stored(
+    name: Option<&str>,
+    under: &str,
+    written: Option<&aws_smithy_types::DateTime>,
+) -> Option<shared::ports::secrets::Stored<SecretKey>> {
+    let key = name?.strip_prefix(under)?.parse().ok()?;
+    let written = written?;
+    let written_at = shared::Timestamp::from_unix(written.secs(), written.subsec_nanos())?;
+    Some(shared::ports::secrets::Stored { key, written_at })
+}
+
 /// The tags a created secret carries: what the IAM policy's conditions and an
 /// operator's inventory read.
 pub(crate) fn tags(key: &SecretKey) -> Vec<Tag> {
@@ -91,6 +104,18 @@ mod tests {
     fn a_name_is_the_prefix_then_the_key() {
         let key = SecretKey::new("wrkspc_01a", "vlt_01b", "cred_01c").unwrap();
         assert_eq!(secret_name("agentd/prod", &key), "agentd/prod/wrkspc_01a/vlt_01b/cred_01c");
+    }
+
+    #[test]
+    fn a_listed_name_reads_back_as_its_key_and_others_are_passed_over() {
+        let at = aws_smithy_types::DateTime::from_secs(1_700_000_000);
+        let read =
+            stored(Some("agentd/prod/wrkspc_01a/vlt_01b/cred_01c"), "agentd/prod/", Some(&at)).unwrap();
+        assert_eq!(read.key, SecretKey::new("wrkspc_01a", "vlt_01b", "cred_01c").unwrap());
+        assert_eq!(read.written_at.as_datetime().timestamp(), 1_700_000_000);
+        assert!(stored(Some("other/wrkspc_01a/vlt_01b/cred_01c"), "agentd/prod/", Some(&at)).is_none());
+        assert!(stored(Some("agentd/prod/not-a-key"), "agentd/prod/", Some(&at)).is_none());
+        assert!(stored(Some("agentd/prod/wrkspc_01a/vlt_01b/cred_01c"), "agentd/prod/", None).is_none());
     }
 
     #[test]

@@ -68,7 +68,7 @@ impl NativeDeploymentsStore for PgDeploymentsStore {
         let mut conn = self.backend.diesel.write().await.map_err(pool_be)?;
         conn.transaction::<_, diesel::result::Error, _>(async move |c| {
             diesel::insert_into(deployments::table).values(row).execute(c).await?;
-            outbox::record(c, schedule).await
+            outbox::record(c, std::slice::from_ref(schedule)).await
         })
         .await
         .map_err(diesel_be)
@@ -113,7 +113,7 @@ impl NativeDeploymentsStore for PgDeploymentsStore {
                 .execute(c)
                 .await?;
                 if let Some(change) = schedule.filter(|_| affected > 0) {
-                    outbox::record(c, change).await?;
+                    outbox::record(c, std::slice::from_ref(change)).await?;
                 }
                 Ok(affected > 0)
             })

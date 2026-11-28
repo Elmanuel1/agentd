@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{Duration, SubsecRound};
@@ -22,8 +24,12 @@ async fn store() -> PgWorkspacesStore {
 }
 
 // The tag keeps tests that start in the same microsecond in separate orgs.
-fn org(tag: &str) -> OrgId {
-    OrgId::new(format!("org_w{tag}{}", Timestamp::now().as_datetime().timestamp_micros()))
+async fn org(tag: &str) -> OrgId {
+    let id = format!("org_w{tag}{}", Timestamp::now().as_datetime().timestamp_micros());
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
+    org::ensure(&PgBackend::connect(&url).await.unwrap(), &id).await;
+    OrgId::new(id)
 }
 
 fn workspace(n: i64) -> Workspace {
@@ -58,7 +64,7 @@ async fn a_workspace_is_seen_only_in_its_org_and_replaced_whole() {
     if !enabled() {
         return;
     }
-    let (store, org) = (store().await, org("get"));
+    let (store, org) = (store().await, org("get").await);
     let mut ws = workspace(1);
     store.insert(&org, &ws).await.unwrap();
     assert_eq!(store.get(&org, &ws.id).await.unwrap(), ws);
@@ -74,7 +80,7 @@ async fn a_list_pages_newest_first_both_ways_and_hides_archived_ones() {
     if !enabled() {
         return;
     }
-    let (store, org) = (store().await, org("list"));
+    let (store, org) = (store().await, org("list").await);
     for n in 1..=5 {
         store.insert(&org, &workspace(n)).await.unwrap();
     }

@@ -1,4 +1,4 @@
-//! The slot and history metrics' source: the change feed's slot as Postgres
+//! The `agentd.feed.*` metrics' source: the change feed's slot as Postgres
 //! reports it. Gated by `AGENTD_PG_TESTS=1` + `DATABASE_URL`; the live slot
 //! also needs `AGENTD_CDC_TESTS=1` and a running Debezium Server.
 

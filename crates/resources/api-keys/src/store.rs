@@ -9,6 +9,9 @@ use crate::types::{AdminKey, ApiKey, EnvironmentKey};
 /// Store-level errors.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StoreError {
+    /// No organization has the key's org id.
+    #[error("no organization {0}")]
+    UnknownOrganization(String),
     /// The backing store failed (infrastructure error).
     #[error("store backend: {0}")]
     Backend(#[source] shared::BackendError),

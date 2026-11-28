@@ -50,6 +50,15 @@ impl ChangeFeed {
         }
     }
 
+    /// Keep the streams of `tables`, which no agentd handler reads, from growing without bound;
+    /// Kafka's topics keep their own retention.
+    pub(crate) fn trim_unread(&self, tables: &[String]) {
+        match self {
+            Self::Valkey(feed) => feed.trim_unread(tables),
+            Self::Kafka(_) => {}
+        }
+    }
+
     /// Run an external scheduler's fires.
     pub(crate) fn spawn_fires(&self, fires: Arc<FireRegistry>) -> JoinHandle<()> {
         match self {

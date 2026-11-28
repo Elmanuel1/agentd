@@ -25,6 +25,11 @@ impl Timestamp {
         Self(dt)
     }
 
+    /// The instant `secs` seconds and `nanos` nanoseconds after the Unix epoch; `None` out of range.
+    pub fn from_unix(secs: i64, nanos: u32) -> Option<Self> {
+        DateTime::from_timestamp(secs, nanos).map(Self)
+    }
+
     /// The underlying chrono instant.
     pub fn as_datetime(&self) -> DateTime<Utc> {
         self.0

@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+mod org;
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -21,7 +23,9 @@ fn enabled() -> bool {
 async fn store() -> PgWorkStore {
     let url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://agentd:agentd@localhost:5432/agentd".into());
-    PgWorkStore::new(PgBackend::connect(&url).await.unwrap())
+    let pg = PgBackend::connect(&url).await.unwrap();
+    org::ensure(&pg, "org_w").await;
+    PgWorkStore::new(pg)
 }
 
 fn stamp() -> String {

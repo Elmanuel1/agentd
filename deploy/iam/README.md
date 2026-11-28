@@ -45,6 +45,8 @@ region and account is tighter and loses nothing.
     `ResourceNotFound` (a gone secret is already deleted).
   - `PutSecretValue` and `RestoreSecret`, which only touch existing secrets,
     on `PREFIX/` secrets tagged `managed-by=agentd`.
+  - `ListSecrets` on `*`, which AWS cannot scope to a name, for the cleanup
+    sweep: it lists the `PREFIX/` secrets and deletes those no credential names.
   - No delete without a recovery window.
   - `kms:DescribeKey` on the key, for the check at boot.
   - `kms:Encrypt`, `kms:Decrypt` and `kms:GenerateDataKey` on the key only
@@ -55,6 +57,8 @@ region and account is tighter and loses nothing.
   - `PutParameter`, `GetParameter` and `DeleteParameter` on `/PREFIX/`
     parameters, scoped by name only for the reason above. An overwrite
     carries no tags, so `PutParameter` takes no tag condition.
+  - `GetParametersByPath` on `/PREFIX` and below, without decryption, for the
+    cleanup sweep.
   - `AddTagsToResource` on `/PREFIX/` parameters, only with the
     `managed-by=agentd` tag and agentd's tag keys: the tags a parameter gets
     at create, which the store adds again after every overwrite.

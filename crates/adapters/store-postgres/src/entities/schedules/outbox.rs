@@ -7,27 +7,37 @@ use shared::BackendError;
 use std::sync::Arc;
 
 use diesel::QueryableByName;
-use diesel::sql_types::{BigInt, Jsonb, Text};
+use diesel::sql_types::{Array, BigInt, Jsonb, Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use shared::ports::changes::{Change, ChangeOp, NativeChangeHandler, Source};
 use shared::ports::{ScheduleChange, SchedulerError, SchedulerPort};
 
-/// Record `change` in the transaction on `c`.
+/// Record `changes`, in order, in the transaction on `c`.
 pub(crate) async fn record(
     c: &mut AsyncPgConnection,
-    change: &ScheduleChange,
+    changes: &[ScheduleChange],
 ) -> Result<(), diesel::result::Error> {
-    let doc =
-        serde_json::to_value(change).map_err(|e| diesel::result::Error::SerializationError(e.into()))?;
-    // Two statements: a DELETE in the INSERT's own statement cannot see the row.
-    let added: Added =
-        diesel::sql_query("INSERT INTO schedule_outbox (target, change) VALUES ($1, $2) RETURNING seq")
-            .bind::<Text, _>(change.target().key())
-            .bind::<Jsonb, _>(doc)
-            .get_result(c)
-            .await?;
-    diesel::sql_query("DELETE FROM schedule_outbox WHERE seq = $1")
-        .bind::<BigInt, _>(added.seq)
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let targets: Vec<String> = changes.iter().map(|change| change.target().key()).collect();
+    let docs = changes
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| diesel::result::Error::SerializationError(e.into()))?;
+    // Two statements: a DELETE in the INSERT's own statement cannot see the rows.
+    let added: Vec<Added> = diesel::sql_query(
+        "INSERT INTO schedule_outbox (target, change)
+         SELECT target, change FROM unnest($1::text[], $2::jsonb[]) AS c(target, change) RETURNING seq",
+    )
+    .bind::<Array<Text>, _>(targets)
+    .bind::<Array<Jsonb>, _>(docs)
+    .load(c)
+    .await?;
+    let seqs: Vec<i64> = added.into_iter().map(|a| a.seq).collect();
+    diesel::sql_query("DELETE FROM schedule_outbox WHERE seq = ANY($1)")
+        .bind::<Array<BigInt>, _>(seqs)
         .execute(c)
         .await
         .map(drop)

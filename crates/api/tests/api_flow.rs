@@ -14,8 +14,9 @@ use blobs_s3::{BlobStore, S3BlobStore, S3Config};
 use http_body_util::BodyExt;
 use shared::ports::fire::FireRegistry;
 
+use organizations::registry::OrganizationsStore;
 use shared::Timestamp;
-use store_postgres::{PgBackend, PgFireClaims};
+use store_postgres::{PgBackend, PgFireClaims, PgOrganizationsStore};
 use tower::ServiceExt;
 
 const KEY: &str = "test-key-workspace-a";
@@ -39,6 +40,7 @@ async fn app() -> Option<Router> {
     let blobs: Arc<dyn BlobStore> = Arc::new(S3BlobStore::connect(&s3_config(bucket)).await.unwrap());
     let stamp = unique_stamp();
     let org = format!("org_t{stamp}");
+    PgOrganizationsStore::new(backend.clone()).create(&shared::OrgId::new(&org)).await.unwrap();
     let mut keys = StaticKeySource::default();
     keys.register(KEY, &org, &format!("wrkspc_a{stamp}"), "apikey_01a");
     keys.register(KEY_B, &org, &format!("wrkspc_b{stamp}"), "apikey_01b");

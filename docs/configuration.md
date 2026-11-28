@@ -39,7 +39,7 @@ fakes in test code, never from configuration ([Security](#security)).
 | `AGENTD_EVENT_RETENTION_DAYS` | unset (events kept) | Archived sessions lose their events this many days after archiving. Every 5 minutes one replica deletes them, walking an hour back from the cutoff (a process's first run walks from the oldest); `agentd.retention.last_success` records each run |
 | `AGENTD_DB_POOL_SIZE` | `10` | Postgres connections per replica |
 | `AGENTD_DB_POOL_WAIT_MS` | `5000` | Longest wait for a free connection, and for opening or recycling one; past it the request fails instead of queueing |
-| `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in |
+| `AGENTD_BLOB_BUCKET` | `agentd-artifacts` | The bucket every blob lives in. It belongs to one agentd database and holds only its blobs: the cleanup sweep removes an object no row names, and it lists the bucket (`s3:ListBucket`) |
 | `AGENTD_S3_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Bucket region |
 | `AGENTD_AWS_ENDPOINT` | unset (AWS S3) | Custom S3 endpoint (MinIO, LocalStack): `https://` to any host, or `http://` only to a loopback address, `localhost` or a single-label container name |
 | `AGENTD_S3_PATH_STYLE` | `1` with a custom endpoint, else `0` | Path-style bucket addressing |
@@ -288,7 +288,7 @@ salt and names the master key's id; the master keys themselves are
 only in `AGENTD_SECRET_KEYS`, never in the database, a log or an error. A put,
 a read and a delete are one statement each, on the primary. A row that does
 not open (its key left the ring, or the row was altered) is an error, logged
-at `ERROR`. The table is not on the change feed and keeps no history.
+at `ERROR`. The table is not on the change feed.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -364,7 +364,7 @@ Parameter Store's limits, as AWS states them:
 | Variable | Default | Meaning |
 |---|---|---|
 | `AGENTD_SECRETS_KMS_KEY_ID` | required for `aws_sm` and `aws_ssm` | The customer-managed KMS key: key id, key ARN, alias name or alias ARN. At boot `kms:DescribeKey` must show it reachable, customer managed, enabled and symmetric, or agentd does not start. An AWS managed key (`aws/secretsmanager`, `aws/ssm`) is refused |
-| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters |
+| `AGENTD_SECRETS_PREFIX` | `agentd` | The first segments of every name: `/`-separated segments of ASCII letters, digits and `_`, at most 128 characters. It belongs to one agentd database: the cleanup sweep removes a secret under it that no credential names |
 | `AGENTD_SECRETS_REGION` | `AWS_REGION`, `AWS_DEFAULT_REGION` or the profile's, else `us-east-1` | Region |
 | `AGENTD_SECRETS_ENDPOINT` | unset (AWS) | Custom endpoint for Secrets Manager or SSM, and KMS (LocalStack), under the same rule as `AGENTD_AWS_ENDPOINT` |
 | `AGENTD_SECRETS_ROLE_ARN` | unset | Role to assume with the default-chain credentials |
@@ -452,6 +452,15 @@ digests alone verify nothing. With 512 bits of entropy a key cannot be guessed, 
 hash such as argon2id would only add cost to every request. Nothing is
 cached, so a revoke holds from the next request.
 
+- **Organizations** are rows of the Postgres `organizations` table, made by
+  `agentd organization create`, which prints the id given with `--id` or a
+  generated `org_…` one. Every workspace, environment, key and work item names
+  an existing organization: a key create for an unknown one fails and names it.
+  `agentd organization delete` removes the organization and everything it owns
+  in one transaction (its workspaces' rows, its environments and keys), writes a
+  schedule delete for each deployment not archived, then removes the secrets,
+  blobs and dream schedules those rows named; it prints each one it could not
+  remove and exits with failure.
 - **Workspace keys** (`sk-ant-api03-…`, `apikey_…`) act for one org and one
   workspace. Each is a row in the Postgres `api_keys` table: its digest under
   a unique index, its id, org, workspace, name, partial key hint, and the time
@@ -476,6 +485,8 @@ cached, so a revoke holds from the next request.
   its id, org, name, partial key hint, and the time it was created and revoked.
 
 ```bash
+agentd organization create [--id <org_id>]                                    # prints the new org id, on stdout
+agentd organization delete <org_id>                                           # removes the org and everything it owns
 agentd keys create --org <org_id> --workspace <workspace_id> [--name <name>]   # prints the key once, on stdout
 agentd keys list                                                              # id, org, workspace, status, hint, created, name
 agentd keys revoke <apikey_id>
@@ -696,7 +707,7 @@ In production:
 - **Postgres** runs with `wal_level=logical` (on RDS and Aurora, the parameter
   `rds.logical_replication=1`, then a reboot) and `max_slot_wal_keep_size` sized as `docs/history.md` says
   ("WAL sizing"), so a stalled slot cannot fill the disk. A slot past that size is invalidated and the changes
-  in it are lost, to the feed's handlers and to history.
+  in it are lost to the feed's handlers.
 - **Debezium's role** has `REPLICATION` (on RDS, `GRANT rds_replication`),
   `SELECT` on the captured tables, and `CREATE` on the schema for its offsets
   table. The publication is made once by the tables' owner,

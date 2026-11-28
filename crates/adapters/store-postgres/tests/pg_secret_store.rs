@@ -268,3 +268,41 @@ async fn vault_secrets_is_off_the_change_feed_and_history() {
     let include = properties.lines().find(|l| l.starts_with("debezium.source.table.include.list=")).unwrap();
     assert!(!include.contains("vault_secrets"), "{include}");
 }
+
+#[tokio::test]
+async fn a_listing_carries_each_secret_s_last_write() {
+    let Some(url) = url() else { return };
+    let store = store(&url, &format!("k1:{K1}")).await;
+    let key = SecretKey::new(&workspace("list"), "vlt_a", "vcrd_a").unwrap();
+    let written = |all: Vec<shared::ports::secrets::Stored<SecretKey>>| {
+        all.into_iter().find(|s| s.key == key).map(|s| s.written_at)
+    };
+    store.put(&key, &secret("one")).await.unwrap();
+    let first = written(test_support::all_pages(&store).await.unwrap()).unwrap();
+    store.put(&key, &secret("two")).await.unwrap();
+    let second = written(test_support::all_pages(&store).await.unwrap()).unwrap();
+    assert!(second > first, "an overwrite moves the write time");
+    store.delete(&key).await.unwrap();
+    assert_eq!(written(test_support::all_pages(&store).await.unwrap()), None);
+}
+
+#[tokio::test]
+async fn a_listing_reads_every_page_once() {
+    let Some(url) = url() else { return };
+    let store = store(&url, &format!("k1:{K1}")).await;
+    let ws = workspace("pages");
+    let mut keys: Vec<String> = Vec::new();
+    for n in 0..1001 {
+        let key = SecretKey::new(&ws, "vlt_a", &format!("vcrd_{n:04}")).unwrap();
+        store.put(&key, &secret("s")).await.unwrap();
+        keys.push(key.to_string());
+    }
+    let listed: Vec<String> = test_support::all_pages(&store)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.key.to_string())
+        .filter(|k| k.starts_with(&format!("{ws}/")))
+        .collect();
+    assert_eq!(listed, keys, "past the 1000-row page, in key order, each once");
+}

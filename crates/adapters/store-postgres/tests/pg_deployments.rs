@@ -4,6 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use agents::Agent;
@@ -26,8 +27,15 @@ async fn backend() -> PgBackend {
     PgBackend::connect(&url).await.unwrap()
 }
 
+// Tests here run in parallel: the counter keeps two that start in the same microsecond in separate workspaces.
+static SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn tenant() -> AuthContext {
-    let stamp = Timestamp::now().as_datetime().timestamp_micros();
+    let stamp = format!(
+        "{}_{}",
+        Timestamp::now().as_datetime().timestamp_micros(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     AuthContext {
         org: OrgId::new(format!("org_dw{stamp}")),
         workspace: WorkspaceId::new(format!("wrkspc_dw{stamp}")),
