@@ -23,7 +23,7 @@ impl SessionsService {
         }
         let appended =
             self.events.append_events(&ctx.workspace, &session.id, &out, Wake::Step, Append::Always);
-        appended.await.map_err(map_store)?;
+        appended.await.map_err(map_store(&session.id))?;
         self.publish(&ctx.workspace, &session.id).await;
         Ok(out)
     }
@@ -39,7 +39,12 @@ impl SessionsService {
         }
         let (ws, id) = (&ctx.workspace, &session.id);
         let events = queued(initial.to_vec());
-        if self.events.append_events(ws, id, &events, Wake::Step, Append::IfEmpty).await.map_err(map_store)? {
+        if self
+            .events
+            .append_events(ws, id, &events, Wake::Step, Append::IfEmpty)
+            .await
+            .map_err(map_store(id))?
+        {
             self.publish(ws, id).await;
         }
         Ok(())
@@ -52,8 +57,7 @@ impl SessionsService {
         environment: Option<&str>,
         payloads: &[EventPayload],
     ) -> Result<Session, ApiError> {
-        let id = parse_id(raw_id)?;
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
+        let session = self.get(ctx, raw_id).await?.seen_from(environment)?;
         session.takes_events()?;
         validate_sendable("events", payloads)?;
         self.guard_waiting(&ctx.workspace, &session, payloads).await?;
@@ -70,7 +74,7 @@ impl SessionsService {
         page: &Pagination,
     ) -> Result<Vec<Event>, ApiError> {
         let id = parse_id(raw_id)?;
-        self.list_reads.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store)
+        self.list_reads.events_page(&ctx.workspace, &id, filter, page).await.map_err(map_store(&id))
     }
 }
 

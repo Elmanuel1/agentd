@@ -35,7 +35,7 @@ impl SessionsService {
             .events
             .events_page(ws, &session.id, &filter, &Pagination { limit: 1, offset: 0 })
             .await
-            .map_err(map_store)?;
+            .map_err(map_store(&session.id))?;
         // The page holds one more than its limit: only the newest idle counts.
         let waiting = last.into_iter().next().and_then(|e| match e.payload {
             EventPayload::Session(SessionEvent::StatusIdle {
@@ -103,7 +103,7 @@ impl SessionsService {
         self.events
             .append_answers(&ctx.workspace, &id, &ids, &events, &check, Wake::Step)
             .await
-            .map_err(map_store)??;
+            .map_err(map_store(&id))??;
         self.publish(&ctx.workspace, &id).await;
         Ok(events)
     }

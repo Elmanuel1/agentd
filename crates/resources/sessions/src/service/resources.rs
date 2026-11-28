@@ -3,7 +3,7 @@
 
 use shared::{ApiError, AuthContext, Timestamp};
 
-use super::{SessionsService, map_store, parse_id};
+use super::{SessionsService, map_store};
 use crate::types::{Session, SessionResource, SessionResourceId, SessionResourceInput};
 
 impl SessionsService {
@@ -89,13 +89,12 @@ impl SessionsService {
         raw_id: &str,
         f: impl FnOnce(&mut Session) -> Result<T, ApiError>,
     ) -> Result<T, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let mut session = self.get(ctx, raw_id).await?;
         let read = session.clone();
         session.writable()?;
         let out = f(&mut session)?;
         session.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, &read, session, &[]).await.map_err(map_store)?;
+        self.store.replace(&ctx.workspace, &read, session, &[]).await.map_err(map_store(&read.id))?;
         Ok(out)
     }
 }

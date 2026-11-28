@@ -15,7 +15,7 @@ use shared::ApiError;
 use shared::limits::ModelCatalog;
 
 use crate::store::{SessionEventLog, SessionEventReads, SessionsStore, StoreError};
-use crate::types::SessionId;
+use crate::types::{SessionId, not_found};
 
 mod egress;
 mod events;
@@ -111,9 +111,9 @@ fn parse_id(raw: &str) -> Result<SessionId, ApiError> {
     SessionId::parse(raw).map_err(|e| ApiError::invalid_request(e.to_string()))
 }
 
-fn map_store(e: StoreError) -> ApiError {
-    match e {
-        StoreError::NotFound => ApiError::not_found("session not found"),
+fn map_store(id: &SessionId) -> impl Fn(StoreError) -> ApiError + '_ {
+    move |e| match e {
+        StoreError::NotFound => not_found(id.as_str()),
         StoreError::Conflict => {
             ApiError::conflict_invalid_request("the session changed while this request ran; retry it")
         }

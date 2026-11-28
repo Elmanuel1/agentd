@@ -99,7 +99,7 @@ async fn runtime_key(items: &dyn WorkReads, mut req: Request, next: Next) -> Res
         Err(e) => return wire_response(&ApiError::internal(e.to_string())),
     };
     if item.is_none() && path.starts_with("/v1/sessions/") {
-        return wire_response(&ApiError::not_found("session not found"));
+        return wire_response(&sessions::types::not_found(session));
     }
     let Some(item) = item else { return wire_response(&ApiError::not_found("work not found")) };
     let ctx = runtime_ctx(item.org, item.workspace);

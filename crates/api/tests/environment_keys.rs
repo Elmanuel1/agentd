@@ -143,12 +143,17 @@ async fn an_environment_key_reaches_its_environment_s_sessions_only() {
     let (mine, theirs) = (rig.session(&env, json!({})).await, rig.session(&other, json!({})).await);
     let (st, _) = rig.call("GET", &format!("/v1/sessions/{mine}"), Auth::Bearer(&key), None).await;
     assert_eq!(st, StatusCode::OK);
-    // W-17.
-    for path in [format!("/v1/sessions/{theirs}"), format!("/v1/sessions/{theirs}/events")] {
+    // W-17, with live's message (AG-1).
+    let not_found = json!({"message": format!("Session not found: {theirs}"), "type": "not_found_error"});
+    for path in [
+        format!("/v1/sessions/{theirs}"),
+        format!("/v1/sessions/{theirs}/events"),
+        format!("/v1/sessions/{theirs}/events/stream"),
+    ] {
         let (st, body) = rig.call("GET", &path, Auth::Bearer(&key), None).await;
-        assert_eq!(st, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!((st, &body["error"]), (StatusCode::NOT_FOUND, &not_found), "{path}: {body}");
     }
-    let (st, _) = rig
+    let (st, body) = rig
         .call(
             "POST",
             &format!("/v1/sessions/{theirs}/events"),
@@ -156,7 +161,7 @@ async fn an_environment_key_reaches_its_environment_s_sessions_only() {
             Some(json!({"events": []})),
         )
         .await;
-    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!((st, &body["error"]), (StatusCode::NOT_FOUND, &not_found));
     // W-16: the environment itself, one work item, another queue.
     for path in [
         format!("/v1/environments/{env}"),

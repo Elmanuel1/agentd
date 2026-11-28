@@ -11,7 +11,7 @@ use shared::{ApiError, AuthContext, ErrorType, WorkspaceId};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Notify, broadcast};
 
-use super::{SessionsService, map_store, parse_id};
+use super::{SessionsService, map_store};
 use crate::events::Event;
 use crate::signals::{LocalSignals, Signal, Signals};
 use crate::store::DatabaseLoad;
@@ -79,11 +79,11 @@ impl SessionsService {
         raw_id: &str,
         environment: Option<&str>,
     ) -> Result<Subscription, ApiError> {
-        let id = parse_id(raw_id)?;
         if self.streams.load.overloaded() {
             return Err(ApiError::of(ErrorType::Overloaded, "the database is overloaded; retry the stream"));
         }
-        let session = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?.seen_from(environment)?;
+        let session = self.get(ctx, raw_id).await?.seen_from(environment)?;
+        let id = session.id.clone();
         self.streams.listening.call_once(|| {
             let rx = self.streams.signals.subscribe();
             tokio::spawn(wake_tails(rx, Arc::downgrade(&self.streams.tails)));
@@ -114,7 +114,7 @@ impl SessionsService {
                 if listed(&map, &id, &tail.wake) {
                     map.remove(&id);
                 }
-                return Err(map_store(e));
+                return Err(map_store(&id)(e));
             }
         };
         let follow = Follow {

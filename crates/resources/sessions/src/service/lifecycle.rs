@@ -4,7 +4,7 @@ use shared::{ApiError, AuthContext, Pagination, Timestamp, Usage};
 
 use super::egress::{FireRefusal, check_mcp_egress};
 use super::events::validate_sendable;
-use super::{SessionsService, map_store, parse_id};
+use super::{SessionsService, map_store, not_found, parse_id};
 use crate::events::{EventPayload, UserEvent};
 use crate::store::{SessionFilter, StoreError};
 use crate::types::{
@@ -87,11 +87,11 @@ impl SessionsService {
             // the work item is that session's, so it stays queued (DS-20).
             Err(StoreError::Conflict) if requested => {
                 let made = self.made(ctx, Some(&session.id), &initial).await?;
-                return made.ok_or_else(|| map_store(StoreError::NotFound).into());
+                return made.ok_or_else(|| not_found(session.id.as_str()).into());
             }
             Err(e) => {
                 self.end_work(&ctx.workspace, &session.id).await;
-                return Err(map_store(e).into());
+                return Err(map_store(&session.id)(e).into());
             }
             Ok(()) => {}
         }
@@ -109,7 +109,7 @@ impl SessionsService {
         let session = match self.store.get(&ctx.workspace, id).await {
             Ok(session) => session,
             Err(StoreError::NotFound) => return Ok(None),
-            Err(e) => return Err(map_store(e)),
+            Err(e) => return Err(map_store(id)(e)),
         };
         self.send_initial(ctx, &session, initial).await?;
         Ok(Some(session))
@@ -118,7 +118,7 @@ impl SessionsService {
     /// `GET /v1/sessions/{id}`.
     pub async fn get(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
         let id = parse_id(raw_id)?;
-        self.store.get(&ctx.workspace, &id).await.map_err(map_store)
+        self.store.get(&ctx.workspace, &id).await.map_err(map_store(&id))
     }
 
     /// `GET /v1/sessions`.
@@ -128,7 +128,7 @@ impl SessionsService {
         filter: &SessionFilter,
         page: &Pagination,
     ) -> Result<Vec<Session>, ApiError> {
-        self.store.list(&ctx.workspace, filter, page).await.map_err(map_store)
+        self.store.list(&ctx.workspace, filter, page).await.map_err(|e| ApiError::internal(e.to_string()))
     }
 
     /// `POST /v1/sessions/{id}`. A field left out keeps its value; the agent's
@@ -139,8 +139,7 @@ impl SessionsService {
         raw_id: &str,
         req: UpdateSessionRequest,
     ) -> Result<Session, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let mut s = self.get(ctx, raw_id).await?;
         let read = s.clone();
         s.writable()?;
         if req.vault_ids.is_some() {
@@ -159,14 +158,13 @@ impl SessionsService {
         }
         s.change_budget(req.budget)?;
         s.updated_at = Timestamp::now();
-        self.store.replace(&ctx.workspace, &read, s.clone(), &[]).await.map_err(map_store)?;
+        self.store.replace(&ctx.workspace, &read, s.clone(), &[]).await.map_err(map_store(&read.id))?;
         Ok(s)
     }
 
     /// `POST /v1/sessions/{id}/archive` — read-only afterwards.
     pub async fn archive(&self, ctx: &AuthContext, raw_id: &str) -> Result<Session, ApiError> {
-        let id = parse_id(raw_id)?;
-        let mut s = self.store.get(&ctx.workspace, &id).await.map_err(map_store)?;
+        let mut s = self.get(ctx, raw_id).await?;
         let read = s.clone();
         if s.status == SessionStatus::Running {
             // Documented race: cannot archive while running.
@@ -180,9 +178,12 @@ impl SessionsService {
             let kind = webhooks::EventKind::SessionTerminated;
             let deliveries =
                 self.webhooks.deliveries(ctx.org.as_str(), ctx.workspace.as_str(), kind, s.id.as_str());
-            self.store.replace(&ctx.workspace, &read, s.clone(), &deliveries).await.map_err(map_store)?;
+            self.store
+                .replace(&ctx.workspace, &read, s.clone(), &deliveries)
+                .await
+                .map_err(map_store(&read.id))?;
             // Every replica's streams of the session end.
-            self.publish(&ctx.workspace, &id).await;
+            self.publish(&ctx.workspace, &read.id).await;
         }
         Ok(s)
     }
@@ -194,7 +195,7 @@ impl SessionsService {
         let id = parse_id(raw_id)?;
         let deleted = self.store.delete(&ctx.workspace, &id).await.map_err(|e| match e {
             StoreError::Conflict => ApiError::conflict_invalid_request("cannot delete a running session"),
-            e => map_store(e),
+            e => map_store(&id)(e),
         })?;
         self.publish(&ctx.workspace, &id).await;
         // The session is gone, so no API reaches events left behind: they
