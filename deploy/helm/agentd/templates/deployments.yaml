@@ -1,0 +1,81 @@
+{{- range $role, $spec := .Values.roles }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $role }}
+  labels:
+    {{- include "agentd.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  replicas: {{ $spec.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $role }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentd.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $role }}
+        {{- with merge (deepCopy ($spec.podLabels | default dict)) $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ toJson $.Values.env | sha256sum }}
+        {{- with merge (deepCopy ($spec.podAnnotations | default dict)) $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $.Release.Name }}-{{ $role }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- include "agentd.scheduling" (dict "Values" $.Values "spec" $spec) | nindent 6 }}
+      securityContext:
+        {{- include "agentd.podSecurityContext" $ | nindent 8 }}
+      {{- with include "agentd.databaseCaVolume" $ }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agentd
+          image: {{ include "agentd.image" $.Values.image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AGENTD_ROLE
+              value: {{ $role }}
+            {{- include "agentd.databaseUrl" $ | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $.Release.Name }}
+            {{- range $.Values.envFromSecrets }}
+            - secretRef:
+                name: {{ .name }}
+                optional: {{ .optional | default false }}
+            {{- end }}
+          # agentd has no health route (live has none); a replica that listens is serving.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ $.Values.preStopSleepSeconds }}
+          resources:
+            {{- toYaml $spec.resources | nindent 12 }}
+          {{- with include "agentd.databaseCaMount" $ }}
+          volumeMounts:
+            {{- . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- include "agentd.securityContext" $ | nindent 12 }}
+{{- end }}

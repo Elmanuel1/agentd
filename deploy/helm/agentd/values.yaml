@@ -1,0 +1,113 @@
+# agentd's own workloads. The backing services (Postgres, Valkey, Kafka and Debezium Server, S3) are not part of
+# the chart: their addresses go in `env` and `database`, and every secret comes from a Secret named below.
+# docs/kubernetes.md has a quickstart; docs/configuration.md has every setting.
+
+# An image is pulled by `digest` (sha256:...) when one is set, else by `tag`. A digest pins exactly what runs.
+image:
+  repository: agentd
+  tag: dev
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Flyway 11 with crates/adapters/store-postgres/migrations (deploy/migrations.Dockerfile), run as a hook Job
+# before each install and upgrade rolls agentd out.
+migrations:
+  image:
+    repository: agentd-migrations
+    tag: dev
+    digest: ""
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    annotations: {}
+
+# One Deployment per role (AGENTD_ROLE). The Service sends traffic to `api` only: a `loop` replica answers 404.
+# Each role and the migrations run as their own ServiceAccount (`<release>-<role>`, `<release>-migrations`), whose
+# annotations bind a cloud role, for example `eks.amazonaws.com/role-arn` for IRSA.
+roles:
+  api:
+    replicas: 2
+    serviceAccount:
+      annotations: {}
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+  loop:
+    replicas: 2
+    serviceAccount:
+      annotations: {}
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { memory: 512Mi }
+
+service:
+  type: ClusterIP
+  port: 8080
+  # Set with `type: NodePort` to pin the node port.
+  nodePort: null
+
+# Postgres. The user and password come from a Secret made before the install (by hand, External Secrets,
+# Sealed Secrets, CloudNativePG), under the keys named here; the chart only reads it. The password holds no
+# single quote or backslash.
+database:
+  host: postgres
+  port: 5432
+  name: agentd
+  # libpq's sslmode: verify-full (TLS, checking the certificate's chain and host name), verify-ca, require,
+  # prefer or disable. agentd and the migrations honour it.
+  sslMode: verify-full
+  # The CA bundle that signs the server's certificate (for RDS, AWS's regional bundle), from a ConfigMap made
+  # before the install. Unset, the server's certificate is checked against the operating system's roots.
+  caBundle:
+    configMapName: ""
+    key: ca.pem
+  secretName: agentd-database
+  userKey: username
+  passwordKey: password
+
+# Plain settings, put in a ConfigMap. Required: AGENTD_API_BASE_URL and AGENTD_VALKEY_URL.
+env: {}
+
+# Secrets whose every key becomes an environment variable: the key rings (AGENTD_API_KEY_PEPPERS,
+# AGENTD_WORK_TOKEN_KEYS, AGENTD_PLACEHOLDER_KEYS, AGENTD_SECRET_KEYS, the same for every replica) and the model
+# keys (AGENTD_ANTHROPIC_API_KEY or AGENTD_OPENROUTER_API_KEY).
+envFromSecrets:
+  - name: agentd-keys
+  - name: agentd-model
+    optional: true
+
+# Labels and annotations on every pod (the migrations' pod takes the annotations), merged under each role's own
+# `podLabels` and `podAnnotations`, for example an autoscaler's do-not-disrupt annotation.
+podLabels: {}
+podAnnotations: {}
+
+# Where pods run, for every role and the migrations; a role (`roles.api.nodeSelector`, ...) or `migrations`
+# setting its own replaces the value here. For example, spot capacity for one node pool:
+#   nodeSelector: { node-pool: agentd, capacity-type: spot }
+#   tolerations: [{ key: spot, operator: Exists, effect: NoSchedule }]
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# SIGTERM drains requests for 10 s (crates/api/src/main.rs); the grace period leaves room for it.
+terminationGracePeriodSeconds: 30
+# Time for the Service to drop a stopping pod before it stops taking connections.
+preStopSleepSeconds: 5
+
+# A NetworkPolicy over every pod of the release, off by default: ingress on 8080 only, and egress only to DNS, the
+# backing services' ports and HTTPS outside the private ranges, so pods cannot reach the cloud metadata address or
+# other cluster services. Turn it on where the cluster's network plugin enforces NetworkPolicy.
+networkPolicy:
+  enabled: false
+  # Who may reach port 8080, as NetworkPolicy `from` peers; empty: any source.
+  ingressFrom: []
+  # The backing services' ports, to any address: Postgres, Valkey, Kafka (plain, TLS, SASL, IAM), Temporal and the
+  # OTLP collector.
+  servicePorts: [5432, 6379, 9092, 9093, 9094, 9096, 9098, 7233, 4317, 4318]
+  # HTTPS for the model APIs, S3, Secrets Manager, KMS and MCP servers.
+  https:
+    cidr: 0.0.0.0/0
+    except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+  # More egress rules, as NetworkPolicy writes them: for example HTTPS to AWS's endpoints inside the VPC.
+  extraEgress: []

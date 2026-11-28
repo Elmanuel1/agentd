@@ -1,0 +1,44 @@
+{{- with .Values.networkPolicy }}
+{{- if .enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}
+  labels:
+    {{- include "agentd.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: 8080
+      {{- with .ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    {{- with .servicePorts }}
+    - ports:
+        {{- range . }}
+        - port: {{ . }}
+        {{- end }}
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: {{ .https.cidr }}
+            {{- with .https.except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports:
+        - port: 443
+    {{- with .extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

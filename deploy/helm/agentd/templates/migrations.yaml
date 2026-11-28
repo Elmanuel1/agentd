@@ -1,0 +1,56 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-migrations
+  labels:
+    {{- include "agentd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrations
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "agentd.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrations
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-migrations
+      automountServiceAccountToken: false
+      {{- include "agentd.scheduling" (dict "Values" .Values "spec" .Values.migrations) | nindent 6 }}
+      securityContext:
+        {{- include "agentd.podSecurityContext" . | nindent 8 }}
+      volumes:
+        # Java's temporary files, under a read-only root filesystem.
+        - name: tmp
+          emptyDir: {}
+        {{- include "agentd.databaseCaVolume" . | nindent 8 }}
+      containers:
+        - name: flyway
+          image: {{ include "agentd.image" .Values.migrations.image | quote }}
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy }}
+          args: [migrate]
+          env:
+            {{- include "agentd.databaseCredentials" . | nindent 12 }}
+            - name: FLYWAY_URL
+              value: {{ include "agentd.flywayUrl" . | quote }}
+            - name: FLYWAY_USER
+              value: $(PGUSER)
+            - name: FLYWAY_PASSWORD
+              value: $(PGPASSWORD)
+            - name: FLYWAY_CONNECT_RETRIES
+              value: "20"
+            - name: FLYWAY_POSTGRESQL_TRANSACTIONAL_LOCK
+              value: "false"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- include "agentd.databaseCaMount" . | nindent 12 }}
+          securityContext:
+            {{- include "agentd.securityContext" . | nindent 12 }}

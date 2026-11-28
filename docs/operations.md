@@ -31,6 +31,7 @@ and any one of them can stop at any time.
   `AGENTD_SECRET_KEYS` on the Postgres store), a model provider key, `AGENTD_API_BASE_URL`, and
   `AGENTD_WEBHOOK_ENDPOINTS` for webhooks.
 - At least two `api` replicas behind the load balancer and two `loop` replicas, or two `all` replicas.
+- On Kubernetes, the Helm chart in `deploy/helm/agentd`; `kubernetes.md` has its values and a local kind setup.
 
 A `self_hosted` environment's tools run on the customer's worker (`ant beta:worker poll` or the SDK's
 `EnvironmentWorker`), which polls the environment's work queue.
